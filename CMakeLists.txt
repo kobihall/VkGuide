@@ -7,11 +7,14 @@ set(CMAKE_CXX_STANDARD 17)
 
 find_package(Vulkan REQUIRED)
 find_package(glfw3 3.3 REQUIRED)
+find_package(fmt REQUIRED)
 
 include_directories(/usr/local/include)
 include_directories(${CMAKE_SOURCE_DIR}/../CPPLibraries)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/imgui imgui)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/glm glm)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/vk-bootstrap vk-bootstrap)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/VulkanMemoryAllocator VulkanMemoryAllocator)
 add_library(stb_image INTERFACE)
 target_include_directories(stb_image INTERFACE ${CMAKE_SOURCE_DIR}/../CPPLibraries)
 

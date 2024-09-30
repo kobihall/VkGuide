@@ -12,7 +12,7 @@ set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGE
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide glm imgui stb_image glfw)
+target_link_libraries(vulkan_guide vk-bootstrap VulkanMemoryAllocator glm imgui stb_image glfw fmt::fmt)
 
 target_link_libraries(vulkan_guide Vulkan::Vulkan)
 
