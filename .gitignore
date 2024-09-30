@@ -1,0 +1,8 @@
+/.vscode/*
+/bin/*
+/build/*
+
+*.sh
+*.spv
+compile.sh
+run.sh
