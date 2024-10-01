@@ -15,6 +15,19 @@ public:
 
 	GLFWwindow* m_window = nullptr;
 
+	VkInstance m_instance;
+	VkAllocationCallbacks* m_Allocator = NULL;
+	VkDebugUtilsMessengerEXT m_debugMessenger;
+	VkPhysicalDevice m_chosenGPU;
+	VkDevice m_device;
+	VkSurfaceKHR m_surface;
+
+	VkSwapchainKHR m_swapchain;
+	VkFormat m_swapchainImageFormat;
+	std::vector<VkImage> m_swapchainImages;
+	std::vector<VkImageView> m_swapchainImageViews;
+	VkExtent2D m_swapchainExtent;
+
 	//initializes everything in the engine
 	void init();
 
@@ -29,5 +42,13 @@ public:
 
 private:
 	void initGLFW();
+	void initVulkan();
+	void initSwapchain();
+	void initCommands();
+	void initSyncStructures();
+
+	void createSwapchain(uint32_t width, uint32_t height);
+	void destroySwapchain();
+
 	static void glfw_error_callback(int error, const char* description);
 };

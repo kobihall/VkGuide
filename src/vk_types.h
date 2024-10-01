@@ -14,6 +14,9 @@
 #include <GLFW/glfw3.h>
 
 #include <vulkan/vulkan.h>
+#include <vulkan/vk_enum_string_helper.h>
+
+#include <VkBootstrap.h>
 
 #include <VulkanMemoryAllocator/include/vk_mem_alloc.h>
 
@@ -21,6 +24,15 @@
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec4.hpp>
+
+
+template <typename T>
+void vkbErr(vkb::Result<T> res){
+    if(!res) {
+        fmt::println("Vulkan bootstrap result error: {}", res.error().message());
+        abort();
+    }
+};
 
 #define checkVkResult(x)                                        \
 do{                                                             \
