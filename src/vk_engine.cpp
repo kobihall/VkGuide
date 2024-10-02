@@ -50,7 +50,7 @@ void VulkanEngine::initVulkan()
 	auto inst_ret = builder.set_app_name("Example Vulkan Application")
 		.request_validation_layers(b_UseValidationLayers)
 		.use_default_debug_messenger()
-		.require_api_version(1, 3, 0)
+		.require_api_version(1, 2, 0)
 		.build();
 	vkbErr(inst_ret);
 	vkb::Instance vkb_inst = inst_ret.value();
@@ -69,17 +69,26 @@ void VulkanEngine::initVulkan()
 	//use vkbootstrap to select a gpu. 
 	//We want a gpu that can write to the GLFW surface and supports vulkan 1.3 with the correct features
 	vkb::PhysicalDeviceSelector selector{ vkb_inst };
-	auto dev_ret = selector
+	auto physdev_ret = selector
 		.set_minimum_version(1, 2)
+		.add_required_extension(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)
 		.set_required_features_12(features)
 		.set_surface(m_surface)
 		.select();
-	vkbErr(dev_ret);
+	vkbErr(physdev_ret);
+
+	VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic_rendering_features{};
+	dynamic_rendering_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+	dynamic_rendering_features.dynamicRendering = VK_TRUE;
 
 	//create the final vulkan device
-	vkb::PhysicalDevice physicalDevice = dev_ret.value();
+	vkb::PhysicalDevice physicalDevice = physdev_ret.value();
 	vkb::DeviceBuilder deviceBuilder{ physicalDevice };
-	vkb::Device vkbDevice = deviceBuilder.build().value();
+	auto dev_ret = deviceBuilder
+		.add_pNext(&dynamic_rendering_features)
+		.build();
+	vkbErr(dev_ret);
+	vkb::Device vkbDevice = dev_ret.value();
 
 	// Get the VkDevice handle used in the rest of a vulkan application
 	m_device = vkbDevice.device;
