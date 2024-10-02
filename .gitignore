@@ -1,6 +1,7 @@
 /.vscode/*
 /bin/*
 /build/*
+.DS_store
 
 *.sh
 *.spv
