@@ -24,6 +24,24 @@ void VulkanEngine::init()
 	m_isInitialized = true;
 }
 
+void VulkanEngine::draw()
+{
+	//nothing yet
+}
+
+void VulkanEngine::run()
+{
+	bool bQuit = false;
+
+	//main loop
+	while (!bQuit && !glfwWindowShouldClose(m_window))
+	{
+        glfwPollEvents();
+
+		draw();
+	}
+}
+
 void VulkanEngine::initGLFW()
 {
     // Initialize GLFW and create a window with it. 
@@ -153,24 +171,6 @@ void VulkanEngine::cleanup()
 
 		glfwDestroyWindow(m_window);
         glfwTerminate();
-	}
-}
-
-void VulkanEngine::draw()
-{
-	//nothing yet
-}
-
-void VulkanEngine::run()
-{
-	bool bQuit = false;
-
-	//main loop
-	while (!bQuit && !glfwWindowShouldClose(m_window))
-	{
-        glfwPollEvents();
-
-		draw();
 	}
 }
 
