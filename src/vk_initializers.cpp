@@ -108,6 +108,49 @@ VkImageSubresourceRange vkinit::image_subresource_range(VkImageAspectFlags aspec
     return subImage;
 }
 
+VkImageCreateInfo vkinit::image_create_info(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent)
+{
+    VkImageCreateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.pNext = nullptr;
+
+    info.imageType = VK_IMAGE_TYPE_2D;
+
+    info.format = format;
+    info.extent = extent;
+
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+
+    //for MSAA. we will not be using it by default, so default it to 1 sample per pixel.
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+
+    //optimal tiling, which means the image is stored on the best gpu format
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = usageFlags;
+
+    return info;
+}
+
+VkImageViewCreateInfo vkinit::imageview_create_info(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags)
+{
+    // build a image-view for the depth image to use for rendering
+    VkImageViewCreateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    info.pNext = nullptr;
+
+    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    info.image = image;
+    info.format = format;
+    info.subresourceRange.baseMipLevel = 0;
+    info.subresourceRange.levelCount = 1;
+    info.subresourceRange.baseArrayLayer = 0;
+    info.subresourceRange.layerCount = 1;
+    info.subresourceRange.aspectMask = aspectFlags;
+
+    return info;
+}
+
 
 vkinit::VkFunctionLoader& vkinit::VkFunctionLoader::get_instance() {
     static VkFunctionLoader instance;
@@ -120,8 +163,13 @@ void vkinit::VkFunctionLoader::load_functions(VkDevice device) {
         vkGetDeviceProcAddr(device, "vkCmdPipelineBarrier2KHR"));
     vkQueueSubmit2KHR = reinterpret_cast<PFN_vkQueueSubmit2KHR>(
         vkGetDeviceProcAddr(device, "vkQueueSubmit2KHR"));
+    vkCmdBlitImage2KHR = reinterpret_cast<PFN_vkCmdBlitImage2KHR>(
+        vkGetDeviceProcAddr(device, "vkCmdBlitImage2KHR"));
 
     if (!vkCmdPipelineBarrier2KHR || !vkQueueSubmit2KHR) {
         throw std::runtime_error("Failed to load Vulkan synchronization2 function pointers");
+    }
+    if (!vkCmdBlitImage2KHR) {
+        throw std::runtime_error("Failed to load Vulkan copy_commands2 function pointers");
     }
 }

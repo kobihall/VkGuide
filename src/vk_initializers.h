@@ -17,6 +17,8 @@ namespace vkinit {
 	VkSubmitInfo2 submit_info(VkCommandBufferSubmitInfo* cmd, VkSemaphoreSubmitInfo* signalSemaphoreInfo, VkSemaphoreSubmitInfo* waitSemaphoreInfo);
 
 	VkImageSubresourceRange image_subresource_range(VkImageAspectFlags aspectMask);
+	VkImageCreateInfo image_create_info(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent);
+	VkImageViewCreateInfo imageview_create_info(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags);
 
 	class VkFunctionLoader {
 	public:
@@ -25,6 +27,7 @@ namespace vkinit {
 		// Function pointers for synchronization2 and other Vulkan features
 		PFN_vkCmdPipelineBarrier2KHR vkCmdPipelineBarrier2KHR = nullptr;
 		PFN_vkQueueSubmit2KHR vkQueueSubmit2KHR = nullptr;
+		PFN_vkCmdBlitImage2KHR vkCmdBlitImage2KHR = nullptr;
 	
 		// Initialize function pointers
 		void load_functions(VkDevice device);

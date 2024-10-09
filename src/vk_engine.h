@@ -5,11 +5,31 @@
 
 #include <vk_types.h>
 
+struct DeletionQueue
+{
+	std::deque<std::function<void()>> deletors;
+
+	void push_function(std::function<void()>&& function) {
+		deletors.push_back(function);
+	}
+
+	void flush() {
+		// reverse iterate the deletion queue to execute all the functions
+		for (auto it = deletors.rbegin(); it != deletors.rend(); it++) {
+			(*it)(); //call functors
+		}
+
+		deletors.clear();
+	}
+};
+
+
 struct FrameData {
 	VkCommandPool commandPool;
 	VkCommandBuffer mainCommandBuffer;
 	VkSemaphore swapchainSemaphore, renderSemaphore;
 	VkFence renderFence;
+	DeletionQueue deletionQueue;
 };
 
 constexpr unsigned int FRAME_OVERLAP = 2;
@@ -20,6 +40,8 @@ public:
 
 	bool m_isInitialized{ false };
 	int m_frameNumber {0};
+
+	DeletionQueue m_mainDeletionQueue;
 
 	VkExtent2D m_windowExtent{ 1700 , 900 };
 
@@ -38,11 +60,16 @@ public:
 	std::vector<VkImageView> m_swapchainImageViews;
 	VkExtent2D m_swapchainExtent;
 
+	AllocatedImage m_drawImage;
+	VkExtent2D m_drawExtent;
+
 	FrameData m_frames[FRAME_OVERLAP];
 	FrameData& get_current_frame() { return m_frames[m_frameNumber % FRAME_OVERLAP]; };
 
 	VkQueue m_graphicsQueue;
 	uint32_t m_graphicsQueueFamily;
+
+	VmaAllocator m_memAllocator;
 
 	//initializes everything in the engine
 	void init();
@@ -65,6 +92,8 @@ private:
 
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
+
+	void draw_background(VkCommandBuffer cmd);
 
 	static void glfw_error_callback(int error, const char* description);
 };

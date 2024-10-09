@@ -25,6 +25,14 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec4.hpp>
 
+struct AllocatedImage {
+    VkImage image;
+    VkImageView imageView;
+    VmaAllocation allocation;
+    VkExtent3D imageExtent;
+    VkFormat imageFormat;
+};
+
 
 template <typename T>
 void vkbErr(vkb::Result<T> res){
