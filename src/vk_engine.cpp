@@ -23,6 +23,7 @@ void VulkanEngine::init()
 	initSwapchain();
 	initCommands();
 	initSyncStructures();
+	initDescriptors();
 	
 	//everything went fine
 	m_isInitialized = true;
@@ -341,6 +342,49 @@ void VulkanEngine::initSyncStructures()
 		checkVkResult(vkCreateSemaphore(m_device, &semaphoreCreateInfo, nullptr, &m_frames[i].swapchainSemaphore));
 		checkVkResult(vkCreateSemaphore(m_device, &semaphoreCreateInfo, nullptr, &m_frames[i].renderSemaphore));
 	}
+}
+
+void VulkanEngine::initDescriptors()
+{
+	//create a descriptor pool that will hold 10 sets with 1 image each
+	std::vector<DescriptorAllocator::PoolSizeRatio> sizes =
+	{
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 }
+	};
+
+	globalDescriptorAllocator.init_pool(m_device, 10, sizes);
+
+	//make the descriptor set layout for our compute draw
+	{
+		DescriptorLayoutBuilder builder;
+		builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+		m_drawImageDescriptorLayout = builder.build(m_device, VK_SHADER_STAGE_COMPUTE_BIT);
+	}
+
+	// allocate a descriptor set for our draw image
+	m_drawImageDescriptors = globalDescriptorAllocator.allocate(m_device, m_drawImageDescriptorLayout);
+
+	VkDescriptorImageInfo imgInfo{};
+	imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	imgInfo.imageView = m_drawImage.imageView;
+
+	VkWriteDescriptorSet drawImageWrite = {};
+	drawImageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	drawImageWrite.pNext = nullptr;
+
+	drawImageWrite.dstBinding = 0;
+	drawImageWrite.dstSet = m_drawImageDescriptors;
+	drawImageWrite.descriptorCount = 1;
+	drawImageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	drawImageWrite.pImageInfo = &imgInfo;
+
+	vkUpdateDescriptorSets(m_device, 1, &drawImageWrite, 0, nullptr);
+
+	//make sure both the descriptor allocator and the new layout get cleaned up properly
+	m_mainDeletionQueue.push_function([&]() {
+		globalDescriptorAllocator.destroy_pool(m_device);
+		vkDestroyDescriptorSetLayout(m_device, m_drawImageDescriptorLayout, nullptr);
+	});
 }
 
 void VulkanEngine::cleanup()
