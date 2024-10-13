@@ -77,6 +77,9 @@ public:
 	VkDescriptorSet m_drawImageDescriptors;
 	VkDescriptorSetLayout m_drawImageDescriptorLayout;
 
+	VkPipeline m_computePipeline;
+	VkPipelineLayout m_computePipelineLayout;
+
 	//initializes everything in the engine
 	void init();
 
@@ -96,6 +99,8 @@ private:
 	void initCommands();
 	void initSyncStructures();
 	void initDescriptors();
+	void initPipeline();
+	void initComputePipelines();
 
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
