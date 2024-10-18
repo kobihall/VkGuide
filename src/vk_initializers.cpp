@@ -151,6 +151,38 @@ VkImageViewCreateInfo vkinit::imageview_create_info(VkFormat format, VkImage ima
     return info;
 }
 
+VkRenderingAttachmentInfo vkinit::attachment_info(VkImageView view, VkClearValue* clear ,VkImageLayout layout /*= VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL*/)
+{
+    VkRenderingAttachmentInfo colorAttachment {};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.pNext = nullptr;
+
+    colorAttachment.imageView = view;
+    colorAttachment.imageLayout = layout;
+    colorAttachment.loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    if (clear) {
+        colorAttachment.clearValue = *clear;
+    }
+
+    return colorAttachment;
+}
+
+VkRenderingInfo vkinit::rendering_info(VkExtent2D renderExtent, VkRenderingAttachmentInfo* colorAttachment, VkRenderingAttachmentInfo* depthAttachment)
+{
+    VkRenderingInfo renderInfo {};
+    renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderInfo.pNext = nullptr;
+
+    renderInfo.renderArea = VkRect2D { VkOffset2D { 0, 0 }, renderExtent };
+    renderInfo.layerCount = 1;
+    renderInfo.colorAttachmentCount = 1;
+    renderInfo.pColorAttachments = colorAttachment;
+    renderInfo.pDepthAttachment = depthAttachment;
+    renderInfo.pStencilAttachment = nullptr;
+
+    return renderInfo;
+}
 
 vkinit::VkFunctionLoader& vkinit::VkFunctionLoader::get_instance() {
     static VkFunctionLoader instance;
@@ -165,11 +197,18 @@ void vkinit::VkFunctionLoader::load_functions(VkDevice device) {
         vkGetDeviceProcAddr(device, "vkQueueSubmit2KHR"));
     vkCmdBlitImage2KHR = reinterpret_cast<PFN_vkCmdBlitImage2KHR>(
         vkGetDeviceProcAddr(device, "vkCmdBlitImage2KHR"));
+    vkCmdBeginRenderingKHR = reinterpret_cast<PFN_vkCmdBeginRenderingKHR>(
+        vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR"));
+    vkCmdEndRenderingKHR = reinterpret_cast<PFN_vkCmdEndRenderingKHR>(
+        vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR"));
 
     if (!vkCmdPipelineBarrier2KHR || !vkQueueSubmit2KHR) {
         throw std::runtime_error("Failed to load Vulkan synchronization2 function pointers");
     }
     if (!vkCmdBlitImage2KHR) {
         throw std::runtime_error("Failed to load Vulkan copy_commands2 function pointers");
+    }
+    if (!vkCmdBeginRenderingKHR || !vkCmdEndRenderingKHR) {
+        throw std::runtime_error("Failed to load Vulkan dynamic render pass function pointers");
     }
 }

@@ -41,6 +41,7 @@ public:
 
 	bool m_isInitialized{ false };
 	int m_frameNumber {0};
+	bool m_stop_rendering{ false };
 
 	DeletionQueue m_mainDeletionQueue;
 
@@ -80,6 +81,11 @@ public:
 	VkPipeline m_computePipeline;
 	VkPipelineLayout m_computePipelineLayout;
 
+	// immediate submit structures
+    VkFence m_immFence;
+    VkCommandBuffer m_immCommandBuffer;
+    VkCommandPool m_immCommandPool;
+
 	//initializes everything in the engine
 	void init();
 
@@ -88,6 +94,9 @@ public:
 
 	//draw loop
 	void draw();
+
+	//submit immdediate mode functions to a command buffer
+	void immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function);
 
 	//run main loop
 	void run();
@@ -101,11 +110,13 @@ private:
 	void initDescriptors();
 	void initPipeline();
 	void initComputePipelines();
+	void initIMGUI();
 
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
 
 	void draw_background(VkCommandBuffer cmd);
+	void draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView);
 
 	static void glfw_error_callback(int error, const char* description);
 };

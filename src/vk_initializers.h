@@ -20,6 +20,9 @@ namespace vkinit {
 	VkImageCreateInfo image_create_info(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent);
 	VkImageViewCreateInfo imageview_create_info(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags);
 
+	VkRenderingAttachmentInfo attachment_info(VkImageView view, VkClearValue* clear ,VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	VkRenderingInfo rendering_info(VkExtent2D renderExtent, VkRenderingAttachmentInfo* colorAttachment, VkRenderingAttachmentInfo* depthAttachment);
+
 	class VkFunctionLoader {
 	public:
 		static VkFunctionLoader& get_instance();
@@ -28,6 +31,8 @@ namespace vkinit {
 		PFN_vkCmdPipelineBarrier2KHR vkCmdPipelineBarrier2KHR = nullptr;
 		PFN_vkQueueSubmit2KHR vkQueueSubmit2KHR = nullptr;
 		PFN_vkCmdBlitImage2KHR vkCmdBlitImage2KHR = nullptr;
+		PFN_vkCmdBeginRenderingKHR vkCmdBeginRenderingKHR = nullptr;
+		PFN_vkCmdEndRenderingKHR vkCmdEndRenderingKHR = nullptr;
 	
 		// Initialize function pointers
 		void load_functions(VkDevice device);
