@@ -35,6 +35,22 @@ struct FrameData {
 
 constexpr unsigned int FRAME_OVERLAP = 2;
 
+struct ComputePushConstants {
+	glm::vec4 data1;
+	glm::vec4 data2;
+	glm::vec4 data3;
+	glm::vec4 data4;
+};
+
+struct ComputeEffect {
+    const char* name;
+
+	VkPipeline pipeline;
+	VkPipelineLayout layout;
+
+	ComputePushConstants data;
+};
+
 
 class VulkanEngine {
 public:
@@ -78,13 +94,16 @@ public:
 	VkDescriptorSet m_drawImageDescriptors;
 	VkDescriptorSetLayout m_drawImageDescriptorLayout;
 
-	VkPipeline m_computePipeline;
+	//VkPipeline m_computePipeline; //unused for now, instead shaders are in m_backgroundEffects
 	VkPipelineLayout m_computePipelineLayout;
 
 	// immediate submit structures
     VkFence m_immFence;
     VkCommandBuffer m_immCommandBuffer;
     VkCommandPool m_immCommandPool;
+
+	std::vector<ComputeEffect> m_backgroundEffects;
+	int m_currentBackgroundEffect{0};
 
 	//initializes everything in the engine
 	void init();
