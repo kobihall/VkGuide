@@ -97,6 +97,9 @@ public:
 	//VkPipeline m_computePipeline; //unused for now, instead shaders are in m_backgroundEffects
 	VkPipelineLayout m_computePipelineLayout;
 
+	VkPipelineLayout m_trianglePipelineLayout;
+	VkPipeline m_trianglePipeline;
+
 	// immediate submit structures
     VkFence m_immFence;
     VkCommandBuffer m_immCommandBuffer;
@@ -129,12 +132,14 @@ private:
 	void initDescriptors();
 	void initPipeline();
 	void initComputePipelines();
+	void initTrianglePipeline();
 	void initIMGUI();
 
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
 
 	void draw_background(VkCommandBuffer cmd);
+	void draw_geometry(VkCommandBuffer cmd);
 	void draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView);
 
 	static void glfw_error_callback(int error, const char* description);

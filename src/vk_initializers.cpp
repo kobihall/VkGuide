@@ -184,6 +184,36 @@ VkRenderingInfo vkinit::rendering_info(VkExtent2D renderExtent, VkRenderingAttac
     return renderInfo;
 }
 
+VkPipelineLayoutCreateInfo vkinit::pipelineLayoutCreateInfo()
+{
+    VkPipelineLayoutCreateInfo info {};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    info.pNext = nullptr;
+
+    // empty defaults
+    info.flags = 0;
+    info.setLayoutCount = 0;
+    info.pSetLayouts = nullptr;
+    info.pushConstantRangeCount = 0;
+    info.pPushConstantRanges = 0;
+    return info;
+}
+
+VkPipelineShaderStageCreateInfo vkinit::pipelineShaderStageCreateInfo(VkShaderStageFlagBits stage, VkShaderModule shaderModule, const char* entry)
+{
+    VkPipelineShaderStageCreateInfo info {};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    info.pNext = nullptr;
+
+    // shader stage
+    info.stage = stage;
+    // module containing the code for this shader stage
+    info.module = shaderModule;
+    // the entry point of the shader
+    info.pName = entry;
+    return info;
+}
+
 vkinit::VkFunctionLoader& vkinit::VkFunctionLoader::get_instance() {
     static VkFunctionLoader instance;
     return instance;
