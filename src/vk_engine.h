@@ -82,7 +82,7 @@ public:
 	VkExtent2D m_drawExtent;
 
 	FrameData m_frames[FRAME_OVERLAP];
-	FrameData& get_current_frame() { return m_frames[m_frameNumber % FRAME_OVERLAP]; };
+	FrameData& getCurrentFrame() { return m_frames[m_frameNumber % FRAME_OVERLAP]; };
 
 	VkQueue m_graphicsQueue;
 	uint32_t m_graphicsQueueFamily;
@@ -118,7 +118,7 @@ public:
 	void draw();
 
 	//submit immdediate mode functions to a command buffer
-	void immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function);
+	void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
 
 	//run main loop
 	void run();
@@ -138,9 +138,11 @@ private:
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
 
-	void draw_background(VkCommandBuffer cmd);
-	void draw_geometry(VkCommandBuffer cmd);
-	void draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView);
+	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
+
+	void drawBackground(VkCommandBuffer cmd);
+	void drawGeometry(VkCommandBuffer cmd);
+	void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);
 
 	static void glfw_error_callback(int error, const char* description);
 };

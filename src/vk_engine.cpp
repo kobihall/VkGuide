@@ -41,18 +41,18 @@ void VulkanEngine::draw()
 {
 	// wait until the gpu has finished rendering the last frame. Timeout of 1
 	// second
-	checkVkResult(vkWaitForFences(m_device, 1, &get_current_frame().renderFence, true, 1000000000));
+	checkVkResult(vkWaitForFences(m_device, 1, &getCurrentFrame().renderFence, true, 1000000000));
 
-	get_current_frame().deletionQueue.flush();
+	getCurrentFrame().deletionQueue.flush();
 
-	checkVkResult(vkResetFences(m_device, 1, &get_current_frame().renderFence));
+	checkVkResult(vkResetFences(m_device, 1, &getCurrentFrame().renderFence));
 
 	//request image from the swapchain
 	uint32_t swapchainImageIndex;
-	checkVkResult(vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000, get_current_frame().swapchainSemaphore, nullptr, &swapchainImageIndex));
+	checkVkResult(vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000, getCurrentFrame().swapchainSemaphore, nullptr, &swapchainImageIndex));
 
 	//naming it cmd for shorter writing
-	VkCommandBuffer cmd = get_current_frame().mainCommandBuffer;
+	VkCommandBuffer cmd = getCurrentFrame().mainCommandBuffer;
 
 	// now that we are sure that the commands finished executing, we can safely
 	// reset the command buffer to begin recording again.
@@ -72,11 +72,11 @@ void VulkanEngine::draw()
 	vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
 	// flash the background color
-	draw_background(cmd);
+	drawBackground(cmd);
 
 	vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-	draw_geometry(cmd);
+	drawGeometry(cmd);
 
 	// transition the draw image and the swapchain image into their correct transfer layouts
 	vkutil::transition_image(cmd, m_drawImage.image,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -89,7 +89,7 @@ void VulkanEngine::draw()
 	vkutil::transition_image(cmd, m_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 	//draw imgui into the swapchain image
-	draw_imgui(cmd, m_swapchainImageViews[swapchainImageIndex]);
+	drawImgui(cmd, m_swapchainImageViews[swapchainImageIndex]);
 
 	// set swapchain image layout to Present so we can show it on the screen
 	vkutil::transition_image(cmd, m_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
@@ -103,14 +103,14 @@ void VulkanEngine::draw()
 
 	VkCommandBufferSubmitInfo cmdinfo = vkinit::command_buffer_submit_info(cmd);
 
-	VkSemaphoreSubmitInfo waitInfo = vkinit::semaphore_submit_info(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR,get_current_frame().swapchainSemaphore);
-	VkSemaphoreSubmitInfo signalInfo = vkinit::semaphore_submit_info(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, get_current_frame().renderSemaphore);	
+	VkSemaphoreSubmitInfo waitInfo = vkinit::semaphore_submit_info(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR,getCurrentFrame().swapchainSemaphore);
+	VkSemaphoreSubmitInfo signalInfo = vkinit::semaphore_submit_info(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, getCurrentFrame().renderSemaphore);	
 	
 	VkSubmitInfo2 submit = vkinit::submit_info(&cmdinfo,&signalInfo,&waitInfo);	
 
 	//submit command buffer to the queue and execute it.
 	// renderFence will now block until the graphic commands finish execution
-	checkVkResult(vkinit::VkFunctionLoader::get_instance().vkQueueSubmit2KHR(m_graphicsQueue, 1, &submit, get_current_frame().renderFence));
+	checkVkResult(vkinit::VkFunctionLoader::get_instance().vkQueueSubmit2KHR(m_graphicsQueue, 1, &submit, getCurrentFrame().renderFence));
 
 	//prepare present
 	// this will put the image we just rendered to into the visible window.
@@ -122,7 +122,7 @@ void VulkanEngine::draw()
 	presentInfo.pSwapchains = &m_swapchain;
 	presentInfo.swapchainCount = 1;
 
-	presentInfo.pWaitSemaphores = &get_current_frame().renderSemaphore;
+	presentInfo.pWaitSemaphores = &getCurrentFrame().renderSemaphore;
 	presentInfo.waitSemaphoreCount = 1;
 
 	presentInfo.pImageIndices = &swapchainImageIndex;
@@ -133,7 +133,7 @@ void VulkanEngine::draw()
 	m_frameNumber++;
 }
 
-void VulkanEngine::draw_background(VkCommandBuffer cmd)
+void VulkanEngine::drawBackground(VkCommandBuffer cmd)
 {
 	ComputeEffect& effect = m_backgroundEffects[m_currentBackgroundEffect];
 
@@ -149,7 +149,7 @@ void VulkanEngine::draw_background(VkCommandBuffer cmd)
 	vkCmdDispatch(cmd, std::ceil(m_drawExtent.width / 16.0), std::ceil(m_drawExtent.height / 16.0), 1);
 }
 
-void VulkanEngine::draw_geometry(VkCommandBuffer cmd)
+void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 {
 	//begin a render pass  connected to our draw image
 	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(m_drawImage.imageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -184,7 +184,7 @@ void VulkanEngine::draw_geometry(VkCommandBuffer cmd)
 	vkinit::VkFunctionLoader::get_instance().vkCmdEndRenderingKHR(cmd);
 }
 
-void VulkanEngine::draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView)
+void VulkanEngine::drawImgui(VkCommandBuffer cmd, VkImageView targetImageView)
 {
 	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(targetImageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	VkRenderingInfo renderInfo = vkinit::rendering_info(m_swapchainExtent, &colorAttachment, nullptr);
@@ -196,7 +196,7 @@ void VulkanEngine::draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView)
 	vkinit::VkFunctionLoader::get_instance().vkCmdEndRenderingKHR(cmd);
 }
 
-void VulkanEngine::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function)
+void VulkanEngine::immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function)
 {
 	checkVkResult(vkResetFences(m_device, 1, &m_immFence));
 	checkVkResult(vkResetCommandBuffer(m_immCommandBuffer, 0));
