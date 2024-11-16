@@ -162,7 +162,7 @@ void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 	VkRenderingInfo renderInfo = vkinit::rendering_info(m_drawExtent, &colorAttachment, &depthAttachment);
 	vkinit::VkFunctionLoader::get_instance().vkCmdBeginRenderingKHR(cmd, &renderInfo);
 
-	//vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_trianglePipeline);
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline);
 
 	//set dynamic viewport and scissor
 	VkViewport viewport = {};
@@ -183,19 +183,7 @@ void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-	//launch a draw command to draw 3 vertices
-	//vkCmdDraw(cmd, 3, 1, 0, 0);
-
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline);
-
 	GPUDrawPushConstants push_constants;
-	/*push_constants.worldMatrix = glm::mat4{ 1.f };
-	push_constants.vertexBuffer = rectangle.vertexBufferAddress;
-
-	vkCmdPushConstants(cmd, m_meshPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &push_constants);
-	vkCmdBindIndexBuffer(cmd, rectangle.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-	vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);*/
 
 	glm::mat4 view = glm::translate(glm::vec3{ 0,0,-5 });
 	// camera projection
@@ -662,7 +650,6 @@ void VulkanEngine::initDescriptors()
 void VulkanEngine::initPipeline()
 {
 	initComputePipelines();
-	initTrianglePipeline();
 	initMeshPipeline();
 }
 
@@ -753,64 +740,6 @@ void VulkanEngine::initComputePipelines()
 		});
 }
 
-void VulkanEngine::initTrianglePipeline()
-{
-	VkShaderModule triangleFragShader;
-	if (!vkutil::load_shader_module("./shaders/colored_triangle.frag.spv", m_device, &triangleFragShader)) {
-		fmt::println("Error when building the triangle fragment shader module");
-	}
-	else {
-		fmt::println("Triangle fragment shader succesfully loaded");
-	}
-
-	VkShaderModule triangleVertexShader;
-	if (!vkutil::load_shader_module("./shaders/colored_triangle.vert.spv", m_device, &triangleVertexShader)) {
-		fmt::println("Error when building the triangle vertex shader module");
-	}
-	else {
-		fmt::println("Triangle vertex shader succesfully loaded");
-	}
-	
-	//build the pipeline layout that controls the inputs/outputs of the shader
-	//we are not using descriptor sets or other systems yet, so no need to use anything other than empty default
-	VkPipelineLayoutCreateInfo pipeline_layout_info = vkinit::pipelineLayoutCreateInfo();
-	checkVkResult(vkCreatePipelineLayout(m_device, &pipeline_layout_info, nullptr, &m_trianglePipelineLayout));
-
-	PipelineBuilder pipelineBuilder;
-
-	//use the triangle layout we created
-	pipelineBuilder.m_pipelineLayout = m_trianglePipelineLayout;
-	//connecting the vertex and pixel shaders to the pipeline
-	pipelineBuilder.setShaders(triangleVertexShader, triangleFragShader);
-	//it will draw triangles
-	pipelineBuilder.setInputTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-	//filled triangles
-	pipelineBuilder.setPolygonMode(VK_POLYGON_MODE_FILL);
-	//no backface culling
-	pipelineBuilder.setCullMode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
-	//no multisampling
-	pipelineBuilder.setMultisamplingNone();
-	//no blending
-	pipelineBuilder.disableBlending();
-	//no depth testing
-	pipelineBuilder.disableDepthtest();
-
-	//connect the image format we will draw into, from draw image
-	pipelineBuilder.setColorAttachmentFormat(m_drawImage.imageFormat);
-	pipelineBuilder.setDepthFormat(m_depthImage.imageFormat);
-
-	//finally build the pipeline
-	m_trianglePipeline = pipelineBuilder.buildPipeline(m_device);
-
-	//clean structures
-	vkDestroyShaderModule(m_device, triangleFragShader, nullptr);
-	vkDestroyShaderModule(m_device, triangleVertexShader, nullptr);
-
-	m_mainDeletionQueue.push_function([&]() {
-		vkDestroyPipelineLayout(m_device, m_trianglePipelineLayout, nullptr);
-		vkDestroyPipeline(m_device, m_trianglePipeline, nullptr);
-	});
-}
 
 void VulkanEngine::initMeshPipeline()
 {
@@ -943,37 +872,7 @@ void VulkanEngine::initIMGUI()
 
 void VulkanEngine::initDefaultData()
 {
-	std::array<Vertex,4> rect_vertices;
-
-	rect_vertices[0].position = {0.5,-0.5, 0};
-	rect_vertices[1].position = {0.5,0.5, 0};
-	rect_vertices[2].position = {-0.5,-0.5, 0};
-	rect_vertices[3].position = {-0.5,0.5, 0};
-
-	rect_vertices[0].color = {0,0, 0,1};
-	rect_vertices[1].color = { 0.5,0.5,0.5 ,1};
-	rect_vertices[2].color = { 1,0, 0,1 };
-	rect_vertices[3].color = { 0,1, 0,1 };
-
-	std::array<uint32_t,6> rect_indices;
-
-	rect_indices[0] = 0;
-	rect_indices[1] = 1;
-	rect_indices[2] = 2;
-
-	rect_indices[3] = 2;
-	rect_indices[4] = 1;
-	rect_indices[5] = 3;
-
-	rectangle = uploadMesh(rect_indices,rect_vertices);
-
 	testMeshes = loadGltfMeshes(this,"./assets/basicmesh.glb").value();
-
-	//delete the rectangle data on engine shutdown
-	m_mainDeletionQueue.push_function([&](){
-		destroy_buffer(rectangle.indexBuffer);
-		destroy_buffer(rectangle.vertexBuffer);
-	});
 }
 
 void VulkanEngine::cleanup()

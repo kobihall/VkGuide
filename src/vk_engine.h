@@ -99,13 +99,10 @@ public:
 	//VkPipeline m_computePipeline; //unused for now, instead shaders are in m_backgroundEffects
 	VkPipelineLayout m_computePipelineLayout;
 
-	VkPipelineLayout m_trianglePipelineLayout;
-	VkPipeline m_trianglePipeline;
 	VkPipelineLayout m_meshPipelineLayout;
 	VkPipeline m_meshPipeline;
 
 	// meshes
-	GPUMeshBuffers rectangle;
 	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
 
 	// immediate submit structures
@@ -142,7 +139,6 @@ private:
 	void initDescriptors();
 	void initPipeline();
 	void initComputePipelines();
-	void initTrianglePipeline();
 	void initMeshPipeline();
 	void initIMGUI();
 	void initDefaultData();
