@@ -785,7 +785,8 @@ void VulkanEngine::initMeshPipeline()
 	//no multisampling
 	pipelineBuilder.setMultisamplingNone();
 	//no blending
-	pipelineBuilder.disableBlending();
+	//pipelineBuilder.disableBlending();
+	pipelineBuilder.enableBlendingAdditive();
 
 	//pipelineBuilder.disableDepthtest();
 	pipelineBuilder.enableDepthtest(true, VK_COMPARE_OP_LESS_OR_EQUAL);
