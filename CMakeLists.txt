@@ -15,6 +15,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/imgui imgui)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/glm glm)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/vk-bootstrap vk-bootstrap)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/VulkanMemoryAllocator VulkanMemoryAllocator)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/fastgltf fastgltf)
 add_library(stb_image INTERFACE)
 target_include_directories(stb_image INTERFACE ${CMAKE_SOURCE_DIR}/../CPPLibraries)
 

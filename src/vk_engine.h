@@ -5,6 +5,7 @@
 
 #include <vk_types.h>
 #include <vk_descriptors.h>
+#include <vk_loader.h>
 
 struct DeletionQueue
 {
@@ -79,6 +80,7 @@ public:
 	VkExtent2D m_swapchainExtent;
 
 	AllocatedImage m_drawImage;
+	AllocatedImage m_depthImage;
 	VkExtent2D m_drawExtent;
 
 	FrameData m_frames[FRAME_OVERLAP];
@@ -104,6 +106,7 @@ public:
 
 	// meshes
 	GPUMeshBuffers rectangle;
+	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
 
 	// immediate submit structures
     VkFence m_immFence;
@@ -118,6 +121,8 @@ public:
 
 	//shuts down the engine
 	void cleanup();
+
+	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 
 	//draw loop
 	void draw();
@@ -148,7 +153,6 @@ private:
 	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
 	void destroy_buffer(const AllocatedBuffer& buffer);
 
-	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 
 	void drawBackground(VkCommandBuffer cmd);
 	void drawGeometry(VkCommandBuffer cmd);
