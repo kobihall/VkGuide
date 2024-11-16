@@ -53,7 +53,13 @@ void VulkanEngine::draw()
 
 	//request image from the swapchain
 	uint32_t swapchainImageIndex;
-	checkVkResult(vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000, getCurrentFrame().swapchainSemaphore, nullptr, &swapchainImageIndex));
+	VkResult acquireImageResult = vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000, getCurrentFrame().swapchainSemaphore, nullptr, &swapchainImageIndex);
+	if (acquireImageResult == VK_ERROR_OUT_OF_DATE_KHR) {
+        m_resizeRequested = true;       
+		return ;
+	} else if (acquireImageResult != VK_SUCCESS && acquireImageResult != VK_SUBOPTIMAL_KHR) {
+    	throw std::runtime_error("failed to acquire swap chain image!");
+	}
 
 	//naming it cmd for shorter writing
 	VkCommandBuffer cmd = getCurrentFrame().mainCommandBuffer;
@@ -65,8 +71,8 @@ void VulkanEngine::draw()
 	//begin the command buffer recording. We will use this command buffer exactly once, so we want to let vulkan know that
 	VkCommandBufferBeginInfo cmdBeginInfo = vkinit::command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-	m_drawExtent.width = m_drawImage.imageExtent.width;
-	m_drawExtent.height = m_drawImage.imageExtent.height;
+	m_drawExtent.width = std::min(m_drawImage.imageExtent.width, m_swapchainExtent.width)*m_renderScale;
+	m_drawExtent.height = std::min(m_drawImage.imageExtent.height, m_swapchainExtent.height)*m_renderScale;
 
 	//start the command buffer recording
 	checkVkResult(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
@@ -131,7 +137,12 @@ void VulkanEngine::draw()
 
 	presentInfo.pImageIndices = &swapchainImageIndex;
 
-	checkVkResult(vkQueuePresentKHR(m_graphicsQueue, &presentInfo));
+	VkResult presentResult = vkQueuePresentKHR(m_graphicsQueue, &presentInfo);
+	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
+		m_resizeRequested = true; 
+	} else if (presentResult != VK_SUCCESS) {
+		throw std::runtime_error("failed to present swap chain image!");
+	}
 
 	//increase the number of frames drawn
 	m_frameNumber++;
@@ -150,7 +161,7 @@ void VulkanEngine::drawBackground(VkCommandBuffer cmd)
 	vkCmdPushConstants(cmd, m_computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &effect.data);
 
 	// execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
-	vkCmdDispatch(cmd, std::ceil(m_drawExtent.width / 16.0), std::ceil(m_drawExtent.height / 16.0), 1);
+	vkCmdDispatch(cmd, std::ceil(m_drawImage.imageExtent.width / 16.0), std::ceil(m_drawImage.imageExtent.height / 16.0), 1);
 }
 
 void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
@@ -261,6 +272,10 @@ void VulkanEngine::run()
 			//throttle the speed to avoid the endless spinning
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			continue;
+		}
+
+		if (m_resizeRequested) {
+			resizeSwapchain();
 		}		
 
 		// imgui new frame
@@ -269,6 +284,7 @@ void VulkanEngine::run()
 		ImGui::NewFrame();
 
 		if (ImGui::Begin("background")) {
+			ImGui::SliderFloat("Render Scale",&m_renderScale, 0.3f, 1.f);
 			
 			ComputeEffect& selected = m_backgroundEffects[m_currentBackgroundEffect];
 		
@@ -304,7 +320,7 @@ void VulkanEngine::initGLFW()
 	}
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
     m_window = glfwCreateWindow(m_windowExtent.width, m_windowExtent.height, "Vulkan", nullptr, nullptr);
     glfwSetWindowUserPointer(m_window, this);
@@ -418,6 +434,22 @@ void VulkanEngine::destroySwapchain()
 	for (int i = 0; i < m_swapchainImageViews.size(); i++) {
 		vkDestroyImageView(m_device, m_swapchainImageViews[i], nullptr);
 	}
+}
+
+void VulkanEngine::resizeSwapchain()
+{
+	vkDeviceWaitIdle(m_device);
+
+	destroySwapchain();
+
+	int w, h;
+	glfwGetWindowSize(m_window, &w, &h);
+	m_windowExtent.width = w;
+	m_windowExtent.height = h;
+
+	createSwapchain(m_windowExtent.width, m_windowExtent.height);
+
+	m_resizeRequested = false;
 }
 
 AllocatedBuffer VulkanEngine::createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage)

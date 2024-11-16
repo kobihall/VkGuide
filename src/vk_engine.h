@@ -65,6 +65,7 @@ public:
 	VkExtent2D m_windowExtent{ 1700 , 900 };
 
 	GLFWwindow* m_window = nullptr;
+	bool m_resizeRequested;
 
 	VkInstance m_instance;
 	VkAllocationCallbacks* m_Allocator = NULL;
@@ -82,6 +83,7 @@ public:
 	AllocatedImage m_drawImage;
 	AllocatedImage m_depthImage;
 	VkExtent2D m_drawExtent;
+	float m_renderScale = 1.f;
 
 	FrameData m_frames[FRAME_OVERLAP];
 	FrameData& getCurrentFrame() { return m_frames[m_frameNumber % FRAME_OVERLAP]; };
@@ -145,6 +147,7 @@ private:
 
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
+	void resizeSwapchain();
 
 	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
 	void destroy_buffer(const AllocatedBuffer& buffer);
