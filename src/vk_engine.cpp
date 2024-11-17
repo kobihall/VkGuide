@@ -48,6 +48,7 @@ void VulkanEngine::draw()
 	checkVkResult(vkWaitForFences(m_device, 1, &getCurrentFrame().renderFence, true, 1000000000));
 
 	getCurrentFrame().deletionQueue.flush();
+	getCurrentFrame().frameDescriptors.clearPools(m_device);
 
 	checkVkResult(vkResetFences(m_device, 1, &getCurrentFrame().renderFence));
 
@@ -195,6 +196,25 @@ void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
 	GPUDrawPushConstants push_constants;
+
+	//allocate a new uniform buffer for the scene data
+	AllocatedBuffer gpuSceneDataBuffer = createBuffer(sizeof(GPUSceneData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+
+	//add it to the deletion queue of this frame so it gets deleted once its been used
+	getCurrentFrame().deletionQueue.push_function([=, this]() {
+		destroy_buffer(gpuSceneDataBuffer);
+	});
+
+	//write the buffer
+	GPUSceneData* sceneUniformData = (GPUSceneData*)gpuSceneDataBuffer.allocation->GetMappedData();
+	*sceneUniformData = m_sceneData;
+
+	//create a descriptor set that binds that buffer and update it
+	VkDescriptorSet globalDescriptor = getCurrentFrame().frameDescriptors.allocate(m_device, m_gpuSceneDataDescriptorLayout);
+
+	DescriptorWriter writer;
+	writer.writeBuffer(0, gpuSceneDataBuffer.buffer, sizeof(GPUSceneData), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+	writer.updateSet(m_device, globalDescriptor);
 
 	glm::mat4 view = glm::translate(glm::vec3{ 0,0,-5 });
 	// camera projection
@@ -644,38 +664,53 @@ void VulkanEngine::initDescriptors()
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 }
 	};
 
-	globalDescriptorAllocator.init_pool(m_device, 10, sizes);
+	globalDescriptorAllocator.initPool(m_device, 10, sizes);
 
 	//make the descriptor set layout for our compute draw
 	{
 		DescriptorLayoutBuilder builder;
-		builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+		builder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 		m_drawImageDescriptorLayout = builder.build(m_device, VK_SHADER_STAGE_COMPUTE_BIT);
 	}
 
 	// allocate a descriptor set for our draw image
 	m_drawImageDescriptors = globalDescriptorAllocator.allocate(m_device, m_drawImageDescriptorLayout);
 
-	VkDescriptorImageInfo imgInfo{};
-	imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-	imgInfo.imageView = m_drawImage.imageView;
+	DescriptorWriter writer;
+	writer.writeImage(0, m_drawImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 
-	VkWriteDescriptorSet drawImageWrite = {};
-	drawImageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	drawImageWrite.pNext = nullptr;
+	writer.updateSet(m_device,m_drawImageDescriptors);
 
-	drawImageWrite.dstBinding = 0;
-	drawImageWrite.dstSet = m_drawImageDescriptors;
-	drawImageWrite.descriptorCount = 1;
-	drawImageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	drawImageWrite.pImageInfo = &imgInfo;
+	for (int i = 0; i < FRAME_OVERLAP; i++) {
+		// create a descriptor pool
+		std::vector<DescriptorAllocatorGrowable::PoolSizeRatio> frame_sizes = { 
+			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 },
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 },
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 },
+		};
 
-	vkUpdateDescriptorSets(m_device, 1, &drawImageWrite, 0, nullptr);
+		m_frames[i].frameDescriptors = DescriptorAllocatorGrowable{};
+		m_frames[i].frameDescriptors.init(m_device, 1000, frame_sizes);
+	
+		m_mainDeletionQueue.push_function([&, i]() {
+			m_frames[i].frameDescriptors.destroyPools(m_device);
+		});
+	}
+
+	//make the descriptor set layout for our triangle raster draw
+	{
+		DescriptorLayoutBuilder builder;
+		builder.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+		m_gpuSceneDataDescriptorLayout = builder.build(m_device, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+	}
+
 
 	//make sure both the descriptor allocator and the new layout get cleaned up properly
 	m_mainDeletionQueue.push_function([&]() {
-		globalDescriptorAllocator.destroy_pool(m_device);
+		globalDescriptorAllocator.destroyPool(m_device);
 		vkDestroyDescriptorSetLayout(m_device, m_drawImageDescriptorLayout, nullptr);
+		vkDestroyDescriptorSetLayout(m_device, m_gpuSceneDataDescriptorLayout, nullptr);
 	});
 }
 

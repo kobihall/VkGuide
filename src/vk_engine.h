@@ -29,6 +29,7 @@ struct DeletionQueue
 struct FrameData {
 	VkCommandPool commandPool;
 	VkCommandBuffer mainCommandBuffer;
+	DescriptorAllocatorGrowable frameDescriptors;
 	VkSemaphore swapchainSemaphore, renderSemaphore;
 	VkFence renderFence;
 	DeletionQueue deletionQueue;
@@ -41,6 +42,15 @@ struct ComputePushConstants {
 	glm::vec4 data2;
 	glm::vec4 data3;
 	glm::vec4 data4;
+};
+
+struct GPUSceneData {
+    glm::mat4 view;
+    glm::mat4 proj;
+    glm::mat4 viewproj;
+    glm::vec4 ambientColor;
+    glm::vec4 sunlightDirection; // w for sun power
+    glm::vec4 sunlightColor;
 };
 
 struct ComputeEffect {
@@ -103,6 +113,10 @@ public:
 
 	VkPipelineLayout m_meshPipelineLayout;
 	VkPipeline m_meshPipeline;
+
+	// scene
+	GPUSceneData m_sceneData;
+	VkDescriptorSetLayout m_gpuSceneDataDescriptorLayout;
 
 	// meshes
 	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
