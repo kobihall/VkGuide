@@ -98,6 +98,8 @@ public:
 	FrameData m_frames[FRAME_OVERLAP];
 	FrameData& getCurrentFrame() { return m_frames[m_frameNumber % FRAME_OVERLAP]; };
 
+	std::string m_rootPath;
+
 	VkQueue m_graphicsQueue;
 	uint32_t m_graphicsQueueFamily;
 
@@ -120,6 +122,16 @@ public:
 
 	// meshes
 	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
+
+	// textures
+	AllocatedImage m_whiteImage;
+	AllocatedImage m_blackImage;
+	AllocatedImage m_greyImage;
+	AllocatedImage m_errorCheckerboardImage;
+
+    VkSampler m_defaultSamplerLinear;
+	VkSampler m_defaultSamplerNearest;
+	VkDescriptorSetLayout m_singleImageDescriptorLayout;
 
 	// immediate submit structures
     VkFence m_immFence;
@@ -165,6 +177,10 @@ private:
 
 	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
 	void destroy_buffer(const AllocatedBuffer& buffer);
+
+	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+	AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+	void destroyImage(const AllocatedImage& img);
 
 
 	void drawBackground(VkCommandBuffer cmd);
