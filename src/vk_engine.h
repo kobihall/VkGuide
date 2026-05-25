@@ -62,6 +62,56 @@ struct ComputeEffect {
 	ComputePushConstants data;
 };
 
+struct RenderObject {
+	uint32_t indexCount;
+	uint32_t firstIndex;
+	VkBuffer indexBuffer;
+	
+	MaterialInstance* material;
+
+	glm::mat4 transform;
+	VkDeviceAddress vertexBufferAddress;
+};
+
+struct DrawContext {
+	std::vector<RenderObject> OpaqueSurfaces;
+};
+
+struct MeshNode : public Node {
+	std::shared_ptr<MeshAsset> mesh;
+	virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx) override;
+};
+
+struct GLTFMetallic_Roughness {
+	MaterialPipeline opaquePipeline;
+	MaterialPipeline transparentPipeline;
+
+	VkDescriptorSetLayout materialLayout;
+
+	struct MaterialConstants {
+		glm::vec4 colorFactors;
+		glm::vec4 metal_rough_factors;
+		//padding, we need it anyway for uniform buffers
+		glm::vec4 extra[14];
+	};
+
+	struct MaterialResources {
+		AllocatedImage colorImage;
+		VkSampler colorSampler;
+		AllocatedImage metalRoughImage;
+		VkSampler metalRoughSampler;
+		VkBuffer dataBuffer;
+		uint32_t dataBufferOffset;
+	};
+
+	DescriptorWriter writer;
+
+	void buildPipelines(VulkanEngine* engine);
+	void clearResources(VkDevice device);
+
+	MaterialInstance writeMaterial(VkDevice device, MaterialPass pass, const MaterialResources& resources, DescriptorAllocatorGrowable& descriptorAllocator);
+};
+
 
 class VulkanEngine {
 public:
@@ -105,7 +155,7 @@ public:
 
 	VmaAllocator m_memAllocator;
 
-	DescriptorAllocator globalDescriptorAllocator;
+	DescriptorAllocatorGrowable globalDescriptorAllocator;
 
 	VkDescriptorSet m_drawImageDescriptors;
 	VkDescriptorSetLayout m_drawImageDescriptorLayout;
@@ -119,6 +169,8 @@ public:
 	// scene
 	GPUSceneData m_sceneData;
 	VkDescriptorSetLayout m_gpuSceneDataDescriptorLayout;
+	DrawContext mainDrawContext;
+    std::unordered_map<std::string, std::shared_ptr<Node>> loadedNodes;
 
 	// meshes
 	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
@@ -132,6 +184,11 @@ public:
     VkSampler m_defaultSamplerLinear;
 	VkSampler m_defaultSamplerNearest;
 	VkDescriptorSetLayout m_singleImageDescriptorLayout;
+
+	// materials
+	MaterialInstance m_defaultData;
+	GLTFMetallic_Roughness m_metalRoughMaterial;
+
 
 	// immediate submit structures
     VkFence m_immFence;
@@ -183,6 +240,7 @@ private:
 	void destroyImage(const AllocatedImage& img);
 
 
+	void update_scene();
 	void drawBackground(VkCommandBuffer cmd);
 	void drawGeometry(VkCommandBuffer cmd);
 	void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);
