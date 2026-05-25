@@ -13,7 +13,9 @@ add_executable(vulkan_guide
     vk_pipelines.cpp
     vk_pipelines.h
     vk_loader.cpp
-    vk_loader.h)
+    vk_loader.h
+    camera.cpp
+    camera.h)
 
 
 set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:vulkan_guide>")

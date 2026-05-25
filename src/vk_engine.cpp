@@ -39,6 +39,12 @@ void VulkanEngine::init()
 	initPipeline();
 	initIMGUI();
 	initDefaultData();
+
+	m_mainCamera.velocity = glm::vec3(0.f);
+	m_mainCamera.position = glm::vec3(0, 0, 5);
+
+	m_mainCamera.pitch = 0;
+	m_mainCamera.yaw = 0;
 	
 	//everything went fine
 	m_isInitialized = true;
@@ -158,9 +164,11 @@ void VulkanEngine::draw()
 
 void VulkanEngine::update_scene()
 {
+	m_mainCamera.update();
+
 	mainDrawContext.OpaqueSurfaces.clear();
 
-	loadedNodes["Suzanne"]->Draw(glm::mat4{1.f}, mainDrawContext);	
+	loadedNodes["Suzanne"]->Draw(glm::mat4{1.f}, mainDrawContext);
 
 	for (int x = -3; x < 3; x++) {
 
@@ -170,14 +178,13 @@ void VulkanEngine::update_scene()
 		loadedNodes["Cube"]->Draw(translation * scale, mainDrawContext);
 	}
 
-	m_sceneData.view = glm::translate(glm::vec3{ 0,0,-5 });
-	// camera projection
-	m_sceneData.proj = glm::perspective(glm::radians(70.f), (float)m_windowExtent.width / (float)m_windowExtent.height, 0.1f, 10000.f);
+	glm::mat4 view = m_mainCamera.getViewMatrix();
+	glm::mat4 projection = glm::perspective(glm::radians(70.f), (float)m_windowExtent.width / (float)m_windowExtent.height, 0.1f, 10000.f);
+	projection[1][1] *= -1;
 
-	// invert the Y direction on projection matrix so that we are more similar
-	// to opengl and gltf axis
-	m_sceneData.proj[1][1] *= -1;
-	m_sceneData.viewproj = m_sceneData.proj * m_sceneData.view;
+	m_sceneData.view = view;
+    m_sceneData.proj = projection;
+    m_sceneData.viewproj = projection * view;
 
 	//some default lighting parameters
 	m_sceneData.ambientColor = glm::vec4(.1f);
@@ -380,6 +387,23 @@ void VulkanEngine::initGLFW()
     m_window = glfwCreateWindow(m_windowExtent.width, m_windowExtent.height, "Vulkan", nullptr, nullptr);
     glfwSetWindowUserPointer(m_window, this);
     //glfwSetFramebufferSizeCallback(m_window, framebufferResizeCallback); // Define framebufferResizeCallback at a later point
+
+    glfwSetKeyCallback(m_window, [](GLFWwindow* w, int key, int, int action, int) {
+        auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
+        engine->m_mainCamera.processKeyEvent(key, action);
+    });
+    glfwSetCursorPosCallback(m_window, [](GLFWwindow* w, double x, double y) {
+        auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
+        if (engine->m_firstMouse) {
+            engine->m_lastMouseX = x;
+            engine->m_lastMouseY = y;
+            engine->m_firstMouse = false;
+            return;
+        }
+        engine->m_mainCamera.processMouseMotion(x - engine->m_lastMouseX, y - engine->m_lastMouseY);
+        engine->m_lastMouseX = x;
+        engine->m_lastMouseY = y;
+    });
 }
 
 void VulkanEngine::initVulkan()

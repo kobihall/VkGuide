@@ -6,6 +6,7 @@
 #include <vk_types.h>
 #include <vk_descriptors.h>
 #include <vk_loader.h>
+#include <camera.h>
 
 struct DeletionQueue
 {
@@ -126,6 +127,9 @@ public:
 
 	GLFWwindow* m_window = nullptr;
 	bool m_resizeRequested;
+	double m_lastMouseX{ 0.0 };
+	double m_lastMouseY{ 0.0 };
+	bool m_firstMouse{ true };
 
 	VkInstance m_instance;
 	VkAllocationCallbacks* m_Allocator = NULL;
@@ -167,6 +171,7 @@ public:
 	VkPipeline m_meshPipeline;
 
 	// scene
+	Camera m_mainCamera;
 	GPUSceneData m_sceneData;
 	VkDescriptorSetLayout m_gpuSceneDataDescriptorLayout;
 	DrawContext mainDrawContext;
