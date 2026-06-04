@@ -45,6 +45,13 @@ void VulkanEngine::init()
 
 	m_mainCamera.pitch = 0;
 	m_mainCamera.yaw = 0;
+
+	std::string structurePath = m_rootPath + "assets/structure.glb";
+    auto structureFile = loadGltf(this,structurePath);
+
+    assert(structureFile.has_value());
+
+    loadedScenes["structure"] = *structureFile;
 	
 	//everything went fine
 	m_isInitialized = true;
@@ -169,6 +176,8 @@ void VulkanEngine::update_scene()
 	mainDrawContext.OpaqueSurfaces.clear();
 
 	loadedNodes["Suzanne"]->Draw(glm::mat4{1.f}, mainDrawContext);
+
+	loadedScenes["structure"]->Draw(glm::mat4{ 1.f }, mainDrawContext);
 
 	for (int x = -3; x < 3; x++) {
 
@@ -1183,6 +1192,8 @@ void VulkanEngine::cleanup()
 	if (m_isInitialized) {
 		//make sure the gpu has stopped doing its things
 		vkDeviceWaitIdle(m_device);
+
+		loadedScenes.clear();
 
 		for (int i = 0; i < FRAME_OVERLAP; i++) {
 			vkDestroyCommandPool(m_device, m_frames[i].commandPool, nullptr);

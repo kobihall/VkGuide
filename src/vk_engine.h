@@ -176,6 +176,7 @@ public:
 	VkDescriptorSetLayout m_gpuSceneDataDescriptorLayout;
 	DrawContext mainDrawContext;
     std::unordered_map<std::string, std::shared_ptr<Node>> loadedNodes;
+	std::unordered_map<std::string, std::shared_ptr<LoadedGLTF>> loadedScenes;
 
 	// meshes
 	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
@@ -210,6 +211,7 @@ public:
 	void cleanup();
 
 	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
+	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
 
 	//draw loop
 	void draw();
@@ -237,7 +239,6 @@ private:
 	void destroySwapchain();
 	void resizeSwapchain();
 
-	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
 	void destroy_buffer(const AllocatedBuffer& buffer);
 
 	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
