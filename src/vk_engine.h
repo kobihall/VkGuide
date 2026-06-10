@@ -76,6 +76,7 @@ struct RenderObject {
 
 struct DrawContext {
 	std::vector<RenderObject> OpaqueSurfaces;
+	std::vector<RenderObject> TransparentSurfaces;
 };
 
 struct MeshNode : public Node {
@@ -212,6 +213,10 @@ public:
 
 	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
+	void destroy_buffer(const AllocatedBuffer& buffer);
+	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+	AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+	void destroyImage(const AllocatedImage& img);
 
 	//draw loop
 	void draw();
@@ -238,13 +243,6 @@ private:
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
 	void resizeSwapchain();
-
-	void destroy_buffer(const AllocatedBuffer& buffer);
-
-	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
-	AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
-	void destroyImage(const AllocatedImage& img);
-
 
 	void update_scene();
 	void drawBackground(VkCommandBuffer cmd);

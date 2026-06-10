@@ -5,6 +5,10 @@
 #include <unordered_map>
 #include <filesystem>
 
+#include <fastgltf/glm_element_traits.hpp>
+#include <fastgltf/core.hpp>
+#include <fastgltf/tools.hpp>
+
 struct GLTFMaterial {
 	MaterialInstance data;
 };
@@ -56,3 +60,5 @@ private:
 std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngine* engine, std::filesystem::path filePath);
 
 std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine,std::string_view filePath);
+
+std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& asset, fastgltf::Image& image);
