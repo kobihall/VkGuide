@@ -114,6 +114,14 @@ struct GLTFMetallic_Roughness {
 	MaterialInstance writeMaterial(VkDevice device, MaterialPass pass, const MaterialResources& resources, DescriptorAllocatorGrowable& descriptorAllocator);
 };
 
+struct EngineStats {
+    float frametime;
+    int triangle_count;
+    int drawcall_count;
+    float scene_update_time;
+    float mesh_draw_time;
+};
+
 
 class VulkanEngine {
 public:
@@ -196,6 +204,7 @@ public:
 	MaterialInstance m_defaultData;
 	GLTFMetallic_Roughness m_metalRoughMaterial;
 
+	EngineStats m_stats;
 
 	// immediate submit structures
     VkFence m_immFence;
