@@ -69,7 +69,7 @@ struct RenderObject {
 	VkBuffer indexBuffer;
 	
 	MaterialInstance* material;
-
+	Bounds bounds;
 	glm::mat4 transform;
 	VkDeviceAddress vertexBufferAddress;
 };
@@ -121,6 +121,8 @@ struct EngineStats {
     float scene_update_time;
     float mesh_draw_time;
 };
+
+bool is_visible(const RenderObject& obj, const glm::mat4& viewproj);
 
 
 class VulkanEngine {
