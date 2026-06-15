@@ -11,22 +11,6 @@ struct DescriptorLayoutBuilder {
 	VkDescriptorSetLayout build(VkDevice device, VkShaderStageFlags shaderStages, void* pNext = nullptr, VkDescriptorSetLayoutCreateFlags flags = 0);
 };
 
-struct DescriptorAllocator {
-
-	struct PoolSizeRatio{
-		VkDescriptorType type;
-		float ratio;
-	};
-
-	VkDescriptorPool pool;
-
-	void initPool(VkDevice device, uint32_t maxSets, std::span<PoolSizeRatio> poolRatios);
-	void clearDescriptors(VkDevice device);
-	void destroyPool(VkDevice device);
-
-	VkDescriptorSet allocate(VkDevice device, VkDescriptorSetLayout layout);
-};
-
 struct DescriptorAllocatorGrowable {
 public:
 	struct PoolSizeRatio{
@@ -50,13 +34,13 @@ private:
 };
 
 struct DescriptorWriter {
-    std::deque<VkDescriptorImageInfo> imageInfos;
-    std::deque<VkDescriptorBufferInfo> bufferInfos;
-    std::vector<VkWriteDescriptorSet> writes;
+	std::deque<VkDescriptorImageInfo> imageInfos;
+	std::deque<VkDescriptorBufferInfo> bufferInfos;
+	std::vector<VkWriteDescriptorSet> writes;
 
-    void writeImage(int binding,VkImageView image,VkSampler sampler , VkImageLayout layout, VkDescriptorType type);
-    void writeBuffer(int binding,VkBuffer buffer,size_t size, size_t offset,VkDescriptorType type); 
+	void writeImage(int binding,VkImageView image,VkSampler sampler , VkImageLayout layout, VkDescriptorType type);
+	void writeBuffer(int binding,VkBuffer buffer,size_t size, size_t offset,VkDescriptorType type); 
 
-    void clear();
-    void updateSet(VkDevice device, VkDescriptorSet set);
+	void clear();
+	void updateSet(VkDevice device, VkDescriptorSet set);
 };

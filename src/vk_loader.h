@@ -14,23 +14,23 @@ struct GLTFMaterial {
 };
 
 struct Bounds {
-    glm::vec3 origin;
-    float sphereRadius;
-    glm::vec3 extents;
+	glm::vec3 origin;
+	float sphereRadius;
+	glm::vec3 extents;
 };
 
 struct GeoSurface {
-    uint32_t startIndex;
-    uint32_t count;
-    Bounds bounds;
-    std::shared_ptr<GLTFMaterial> material;
+	uint32_t startIndex;
+	uint32_t count;
+	Bounds bounds;
+	std::shared_ptr<GLTFMaterial> material;
 };
 
 struct MeshAsset {
-    std::string name;
+	std::string name;
 
-    std::vector<GeoSurface> surfaces;
-    GPUMeshBuffers meshBuffers;
+	std::vector<GeoSurface> surfaces;
+	GPUMeshBuffers meshBuffers;
 };
 
 //forward declaration
@@ -38,30 +38,30 @@ class VulkanEngine;
 
 struct LoadedGLTF : public IRenderable {
 
-    // storage for all the data on a given glTF file
-    std::unordered_map<std::string, std::shared_ptr<MeshAsset>> meshes;
-    std::unordered_map<std::string, std::shared_ptr<Node>> nodes;
-    std::unordered_map<std::string, AllocatedImage> images;
-    std::unordered_map<std::string, std::shared_ptr<GLTFMaterial>> materials;
+	// storage for all the data on a given glTF file
+	std::unordered_map<std::string, std::shared_ptr<MeshAsset>> meshes;
+	std::unordered_map<std::string, std::shared_ptr<Node>> nodes;
+	std::unordered_map<std::string, AllocatedImage> images;
+	std::unordered_map<std::string, std::shared_ptr<GLTFMaterial>> materials;
 
-    // nodes that dont have a parent, for iterating through the file in tree order
-    std::vector<std::shared_ptr<Node>> topNodes;
+	// nodes that dont have a parent, for iterating through the file in tree order
+	std::vector<std::shared_ptr<Node>> topNodes;
 
-    std::vector<VkSampler> samplers;
+	std::vector<VkSampler> samplers;
 
-    DescriptorAllocatorGrowable descriptorPool;
+	DescriptorAllocatorGrowable descriptorPool;
 
-    AllocatedBuffer materialDataBuffer;
+	AllocatedBuffer materialDataBuffer;
 
-    VulkanEngine* creator;
+	VulkanEngine* creator;
 
-    ~LoadedGLTF() { clearAll(); };
+	~LoadedGLTF() { clearAll(); };
 
-    virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx);
+	virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx);
 
 private:
 
-    void clearAll();
+	void clearAll();
 };
 
 std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngine* engine, std::filesystem::path filePath);

@@ -46,16 +46,16 @@ struct ComputePushConstants {
 };
 
 struct GPUSceneData {
-    glm::mat4 view;
-    glm::mat4 proj;
-    glm::mat4 viewproj;
-    glm::vec4 ambientColor;
-    glm::vec4 sunlightDirection; // w for sun power
-    glm::vec4 sunlightColor;
+	glm::mat4 view;
+	glm::mat4 proj;
+	glm::mat4 viewproj;
+	glm::vec4 ambientColor;
+	glm::vec4 sunlightDirection; // w for sun power
+	glm::vec4 sunlightColor;
 };
 
 struct ComputeEffect {
-    const char* name;
+	const char* name;
 
 	VkPipeline pipeline;
 	VkPipelineLayout layout;
@@ -75,8 +75,8 @@ struct RenderObject {
 };
 
 struct DrawContext {
-	std::vector<RenderObject> OpaqueSurfaces;
-	std::vector<RenderObject> TransparentSurfaces;
+	std::vector<RenderObject> opaqueSurfaces;
+	std::vector<RenderObject> transparentSurfaces;
 };
 
 struct MeshNode : public Node {
@@ -92,7 +92,7 @@ struct GLTFMetallic_Roughness {
 
 	struct MaterialConstants {
 		glm::vec4 colorFactors;
-		glm::vec4 metal_rough_factors;
+		glm::vec4 metalRoughFactors;
 		//padding, we need it anyway for uniform buffers
 		glm::vec4 extra[14];
 	};
@@ -115,11 +115,11 @@ struct GLTFMetallic_Roughness {
 };
 
 struct EngineStats {
-    float frametime;
-    int triangle_count;
-    int drawcall_count;
-    float scene_update_time;
-    float mesh_draw_time;
+	float frameTime;
+	int triangleCount;
+	int drawcallCount;
+	float sceneUpdateTime;
+	float meshDrawTime;
 };
 
 bool is_visible(const RenderObject& obj, const glm::mat4& viewproj);
@@ -137,13 +137,13 @@ public:
 	VkExtent2D m_windowExtent{ 1700 , 900 };
 
 	GLFWwindow* m_window = nullptr;
-	bool m_resizeRequested;
+	bool m_resizeRequested{ false };
 	double m_lastMouseX{ 0.0 };
 	double m_lastMouseY{ 0.0 };
 	bool m_firstMouse{ true };
 
 	VkInstance m_instance;
-	VkAllocationCallbacks* m_Allocator = NULL;
+	VkAllocationCallbacks* m_allocator = nullptr;
 	VkDebugUtilsMessengerEXT m_debugMessenger;
 	VkPhysicalDevice m_chosenGPU;
 	VkDevice m_device;
@@ -170,7 +170,7 @@ public:
 
 	VmaAllocator m_memAllocator;
 
-	DescriptorAllocatorGrowable globalDescriptorAllocator;
+	DescriptorAllocatorGrowable m_globalDescriptorAllocator;
 
 	VkDescriptorSet m_drawImageDescriptors;
 	VkDescriptorSetLayout m_drawImageDescriptorLayout;
@@ -185,12 +185,12 @@ public:
 	Camera m_mainCamera;
 	GPUSceneData m_sceneData;
 	VkDescriptorSetLayout m_gpuSceneDataDescriptorLayout;
-	DrawContext mainDrawContext;
-    std::unordered_map<std::string, std::shared_ptr<Node>> loadedNodes;
-	std::unordered_map<std::string, std::shared_ptr<LoadedGLTF>> loadedScenes;
+	DrawContext m_mainDrawContext;
+	std::unordered_map<std::string, std::shared_ptr<Node>> m_loadedNodes;
+	std::unordered_map<std::string, std::shared_ptr<LoadedGLTF>> m_loadedScenes;
 
 	// meshes
-	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
+	std::vector<std::shared_ptr<MeshAsset>> m_testMeshes;
 
 	// textures
 	AllocatedImage m_whiteImage;
@@ -198,7 +198,7 @@ public:
 	AllocatedImage m_greyImage;
 	AllocatedImage m_errorCheckerboardImage;
 
-    VkSampler m_defaultSamplerLinear;
+	VkSampler m_defaultSamplerLinear;
 	VkSampler m_defaultSamplerNearest;
 	VkDescriptorSetLayout m_singleImageDescriptorLayout;
 
@@ -209,9 +209,9 @@ public:
 	EngineStats m_stats;
 
 	// immediate submit structures
-    VkFence m_immFence;
-    VkCommandBuffer m_immCommandBuffer;
-    VkCommandPool m_immCommandPool;
+	VkFence m_immFence;
+	VkCommandBuffer m_immCommandBuffer;
+	VkCommandPool m_immCommandPool;
 
 	std::vector<ComputeEffect> m_backgroundEffects;
 	int m_currentBackgroundEffect{0};
@@ -224,7 +224,7 @@ public:
 
 	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
-	void destroy_buffer(const AllocatedBuffer& buffer);
+	void destroyBuffer(const AllocatedBuffer& buffer);
 	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
 	AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
 	void destroyImage(const AllocatedImage& img);
@@ -255,7 +255,7 @@ private:
 	void destroySwapchain();
 	void resizeSwapchain();
 
-	void update_scene();
+	void updateScene();
 	void drawBackground(VkCommandBuffer cmd);
 	void drawGeometry(VkCommandBuffer cmd);
 	void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);
