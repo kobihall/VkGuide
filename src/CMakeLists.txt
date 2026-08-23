@@ -12,6 +12,8 @@ add_executable(vulkan_guide
     vk_descriptors.h
     vk_pipelines.cpp
     vk_pipelines.h
+    vk_display.cpp
+    vk_display.h
     vk_loader.cpp
     vk_loader.h
     camera.cpp

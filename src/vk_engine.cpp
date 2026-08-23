@@ -40,6 +40,12 @@ void VulkanEngine::init()
 	initIMGUI();
 	initDefaultData();
 
+	//debug view of the main draw image. Hidden by default, shown from the "Windows" menu.
+	//note this mirrors the whole draw image, so at a render scale below 1 the unused border
+	//still holds the previous frame's pixels
+	m_displayRegistry.registerImage("Scene Mirror", m_drawImage.imageView, { m_drawImage.imageExtent.width, m_drawImage.imageExtent.height });
+	m_displayRegistry.setVisible("Scene Mirror", false);
+
 	m_mainCamera.velocity = glm::vec3(0.f);
 	m_mainCamera.position = glm::vec3(0, 0, 5);
 
@@ -115,6 +121,10 @@ void VulkanEngine::draw()
 
 	// execute a copy from the draw image into the swapchain
 	vkutil::copy_image_to_image(cmd, m_drawImage.image, m_swapchainImages[swapchainImageIndex], m_drawExtent, m_swapchainExtent);
+
+	// the "Scene Mirror" display window samples the draw image, so it has to be readable before
+	// drawImgui() below. Every image registered with m_displayRegistry needs this same transition.
+	vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// set swapchain image layout to Attachment Optimal so we can draw it
 	vkutil::transition_image(cmd, m_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -451,32 +461,55 @@ void VulkanEngine::run()
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
-		if (ImGui::Begin("background")) {
-			ImGui::SliderFloat("Render Scale",&m_renderScale, 0.3f, 1.f);
-			
-			ComputeEffect& selected = m_backgroundEffects[m_currentBackgroundEffect];
-		
-			ImGui::Text("Selected effect: %s", selected.name);
-		
-			ImGui::SliderInt("Effect Index", &m_currentBackgroundEffect,0, m_backgroundEffects.size() - 1);
-		
-			ImGui::InputFloat4("data1",(float*)& selected.data.data1);
-			ImGui::InputFloat4("data2",(float*)& selected.data.data2);
-			ImGui::InputFloat4("data3",(float*)& selected.data.data3);
-			ImGui::InputFloat4("data4",(float*)& selected.data.data4);
-		}
-		ImGui::End();
+		m_displayRegistry.beginFrame(m_frameNumber);
 
-		ImGui::Begin("Stats");
-		ImGui::Text("frametime %f ms", m_stats.frameTime);
-		ImGui::Text("draw time %f ms", m_stats.meshDrawTime);
-		ImGui::Text("update time %f ms", m_stats.sceneUpdateTime);
-		ImGui::Text("triangles %i", m_stats.triangleCount);
-		ImGui::Text("draws %i", m_stats.drawcallCount);
-		ImGui::End();
+		if (ImGui::BeginMainMenuBar()) {
+			if (ImGui::BeginMenu("Windows")) {
+				ImGui::MenuItem("background", nullptr, &m_showBackgroundWindow);
+				ImGui::MenuItem("Stats", nullptr, &m_showStatsWindow);
+				ImGui::MenuItem("ImGui Demo", nullptr, &m_showDemoWindow);
+				ImGui::Separator();
+				m_displayRegistry.drawWindowsMenu();
+				ImGui::EndMenu();
+			}
+			ImGui::EndMainMenuBar();
+		}
+
+		if (m_showBackgroundWindow) {
+			if (ImGui::Begin("background", &m_showBackgroundWindow)) {
+				ImGui::SliderFloat("Render Scale",&m_renderScale, 0.3f, 1.f);
+				
+				ComputeEffect& selected = m_backgroundEffects[m_currentBackgroundEffect];
+			
+				ImGui::Text("Selected effect: %s", selected.name);
+			
+				ImGui::SliderInt("Effect Index", &m_currentBackgroundEffect,0, m_backgroundEffects.size() - 1);
+			
+				ImGui::InputFloat4("data1",(float*)& selected.data.data1);
+				ImGui::InputFloat4("data2",(float*)& selected.data.data2);
+				ImGui::InputFloat4("data3",(float*)& selected.data.data3);
+				ImGui::InputFloat4("data4",(float*)& selected.data.data4);
+			}
+			ImGui::End();
+		}
+
+		if (m_showStatsWindow) {
+			if (ImGui::Begin("Stats", &m_showStatsWindow)) {
+				ImGui::Text("frametime %f ms", m_stats.frameTime);
+				ImGui::Text("draw time %f ms", m_stats.meshDrawTime);
+				ImGui::Text("update time %f ms", m_stats.sceneUpdateTime);
+				ImGui::Text("triangles %i", m_stats.triangleCount);
+				ImGui::Text("draws %i", m_stats.drawcallCount);
+			}
+			ImGui::End();
+		}
 
 		//some imgui UI to test
-		ImGui::ShowDemoWindow();
+		if (m_showDemoWindow) {
+			ImGui::ShowDemoWindow(&m_showDemoWindow);
+		}
+
+		m_displayRegistry.drawWindows();
 
 		//make imgui calculate internal draw structures
 		ImGui::Render();
@@ -508,12 +541,20 @@ void VulkanEngine::initGLFW()
 	m_window = glfwCreateWindow(m_windowExtent.width, m_windowExtent.height, "Vulkan", nullptr, nullptr);
 	glfwSetWindowUserPointer(m_window, this);
 
+	//both of these are gated on the one capture flag rather than on separate heuristics, so there
+	//is a single boundary between driving the camera and using the ui
 	glfwSetKeyCallback(m_window, [](GLFWwindow* w, int key, int, int action, int) {
 		auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
+		if (!engine->m_cameraCaptureActive) {
+			return;
+		}
 		engine->m_mainCamera.processKeyEvent(key, action);
 	});
 	glfwSetCursorPosCallback(m_window, [](GLFWwindow* w, double x, double y) {
 		auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
+		if (!engine->m_cameraCaptureActive) {
+			return;
+		}
 		if (engine->m_firstMouse) {
 			engine->m_lastMouseX = x;
 			engine->m_lastMouseY = y;
@@ -524,6 +565,47 @@ void VulkanEngine::initGLFW()
 		engine->m_lastMouseX = x;
 		engine->m_lastMouseY = y;
 	});
+	glfwSetMouseButtonCallback(m_window, [](GLFWwindow* w, int button, int action, int) {
+		if (button != GLFW_MOUSE_BUTTON_RIGHT) {
+			return;
+		}
+		auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
+		if (action == GLFW_PRESS) {
+			//the ui has first claim on the cursor, so only a press over the raster background looks around
+			if (!ImGui::GetIO().WantCaptureMouse) {
+				engine->setCameraCapture(true);
+			}
+		} else if (action == GLFW_RELEASE) {
+			engine->setCameraCapture(false);
+		}
+	});
+}
+
+void VulkanEngine::setCameraCapture(bool active)
+{
+	if (active == m_cameraCaptureActive) {
+		return;
+	}
+
+	if (active) {
+		glfwGetCursorPos(m_window, &m_capturedCursorX, &m_capturedCursorY);
+		//unbounded relative mouse-look, with no screen edge to run into
+		glfwSetInputMode(m_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+		//the glfw backend still feeds imgui the disabled cursor's virtual position, which drifts
+		//freely while looking around - without this it would wander over windows and hover them
+		ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;
+		//re-arm, so the first delta is not measured against wherever the free cursor last sat
+		m_firstMouse = true;
+	} else {
+		glfwSetInputMode(m_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+		//the virtual position has drifted, so put the visible cursor back where the user left it
+		glfwSetCursorPos(m_window, m_capturedCursorX, m_capturedCursorY);
+		ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+		//a key released after this point never reaches the camera, so held movement would stick
+		m_mainCamera.velocity = glm::vec3(0.f);
+	}
+
+	m_cameraCaptureActive = active;
 }
 
 void VulkanEngine::initVulkan()
@@ -824,6 +906,8 @@ void VulkanEngine::initSwapchain()
 	drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
 	drawImageUsages |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	//needed by the "Scene Mirror" display window, which samples this image from imgui
+	drawImageUsages |= VK_IMAGE_USAGE_SAMPLED_BIT;
 
 	VkImageCreateInfo rimg_info = vkinit::image_create_info(m_drawImage.imageFormat, drawImageUsages, drawImageExtent);
 
@@ -1172,34 +1256,48 @@ void VulkanEngine::initIMGUI()
 	// this initializes the core structures of imgui
 	ImGui::CreateContext();
 
+	//let windows be dragged onto each other to form tabbed/docked groups at runtime
+	ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
 	// this initializes imgui for GLFW
 	ImGui_ImplGlfw_InitForVulkan(m_window, true);
 
 	// this initializes imgui for Vulkan
 	ImGui_ImplVulkan_InitInfo init_info = {};
+	//must match the instance's apiVersion, so the backend loads the KHR dynamic rendering entry points rather than the core 1.3 ones
+	init_info.ApiVersion = VK_API_VERSION_1_2;
 	init_info.Instance = m_instance;
 	init_info.PhysicalDevice = m_chosenGPU;
 	init_info.Device = m_device;
+	init_info.QueueFamily = m_graphicsQueueFamily;
 	init_info.Queue = m_graphicsQueue;
 	init_info.DescriptorPool = imguiPool;
 	init_info.MinImageCount = 3;
 	init_info.ImageCount = 3;
 	init_info.UseDynamicRendering = true;
-	init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+	init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
 	//dynamic rendering parameters for imgui to use
-	init_info.PipelineRenderingCreateInfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-	init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-	init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &m_swapchainImageFormat;
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &m_swapchainImageFormat;
 
 	ImGui_ImplVulkan_Init(&init_info);
 
-	ImGui_ImplVulkan_CreateFontsTexture();
+	//the font atlas uploads itself on demand now (ImGuiBackendFlags_RendererHasTextures), so there is no CreateFontsTexture call
+
+	m_displayRegistry.init(FRAME_OVERLAP);
 
 	// add the destroy the imgui created structures
 	m_mainDeletionQueue.push_function([this, imguiPool]() {
 		ImGui_ImplVulkan_Shutdown();
 		vkDestroyDescriptorPool(m_device, imguiPool, nullptr);
+	});
+
+	//the queue is flushed in reverse, so this runs before the shutdown above - which it has to,
+	//since releasing a display image goes back through the vulkan backend
+	m_mainDeletionQueue.push_function([this]() {
+		m_displayRegistry.destroyAll();
 	});
 }
 

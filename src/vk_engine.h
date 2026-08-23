@@ -5,6 +5,7 @@
 
 #include <vk_types.h>
 #include <vk_descriptors.h>
+#include <vk_display.h>
 #include <vk_loader.h>
 #include <camera.h>
 
@@ -142,6 +143,11 @@ public:
 	double m_lastMouseY{ 0.0 };
 	bool m_firstMouse{ true };
 
+	// while capture is active the camera owns the mouse and the keyboard, and nothing else sees them
+	bool m_cameraCaptureActive{ false };
+	double m_capturedCursorX{ 0.0 };
+	double m_capturedCursorY{ 0.0 };
+
 	VkInstance m_instance;
 	VkAllocationCallbacks* m_allocator = nullptr;
 	VkDebugUtilsMessengerEXT m_debugMessenger;
@@ -171,6 +177,7 @@ public:
 	VmaAllocator m_memAllocator;
 
 	DescriptorAllocatorGrowable m_globalDescriptorAllocator;
+	DisplayRegistry m_displayRegistry;
 
 	VkDescriptorSet m_drawImageDescriptors;
 	VkDescriptorSetLayout m_drawImageDescriptorLayout;
@@ -216,6 +223,11 @@ public:
 	std::vector<ComputeEffect> m_backgroundEffects;
 	int m_currentBackgroundEffect{0};
 
+	// toggled from the "Windows" menu
+	bool m_showBackgroundWindow{ true };
+	bool m_showStatsWindow{ true };
+	bool m_showDemoWindow{ false };
+
 	//initializes everything in the engine
 	void init();
 
@@ -254,6 +266,8 @@ private:
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
 	void resizeSwapchain();
+
+	void setCameraCapture(bool active);
 
 	void updateScene();
 	void drawBackground(VkCommandBuffer cmd);
