@@ -8,6 +8,9 @@
 #include <vk_display.h>
 #include <vk_loader.h>
 #include <camera.h>
+#include <vk_tonemap.h>
+#include <rt_job.h>
+#include <rt_scene_editor.h>
 
 struct DeletionQueue
 {
@@ -38,6 +41,10 @@ struct FrameData {
 };
 
 constexpr unsigned int FRAME_OVERLAP = 2;
+
+// the raster camera's vertical field of view. Shared so the cpu raytracer frames its render
+// the same way the viewport it was aimed from does
+constexpr float CAMERA_VERTICAL_FOV_DEGREES = 70.f;
 
 struct ComputePushConstants {
 	glm::vec4 data1;
@@ -185,11 +192,16 @@ public:
 	//VkPipeline m_computePipeline; //unused for now, instead shaders are in m_backgroundEffects
 	VkPipelineLayout m_computePipelineLayout;
 
+	// linear rgba32f -> displayable rgba8, shared by the raytracer outputs
+	TonemapPass m_tonemapPass;
+
 	VkPipelineLayout m_meshPipelineLayout;
 	VkPipeline m_meshPipeline;
 
 	// scene
 	Camera m_mainCamera;
+	RaytraceSceneEditor m_raytraceScene;
+	RaytraceJob m_raytraceJob;
 	GPUSceneData m_sceneData;
 	VkDescriptorSetLayout m_gpuSceneDataDescriptorLayout;
 	DrawContext m_mainDrawContext;
@@ -198,6 +210,12 @@ public:
 
 	// meshes
 	std::vector<std::shared_ptr<MeshAsset>> m_testMeshes;
+
+	// a unit sphere at the origin, drawn once per raytracer sphere with a per-object transform
+	std::shared_ptr<MeshAsset> m_sphereMesh;
+	// rebuilt every frame in drawRaytraceSpheres(); RenderObject holds raw pointers into it, so
+	// it is sized once up front and not appended to while those pointers are being taken
+	std::vector<MaterialInstance> m_sphereMaterials;
 
 	// textures
 	AllocatedImage m_whiteImage;
@@ -227,6 +245,7 @@ public:
 	bool m_showBackgroundWindow{ true };
 	bool m_showStatsWindow{ true };
 	bool m_showDemoWindow{ false };
+	// the raytracer's two control panels own their own flags, since they own their own windows
 
 	//initializes everything in the engine
 	void init();
@@ -270,6 +289,7 @@ private:
 	void setCameraCapture(bool active);
 
 	void updateScene();
+	void drawRaytraceSpheres();
 	void drawBackground(VkCommandBuffer cmd);
 	void drawGeometry(VkCommandBuffer cmd);
 	void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);

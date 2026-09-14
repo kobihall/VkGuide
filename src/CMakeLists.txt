@@ -16,6 +16,21 @@ add_executable(vulkan_guide
     vk_display.h
     vk_loader.cpp
     vk_loader.h
+    vk_tonemap.cpp
+    vk_tonemap.h
+    rt_types.h
+    rt_random.cpp
+    rt_random.h
+    rt_hittable.cpp
+    rt_hittable.h
+    rt_material.cpp
+    rt_material.h
+    rt_scene.cpp
+    rt_scene.h
+    rt_scene_editor.cpp
+    rt_scene_editor.h
+    rt_job.cpp
+    rt_job.h
     camera.cpp
     camera.h)
 

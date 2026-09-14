@@ -6,7 +6,7 @@ Standalone implementation spec — treat it as the only context you have. For ex
 
 - `docs/plans/simulation-domain.md` — this doc's compute shaders operate on that doc's `SimulationPlane` grid resolution and consume its `boundaryMask` output (§2.5 there) directly; it does not re-derive boundary geometry itself.
 - `docs/plans/compute-pipeline-general.md` — every compute dispatch here is a `ComputePass` (§2.1 there), reusing that framework rather than hand-rolling pipeline/descriptor setup.
-- `docs/plans/imgui-display.md` — the simulation's output image is shown via `DisplayRegistry`, and mouse injection (§2.6 below) uses that doc's optional click/drag callback (§2.8 there) added specifically to support this.
+- `docs/plans/completed/imgui-display.md` — the simulation's output image is shown via `DisplayRegistry`, and mouse injection (§2.6 below) uses that doc's optional click/drag callback (§2.8 there) added specifically to support this.
 
 ## 1. Feature goal
 
@@ -43,7 +43,7 @@ The explicit scheme in §2.1 is only numerically stable when `dt ≤ dx / (c·�
 
 ### 2.6 Mouse injection via `DisplayRegistry`'s click/drag callback, only while Running
 
-The output image is registered with `docs/plans/imgui-display.md`'s `DisplayRegistry` using the optional `onInteract(glm::vec2 uv)` callback added there (§2.8) specifically for this. The callback converts the UV coordinate into a grid cell (`gridX = uv.x * resolutionX`, etc.) and, only while `SimState::Running`, dispatches the `inject` pass (§2.3) centered there. Injection is deliberately disabled while `Paused`/`Stopped` — clicking a frozen or empty simulation shouldn't silently queue up a change that appears only once Start is pressed, since that would be confusing (a click producing a delayed, disconnected-feeling effect).
+The output image is registered with `docs/plans/completed/imgui-display.md`'s `DisplayRegistry` using the optional `onInteract(glm::vec2 uv)` callback added there (§2.8) specifically for this. The callback converts the UV coordinate into a grid cell (`gridX = uv.x * resolutionX`, etc.) and, only while `SimState::Running`, dispatches the `inject` pass (§2.3) centered there. Injection is deliberately disabled while `Paused`/`Stopped` — clicking a frozen or empty simulation shouldn't silently queue up a change that appears only once Start is pressed, since that would be confusing (a click producing a delayed, disconnected-feeling effect).
 
 ## 3. Exact files to create/modify
 
@@ -55,7 +55,7 @@ The output image is registered with `docs/plans/imgui-display.md`'s `DisplayRegi
 | `src/wave_sim.h` (new) | Declares `WaveSimulation`: the three role-rotating grid buffers, the uploaded `boundaryType` buffer (§2.2), the three `ComputePass` instances, `SimState`, `update(VkCommandBuffer, VulkanEngine*, const SimulationPlane&)` (the `draw()` entry point — steps if `Running`, always re-visualizes if grids exist), and the "Wave Simulation" settings panel (Start/Pause/Stop, wave-speed slider with the CFL-derived range from §2.5). |
 | `src/wave_sim.cpp` (new) | Implements the above. |
 | `src/vk_engine.h` | Add `WaveSimulation m_waveSimulation;` member. |
-| `src/vk_engine.cpp` | In `draw()`, call `m_waveSimulation.update(cmd, this, m_simulationPlane)` as its own step, separate from `drawGeometry()`/the compute-raytracing dispatch (`docs/plans/compute-pipeline-raytracing.md` §3) — all three write to independent resources, so relative ordering among them doesn't matter functionally, only that each finishes its own barriers before `drawImgui()` per `docs/plans/imgui-display.md` §2.6's contract. Wire the settings panel into `run()`; register the output image (with the `onInteract` callback, §2.6) with `DisplayRegistry` once grids are first allocated (on Start, not before). |
+| `src/vk_engine.cpp` | In `draw()`, call `m_waveSimulation.update(cmd, this, m_simulationPlane)` as its own step, separate from `drawGeometry()`/the compute-raytracing dispatch (`docs/plans/compute-pipeline-raytracing.md` §3) — all three write to independent resources, so relative ordering among them doesn't matter functionally, only that each finishes its own barriers before `drawImgui()` per `docs/plans/completed/imgui-display.md` §2.6's contract. Wire the settings panel into `run()`; register the output image (with the `onInteract` callback, §2.6) with `DisplayRegistry` once grids are first allocated (on Start, not before). |
 | `src/CMakeLists.txt` | Add `wave_sim.h`/`wave_sim.cpp` to the explicit source list. New `.comp` files need no build-file change (existing shader glob). |
 
 ## 4. Implementation order and dependencies
@@ -82,7 +82,7 @@ Depends on both prerequisites in §0 being complete.
 - **Every pass via `ComputePassBuilder`/`dispatchComputePass()`** (`docs/plans/compute-pipeline-general.md`) — no bespoke compute pipeline code here.
 - **Boundary data source**: `SimulationPlane::boundaryMask` (`docs/plans/simulation-domain.md` §2.5) — read directly, never recomputed by this feature.
 - **Upload-on-change, not per-frame**: mirrors both `docs/plans/compute-pipeline-raytracing.md`'s sphere/material buffer upload (`RaytraceSceneEditor` dirty flag) and `docs/plans/simulation-domain.md`'s own recompute trigger — the boundary buffer here follows the same "only re-upload when the CPU source actually changed" shape.
-- **Interactive display window**: `docs/plans/imgui-display.md` §2.8's `onInteract` callback — this is that capability's first real consumer.
+- **Interactive display window**: `docs/plans/completed/imgui-display.md` §2.8's `onInteract` callback — this is that capability's first real consumer.
 - **"One unit of work per engine frame"**: `docs/plans/compute-pipeline-raytracing.md` §2.3 — same shape applied here (one `step` per frame while running) for the same reason (keeps each frame's dispatch sequence self-contained and easy to reason about).
 
 ## 7. What NOT to do (alternatives rejected and why)

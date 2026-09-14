@@ -1,0 +1,39 @@
+#pragma once
+
+// The one-shot snapshot handed to the raytrace worker thread, and the function that builds it.
+//
+// This is the thread-safety boundary of the whole feature: buildRaytraceScene() runs on the
+// main thread while Render is being clicked, copies everything the render needs out of live
+// engine and editor state, and the worker then reads nothing else. Editing a sphere or moving
+// the camera while a render is in flight therefore does not affect that render - the same
+// "each render is a snapshot of settings at that moment" behaviour the sibling project had by
+// virtue of being synchronous.
+
+#include <rt_hittable.h>
+#include <rt_types.h>
+
+class VulkanEngine;
+class RaytraceSceneEditor;
+struct MeshNode;
+
+struct RaytraceScene {
+	// deep copies, materials included, not shared with the editor - see buildRaytraceScene()
+	std::vector<std::shared_ptr<sphere>> spheres;
+
+	// populated but never read by this feature; see RTMeshInstance in rt_types.h
+	std::vector<RTMeshInstance> meshInstances;
+
+	RTCameraSnapshot camera;
+	RenderSettings settings;
+
+	// flat linear scan over spheres, mirroring the sibling project's hittable_list::hit().
+	// With a handful of user-placed spheres there is no acceleration structure to justify
+	bool hit(const ray& r, double t_min, double t_max, hit_record& rec) const;
+};
+
+// Walks every loaded glTF scene's node tree and visits each mesh-bearing node. Shared by the
+// scene browser (which wants node names) and buildRaytraceScene() (which wants triangles), so
+// both see exactly the same set of objects.
+void forEachMeshNode(VulkanEngine* engine, const std::function<void(const MeshNode& node)>& visit);
+
+RaytraceScene buildRaytraceScene(VulkanEngine* engine, const RaytraceSceneEditor& editor, const RenderSettings& settings);

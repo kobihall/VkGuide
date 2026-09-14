@@ -1,0 +1,34 @@
+#version 460
+
+// Linear HDR radiance in, display-ready LDR out. Shared by every raytracer output so they all
+// go through one identical display transform - see src/vk_tonemap.h
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (rgba32f, set = 0, binding = 0) uniform readonly image2D linearImage;
+layout (rgba8, set = 0, binding = 1) uniform writeonly image2D displayImage;
+
+layout (push_constant) uniform constants {
+	// multiplied in before the clamp: 1 for an already-averaged image, 1/N for a sum of N samples
+	float scale;
+} pc;
+
+void main()
+{
+	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 size = imageSize(displayImage);
+
+	if (texelCoord.x >= size.x || texelCoord.y >= size.y) {
+		return;
+	}
+
+	vec3 color = imageLoad(linearImage, texelCoord).rgb * pc.scale;
+
+	// NaN compares unequal to itself, and clamp() of a NaN is undefined, so it is zeroed first
+	color = mix(vec3(0.0), color, equal(color, color));
+
+	// gamma 2 - the square root the book, and the sibling project's write_color(), use
+	color = sqrt(clamp(color, 0.0, 1.0));
+
+	imageStore(displayImage, texelCoord, vec4(color, 1.0));
+}

@@ -47,6 +47,8 @@ Binds the pipeline, binds `set` at index 0, pushes `pushData` (if `pass.pushCons
 
 Refactoring the two existing background effects (`gradient_color.comp`, `sky.comp`) onto `ComputePass` would compile and work, but wouldn't actually demonstrate anything the old system couldn't already do — both effects use exactly one storage-image binding, same as today. To prove the generalization is real, this feature adds one new example compute effect that binds **more than one resource** (e.g. an input texture sampled alongside the output storage image, or an auxiliary input buffer) — something the old hardcoded single-`STORAGE_IMAGE`-binding layout (`docs/codebase-map.md` §2) could not express at all. Exact content of this demo effect is left to implementation time (§8) — its purpose is purely to exercise the >1-binding path, not to be visually interesting.
 
+**A real multi-binding compute pass already exists and should be migrated too: `TonemapPass`** (`src/vk_tonemap.h/.cpp`, `shaders/tonemap.comp`, added 2026-09-13 for the CPU raytracer's output). It binds two storage images (`rgba32f` in, `rgba8` out) plus a `float` push constant, and builds its own descriptor set layout, pipeline layout and pipeline by hand in exactly the inline shape this feature replaces. Moving it onto `ComputePassBuilder`/`dispatchComputePass()` proves the >1-binding path against production code, and may make the separate demo effect unnecessary — decide at implementation time. Keep its public contract unchanged (caller owns the layout transitions and supplies the descriptor allocator): `RaytraceJob::publishOutput()` uses it today and `docs/plans/compute-pipeline-raytracing.md` §2.7 builds on it.
+
 ## 3. Exact files to create/modify
 
 | File | Role |
@@ -55,8 +57,9 @@ Refactoring the two existing background effects (`gradient_color.comp`, `sky.com
 | `src/vk_compute.cpp` (new) | Implements the above — `ComputePassBuilder::build()` constructs the descriptor set layout, pipeline layout (with the specified push-constant range if any), loads the shader via the existing `vkutil::load_shader_module` (`src/vk_pipelines.h:6`), and builds the `VkComputePipelineCreateInfo`/`vkCreateComputePipelines` call currently inlined in `initComputePipelines()`. |
 | `src/vk_engine.h` | Replace `ComputePushConstants`/`ComputeEffect` (`vk_engine.h:41-64`) and `m_drawImageDescriptorLayout`/`m_computePipelineLayout` (`vk_engine.h:175-179`) with the new `ComputePass`-based equivalents; add whatever new members the demo multi-binding effect needs (its own descriptor set layout/set, and its input resource). |
 | `src/vk_engine.cpp` | Rewrite `initComputePipelines()` (`vk_engine.cpp:991-1071`) to build each background effect (including the new demo effect) via `ComputePassBuilder` instead of the current inline `VkComputePipelineCreateInfo` code; rewrite `drawBackground()` (`vk_engine.cpp:214-228`) to call `dispatchComputePass()`. |
+| `src/vk_tonemap.h/.cpp` | Rebuild `TonemapPass::init()`/`dispatch()` on `ComputePassBuilder`/`dispatchComputePass()`, keeping its public signatures (§2.5). |
 | `shaders/` (new file) | One new `.comp` shader for the multi-binding demo effect (§2.5) — picked up automatically by the existing CMake shader glob (`docs/codebase-map.md` §5), no build-file change needed for the shader itself. |
-| `src/CMakeLists.txt` | Add `vk_compute.h`/`vk_compute.cpp` to the explicit source list (`src/CMakeLists.txt:2-16` — confirmed not a glob, see `docs/codebase-map.md`/`docs/plans/imgui-display.md` §3). |
+| `src/CMakeLists.txt` | Add `vk_compute.h`/`vk_compute.cpp` to the explicit source list (`src/CMakeLists.txt:2-16` — confirmed not a glob, see `docs/codebase-map.md`/`docs/plans/completed/imgui-display.md` §3). |
 
 ## 4. Implementation order and dependencies
 

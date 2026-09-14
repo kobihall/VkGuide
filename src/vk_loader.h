@@ -11,6 +11,12 @@
 
 struct GLTFMaterial {
 	MaterialInstance data;
+
+	// the raw pbr factors this material was authored with, kept on the cpu side alongside the
+	// gpu uniform they are also written into. No consumer yet - retained so a future feature
+	// that shades glTF geometry on the cpu does not have to re-parse the source file for them
+	glm::vec4 colorFactors { 1.f };
+	glm::vec2 metalRoughFactors { 0.f };
 };
 
 struct Bounds {
@@ -31,6 +37,13 @@ struct MeshAsset {
 
 	std::vector<GeoSurface> surfaces;
 	GPUMeshBuffers meshBuffers;
+
+	// the same geometry that was handed to uploadMesh(), retained rather than discarded once
+	// it is on the gpu. Costs ram proportional to total loaded mesh data - judged negligible
+	// at this project's scale - and exists for future cpu-side geometry work (mesh raytracing,
+	// plane/mesh intersection). Nothing reads it today
+	std::vector<Vertex> cpuVertices;
+	std::vector<uint32_t> cpuIndices;
 };
 
 //forward declaration

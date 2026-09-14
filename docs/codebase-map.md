@@ -91,7 +91,7 @@ GPUMeshBuffers  uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertic
 ```
 The empty-image `createImage()` overload always allocates `VMA_MEMORY_USAGE_GPU_ONLY` with `DEVICE_LOCAL_BIT` — there is no CPU-visible/mappable image creation path in the codebase.
 
-The data-upload `createImage(void* data, ...)` overload **hardcodes its staging-buffer size as `width * height * depth * 4`** (`vk_engine.cpp:717`) — correct only for its one current caller (`load_image()`, always `VK_FORMAT_R8G8B8A8_UNORM`, 4 bytes/pixel). Passing any other format's data through this overload as-is (e.g. an HDR float format at 16 bytes/pixel) would under-size the staging buffer and corrupt/truncate the upload. Found during planning; fixed as part of `docs/plans/scene-and-asset-management.md` §2.4.
+The data-upload `createImage(void* data, ...)` overload originally **hardcoded its staging-buffer size as `width * height * depth * 4`** — correct only for RGBA8. *Update 2026-09-13: fixed.* It now sizes the upload with a per-format `bytes_per_pixel()` lookup (RGBA8/BGRA8 = 4, RGBA16F = 8, RGBA32F = 16, aborts otherwise), pulled forward from `docs/plans/scene-and-asset-management.md` §2.4 for the CPU raytracer's `R32G32B32A32_SFLOAT` output (`docs/plans/completed/raytracing-in-a-weekend.md` §9.6).
 
 ### Image transition/copy helpers (`src/vk_images.h/.cpp`)
 ```cpp
@@ -170,7 +170,7 @@ Uses dedicated `m_immFence`/`m_immCommandBuffer`/`m_immCommandPool` (separate fr
 - `ImGui_ImplVulkan_InitInfo`: `UseDynamicRendering = true`, `MSAASamples = VK_SAMPLE_COUNT_1_BIT`, `PipelineRenderingCreateInfo.pColorAttachmentFormats = &m_swapchainImageFormat` (1179-1194) — **targets the swapchain color format**, not `m_drawImage`'s format (`R16G16B16A16_SFLOAT`).
 - `ImGui_ImplVulkan_CreateFontsTexture()` called once at init (1197), no manual command-buffer plumbing.
 - Cleanup: `ImGui_ImplVulkan_Shutdown()` + pool destroy pushed to `m_mainDeletionQueue` (1200-1203).
-- No `ConfigFlags` are set on `ImGui::GetIO()` anywhere in `vk_engine.cpp` (confirmed via grep) — docking/viewports flags are not currently enabled either way. **Update**: subsequently confirmed during `docs/plans/imgui-display.md`'s planning that the vendored ImGui at `../CPPLibraries/imgui` (`1.90.9 WIP`) is from upstream **master**, not the **docking** branch — grepping for `Docking`/`DockSpace`/`DockNode` in `imgui.h` finds nothing but incidental comments. `docs/plans/imgui-display.md` §2.1 covers what vendoring a docking-branch build requires.
+- No `ConfigFlags` are set on `ImGui::GetIO()` anywhere in `vk_engine.cpp` (confirmed via grep) — docking/viewports flags are not currently enabled either way. **Update**: subsequently confirmed during `docs/plans/completed/imgui-display.md`'s planning that the vendored ImGui at `../CPPLibraries/imgui` (`1.90.9 WIP`) is from upstream **master**, not the **docking** branch — grepping for `Docking`/`DockSpace`/`DockNode` in `imgui.h` finds nothing but incidental comments. `docs/plans/completed/imgui-display.md` §2.1 covers what vendoring a docking-branch build requires.
 
 ### `drawImgui()` (`vk_engine.cpp:383-393`)
 Opens a dynamic-rendering pass on the *target view passed in* (always a swapchain image view in current call sites) with no clear value (blends over whatever's already there — the already-blitted 3D scene), then calls `ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd)`.
@@ -263,8 +263,8 @@ Full docking ImGui+Vulkan application shell (vs. writing a `.ppm`); interactive 
 - No `VK_KHR_ray_tracing_pipeline` / `VK_KHR_acceleration_structure` usage anywhere in VkGuide; project targets Vulkan 1.2 core + KHR extension forms loaded through `vkinit::VkFunctionLoader` (confirmed no core-1.3 unsuffixed entry points are called for dynamic rendering/sync2/blit).
 - VkGuide has a single GLFW window and a single Vulkan surface/swapchain; no multi-window code exists.
 - VkGuide's ImGui init pins `PipelineRenderingCreateInfo.pColorAttachmentFormats` to the swapchain format (section 4); the `imguiPool` descriptor pool is a local variable in `initIMGUI()`, not currently exposed as an engine member.
-- The vendored ImGui at `../CPPLibraries/imgui` is confirmed **not** the docking branch (section 4) — any feature wanting real docking/tabbing needs to vendor a docking-branch build first (`docs/plans/imgui-display.md` §2.1 covers this).
-- `createImage(void* data, ...)`'s staging-buffer size is hardcoded to 4 bytes/pixel (section 3) — any future caller uploading a non-RGBA8 format needs this fixed first; `docs/plans/scene-and-asset-management.md` §2.4 does this.
+- The vendored ImGui at `../CPPLibraries/imgui` is confirmed **not** the docking branch (section 4) — any feature wanting real docking/tabbing needs to vendor a docking-branch build first (`docs/plans/completed/imgui-display.md` §2.1 covers this).
+- ~~`createImage(void* data, ...)`'s staging-buffer size is hardcoded to 4 bytes/pixel~~ — fixed 2026-09-13 (section 3).
 - `GPUSceneData`/`m_mainCamera` in VkGuide are singular — there is exactly one camera and one scene-data uniform wired into `drawGeometry()`; nothing else reads or writes a second view.
 - The RTIAW project's `hittable`/`material` virtual-dispatch model, `hittable_list`'s O(n) linear scan (no BVH), the global mutable `std::mt19937`, `double`-precision math, and full-image-recompute-per-trigger render loop are all CPU-only constructs with no direct GPU-compute equivalent present anywhere in either codebase — none of this is portable to a compute shader as-is.
 - VkGuide's `checkVkResult`/`vkbErr` error macros (`vk_types.h:115-129`) hard-abort on any failure; there is no exception-based or recoverable error path in the codebase.

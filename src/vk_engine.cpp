@@ -10,6 +10,7 @@
 #include <vk_initializers.h>
 #include <vk_images.h>
 #include <vk_pipelines.h>
+#include <rt_material.h>
 
 #include <VkBootstrap.h>
 
@@ -65,14 +66,16 @@ void VulkanEngine::init()
 
 void VulkanEngine::draw()
 {
-	updateScene();
-
 	// wait until the gpu has finished rendering the last frame. Timeout of 1
 	// second
 	checkVkResult(vkWaitForFences(m_device, 1, &getCurrentFrame().renderFence, true, 1000000000));
 
 	getCurrentFrame().deletionQueue.flush();
 	getCurrentFrame().frameDescriptors.clearPools(m_device);
+
+	// after the flush and the pool reset, not before: updateScene() allocates this frame slot's
+	// sphere-material buffer and descriptor sets, and both would be reclaimed out from under it
+	updateScene();
 
 	checkVkResult(vkResetFences(m_device, 1, &getCurrentFrame().renderFence));
 
@@ -200,8 +203,10 @@ void VulkanEngine::updateScene()
 		m_loadedNodes["Cube"]->Draw(translation * scale, m_mainDrawContext);
 	}
 
+	drawRaytraceSpheres();
+
 	glm::mat4 view = m_mainCamera.getViewMatrix();
-	glm::mat4 projection = glm::perspective(glm::radians(70.f), (float)m_windowExtent.width / (float)m_windowExtent.height, 0.1f, 10000.f);
+	glm::mat4 projection = glm::perspective(glm::radians(CAMERA_VERTICAL_FOV_DEGREES), (float)m_windowExtent.width / (float)m_windowExtent.height, 0.1f, 10000.f);
 	projection[1][1] *= -1;
 
 	m_sceneData.view = view;
@@ -463,10 +468,16 @@ void VulkanEngine::run()
 
 		m_displayRegistry.beginFrame(m_frameNumber);
 
+		//before the imgui content below, so a raytrace that finished since the last frame has
+		//its output registered in time to be drawn this frame rather than the next one
+		m_raytraceJob.update(this);
+
 		if (ImGui::BeginMainMenuBar()) {
 			if (ImGui::BeginMenu("Windows")) {
 				ImGui::MenuItem("background", nullptr, &m_showBackgroundWindow);
 				ImGui::MenuItem("Stats", nullptr, &m_showStatsWindow);
+				ImGui::MenuItem("Raytracer Scene", nullptr, m_raytraceScene.visibilityFlag());
+				ImGui::MenuItem("Raytrace Render", nullptr, m_raytraceJob.visibilityFlag());
 				ImGui::MenuItem("ImGui Demo", nullptr, &m_showDemoWindow);
 				ImGui::Separator();
 				m_displayRegistry.drawWindowsMenu();
@@ -503,6 +514,9 @@ void VulkanEngine::run()
 			}
 			ImGui::End();
 		}
+
+		m_raytraceScene.drawPanel(this);
+		m_raytraceJob.drawControlPanel(this, m_raytraceScene);
 
 		//some imgui UI to test
 		if (m_showDemoWindow) {
@@ -794,9 +808,29 @@ AllocatedImage VulkanEngine::createImage(VkExtent3D size, VkFormat format, VkIma
 	return newImage;
 }
 
+//bytes per texel for the formats uploaded through createImage(void* data, ...). Aborts on anything
+//else rather than guessing a size and silently under- or over-reading the caller's buffer
+static size_t bytes_per_pixel(VkFormat format)
+{
+	switch (format) {
+	case VK_FORMAT_R8G8B8A8_UNORM:
+	case VK_FORMAT_R8G8B8A8_SRGB:
+	case VK_FORMAT_B8G8R8A8_UNORM:
+	case VK_FORMAT_B8G8R8A8_SRGB:
+		return 4;
+	case VK_FORMAT_R16G16B16A16_SFLOAT:
+		return 8;
+	case VK_FORMAT_R32G32B32A32_SFLOAT:
+		return 16;
+	default:
+		fmt::println("createImage: no upload size known for VkFormat {}", (int)format);
+		abort();
+	}
+}
+
 AllocatedImage VulkanEngine::createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped/* = false*/)
 {
-	size_t data_size = size.depth * size.width * size.height * 4;
+	size_t data_size = (size_t)size.depth * size.width * size.height * bytes_per_pixel(format);
 	AllocatedBuffer uploadbuffer = createBuffer(data_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
 
 	memcpy(uploadbuffer.info.pMappedData, data, data_size);
@@ -1070,6 +1104,11 @@ void VulkanEngine::initPipeline()
 	initComputePipelines();
 	initMeshPipeline();
 	m_metalRoughMaterial.buildPipelines(this);
+
+	m_tonemapPass.init(this);
+	m_mainDeletionQueue.push_function([this]() {
+		m_tonemapPass.destroy(m_device);
+	});
 }
 
 void VulkanEngine::initComputePipelines()
@@ -1301,6 +1340,128 @@ void VulkanEngine::initIMGUI()
 	});
 }
 
+//a unit uv sphere at the origin. Vertex colours are left white so that the per-sphere material's
+//colorFactors is what carries the colour - mesh.vert multiplies the two together
+static MeshAsset makeUnitSphereMesh(VulkanEngine* engine, uint32_t rings, uint32_t segments)
+{
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
+
+	vertices.reserve((size_t)(rings + 1) * (segments + 1));
+
+	for (uint32_t ring = 0; ring <= rings; ring++) {
+		const double theta = RT_PI * (double)ring / (double)rings;
+		const double sinTheta = sin(theta);
+		const double cosTheta = cos(theta);
+
+		for (uint32_t segment = 0; segment <= segments; segment++) {
+			const double phi = 2.0 * RT_PI * (double)segment / (double)segments;
+
+			Vertex vtx;
+			vtx.position = glm::vec3(sinTheta * cos(phi), cosTheta, sinTheta * sin(phi));
+			//on a unit sphere centred on the origin the position is also the normal
+			vtx.normal = vtx.position;
+			vtx.color = glm::vec4(1.f);
+			vtx.uv_x = (float)segment / (float)segments;
+			vtx.uv_y = (float)ring / (float)rings;
+
+			vertices.push_back(vtx);
+		}
+	}
+
+	indices.reserve((size_t)rings * segments * 6);
+
+	for (uint32_t ring = 0; ring < rings; ring++) {
+		for (uint32_t segment = 0; segment < segments; segment++) {
+			const uint32_t a = ring * (segments + 1) + segment;
+			const uint32_t b = a + segments + 1;
+
+			indices.push_back(a);
+			indices.push_back(b);
+			indices.push_back(a + 1);
+
+			indices.push_back(a + 1);
+			indices.push_back(b);
+			indices.push_back(b + 1);
+		}
+	}
+
+	MeshAsset mesh;
+	mesh.name = "raytracer_sphere";
+
+	GeoSurface surface;
+	surface.startIndex = 0;
+	surface.count = (uint32_t)indices.size();
+	surface.bounds.origin = glm::vec3(0.f);
+	surface.bounds.extents = glm::vec3(1.f);
+	surface.bounds.sphereRadius = 1.f;
+	//no material: drawRaytraceSpheres() supplies a per-sphere one rather than going through
+	//MeshNode::Draw(), which is what would otherwise read this
+	mesh.surfaces.push_back(surface);
+
+	mesh.cpuIndices = indices;
+	mesh.cpuVertices = vertices;
+	mesh.meshBuffers = engine->uploadMesh(indices, vertices);
+
+	return mesh;
+}
+
+void VulkanEngine::drawRaytraceSpheres()
+{
+	const std::vector<SceneSphere>& spheres = m_raytraceScene.spheres();
+
+	if (m_sphereMesh == nullptr || spheres.empty()) {
+		return;
+	}
+
+	//one buffer for the whole set, indexed per sphere by offset - the same layout loadGltf()
+	//uses for a file's materials. Allocated per frame because the sphere list is live
+	const size_t stride = sizeof(GLTFMetallic_Roughness::MaterialConstants);
+	const size_t bufferSize = stride * spheres.size();
+
+	AllocatedBuffer materialBuffer = createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+	getCurrentFrame().deletionQueue.push_function([this, materialBuffer]() {
+		destroyBuffer(materialBuffer);
+	});
+
+	GLTFMetallic_Roughness::MaterialConstants* constants = (GLTFMetallic_Roughness::MaterialConstants*)materialBuffer.info.pMappedData;
+
+	m_sphereMaterials.clear();
+	m_sphereMaterials.resize(spheres.size());
+
+	const GeoSurface& surface = m_sphereMesh->surfaces[0];
+
+	for (size_t i = 0; i < spheres.size(); i++) {
+		const sphere& s = *spheres[i].object;
+
+		constants[i].colorFactors = glm::vec4(materialPreviewColor(*s.mat_ptr), 1.f);
+		constants[i].metalRoughFactors = glm::vec4(1.f, 0.5f, 0.f, 0.f);
+
+		GLTFMetallic_Roughness::MaterialResources resources;
+		resources.colorImage = m_whiteImage;
+		resources.colorSampler = m_defaultSamplerLinear;
+		resources.metalRoughImage = m_whiteImage;
+		resources.metalRoughSampler = m_defaultSamplerLinear;
+		resources.dataBuffer = materialBuffer.buffer;
+		resources.dataBufferOffset = (uint32_t)(i * stride);
+
+		m_sphereMaterials[i] = m_metalRoughMaterial.writeMaterial(m_device, MaterialPass::MainColor, resources, getCurrentFrame().frameDescriptors);
+
+		RenderObject obj;
+		obj.indexCount = surface.count;
+		obj.firstIndex = surface.startIndex;
+		obj.indexBuffer = m_sphereMesh->meshBuffers.indexBuffer.buffer;
+		obj.material = &m_sphereMaterials[i];
+		obj.bounds = surface.bounds;
+		obj.transform = glm::translate(glm::mat4(1.f), glm::vec3(s.center)) * glm::scale(glm::mat4(1.f), glm::vec3((float)s.radius));
+		obj.vertexBufferAddress = m_sphereMesh->meshBuffers.vertexBufferAddress;
+
+		m_mainDrawContext.opaqueSurfaces.push_back(obj);
+	}
+
+	vmaFlushAllocation(m_memAllocator, materialBuffer.allocation, 0, bufferSize);//flush vma on MoltenVK
+}
+
 void VulkanEngine::initDefaultData()
 {
 	std::string testMeshPath = "assets/basicmesh.glb";
@@ -1372,6 +1533,12 @@ void VulkanEngine::initDefaultData()
 
 	m_defaultData = m_metalRoughMaterial.writeMaterial(m_device,MaterialPass::MainColor,materialResources, m_globalDescriptorAllocator);
 
+	m_sphereMesh = std::make_shared<MeshAsset>(makeUnitSphereMesh(this, 24, 32));
+	m_mainDeletionQueue.push_function([this]() {
+		destroyBuffer(m_sphereMesh->meshBuffers.indexBuffer);
+		destroyBuffer(m_sphereMesh->meshBuffers.vertexBuffer);
+	});
+
 	for (auto& m : m_testMeshes) {
 		std::shared_ptr<MeshNode> newNode = std::make_shared<MeshNode>();
 		newNode->mesh = m;
@@ -1392,6 +1559,10 @@ void VulkanEngine::cleanup()
 	if (m_isInitialized) {
 		//make sure the gpu has stopped doing its things
 		vkDeviceWaitIdle(m_device);
+
+		//cancels and joins any in-flight raytrace, and releases its output image while the
+		//display registry it is registered with is still alive
+		m_raytraceJob.shutdown(this);
 
 		m_loadedScenes.clear();
 

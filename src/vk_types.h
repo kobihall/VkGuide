@@ -20,7 +20,7 @@
 
 #include <VulkanMemoryAllocator/include/vk_mem_alloc.h>
 
-#include <fmt/core.h>
+#include <fmt/format.h>
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec4.hpp>
@@ -87,6 +87,9 @@ class IRenderable {
 // the scene node can hold children and will also keep a transform to propagate
 // to them
 struct Node : public IRenderable {
+
+	// the source glTF node's name, for anything that needs to identify a node to the user
+	std::string name;
 
 	// parent pointer must be a weak pointer to avoid circular dependencies
 	std::weak_ptr<Node> parent;

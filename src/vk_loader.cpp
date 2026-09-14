@@ -166,6 +166,10 @@ std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngi
 				vtx.color = glm::vec4(vtx.normal, 1.f);
 			}
 		}
+		//retained cpu-side copy of exactly what goes to the gpu (see MeshAsset::cpuVertices)
+		newmesh.cpuIndices = indices;
+		newmesh.cpuVertices = vertices;
+
 		newmesh.meshBuffers = engine->uploadMesh(indices, vertices);
 
 		meshes.emplace_back(std::make_shared<MeshAsset>(std::move(newmesh)));
@@ -273,6 +277,10 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 		// write material parameters to buffer
 		sceneMaterialConstants[data_index] = constants;
 
+		// keep the same factors cpu-side (see GLTFMaterial::colorFactors)
+		newMat->colorFactors = constants.colorFactors;
+		newMat->metalRoughFactors = glm::vec2(constants.metalRoughFactors);
+
 		MaterialPass passType = MaterialPass::MainColor;
 		if (mat.alphaMode == fastgltf::AlphaMode::Blend) {
 			passType = MaterialPass::Transparent;
@@ -342,6 +350,10 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 			newmesh->surfaces.push_back(newSurface);
 		}
 
+		//retained cpu-side copy of exactly what goes to the gpu (see MeshAsset::cpuVertices)
+		newmesh->cpuIndices = indices;
+		newmesh->cpuVertices = vertices;
+
 		newmesh->meshBuffers = engine->uploadMesh(indices, vertices);
 	}
 
@@ -357,8 +369,10 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 			newNode = std::make_shared<Node>();
 		}
 
+		newNode->name = node.name;
+
 		nodes.push_back(newNode);
-		file.nodes[node.name.c_str()];
+		file.nodes[node.name.c_str()] = newNode;
 
 		std::visit(fastgltf::visitor { [&](fastgltf::math::fmat4x4 matrix) {
 										  memcpy(&newNode->localTransform, matrix.data(), sizeof(glm::mat4));
