@@ -1,5 +1,15 @@
 #include "vk_engine.h"
 
+#include <rt_scene.h>
+#include <scene_io.h>
+#include <file_dialog.h>
+#include <vk_ui.h>
+
+#include <fmt/ranges.h>
+
+#include <stb_image.h>
+#include <glm/gtc/packing.hpp>
+
 #include <stdio.h>			// printf, fprintf
 #include <stdlib.h>			// abort, getenv
 #include <iostream>
@@ -29,7 +39,7 @@ constexpr bool b_UseValidationLayers = false;
 void VulkanEngine::init()
 {
 	m_rootPath = "../";
-	fmt::print("loaded root path as: ", m_rootPath, "\n");
+	fmt::println("loaded root path as: {}", m_rootPath);
 
 	initGLFW();
 	initVulkan();
@@ -53,12 +63,13 @@ void VulkanEngine::init()
 	m_mainCamera.pitch = 0;
 	m_mainCamera.yaw = 0;
 
-	std::string structurePath = m_rootPath + "assets/structure.glb";
-	auto structureFile = loadGltf(this,structurePath);
-
-	assert(structureFile.has_value());
-
-	m_loadedScenes["structure"] = *structureFile;
+	//the default scene: the tutorial's structure model plus the editor's seeded spheres. Not a
+	//file - "Save Scene" writes one wherever the user chooses. A missing asset is reported
+	//rather than fatal; the app is usable with an empty scene
+	m_lastFileResult = importGltf(m_rootPath + "assets/structure.glb");
+	if (!m_lastFileResult.ok) {
+		fmt::println("{}", m_lastFileResult.message);
+	}
 	
 	//everything went fine
 	m_isInitialized = true;
@@ -191,22 +202,15 @@ void VulkanEngine::updateScene()
 
 	m_mainDrawContext.opaqueSurfaces.clear();
 
-	m_loadedNodes["Suzanne"]->Draw(glm::mat4{1.f}, m_mainDrawContext);
-
-	m_loadedScenes["structure"]->Draw(glm::mat4{ 1.f }, m_mainDrawContext);
-
-	for (int x = -3; x < 3; x++) {
-
-		glm::mat4 scale = glm::scale(glm::vec3{0.2});
-		glm::mat4 translation =	 glm::translate(glm::vec3{x, 1, 0});
-
-		m_loadedNodes["Cube"]->Draw(translation * scale, m_mainDrawContext);
+	for (auto& [name, model] : m_models) {
+		model->Draw(glm::mat4{ 1.f }, m_mainDrawContext);
 	}
 
 	drawRaytraceSpheres();
 
 	glm::mat4 view = m_mainCamera.getViewMatrix();
-	glm::mat4 projection = glm::perspective(glm::radians(CAMERA_VERTICAL_FOV_DEGREES), (float)m_windowExtent.width / (float)m_windowExtent.height, 0.1f, 10000.f);
+	//vulkan's clip space has y down, so the raster path flips what rasterProjection() returns
+	glm::mat4 projection = rasterProjection();
 	projection[1][1] *= -1;
 
 	m_sceneData.view = view;
@@ -466,17 +470,23 @@ void VulkanEngine::run()
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
+		//first, so the window ImGuizmo draws into sits behind every panel built after it
+		m_transformGizmo.beginFrame();
+
 		m_displayRegistry.beginFrame(m_frameNumber);
+
+
 
 		//before the imgui content below, so a raytrace that finished since the last frame has
 		//its output registered in time to be drawn this frame rather than the next one
 		m_raytraceJob.update(this);
 
 		if (ImGui::BeginMainMenuBar()) {
+			drawFileMenu();
 			if (ImGui::BeginMenu("Windows")) {
 				ImGui::MenuItem("background", nullptr, &m_showBackgroundWindow);
 				ImGui::MenuItem("Stats", nullptr, &m_showStatsWindow);
-				ImGui::MenuItem("Raytracer Scene", nullptr, m_raytraceScene.visibilityFlag());
+				ImGui::MenuItem("Scene", nullptr, m_raytraceScene.visibilityFlag());
 				ImGui::MenuItem("Raytrace Render", nullptr, m_raytraceJob.visibilityFlag());
 				ImGui::MenuItem("ImGui Demo", nullptr, &m_showDemoWindow);
 				ImGui::Separator();
@@ -485,6 +495,7 @@ void VulkanEngine::run()
 			}
 			ImGui::EndMainMenuBar();
 		}
+
 
 		if (m_showBackgroundWindow) {
 			if (ImGui::Begin("background", &m_showBackgroundWindow)) {
@@ -525,8 +536,15 @@ void VulkanEngine::run()
 
 		m_displayRegistry.drawWindows();
 
+		//after the panels, so an "Edit Transform" click shows the gizmo this frame. ImGuizmo
+		//maps clip space to the screen itself, y up, so it gets the un-flipped projection
+		m_transformGizmo.draw(m_mainCamera.getViewMatrix(), rasterProjection());
+
 		//make imgui calculate internal draw structures
 		ImGui::Render();
+
+		//between the imgui frame and the draw, since a native file dialog blocks in a modal loop
+		runPendingFileAction();
 
 		draw();
 
@@ -585,8 +603,9 @@ void VulkanEngine::initGLFW()
 		}
 		auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
 		if (action == GLFW_PRESS) {
-			//the ui has first claim on the cursor, so only a press over the raster background looks around
-			if (!ImGui::GetIO().WantCaptureMouse) {
+			//the ui has first claim on the cursor, so only a press over the raster background looks
+			//around - and a press on or near an active gizmo handle is a gizmo drag, not a look
+			if (!ImGui::GetIO().WantCaptureMouse && !engine->m_transformGizmo.wantsMouse()) {
 				engine->setCameraCapture(true);
 			}
 		} else if (action == GLFW_RELEASE) {
@@ -620,6 +639,292 @@ void VulkanEngine::setCameraCapture(bool active)
 	}
 
 	m_cameraCaptureActive = active;
+}
+
+glm::mat4 VulkanEngine::rasterProjection() const
+{
+	//forward-z, not vkguide's reversed near/far - see CLAUDE.md's MoltenVK notes
+	return glm::perspective(glm::radians(CAMERA_VERTICAL_FOV_DEGREES), (float)m_windowExtent.width / (float)m_windowExtent.height, 0.1f, 10000.f);
+}
+
+namespace {
+
+constexpr const char* ENVIRONMENT_MAP_DISPLAY_NAME = "Environment Map";
+constexpr const char* SCENE_FILE_EXTENSION = "gltf";
+
+std::filesystem::path absoluteNormalized(const std::filesystem::path& path)
+{
+	std::error_code ec;
+	std::filesystem::path absolute = std::filesystem::absolute(path, ec);
+	return (ec ? path : absolute).lexically_normal();
+}
+
+}
+
+void VulkanEngine::rebuildSceneDerivedData()
+{
+	m_raytraceMeshData = buildRaytraceMeshData(this);
+	m_sceneRevision++;
+}
+
+IoResult VulkanEngine::importGltf(const std::filesystem::path& path)
+{
+	std::string error;
+	auto loaded = loadGltf(this, path.string(), &error);
+	if (!loaded.has_value()) {
+		return IoResult::failure(error);
+	}
+	(*loaded)->sourcePath = absoluteNormalized(path);
+
+	//keyed by file stem, made unique so the same file can be in the scene twice
+	const std::string stem = path.stem().string().empty() ? "model" : path.stem().string();
+	std::string key = stem;
+	for (int suffix = 2; m_models.count(key) != 0; suffix++) {
+		key = fmt::format("{}_{}", stem, suffix);
+	}
+	m_models[key] = *loaded;
+
+	rebuildSceneDerivedData();
+
+	return IoResult::success(fmt::format("Imported '{}' as '{}'. Scene now has {} model(s), {} surface instance(s), {} triangles",
+		path.filename().string(), key, m_models.size(), m_raytraceMeshData->instances.size(), m_raytraceMeshData->triangleCount));
+}
+
+void VulkanEngine::removeGltf(const std::string& name)
+{
+	auto it = m_models.find(name);
+	if (it == m_models.end()) {
+		return;
+	}
+
+	//frames in flight may still reference the model's buffers, images and descriptor pools, and
+	//LoadedGLTF::clearAll() destroys them the moment the last reference goes. A wait is the
+	//simple, obviously-correct way to retire them for a menu-driven action
+	vkDeviceWaitIdle(m_device);
+	m_models.erase(it);
+	rebuildSceneDerivedData();
+}
+
+void VulkanEngine::clearModels()
+{
+	if (m_models.empty()) {
+		return;
+	}
+	vkDeviceWaitIdle(m_device);
+	m_models.clear();
+	rebuildSceneDerivedData();
+}
+
+void VulkanEngine::newScene()
+{
+	clearModels();
+	clearEnvironmentMap();
+	m_raytraceScene.replaceSpheres({});
+	m_scenePath.clear();
+	m_lastFileResult = IoResult::success("New empty scene");
+}
+
+IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
+{
+	SceneDescription scene;
+	for (const auto& [name, model] : m_models) {
+		scene.modelPaths.push_back(model->sourcePath);
+	}
+	scene.environmentMapPath = m_environmentMapPath;
+	scene.spheres = m_raytraceScene.spheres();
+
+	IoResult result = saveSceneFile(scene, path);
+	if (result.ok) {
+		m_scenePath = absoluteNormalized(path);
+	}
+	return result;
+}
+
+IoResult VulkanEngine::openScene(const std::filesystem::path& path)
+{
+	SceneDescription scene;
+	IoResult parsed = loadSceneFile(path, scene);
+	if (!parsed.ok) {
+		//the current scene is untouched
+		return parsed;
+	}
+
+	//only now that the file itself is known good does the current scene go. A model or map the
+	//file refers to may still be missing; the rest of the scene loads regardless and the
+	//problems are reported together
+	clearModels();
+	clearEnvironmentMap();
+	std::vector<std::string> problems;
+	for (const std::filesystem::path& modelPath : scene.modelPaths) {
+		IoResult imported = importGltf(modelPath);
+		if (!imported.ok) {
+			problems.push_back(imported.message);
+		}
+	}
+	if (!scene.environmentMapPath.empty()) {
+		IoResult mapLoaded = loadEnvironmentMap(scene.environmentMapPath);
+		if (!mapLoaded.ok) {
+			problems.push_back(mapLoaded.message);
+		}
+	}
+	m_raytraceScene.replaceSpheres(std::move(scene.spheres));
+	m_scenePath = absoluteNormalized(path);
+
+	if (!problems.empty()) {
+		return IoResult::failure(fmt::format("Opened '{}' with {} problem(s): {}", path.filename().string(), problems.size(), fmt::join(problems, "; ")));
+	}
+	return IoResult::success(fmt::format("Opened '{}': {} model(s), {} sphere(s){}", path.filename().string(), m_models.size(), m_raytraceScene.spheres().size(),
+		m_environmentMapPath.empty() ? "" : ", environment map"));
+}
+
+IoResult VulkanEngine::loadEnvironmentMap(const std::filesystem::path& path)
+{
+	const std::string pathString = path.string();
+
+	if (!stbi_is_hdr(pathString.c_str())) {
+		//stbi_is_hdr is also false for a file that is not there, so tell the two apart
+		std::error_code ec;
+		if (!std::filesystem::exists(path, ec)) {
+			return IoResult::failure(fmt::format("No file at '{}'", pathString));
+		}
+		return IoResult::failure(fmt::format("'{}' is not a Radiance .hdr image (only .hdr is supported)", pathString));
+	}
+
+	int width = 0;
+	int height = 0;
+	int channels = 0;
+	float* pixels = stbi_loadf(pathString.c_str(), &width, &height, &channels, 4);
+	if (pixels == nullptr) {
+		return IoResult::failure(fmt::format("Failed to decode '{}': {}", pathString, stbi_failure_reason()));
+	}
+
+	//half float: the usual precision for environment lighting, half the memory of rgba32f (an 8k
+	//map is 256 MB rather than 512), and linearly filterable everywhere - 32-bit float filtering
+	//is optional in vulkan
+	const size_t pixelCount = (size_t)width * (size_t)height;
+	std::vector<uint32_t> halves(pixelCount * 2);
+	for (size_t i = 0; i < pixelCount; i++) {
+		halves[i * 2 + 0] = glm::packHalf2x16(glm::vec2(pixels[i * 4 + 0], pixels[i * 4 + 1]));
+		halves[i * 2 + 1] = glm::packHalf2x16(glm::vec2(pixels[i * 4 + 2], pixels[i * 4 + 3]));
+	}
+	stbi_image_free(pixels);
+
+	//only now that the new data is known good does the old resource go
+	destroyEnvironmentMap();
+
+	const VkExtent3D extent { (uint32_t)width, (uint32_t)height, 1 };
+	m_environmentMap = createImage(halves.data(), extent, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT);
+	m_environmentMapExtent = { extent.width, extent.height };
+	m_environmentMapPath = absoluteNormalized(path);
+
+	//a preview window, so a loaded map can be seen even though nothing renders with it yet.
+	//Values above 1 show clipped
+	m_displayRegistry.registerImage(ENVIRONMENT_MAP_DISPLAY_NAME, m_environmentMap.imageView, m_environmentMapExtent);
+
+	return IoResult::success(fmt::format("Loaded '{}': {} x {}, rgba16f", path.filename().string(), width, height));
+}
+
+void VulkanEngine::clearEnvironmentMap()
+{
+	destroyEnvironmentMap();
+	m_environmentMapPath.clear();
+}
+
+void VulkanEngine::destroyEnvironmentMap()
+{
+	if (m_environmentMap.image == VK_NULL_HANDLE) {
+		return;
+	}
+
+	//unregister first so no new frame references the view, then wait out the ones that already do
+	m_displayRegistry.unregisterImage(ENVIRONMENT_MAP_DISPLAY_NAME);
+	vkDeviceWaitIdle(m_device);
+	destroyImage(m_environmentMap);
+	m_environmentMap = {};
+	m_environmentMapExtent = { 0, 0 };
+}
+
+void VulkanEngine::drawFileMenu()
+{
+	if (ImGui::BeginMenu("File")) {
+		if (ImGui::MenuItem("New Scene")) {
+			m_pendingFileAction = FileAction::NewScene;
+		}
+		if (ImGui::MenuItem("Open Scene...")) {
+			m_pendingFileAction = FileAction::OpenScene;
+		}
+		if (ImGui::MenuItem("Save Scene")) {
+			m_pendingFileAction = FileAction::SaveScene;
+		}
+		if (ImGui::MenuItem("Save Scene As...")) {
+			m_pendingFileAction = FileAction::SaveSceneAs;
+		}
+		ImGui::Separator();
+		if (ImGui::MenuItem("Import glTF Model...")) {
+			m_pendingFileAction = FileAction::ImportGltf;
+		}
+		if (ImGui::MenuItem("Set Environment Map...")) {
+			m_pendingFileAction = FileAction::SetEnvironmentMap;
+		}
+		if (ImGui::MenuItem("Clear Environment Map", nullptr, false, m_environmentMap.image != VK_NULL_HANDLE)) {
+			m_pendingFileAction = FileAction::ClearEnvironmentMap;
+		}
+		ImGui::EndMenu();
+	}
+}
+
+void VulkanEngine::runPendingFileAction()
+{
+	const FileAction action = m_pendingFileAction;
+	m_pendingFileAction = FileAction::None;
+	if (action == FileAction::None) {
+		return;
+	}
+
+	const std::filesystem::path assetsDirectory = absoluteNormalized(m_rootPath + "assets");
+	const std::filesystem::path sceneDirectory = m_scenePath.empty() ? assetsDirectory / "scenes" : m_scenePath.parent_path();
+
+	switch (action) {
+	case FileAction::None:
+		break;
+	case FileAction::NewScene:
+		newScene();
+		break;
+	case FileAction::OpenScene:
+		if (auto chosen = showOpenFileDialog("Open Scene", { SCENE_FILE_EXTENSION }, sceneDirectory)) {
+			m_lastFileResult = openScene(*chosen);
+		}
+		break;
+	case FileAction::SaveScene:
+		if (!m_scenePath.empty()) {
+			m_lastFileResult = saveScene(m_scenePath);
+			break;
+		}
+		[[fallthrough]];
+	case FileAction::SaveSceneAs:
+		if (auto chosen = showSaveFileDialog("Save Scene", { SCENE_FILE_EXTENSION }, sceneDirectory, m_scenePath.empty() ? "scene.gltf" : m_scenePath.filename().string())) {
+			m_lastFileResult = saveScene(*chosen);
+		}
+		break;
+	case FileAction::ImportGltf:
+		if (auto chosen = showOpenFileDialog("Import glTF Model", { "gltf", "glb" }, assetsDirectory)) {
+			m_lastFileResult = importGltf(*chosen);
+		}
+		break;
+	case FileAction::SetEnvironmentMap:
+		if (auto chosen = showOpenFileDialog("Set Environment Map", { "hdr" }, assetsDirectory)) {
+			m_lastFileResult = loadEnvironmentMap(*chosen);
+		}
+		break;
+	case FileAction::ClearEnvironmentMap:
+		clearEnvironmentMap();
+		m_lastFileResult = IoResult::success("Environment map cleared");
+		break;
+	}
+
+	if (!m_lastFileResult.ok) {
+		fmt::println("{}", m_lastFileResult.message);
+	}
 }
 
 void VulkanEngine::initVulkan()
@@ -1464,9 +1769,6 @@ void VulkanEngine::drawRaytraceSpheres()
 
 void VulkanEngine::initDefaultData()
 {
-	std::string testMeshPath = "assets/basicmesh.glb";
-	m_testMeshes = loadGltfMeshes(this, m_rootPath + testMeshPath).value();
-
 	//3 default textures, white, grey, black. 1 pixel each
 	uint32_t white = glm::packUnorm4x8(glm::vec4(1, 1, 1, 1));
 	m_whiteImage = createImage((void*)&white, VkExtent3D{ 1, 1, 1 }, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
@@ -1539,19 +1841,6 @@ void VulkanEngine::initDefaultData()
 		destroyBuffer(m_sphereMesh->meshBuffers.vertexBuffer);
 	});
 
-	for (auto& m : m_testMeshes) {
-		std::shared_ptr<MeshNode> newNode = std::make_shared<MeshNode>();
-		newNode->mesh = m;
-
-		newNode->localTransform = glm::mat4{ 1.f };
-		newNode->worldTransform = glm::mat4{ 1.f };
-
-		for (auto& s : newNode->mesh->surfaces) {
-			s.material = std::make_shared<GLTFMaterial>(m_defaultData);
-		}
-
-		m_loadedNodes[m->name] = std::move(newNode);
-	}
 }
 
 void VulkanEngine::cleanup()
@@ -1564,7 +1853,9 @@ void VulkanEngine::cleanup()
 		//display registry it is registered with is still alive
 		m_raytraceJob.shutdown(this);
 
-		m_loadedScenes.clear();
+		m_models.clear();
+		m_raytraceMeshData.reset();
+		destroyEnvironmentMap();
 
 		m_metalRoughMaterial.clearResources(m_device);
 
@@ -1577,11 +1868,6 @@ void VulkanEngine::cleanup()
 			vkDestroySemaphore(m_device ,m_frames[i].swapchainSemaphore, nullptr);
 
 			m_frames[i].deletionQueue.flush();
-		}
-
-		for (auto& mesh : m_testMeshes) {
-			destroyBuffer(mesh->meshBuffers.indexBuffer);
-			destroyBuffer(mesh->meshBuffers.vertexBuffer);
 		}
 
 		m_mainDeletionQueue.flush();

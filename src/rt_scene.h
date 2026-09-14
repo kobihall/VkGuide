@@ -1,6 +1,7 @@
 #pragma once
 
-// The one-shot snapshot handed to the raytrace worker thread, and the function that builds it.
+// The one-shot snapshot handed to the raytrace worker thread, and the functions that build it
+// and the scene-wide mesh data it shares.
 //
 // This is the thread-safety boundary of the whole feature: buildRaytraceScene() runs on the
 // main thread while Render is being clicked, copies everything the render needs out of live
@@ -20,8 +21,10 @@ struct RaytraceScene {
 	// deep copies, materials included, not shared with the editor - see buildRaytraceScene()
 	std::vector<std::shared_ptr<sphere>> spheres;
 
-	// populated but never read by this feature; see RTMeshInstance in rt_types.h
-	std::vector<RTMeshInstance> meshInstances;
+	// shared with VulkanEngine::m_raytraceMeshData rather than copied: it is immutable and
+	// cpu-only, so a render keeps the scene it was started against alive even if a different
+	// file is loaded mid-render. Nothing in this feature intersects it - see RaytraceMeshData
+	std::shared_ptr<const RaytraceMeshData> meshData;
 
 	RTCameraSnapshot camera;
 	RenderSettings settings;
@@ -32,8 +35,12 @@ struct RaytraceScene {
 };
 
 // Walks every loaded glTF scene's node tree and visits each mesh-bearing node. Shared by the
-// scene browser (which wants node names) and buildRaytraceScene() (which wants triangles), so
-// both see exactly the same set of objects.
+// scene browser (which wants node names) and buildRaytraceMeshData() (which wants geometry),
+// so both see exactly the same set of objects.
 void forEachMeshNode(VulkanEngine* engine, const std::function<void(const MeshNode& node)>& visit);
+
+// Bakes the currently loaded glTF scenes into object-space mesh data. Called from the engine's
+// scene load path, once per scene change - never per render, which is what it used to cost
+std::shared_ptr<const RaytraceMeshData> buildRaytraceMeshData(VulkanEngine* engine);
 
 RaytraceScene buildRaytraceScene(VulkanEngine* engine, const RaytraceSceneEditor& editor, const RenderSettings& settings);

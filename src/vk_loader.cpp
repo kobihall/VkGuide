@@ -178,9 +178,9 @@ std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngi
 	return meshes;
 }
 
-std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::string_view filePath)
+std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::string_view filePath, std::string* outError)
 {
-	fmt::print("Loading GLTF: {}", filePath);
+	fmt::println("Loading GLTF: {}", filePath);
 
 	std::shared_ptr<LoadedGLTF> scene = std::make_shared<LoadedGLTF>();
 	scene->creator = engine;
@@ -192,9 +192,23 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 
 	std::filesystem::path path = filePath;
 
+	//fastgltf's own message for a missing file blames the directory, so check first
+	if (std::error_code ec; !std::filesystem::exists(path, ec)) {
+		const std::string message = fmt::format("No file at '{}'", path.string());
+		fmt::println("{}", message);
+		if (outError != nullptr) {
+			*outError = message;
+		}
+		return {};
+	}
+
 	auto dataBuffer = fastgltf::GltfDataBuffer::FromPath(path);
 	if (dataBuffer.error() != fastgltf::Error::None) {
-		std::cerr << "Failed to load glTF file: " << fastgltf::to_underlying(dataBuffer.error()) << std::endl;
+		const std::string message = fmt::format("Could not read '{}': {}", path.string(), fastgltf::getErrorMessage(dataBuffer.error()));
+		fmt::println("{}", message);
+		if (outError != nullptr) {
+			*outError = message;
+		}
 		return {};
 	}
 
@@ -202,7 +216,11 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 
 	auto load = parser.loadGltf(dataBuffer.get(), path.parent_path(), gltfOptions);
 	if (load.error() != fastgltf::Error::None) {
-		std::cerr << "Failed to load glTF: " << fastgltf::to_underlying(load.error()) << std::endl;
+		const std::string message = fmt::format("'{}' is not a readable glTF file: {}", path.string(), fastgltf::getErrorMessage(load.error()));
+		fmt::println("{}", message);
+		if (outError != nullptr) {
+			*outError = message;
+		}
 		return {};
 	}
 	gltf = std::move(load.get());
@@ -240,7 +258,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 
 	// load all textures
 	for (fastgltf::Image& image : gltf.images) {
-		std::optional<AllocatedImage> img = load_image(engine, gltf, image);
+		std::optional<AllocatedImage> img = load_image(engine, gltf, image, path.parent_path());
 
 		if (img.has_value()) {
 			images.push_back(*img);
@@ -274,7 +292,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 
 		constants.metalRoughFactors.x = mat.pbrData.metallicFactor;
 		constants.metalRoughFactors.y = mat.pbrData.roughnessFactor;
-		// write material parameters to buffer
+		// write material parameters to buffer. The whole buffer is flushed after the loop
 		sceneMaterialConstants[data_index] = constants;
 
 		// keep the same factors cpu-side (see GLTFMaterial::colorFactors)
@@ -309,6 +327,11 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 
 		data_index++;
 	}
+
+	//MoltenVK exposes no coherent host memory: without this the gpu reads whatever the block held
+	//before. At startup that happened to be fresh zero-initialised memory and the factors landed by
+	//luck; a scene loaded later reuses a freed block and every material came back black
+	vmaFlushAllocation(engine->m_memAllocator, file.materialDataBuffer.allocation, 0, sizeof(GLTFMetallic_Roughness::MaterialConstants) * gltf.materials.size());
 
 	// use the same vectors for all meshes so that the memory doesnt reallocate as
 	// often
@@ -414,7 +437,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 	return scene;
 }
 
-std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& asset, fastgltf::Image& image)
+std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& asset, fastgltf::Image& image, const std::filesystem::path& directory)
 {
 	AllocatedImage newImage {};
 
@@ -424,13 +447,23 @@ std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& 
 		fastgltf::visitor {
 			[](auto& arg) {},
 			[&](fastgltf::sources::URI& filePath) {
-				assert(filePath.fileByteOffset == 0); // We don't support offsets with stbi.
-				assert(filePath.uri.isLocalPath()); // We're only capable of loading
-													// local files.
+				//a bad image reference in a user-supplied file is not worth aborting over: the
+				//caller substitutes the checkerboard for anything that fails here
+				if (filePath.fileByteOffset != 0 || !filePath.uri.isLocalPath()) {
+					fmt::println("load_image: unsupported image uri '{}' (only local files without byte offsets)", std::string_view(filePath.uri.string()));
+					return;
+				}
 
-				const std::string path(filePath.uri.path().begin(),
-					filePath.uri.path().end()); // Thanks C++.
+				//relative uris are relative to the glTF file, not to the working directory
+				std::filesystem::path imagePath(std::string(filePath.uri.path().begin(), filePath.uri.path().end()));
+				if (imagePath.is_relative()) {
+					imagePath = directory / imagePath;
+				}
+				const std::string path = imagePath.string();
 				unsigned char* data = stbi_load(path.c_str(), &width, &height, &nrChannels, 4);
+				if (data == nullptr) {
+					fmt::println("load_image: could not load '{}': {}", path, stbi_failure_reason());
+				}
 				if (data) {
 					VkExtent3D imagesize;
 					imagesize.width = width;

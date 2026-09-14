@@ -65,7 +65,7 @@ glm::dvec3 ray_color(const ray& r, const RaytraceScene& scene, int depth)
 	hit_record rec;
 	if (depth <= 0)
 		return glm::dvec3(0, 0, 0);
-	//only scene.spheres is ever consulted; scene.meshInstances has no intersection routine
+	//only scene.spheres is ever consulted; scene.meshData has no intersection routine
 	if (scene.hit(r, 0.001, RT_INFINITY, rec)) {
 		ray scattered;
 		glm::dvec3 attenuation;

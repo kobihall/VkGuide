@@ -14,6 +14,9 @@ add_executable(vulkan_guide
     vk_pipelines.h
     vk_display.cpp
     vk_display.h
+    vk_gizmo.cpp
+    vk_gizmo.h
+    vk_ui.h
     vk_loader.cpp
     vk_loader.h
     vk_tonemap.cpp
@@ -29,6 +32,9 @@ add_executable(vulkan_guide
     rt_scene.h
     rt_scene_editor.cpp
     rt_scene_editor.h
+    scene_io.cpp
+    scene_io.h
+    file_dialog.h
     rt_job.cpp
     rt_job.h
     camera.cpp
@@ -39,12 +45,19 @@ set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGE
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide PUBLIC vk-bootstrap glm imgui stb_image glfw fmt::fmt fastgltf::fastgltf)
+target_link_libraries(vulkan_guide PUBLIC vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
 
 target_link_libraries(vulkan_guide PRIVATE GPUOpen::VulkanMemoryAllocator)
 
 if (APPLE)
     target_compile_options(vulkan_guide PRIVATE -Wno-nullability-completeness)
+    # native NSOpenPanel/NSSavePanel file dialogs, Objective-C++
+    enable_language(OBJCXX)
+    target_sources(vulkan_guide PRIVATE file_dialog.mm)
+    set_source_files_properties(file_dialog.mm PROPERTIES SKIP_PRECOMPILE_HEADERS ON COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(vulkan_guide PRIVATE "-framework Cocoa" "-framework UniformTypeIdentifiers")
+else()
+    target_sources(vulkan_guide PRIVATE file_dialog_stub.cpp)
 endif()
 
 target_link_libraries(vulkan_guide PUBLIC Vulkan::Vulkan)

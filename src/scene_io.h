@@ -1,0 +1,39 @@
+#pragma once
+
+// Scene file save/load.
+//
+// One file captures the whole scene: the glTF models it is composed of (by path - the model
+// files themselves are untouched), the environment map (by path), and the raytracer's spheres
+// (inline, materials included). The file is a minimal but valid glTF 2.0 document whose single
+// scene carries all of that in its spec-defined `extras` field, so any glTF tool can open it
+// without erroring - it just sees an empty scene - and the spec requires readers to preserve
+// extras they don't understand.
+//
+// Paths are written relative to the scene file's own directory when they share a root, so an
+// assets folder can move as a unit, and made absolute again on load. Reading navigates the
+// extras with simdjson, which fastgltf already links; writing hand-formats the small
+// fixed-shape payload with fmt. The payload carries a "version" so a later schema change has
+// something to branch on; version 1 files (spheres only) still load.
+//
+// Neither function touches the engine: they are pure file io over plain data, and failures come
+// back as an IoResult rather than aborting, since a bad path is expected input.
+
+#include <filesystem>
+#include <vector>
+
+#include <rt_scene_editor.h>
+#include <vk_types.h>
+
+struct SceneDescription {
+	// absolute paths
+	std::vector<std::filesystem::path> modelPaths;
+	// empty when the scene has no environment map
+	std::filesystem::path environmentMapPath;
+	std::vector<SceneSphere> spheres;
+};
+
+IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);
+
+// on success out holds freshly constructed spheres and materials and absolute paths; on failure
+// it is untouched
+IoResult loadSceneFile(const std::filesystem::path& file, SceneDescription& out);

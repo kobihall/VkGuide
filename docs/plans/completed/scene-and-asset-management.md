@@ -2,6 +2,8 @@
 
 ## 0. How to use this doc
 
+**Status: implemented 2026-09-14 and reworked the same day after the user's first test pass (§9.7 — one unified scene file, native dialogs). Interactive verification of the reworked parts is pending (§9.7).** The spec below is preserved as written; §9 records the as-built picture — approved deviations, the API as it actually exists, verification evidence, and answers to every §8 open question. **Read §9 before relying on any API shape described in §2/§3** — the gizmo's target API in particular is not the raw `glm::mat4*` §2.8 describes.
+
 Standalone implementation spec — treat it as the only context you have. For exhaustive facts about the current codebase state, read `docs/codebase-map.md` first. This feature has one hard prerequisite:
 
 - `docs/plans/completed/raytracing-in-a-weekend.md` — this feature adds save/load to that feature's already-built `RaytraceSceneEditor` panel; it does not redesign that panel's live sphere-editing UI.
@@ -173,3 +175,138 @@ Depends on `docs/plans/completed/raytracing-in-a-weekend.md` being implemented (
 5. **Should glTF node transforms also become gizmo-editable** (§2.8), letting the user reposition loaded mesh objects in the raster scene directly? Not explicitly asked for — the explicit examples given were spheres and the future simulation plane — and `RaytraceSceneEditor`'s glTF browser rows are currently a deliberate non-interactive placeholder for a *different* reason (deferred mesh-tracing capability, not general transform editing, per this doc's own scope-boundary note). Worth a direct check-in before building rather than assuming either way.
 6. **ImGuizmo version/compatibility with whichever docking-branch ImGui snapshot ends up vendored** (`docs/plans/completed/imgui-display.md` §8) — not verified during planning.
 7. **Whether gizmo mode (translate/rotate/scale) should ever be user-selectable** (e.g. keyboard shortcuts matching common 3D tools) versus fixed per object type as this doc currently assumes (§5) — no need for this to be resolved now; revisit if/when a second gizmo-consumer (the simulation plane) makes the pattern clearer.
+
+## 9. As-built notes (implementation, 2026-09-14)
+
+Everything below is what actually got built and verified, written after the fact. Where it disagrees with §§1–8, this section is right.
+
+### 9.1 Deviations from this spec, and why
+
+All four larger deviations were proposed and approved by the user before implementation; the smaller ones were judgment calls.
+
+1. **`TransformGizmo` targets a getter/setter closure pair, not a raw `glm::mat4*`** (§2.8). Neither planned consumer owns a `glm::mat4`: a sphere is centre + radius, the simulation plane will be origin + orientation + extent. A raw pointer would have forced each owner to keep a scratch matrix and two-way sync it every frame (slider edits must reach the gizmo, gizmo drags must reach centre/radius). `beginEditing(targetId, getMatrix, setMatrix, operation, mode)` instead reads the current matrix through `getMatrix()` every frame, runs `ImGuizmo::Manipulate()`, and calls `setMatrix()` only when it changed. Still non-virtual and object-agnostic. **The getter may return `std::nullopt` to say the target no longer exists, at which point editing ends by itself** — the sphere adapter holds a `std::weak_ptr<sphere>`, so deleting a sphere or loading a file while its gizmo is active can never leave a dangling target. §5's "whatever removes an editable object must call `endEditing()` first" rule therefore does not exist; `endEditing()` is still there for the explicit "Stop Editing Transform" button.
+2. **The editor's `isDirty()`/`clearDirty()` boolean is gone; `uint64_t revision()` replaced it now** rather than in `docs/plans/compute-pipeline-raytracing.md` §2.6. It had zero consumers and this feature added two producers (the load path and the gizmo), so the swap was free here and would have cost more later. Every mutation calls `markChanged()`; nothing ever resets it. `Camera` was not touched — that half of the compute doc's §2.6 still stands.
+3. **HDR maps are uploaded as `VK_FORMAT_R16G16B16A16_SFLOAT`, not `R32G32B32A32_SFLOAT`** (§2.3). The only local `.hdr` is 8192×4096; at 32-bit float that is 512 MB of VRAM plus a 512 MB staging buffer on a 4 GB card. Half float is the usual precision for environment lighting, halves both, and is guaranteed linear-filterable (32-bit float filtering is optional in Vulkan, and the planned consumer samples it). Conversion is `glm::packHalf2x16` per channel pair. `createImage()`'s `bytes_per_pixel()` already knew the format.
+4. **Four small additions**, each approved: the loaded environment map is registered with `DisplayRegistry` as `"Environment Map"` (§8 q4 — values above 1 display clipped); `load_image()` now resolves relative image URIs against the glTF file's own directory instead of the working directory, and reports a bad URI instead of `assert`ing (a pre-existing limitation that runtime loading of arbitrary `.gltf` files made user-visible); a saved sphere scene carries **one empty node** so `scenes[].nodes` satisfies the glTF schema's `minItems: 1` and the file passes validators (verified with `fastgltf::validate`); and load/save errors show as a **persistent red/green status line** under the path field (`drawIoResultLine()` in `src/vk_ui.h`) rather than a timed toast.
+5. **`rt_scene_io`'s functions take no `VulkanEngine*`** — they are pure file I/O over `std::vector<SceneSphere>`; §3's signatures had the parameter for no reason.
+6. **`loadGltf()` gained a `std::string* outError`** so the File menu can show the actual reason. It also pre-checks that the file exists, because fastgltf's own message for a missing file blames the *directory*.
+7. **Scene and environment-map replacement call `vkDeviceWaitIdle()` before destroying the old resources.** Frames in flight may still reference them, and the load has already stalled for the parse and upload, so a wait is the simplest obviously-correct retirement — cheaper to reason about than a third copy of the deferred-destroy pattern `DisplayRegistry` and `RaytraceJob` carry.
+8. **The startup scene goes through `loadScene()` too and a missing asset is no longer fatal** — the app runs with no scene loaded. `updateScene()` iterates `m_loadedScenes` instead of looking up `"structure"` by name; the map key is now the file stem.
+9. **`VulkanEngine::m_sceneRevision`** was added next to `m_raytraceMeshData` — the same revision-counter shape as item 2, bumped by `loadScene()`, for `docs/plans/simulation-domain.md`'s "recompute on scene load" trigger.
+10. **Root `CMakeLists.txt` minimum version is now 3.16** (was 3.8). ImGuizmo 1.10 ships its own `CMakeLists.txt` producing an `imguizmo` target that only links imgui when built standalone, so the root links it (`target_link_libraries(imguizmo PUBLIC imgui)`), which needs policy CMP0079. `ImGuizmo.h` does not include `imgui.h` itself; `vk_gizmo.h` includes it first.
+11. **`src/vk_ui.h`** (header-only) is a file not in §3's table: the shared status-line widget.
+
+### 9.2 The API as built
+
+```cpp
+// vk_gizmo.h
+class TransformGizmo {
+	using MatrixGetter = std::function<std::optional<glm::mat4>()>;   // nullopt = target gone, editing ends
+	using MatrixSetter = std::function<void(const glm::mat4&)>;
+	void beginEditing(const void* targetId, MatrixGetter, MatrixSetter, ImGuizmo::OPERATION, ImGuizmo::MODE = ImGuizmo::WORLD);
+	void endEditing();
+	bool isActive() const;
+	bool isEditing(const void* targetId) const;     // drives the button label
+	void beginFrame();                              // right after ImGui::NewFrame(), before any window
+	void draw(const glm::mat4& view, const glm::mat4& projection);   // after the panels; OpenGL-convention projection, NOT y-flipped
+	bool wantsMouse() const;                        // IsOver() || IsUsing(); checked by the RMB capture trigger
+};
+
+// rt_scene_io.h
+IoResult saveSphereScene(const std::vector<SceneSphere>& spheres, const std::filesystem::path& path);
+IoResult loadSphereScene(const std::filesystem::path& path, std::vector<SceneSphere>& outSpheres);   // outSpheres untouched on failure
+
+// rt_scene_editor.h
+void replaceSpheres(std::vector<SceneSphere>&& spheres);   // the load path; bumps the revision
+uint64_t revision() const;
+
+// rt_scene.h / rt_types.h
+std::shared_ptr<const RaytraceMeshData> buildRaytraceMeshData(VulkanEngine*);   // called from loadScene() only
+struct RaytraceMeshData { std::vector<std::shared_ptr<const MeshAsset>> meshes; std::vector<RTMeshInstance> instances; size_t triangleCount; };
+struct RTMeshInstance { std::string name; size_t meshIndex; uint32_t firstIndex, indexCount; glm::mat4 worldTransform; glm::vec4 colorFactors; glm::vec2 metalRoughFactors; };
+// RaytraceScene::meshData is a shared_ptr<const RaytraceMeshData>; RTTriangle and collectMeshInstances() are gone
+
+// vk_engine.h
+IoResult loadScene(const std::filesystem::path&);            // replaces m_loadedScenes, rebuilds m_raytraceMeshData, bumps m_sceneRevision
+IoResult loadEnvironmentMap(const std::filesystem::path&);   // .hdr only -> m_environmentMap (rgba16f) + "Environment Map" display window
+glm::mat4 rasterProjection() const;                          // OpenGL convention; updateScene() flips y
+
+// vk_types.h
+struct IoResult { bool ok; std::string message; static IoResult success(std::string); static IoResult failure(std::string); };
+```
+
+**Sphere-scene file shape** (`scenes[0].extras`, pretty-printed by fastgltf):
+
+```json
+{"version":1,"spheres":[{"name":"ground","center":[0.0,-100.5,-1.0],"radius":100.0,"material":{"type":"lambertian","albedo":[1.0,1.0,1.0]}}]}
+```
+
+Material fields are exactly the source fields: `type` is `materialTypeName()`; `albedo` for lambertian/metal/phong; `fuzz` (metal), `smoothness` (phong), `ir` (dielectric). Numbers are always written with a fraction or exponent so simdjson hands back doubles, and integers are accepted on read anyway for hand-edited files. Names are JSON-escaped. Loading a file whose `version` is newer than the build's is refused with a clear message.
+
+**Gizmo composition**: `ImGuizmo::BeginFrame()` creates its own full-screen, no-input, no-background window; calling it before any other window is built keeps it behind them. `draw()` sets the rect to the main viewport and calls `ImGuizmo::Enable(!io.WantCaptureMouse || ImGuizmo::IsUsing())`, because ImGuizmo hit-tests the raw cursor and would otherwise grab clicks landing on an overlapping panel — so the gizmo draws greyed while the cursor is over any window, but a drag that crosses a window keeps its handle. The sphere adapter uses `ImGuizmo::TRANSLATE | ImGuizmo::SCALEU` (translate plus uniform scale = radius; a sphere has no meaningful rotation, §5), and clamps the radius at 0.001. The RMB capture trigger now checks `!WantCaptureMouse && !m_transformGizmo.wantsMouse()` (§2.8).
+
+### 9.3 Verification actually performed
+
+**Offline harness** over `rt_scene_io` + the raytracer core (no Vulkan), 41 checks, all passing: a 4-sphere scene with every material type, a name containing quotes and backslashes, a 1e-7 coordinate and a 0.001 radius round-trips exactly (names, centres, radii, types, per-type parameters, and freshly constructed objects); the saved file parses with fastgltf's default full parse and passes `fastgltf::validate()`; a missing file, a non-glTF file (`CLAUDE.md`), a real glTF with no sphere data (`structure.glb`), a newer `version`, and an unknown material type each fail with a specific message and leave the output vector untouched; integer-valued numbers load.
+
+**In-app**, via a temporary self-test hook (since removed) under validation layers (`b_UseValidationLayers = true`, layer confirmed inserted at instance level via `VK_LOADER_DEBUG=layer`, then reverted to `false`):
+
+| Test | Result |
+|---|---|
+| Startup through `loadScene("structure.glb")` | 108 unique meshes, **1699 surface instances, 1,063,849 triangles** — matches the per-render build this replaces |
+| `buildRaytraceScene()` snapshot with `structure.glb` loaded | **0.017 ms** (was 46 ms, §2.9); shares the engine's mesh data |
+| Reload `structure.glb`, then load `basicmesh.glb` (replacement path, twice) | ok; 3 meshes / 3 instances / 1940 triangles; `m_sceneRevision` advanced |
+| Snapshot taken before the replacement, read after it | still 1699 instances, `cpuVertices` readable — the old data outlived its scene, as §2.9 requires |
+| Missing path, non-glTF path | clean failures with messages, scene untouched |
+| 8k `.hdr` load, then load again (replacement path) | 8192×4096 rgba16f, twice, registered for display |
+| A `.glb` as HDR, missing `.hdr` | clean failures |
+| Save spheres → load → `replaceSpheres()` | 4 spheres, editor revision advanced |
+| `beginEditing()` on a scratch matrix; then on a target whose getter returns nullopt | active; then inactive two frames later without any explicit `endEditing()` |
+| Whole run + clean shutdown | exit 0, **0 validation messages** |
+
+### 9.4 Not verified — needs a human at the keyboard
+
+Everything above is programmatic. Nobody has yet: dragged the gizmo and watched the sphere and its raster preview follow; checked the gizmo lines up with the sphere (the y-flip reasoning in §9.2 is argued, not seen); checked that hovering a panel greys the gizmo and that a drag started on the gizmo keeps going across a panel; confirmed that RMB on a gizmo handle does not enter camera-look; used the File menu popups or the panel's Save/Load buttons; looked at the "Environment Map" window; watched the "Stats" frame time stay flat with "Render every frame" on; or loaded a scene while a render was in flight. Those are the tests handed to the user.
+
+### 9.5 Answers to §8's open questions
+
+1. **Extras against a minimal `Asset`**: works exactly as hoped — `ExtrasWriteCallback` fires for `Category::Scenes` index 0 on export and `ExtrasParseCallback` fires for the same on parse. The `simdjson::dom::object` is only valid during the callback, so the spheres are built inside it. Scene-level extras stayed; the asset-level fallback was not needed. Parsing passes `Category::Scenes | Category::Asset` and nothing else.
+2. **JSON shape**: §9.2. Render settings are not saved; `"version"` gives a later addition something to branch on.
+3. **Save location**: the panel's field defaults to `<root>/assets/scenes/sphere_scene.gltf` and the directory is created on save; the File menu fields default to `<root>/assets/structure.glb` and `<root>/assets/environment.hdr`. Paths are relative to the working directory (`bin/`), so they show as `../assets/...`.
+4. **Environment-map preview**: yes, added (§9.1 item 4).
+5. **glTF node gizmo editing**: no, as this doc leans. The browser rows stay the mesh-tracing placeholder. `RaytraceMeshData` would need re-instancing if that ever changes.
+6. **ImGuizmo/ImGui compatibility**: ImGuizmo tag **1.10** (May 2026) against ImGui `v1.92.9b-docking` compiled and ran without a single change to either. Vendored at `../CPPLibraries/ImGuizmo` (a git checkout of the tag; not shared by the other two projects).
+7. **User-selectable gizmo mode**: not built; still per object type.
+
+### 9.6 Known limitations left in place
+
+- `loadScene()`/`loadEnvironmentMap()` stall the frame (§9.1 item 7) — a `vkDeviceWaitIdle()` on top of the parse and upload. Fine for a menu action; not a path to call every frame.
+- Loading the 8k HDR needs roughly 800 MB of transient CPU memory (float decode plus half conversion) and takes a few seconds. No mipmaps are generated for the environment map.
+- The gizmo renders greyed whenever the cursor is over any ImGui window, because that is how "inert while a panel owns the mouse" is expressed (§9.2). Cosmetic.
+- The File-menu popups are non-modal `BeginPopup`s: clicking elsewhere closes them, and the status line inside is lost from view until the popup is reopened (the result itself is kept).
+- Sphere positions round-trip through `float` when edited by the gizmo (ImGuizmo is single precision); slider and file paths stay double.
+
+### 9.7 Follow-up after the user's first test pass (2026-09-14)
+
+Tests 1–8 (gizmo) passed and 9–16 mostly passed, with three findings that changed the design. Where this section disagrees with §§1–9.6, this section is right.
+
+**Two bugs found by the tests**
+
+1. **Gizmo flickered between coloured and grey while hovered.** ImGuizmo itself calls `ImGui::SetNextFrameWantCaptureMouse(true)` whenever the cursor is over a handle, so gating `ImGuizmo::Enable()` on `io.WantCaptureMouse` (§9.2) switched the gizmo off every other frame. `TransformGizmo::draw()` now gates on `ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)` — ImGuizmo's own window has `NoInputs` and is never "hovered" — which is what "a panel is under the cursor" actually means.
+2. **A model imported at runtime rendered black; the startup load looked fine.** `loadGltf()` wrote every material's `MaterialConstants` through the mapped `materialDataBuffer` and never called `vmaFlushAllocation` — the exact rule `CLAUDE.md`'s MoltenVK section states. At startup the freshly allocated block happened to hold the written bytes; a load later reused a freed block and the GPU read stale zeros, so `colorFactors` was black for every material. Pre-existing since the vkguide port, invisible until this feature made a second load possible. Fixed with one flush after the material loop.
+
+**Direction change: one scene, not a glTF scene plus a sphere scene**
+
+The user rejected §2.6's single-active-glTF model and the split between "load glTF" and "sphere scene file": one scene must capture the models, the spheres and the environment map, edited through one File menu, with the native macOS file dialog rather than typed paths, and the hardcoded monkey/cubes should not exist outside that scene. As built:
+
+- **Scene = models + environment map + spheres.** `VulkanEngine::m_models` (`std::map<std::string, std::shared_ptr<LoadedGLTF>>`, replacing `m_loadedScenes`) holds any number of imported glTF files, keyed by file stem made unique (`structure`, `basicmesh`, `basicmesh_2`), each placed as authored (identity root transform — §2.6's "where does a second scene go" question is answered by "where its file says"). `LoadedGLTF::sourcePath` records the absolute file for saving. `m_environmentMapPath` records the map's file. The spheres stay in `RaytraceSceneEditor`. `m_scenePath` is the current scene file (empty = unsaved). `rebuildSceneDerivedData()` (mesh data + `m_sceneRevision`) runs after every change to `m_models`.
+- **`src/scene_io.h/.cpp` replaces `rt_scene_io`.** `saveSceneFile(const SceneDescription&, path)` / `loadSceneFile(path, SceneDescription&)` over a plain `SceneDescription { modelPaths, environmentMapPath, spheres }`. Still a minimal valid `.gltf` with everything in `scenes[0].extras`; format **version 2**: `{"version":2,"models":[{"path":"../structure.glb"}],"environmentMap":"…","spheres":[…]}`. `environmentMap` is omitted when there is none; `models` and `environmentMap` are optional on read, so **version 1 files (spheres only) still load**. Paths are written relative to the scene file when the target is inside the scene's folder or its parent (the project's `assets/scenes → assets` layout) and absolute otherwise — on posix everything shares `/`, so a "relative" path to another volume would be a fragile `../../..` chain. They are resolved back to absolute on load.
+- **Engine API**: `newScene()`, `openScene(path)`, `saveScene(path)`, `importGltf(path)`, `removeGltf(name)`, `clearModels()`, `loadEnvironmentMap(path)`, `clearEnvironmentMap()`. `openScene()` parses first and touches nothing if the file is bad; if the file is good but a referenced model or map is missing it loads everything else and returns a failure listing the problems (so the status line is red, but the scene is as complete as it can be). `newScene()` is empty — no default spheres. The startup scene is `structure.glb` plus the editor's seeded spheres, not a file.
+- **File menu**: New Scene · Open Scene… · Save Scene · Save Scene As… · Import glTF Model… · Set Environment Map… · Clear Environment Map. A click records a `FileAction`; `runPendingFileAction()` executes it between `ImGui::Render()` and `draw()`, because the dialog blocks in a modal loop and must not run mid-frame. "Save Scene" on an unsaved scene falls through to Save As.
+- **Native dialogs**: `src/file_dialog.h` + `file_dialog.mm` (Objective-C++, `NSOpenPanel`/`NSSavePanel`, `allowedContentTypes` via `UTType`, ARC) and `file_dialog_stub.cpp` for non-Apple. `src/CMakeLists.txt` enables `OBJCXX` and links Cocoa + UniformTypeIdentifiers on Apple. No new library — nativefiledialog-extended would be the portable alternative if another platform ever matters.
+- **The "Raytracer Scene" panel is now "Scene"**: the current file name (tooltip: full path), a Models list with a Remove button per model, the Objects browser (spheres + mesh nodes, unchanged), the selected sphere's controls, and the last File-menu result as the status line. The path field and Save/Load buttons are gone.
+- **The hardcoded Suzanne and cube row are gone** (`m_testMeshes`/`m_loadedNodes` and their draw calls in `updateScene()`); they were vkguide tutorial scaffolding outside any scene. `basicmesh.glb` can be imported as a model. `loadGltfMeshes()` in `vk_loader` stays, now unused.
+
+**Verification performed** — offline harness (scene_io + raytracer core, 40 checks, all passing): model paths inside the tree round-trip relative, an off-volume path stays absolute, the environment map round-trips, a scene with no models/map omits the keys, a version-1 file loads, and a missing file / non-glTF / model file / model entry without `path` / newer version each fail with a specific message leaving the output untouched; the saved file passes `fastgltf::validate()`. In-app under validation layers (temporary hook, since removed): import `basicmesh.glb` twice (keys `basicmesh`, `basicmesh_2`; 1705 instances), remove one, set the 8k map, save, new scene (0/0/none), open the saved file back (2 models, 4 spheres, 8192×4096 map, path set), open a hand-written scene referencing a missing model and map (red result naming both; the reachable model and the sphere loaded), open a model file as a scene (refused, state untouched), Save on the current path — exit 0, **0 validation messages**.
+
+**Not verified — needs a human**: the native dialogs (never driven programmatically), that a model imported at runtime is now textured, that the gizmo no longer flickers, the Scene panel's Models list, and everything in §9.4 that was not already confirmed by the first test pass.

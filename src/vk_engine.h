@@ -11,6 +11,10 @@
 #include <vk_tonemap.h>
 #include <rt_job.h>
 #include <rt_scene_editor.h>
+#include <vk_gizmo.h>
+
+#include <filesystem>
+#include <map>
 
 struct DeletionQueue
 {
@@ -205,11 +209,32 @@ public:
 	GPUSceneData m_sceneData;
 	VkDescriptorSetLayout m_gpuSceneDataDescriptorLayout;
 	DrawContext m_mainDrawContext;
-	std::unordered_map<std::string, std::shared_ptr<Node>> m_loadedNodes;
-	std::unordered_map<std::string, std::shared_ptr<LoadedGLTF>> m_loadedScenes;
+	// the scene's glTF models, keyed by a unique name derived from the file stem. Ordered, so
+	// the browser, the mesh data and a saved file list them stably. Each is placed as authored
+	// (identity root transform); the spheres in m_raytraceScene and m_environmentMap are the
+	// rest of the scene, and openScene()/saveScene() move all three together
+	std::map<std::string, std::shared_ptr<LoadedGLTF>> m_models;
 
-	// meshes
-	std::vector<std::shared_ptr<MeshAsset>> m_testMeshes;
+	// the models as the cpu raytracer sees them, rebuilt by rebuildSceneDerivedData() exactly
+	// when m_models changes and shared immutably with every render snapshot - see RaytraceMeshData
+	std::shared_ptr<const RaytraceMeshData> m_raytraceMeshData;
+	// bumped whenever m_models changes, so anything that derives data from the models (a future
+	// simulation plane's intersections, say) can compare against the revision it last acted on
+	uint64_t m_sceneRevision { 0 };
+
+	// hdr environment lighting, part of the scene. Nothing samples it yet - the compute
+	// raytracer's miss branch is the planned consumer
+	AllocatedImage m_environmentMap {};
+	VkExtent2D m_environmentMapExtent { 0, 0 };
+	std::filesystem::path m_environmentMapPath;
+
+	// the file the current scene was opened from or last saved to; empty for an unsaved scene
+	std::filesystem::path m_scenePath;
+	// the outcome of the last File-menu action, shown in the Scene panel
+	IoResult m_lastFileResult;
+
+	// the one viewport gizmo, shared by every object type that offers "Edit Transform"
+	TransformGizmo m_transformGizmo;
 
 	// a unit sphere at the origin, drawn once per raytracer sphere with a per-object transform
 	std::shared_ptr<MeshAsset> m_sphereMesh;
@@ -241,6 +266,20 @@ public:
 	std::vector<ComputeEffect> m_backgroundEffects;
 	int m_currentBackgroundEffect{0};
 
+	// a File-menu click only records the action; the native dialog it needs runs a modal loop,
+	// so runPendingFileAction() executes it once the imgui frame is finished
+	enum class FileAction {
+		None,
+		NewScene,
+		OpenScene,
+		SaveScene,
+		SaveSceneAs,
+		ImportGltf,
+		SetEnvironmentMap,
+		ClearEnvironmentMap
+	};
+	FileAction m_pendingFileAction { FileAction::None };
+
 	// toggled from the "Windows" menu
 	bool m_showBackgroundWindow{ true };
 	bool m_showStatsWindow{ true };
@@ -259,6 +298,21 @@ public:
 	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
 	AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
 	void destroyImage(const AllocatedImage& img);
+
+	// the scene as a whole: models + environment map + spheres. Failures never abort and leave
+	// what is loaded untouched; a partially readable scene reports what it could not load
+	void newScene();
+	IoResult openScene(const std::filesystem::path& path);
+	IoResult saveScene(const std::filesystem::path& path);
+
+	// the scene's parts. importGltf() adds a model (models are keyed uniquely, so the same file
+	// can be imported twice); loadEnvironmentMap() takes a Radiance .hdr into m_environmentMap
+	// (rgba16f), replacing any previous one
+	IoResult importGltf(const std::filesystem::path& path);
+	void removeGltf(const std::string& name);
+	void clearModels();
+	IoResult loadEnvironmentMap(const std::filesystem::path& path);
+	void clearEnvironmentMap();
 
 	//draw loop
 	void draw();
@@ -287,6 +341,16 @@ private:
 	void resizeSwapchain();
 
 	void setCameraCapture(bool active);
+
+	void drawFileMenu();
+	void runPendingFileAction();
+	void destroyEnvironmentMap();
+	// m_raytraceMeshData and m_sceneRevision, after any change to m_models
+	void rebuildSceneDerivedData();
+
+	// the raster camera's projection in OpenGL clip convention (y up). updateScene() flips y for
+	// vulkan; the gizmo wants it as-is
+	glm::mat4 rasterProjection() const;
 
 	void updateScene();
 	void drawRaytraceSpheres();

@@ -131,3 +131,14 @@ do{																\
 		abort();												\
 	}															\
 } while(0)
+// The outcome of a user-facing file operation - loading a scene or an environment map, saving
+// or loading a sphere scene. Unlike checkVkResult/vkbErr these never abort: a bad user-typed
+// path is expected input at a system boundary, not a broken internal invariant, so the caller
+// reports the message and leaves its existing state untouched.
+struct IoResult {
+	bool ok { false };
+	std::string message;
+
+	static IoResult success(std::string text) { return { true, std::move(text) }; }
+	static IoResult failure(std::string text) { return { false, std::move(text) }; }
+};

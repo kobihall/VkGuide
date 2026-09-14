@@ -5,6 +5,7 @@
 // throughout - kept as-is here rather than narrowed to float, so the ported intersection
 // and scattering math behaves identically.
 
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -56,27 +57,41 @@ struct hit_record {
 	}
 };
 
-// A single world-space triangle from a loaded glTF mesh.
-//
-// Deliberately NOT a hittable and deliberately without an intersection routine: this feature
-// traces spheres only. The type exists so the mesh-extraction path is already in place for a
-// future triangle-tracing feature - nothing in this feature reads it.
-struct RTTriangle {
-	glm::dvec3 v0;
-	glm::dvec3 v1;
-	glm::dvec3 v2;
-};
+struct MeshAsset;
 
-// One glTF GeoSurface's worth of triangles, already in world space, with the raw material
-// factors that surface was authored with. Grouped per surface rather than per node because a
-// surface is the finest granularity that has exactly one material.
+// One glTF GeoSurface placed in the world: which retained mesh it indexes into, that surface's
+// index range, the owning node's world transform, and the raw material factors the surface was
+// authored with. Geometry stays in object space - a consumer that needs world-space triangles
+// applies worldTransform itself. Per surface rather than per node because a surface is the
+// finest granularity that has exactly one material.
 //
-// Inert in this feature, for the same reason as RTTriangle above.
+// Deliberately without an intersection routine: the CPU raytracer traces spheres only. This is
+// the bottom-level/top-level split a future BVH or GPU mesh path would want anyway.
 struct RTMeshInstance {
+	// the node's name, suffixed with the surface index when the node's mesh has several surfaces
 	std::string name;
-	std::vector<RTTriangle> triangles;
+	// into RaytraceMeshData::meshes
+	size_t meshIndex { 0 };
+	// into that mesh's cpuIndices
+	uint32_t firstIndex { 0 };
+	uint32_t indexCount { 0 };
+	glm::mat4 worldTransform { 1.f };
 	glm::vec4 colorFactors { 1.f };
 	glm::vec2 metalRoughFactors { 0.f };
+};
+
+// The loaded glTF scene as the raytracer sees it: every unique mesh once, plus one instance per
+// mesh-bearing node and surface. Built once per scene load by buildRaytraceMeshData() and shared
+// immutably (shared_ptr<const>) with every render snapshot taken afterwards, instead of being
+// rebuilt on every Render click.
+//
+// The MeshAssets are held alive here past a scene replacement, but LoadedGLTF::clearAll() will
+// already have destroyed their GPU buffers by then. Raytracer code must NEVER read
+// MeshAsset::meshBuffers through this - only cpuVertices and cpuIndices, which stay valid.
+struct RaytraceMeshData {
+	std::vector<std::shared_ptr<const MeshAsset>> meshes;
+	std::vector<RTMeshInstance> instances;
+	size_t triangleCount { 0 };
 };
 
 // The raster camera's state at the instant Render was clicked. Captured by value so the worker

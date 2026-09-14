@@ -1,16 +1,19 @@
 #pragma once
 
-// The live, persistent side of the raytracer's scene state - mutated every frame its panel is
-// open, and the source buildRaytraceScene() copies from when a render starts.
+// The live, persistent sphere list, and the "Scene" panel that browses the whole scene.
 //
-// It owns the sphere list outright. The glTF objects it also lists are not owned and not
-// copied: they are read fresh out of VulkanEngine::m_loadedScenes each time the panel draws,
-// so loading a different scene at runtime is reflected immediately.
+// It owns the spheres outright - they are the raytracer's geometry, and buildRaytraceScene()
+// copies them when a render starts. The glTF models and their mesh nodes it also lists are not
+// owned and not copied: they are read fresh out of VulkanEngine::m_models each time the panel
+// draws, so importing or removing a model is reflected immediately. Scene files themselves are
+// the engine's concern (VulkanEngine::openScene()/saveScene(), driven from the File menu).
 
 #include <rt_hittable.h>
 #include <rt_types.h>
+#include <vk_types.h>
 
 class VulkanEngine;
+class TransformGizmo;
 
 struct SceneSphere {
 	std::string name;
@@ -26,16 +29,24 @@ public:
 
 	const std::vector<SceneSphere>& spheres() const { return m_spheres; }
 
-	// set by every path that adds, removes or edits a sphere or its material. Nothing in this feature consumes
-	// it - the CPU raytracer re-reads the whole list at render time - but the planned GPU
-	// raytracer needs to know when to re-upload its sphere buffer and reset its accumulation
-	bool isDirty() const { return m_dirty; }
-	void clearDirty() { m_dirty = false; }
+	// swaps in a whole new sphere list - the load path. Goes through the same change tracking
+	// every manual edit uses, so consumers cannot miss it
+	void replaceSpheres(std::vector<SceneSphere>&& spheres);
+
+	// incremented by every mutation: add, delete, sphere or material parameters, a gizmo drag, a
+	// loaded file. A consumer that derives data from the sphere list (the planned GPU raytracer's
+	// sphere buffer and accumulation reset, the raster preview spheres) stores the last revision
+	// it acted on and compares. Nothing ever resets it, so adding a consumer cannot starve another
+	uint64_t revision() const { return m_revision; }
 
 	bool* visibilityFlag() { return &m_showPanel; }
 
 private:
-	void drawSphereParams(int index);
+	void drawModels(VulkanEngine* engine);
+	void drawSphereParams(VulkanEngine* engine, int index);
+	void beginSphereGizmo(TransformGizmo& gizmo, const std::shared_ptr<sphere>& target);
+
+	void markChanged() { m_revision++; }
 
 	// which row of the unified object list is selected. Rows are spheres first, then glTF
 	// mesh nodes, so a selection is identified by kind rather than by a bare index - the glTF
@@ -50,6 +61,6 @@ private:
 	SelectionKind m_selectionKind { SelectionKind::None };
 	int m_selectionIndex { 0 };
 	int m_nextSphereNumber { 1 };
-	bool m_dirty { true };
+	uint64_t m_revision { 1 };
 	bool m_showPanel { true };
 };

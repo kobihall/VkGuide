@@ -68,6 +68,9 @@ struct LoadedGLTF : public IRenderable {
 
 	VulkanEngine* creator;
 
+	// the file this was loaded from, absolute - what a saved scene records for it
+	std::filesystem::path sourcePath;
+
 	~LoadedGLTF() { clearAll(); };
 
 	virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx);
@@ -79,6 +82,9 @@ private:
 
 std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngine* engine, std::filesystem::path filePath);
 
-std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine,std::string_view filePath);
+// callable at any time, not just at init. On failure outError (if given) receives a message
+// suitable for showing to the user
+std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::string_view filePath, std::string* outError = nullptr);
 
-std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& asset, fastgltf::Image& image);
+// directory is the glTF file's own folder, which relative image uris are resolved against
+std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& asset, fastgltf::Image& image, const std::filesystem::path& directory);
