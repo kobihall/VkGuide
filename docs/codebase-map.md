@@ -54,6 +54,8 @@ Picks `m_backgroundEffects[m_currentBackgroundEffect]`, binds its compute pipeli
 
 ## 2. How compute shaders are currently dispatched
 
+*Update 2026-09-14 (`docs/plans/completed/compute-pipeline-general.md`): the pattern below is gone. Every compute pipeline is now a `ComputePass` built by `ComputePassBuilder` (`src/vk_compute.h/.cpp`: arbitrary set-0 bindings, any push-constant size, a `workgroupSize`) and recorded with `dispatchComputePass()`/`dispatchComputePassOver()`. Background effects are `BackgroundEffect{name, pass, record, drawSettings}` closures, allocate their descriptor set per frame from `frameDescriptors`, and there are three: `gradient`, `sky`, and a new `environment` (`shaders/env_background.comp` + `shaders/equirect.glsl`: the draw image as a storage image plus `m_environmentMap` through a sampler). `TonemapPass` is a wrapper over one `ComputePass`. `m_drawImageDescriptors`, `m_drawImageDescriptorLayout`, `m_computePipelineLayout` and `ComputeEffect` no longer exist; `ComputePushConstants` remains as the shape shared by `gradient_color.comp`/`sky.comp`. Root `CMakeLists.txt` now rebuilds every shader when a `shaders/*.glsl` include changes. The rest of this section describes the state before that change.*
+
 There is exactly one compute pattern in the codebase: the "background effects" system. No other compute usage exists.
 
 - **Descriptor set layout** (`initDescriptors()`, `vk_engine.cpp:930-934`): single binding 0, `VK_DESCRIPTOR_TYPE_STORAGE_IMAGE`, stage `VK_SHADER_STAGE_COMPUTE_BIT`, built via `DescriptorLayoutBuilder`. Stored as `m_drawImageDescriptorLayout` (`vk_engine.h:176`).

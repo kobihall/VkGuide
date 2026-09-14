@@ -4,7 +4,7 @@
 
 Standalone implementation spec — treat it as the only context you have. For exhaustive facts about the current codebase state, read `docs/codebase-map.md` first. This feature has two hard prerequisites, both must exist and work **before this doc's implementation begins**:
 
-- `docs/plans/compute-pipeline-general.md` — this doc builds its three compute stages using that doc's `ComputePass`/`ComputePassBuilder`/`dispatchComputePass()`.
+- `docs/plans/completed/compute-pipeline-general.md` — this doc builds its three compute stages using that doc's `ComputePass`/`ComputePassBuilder`/`dispatchComputePass()`. *Update (2026-09-14): built; read its §9. Note `ComputePass::workgroupSize` + `dispatchComputePassOver(domain)`, the per-frame descriptor-set convention, `shaders/equirect.glsl` for the miss branch's environment lookup, and `maxPushConstantsSize` = 4096 bytes on the target GPU (§8 item 1 here is answered).*
 - `docs/plans/completed/raytracing-in-a-weekend.md` — **this feature is substantially a GPU re-expression of that feature's already-implemented CPU logic.** It reuses that feature's sphere list/editor (`RaytraceSceneEditor`) and ports its material model (lambertian/metal/phong/dielectric) to GLSL. Do not start this doc's implementation until the CPU raytracer is built and working — this is not a from-scratch raytracer design, it's a port of working, already-verified logic onto compute shaders.
 
 ## 1. Feature goal
@@ -15,7 +15,7 @@ Raytrace the same sphere scene the CPU raytracer (`docs/plans/completed/raytraci
 
 ### 2.1 Three `ComputePass` stages with a fixed buffer contract between them, not a monolithic shader
 
-Ray generation, hit detection, and hit shading are each a separate `ComputePass` (`docs/plans/compute-pipeline-general.md`), not one big shader doing everything. The contract between stages is a pair of storage buffers sized to the render resolution:
+Ray generation, hit detection, and hit shading are each a separate `ComputePass` (`docs/plans/completed/compute-pipeline-general.md`), not one big shader doing everything. The contract between stages is a pair of storage buffers sized to the render resolution:
 
 ```cpp
 struct GpuRay      { vec3 origin; vec3 direction; vec3 throughput; uint pixelIndex; uint alive; };
@@ -129,7 +129,7 @@ Depends on both prerequisites in §0 being complete. Build and verify incrementa
 
 ## 6. Code patterns from the existing codebase to follow
 
-- **Every stage is built via `ComputePassBuilder`/dispatched via `dispatchComputePass()`** from `docs/plans/compute-pipeline-general.md` — no bespoke pipeline/descriptor-set code should be written here that duplicates what that framework already provides.
+- **Every stage is built via `ComputePassBuilder`/dispatched via `dispatchComputePass()`** from `docs/plans/completed/compute-pipeline-general.md` — no bespoke pipeline/descriptor-set code should be written here that duplicates what that framework already provides.
 - **Material logic**: `docs/codebase-map.md` §6 (`lambertian`/`metal`/`phong`/`dielectric` scatter functions) is the direct porting source for `crt_shade.comp`'s material `switch` — same formulas, re-expressed in GLSL.
 - **Scene data source**: `docs/plans/completed/raytracing-in-a-weekend.md`'s `RaytraceSceneEditor` (§2.6 above) — read its sphere/material lists directly, don't re-derive scene state independently.
 - **Tonemap and display**: `TonemapPass` (`src/vk_tonemap.h`) and its use in `RaytraceJob::publishOutput()` (`src/rt_job.cpp`) — the CPU raytracer's layout transitions around the dispatch are the template; this feature does the same inside `draw()` instead of an `immediateSubmit()`. Then `docs/plans/completed/imgui-display.md`'s `DisplayRegistry` for registration.

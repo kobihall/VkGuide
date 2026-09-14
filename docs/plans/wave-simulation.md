@@ -5,7 +5,7 @@
 Standalone implementation spec — treat it as the only context you have. For exhaustive facts about the current codebase state, read `docs/codebase-map.md` first. Hard prerequisites, all must be implemented first:
 
 - `docs/plans/simulation-domain.md` — this doc's compute shaders operate on that doc's `SimulationPlane` grid resolution and consume its `boundaryMask` output (§2.5 there) directly; it does not re-derive boundary geometry itself.
-- `docs/plans/compute-pipeline-general.md` — every compute dispatch here is a `ComputePass` (§2.1 there), reusing that framework rather than hand-rolling pipeline/descriptor setup.
+- `docs/plans/completed/compute-pipeline-general.md` — every compute dispatch here is a `ComputePass` (§2.1 there), reusing that framework rather than hand-rolling pipeline/descriptor setup.
 - `docs/plans/completed/imgui-display.md` — the simulation's output image is shown via `DisplayRegistry`, and mouse injection (§2.6 below) uses that doc's optional click/drag callback (§2.8 there) added specifically to support this.
 
 ## 1. Feature goal
@@ -28,7 +28,7 @@ The "step" `ComputePass` (§2.3) binds a `boundaryType` storage buffer alongside
 - **`visualize`**: reads `curr` (the just-completed step's result, after role rotation), maps the scalar wave height to a color (a simple diverging colormap — negative → blue, zero → black/white, positive → red — is enough to start; see §8) and writes into the image registered with `DisplayRegistry`. Dispatched once per engine frame while running, immediately after `step`.
 - **`inject`**: reads a push-constant grid coordinate + radius, adds a Gaussian bump directly into `curr`. Dispatched only on frames where the mouse-injection callback fired (§2.6) — not part of the normal per-frame sequence.
 
-All three are built via `ComputePassBuilder` (`docs/plans/compute-pipeline-general.md` §2.1) and dispatched via `dispatchComputePass()` — no bespoke pipeline/descriptor code here.
+All three are built via `ComputePassBuilder` (`docs/plans/completed/compute-pipeline-general.md` §2.1) and dispatched via `dispatchComputePass()` — no bespoke pipeline/descriptor code here.
 
 ### 2.4 Explicit Start / Pause / Stop state machine — auto-steps only while Running
 
@@ -79,7 +79,7 @@ Depends on both prerequisites in §0 being complete.
 
 ## 6. Code patterns from the existing codebase to follow
 
-- **Every pass via `ComputePassBuilder`/`dispatchComputePass()`** (`docs/plans/compute-pipeline-general.md`) — no bespoke compute pipeline code here.
+- **Every pass via `ComputePassBuilder`/`dispatchComputePass()`** (`docs/plans/completed/compute-pipeline-general.md`) — no bespoke compute pipeline code here.
 - **Boundary data source**: `SimulationPlane::boundaryMask` (`docs/plans/simulation-domain.md` §2.5) — read directly, never recomputed by this feature.
 - **Upload-on-change, not per-frame**: mirrors both `docs/plans/compute-pipeline-raytracing.md`'s sphere/material buffer upload (`RaytraceSceneEditor` dirty flag) and `docs/plans/simulation-domain.md`'s own recompute trigger — the boundary buffer here follows the same "only re-upload when the CPU source actually changed" shape.
 - **Interactive display window**: `docs/plans/completed/imgui-display.md` §2.8's `onInteract` callback — this is that capability's first real consumer.

@@ -90,3 +90,103 @@ Refactoring the two existing background effects (`gradient_color.comp`, `sky.com
 
 1. **`maxPushConstantsSize` on the target hardware** (Radeon Pro 560X via MoltenVK) — not verified during planning; relevant both here (§5) and for the companion raytracing doc.
 2. **Exact content of the multi-binding demo effect** (§2.5) — deliberately left open; anything genuinely exercising >1 binding satisfies the requirement, no specific visual target was specified.
+
+## 9. As-built notes (implementation, 2026-09-14)
+
+Everything below is what actually got built and verified, written after the fact. Where it disagrees with §§1–8, this section is right.
+
+### 9.1 Deviations from this spec, and why
+
+The three larger ones were proposed and approved by the user before implementation; the rest were judgment calls filling gaps the spec left.
+
+1. **The multi-binding demo effect is a real feature: an `environment` background** (§2.5/§8 q2). `shaders/env_background.comp` binds the draw image as a storage image at binding 0 and `VulkanEngine::m_environmentMap` through `m_defaultSamplerLinear` as a combined image sampler at binding 1, and takes a push-constant block shaped nothing like the other two effects' (`mat4 inverseViewProj; vec2 drawExtent; float exposure; float pad;` — 84 bytes, versus their 64). Each pixel's centre is unprojected through the raster camera's inverse view-projection (the y-flipped one from `m_sceneData`, so no flip in the shader), so the panorama sits exactly behind the models the raster pass draws over it. The equirectangular lookup lives in **`shaders/equirect.glsl`**, a shared include, so the compute raytracer's miss branch (`docs/plans/compute-pipeline-raytracing.md` §2.8) samples the map the same way round: +y up, the map's centre column facing −z (the camera's yaw-0 forward), u increasing turning right. With no map loaded it binds `m_greyImage` and shows flat grey. An `Exposure` slider (0–4) sits in the "background" window; the draw image goes to the swapchain unmapped, so values above 1 clip.
+2. **Background effects allocate their descriptor set per frame from `getCurrentFrame().frameDescriptors`**, rather than a persistent set written at init (§3 "its own descriptor set layout/set"). One set per frame is nothing, it copes with the environment map being replaced or cleared at runtime with no invalidation logic (a replaced map is destroyed only after `vkDeviceWaitIdle()`, so a set written this frame can never outlive the view it names), and it is the pattern both future consumers use anyway — the wave simulation rotates buffer roles every step, the raytracer rebinds per bounce. `m_drawImageDescriptors` and `m_drawImageDescriptorLayout` are gone; nothing persistent is left in `initDescriptors()` for compute.
+3. **`ComputePass` carries a `workgroupSize`** (builder-set, default 16×16×1 — every `.comp` here) **and there is a `dispatchComputePassOver(cmd, pass, set, push, VkExtent3D domain)`** that does the ceil-divide, next to the spec's group-count `dispatchComputePass()`. `computeGroupCount(domain, workgroupSize)` is exposed too. The size is not validated against the shader; keep them in sync by hand.
+4. **`ComputePass::destroy(VkDevice)`** — the spec never said how a pass dies. A member function, matching `TonemapPass::destroy()`/`DescriptorAllocatorGrowable::destroyPools()`.
+5. **`ComputePassBuilder::build()` aborts** if the shader file is missing or any Vulkan object fails, the `checkVkResult` convention. The old `initComputePipelines()` only printed and carried on with a null module. The shader path goes in the constructor (a pass without a shader is meaningless); bindings, push-constant size (`setPushConstantSize(bytes)` or `setPushConstants<T>()`) and workgroup size are fluent setters. A pass with no bindings gets no set layout and no set bind at dispatch, so push-constant-only passes work.
+6. **`ComputeEffect` became `BackgroundEffect{name, pass, record, drawSettings}`**, where the two closures are the only code that knows an effect's binding and push-constant shape: `record(cmd, pass)` allocates the set, fills the push constants and dispatches; `drawSettings()` draws the effect's imgui controls. The "background" window calls the selected effect's `drawSettings()` in place of the old four raw `InputFloat4`s — which is exactly what the two ported effects' closures draw, so their editing is unchanged. Their parameters are `m_gradientParams`/`m_skyParams` (`ComputePushConstants`, kept as the shape those two shaders share) and `m_environmentBackgroundExposure`, engine members so the closures capture `this` rather than a pointer into the vector. `recordDrawImageEffect()` is the shared one-storage-image record path.
+7. **`VulkanEngine::m_gpuProperties`** is filled in `initVulkan()` and the relevant limits are printed once at startup (§8 q1).
+8. **Root `CMakeLists.txt`: every shader now depends on `shaders/*.glsl`** as well as its own source. Before this, editing an include (`input_structures.glsl` had the same exposure) did not rebuild the shaders using it; with `equirect.glsl` meant to be shared and edited, that would have been a trap.
+9. **Background effects still dispatch over the whole draw image**, not `m_drawExtent`, so the two ported effects look the same at every render scale as they always did. The environment effect takes `drawExtent` in its push constants so its unprojection covers the visible frame; the unused border gets directions beyond the frustum, which is harmless (only `m_drawExtent` is blitted).
+
+### 9.2 The API as built
+
+```cpp
+// vk_compute.h
+struct ComputePass {
+	VkDescriptorSetLayout setLayout;   // VK_NULL_HANDLE for a pass with no bindings
+	VkPipelineLayout pipelineLayout;
+	VkPipeline pipeline;
+	uint32_t pushConstantSize;         // 0 if none
+	VkExtent3D workgroupSize;          // the shader's local_size; default 16x16x1
+	void destroy(VkDevice device);
+};
+
+class ComputePassBuilder {
+	explicit ComputePassBuilder(std::string shaderPath);                  // a compiled .comp.spv
+	ComputePassBuilder& addBinding(uint32_t binding, VkDescriptorType type);   // all at set 0, count 1, compute stage
+	ComputePassBuilder& setPushConstantSize(uint32_t bytes);
+	template <typename T> ComputePassBuilder& setPushConstants();         // sizeof(T)
+	ComputePassBuilder& setWorkgroupSize(uint32_t x, uint32_t y = 1, uint32_t z = 1);
+	ComputePass build(VkDevice device);                                   // aborts on failure
+};
+
+VkExtent3D computeGroupCount(VkExtent3D domain, VkExtent3D workgroupSize);
+void dispatchComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkExtent3D groupCount);
+void dispatchComputePassOver(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkExtent3D domain);
+
+// vk_engine.h
+struct BackgroundEffect {
+	const char* name;
+	ComputePass pass;
+	std::function<void(VkCommandBuffer cmd, const ComputePass& pass)> record;   // set + push + dispatch, draw image in GENERAL
+	std::function<void()> drawSettings;                                        // imgui, inside "background"
+};
+// members: std::vector<BackgroundEffect> m_backgroundEffects (gradient, sky, environment); ComputePushConstants m_gradientParams, m_skyParams;
+//          float m_environmentBackgroundExposure; VkPhysicalDeviceProperties m_gpuProperties
+// private: void recordDrawImageEffect(VkCommandBuffer cmd, const ComputePass& pass, const ComputePushConstants& params);
+
+// vk_tonemap.h - public contract unchanged; privately one ComputePass
+// shaders/equirect.glsl - vec2 equirectUv(vec3 direction)   (direction normalised; +y up, centre column faces -z)
+```
+
+The idiom every future pass follows (`TonemapPass::dispatch()` is the reference, 12 lines):
+
+```cpp
+const VkDescriptorSet set = getCurrentFrame().frameDescriptors.allocate(m_device, pass.setLayout);
+DescriptorWriter writer;
+writer.writeImage(0, ...);  writer.writeBuffer(1, ...);
+writer.updateSet(m_device, set);
+dispatchComputePassOver(cmd, pass, set, &pushConstants, image.imageExtent);
+```
+
+The caller still owns every layout transition and barrier around it. Nothing here inserts a compute→compute memory barrier; the raytracer's bounce loop and the wave simulation's step→visualize will need one (a `VkMemoryBarrier2` on `SHADER_WRITE → SHADER_READ` at the compute stage). `vkutil::transition_image()` covers image-layout cases; a buffer/global barrier helper next to it is the natural next addition to `vk_images.h` when the first consumer arrives.
+
+### 9.3 Verification actually performed
+
+All under **validation layers** (`b_UseValidationLayers = true` temporarily; `VK_LOADER_DEBUG=layer` confirmed `VK_LAYER_KHRONOS_validation` inserted at instance and device level; the default vk-bootstrap messenger prints to stdout, and a deliberately wrong layout in a throwaway readback hook proved it does), with a temporary self-driving hook (since removed, source restored from a backup and re-diffed) that cycled the effect index every 60 frames, loaded the 8192×4096 `kiara_9_dusk_8k.hdr` at frame 30, pitched the camera ±0.5 rad, and closed the window at frame 500 so `cleanup()` ran under the layers too:
+
+| Test | Result |
+|---|---|
+| Startup: `maxPushConstantsSize` / `maxComputeWorkGroupInvocations` / `maxComputeWorkGroupSize` on the Radeon Pro 560X via MoltenVK | **4096 bytes** / 1024 / 1024×1024×1024 |
+| 500 frames cycling gradient → sky → environment (no map, then 8k map), then shutdown | **zero validation messages** from the feature code |
+| Draw-image readback (rgba16f → PPM) of gradient and sky at the defaults | same image as before the port (blue→navy gradient; navy starfield) |
+| Readback of environment, pitch +0.5 vs −0.5 | spheres move down / up while the panorama shows dusk sky darkening to the zenith / the ground sphere — background and geometry agree on up and down and on the horizon |
+| Release build (`b_UseValidationLayers = false`, hook removed) | builds clean; `env_background.comp.spv` produced by the existing glob |
+
+### 9.4 Not verified — needs a human at the keyboard
+
+Interactive checks the self-driving hook could not cover: the "Effect Index" slider and the raw `data1..4` editors for gradient/sky; the exposure slider; panning the camera with the environment effect selected; File > Set/Clear Environment Map while the environment effect is selected; a CPU raytrace render completing and displaying through the migrated `TonemapPass` (the hook never started a render); the "Scene Mirror" window.
+
+### 9.5 Answers to §8's open questions
+
+1. **`maxPushConstantsSize` = 4096 bytes** on the Radeon Pro 560X via MoltenVK (Metal's limit), 32× the spec minimum. The raytracing doc's ray-gen push constant has plenty of room; the environment effect's 84-byte block is a real 64-byte-plus example already.
+2. **The demo effect** — the environment background, §9.1 item 1.
+
+### 9.6 Known limitations left in place
+
+- **The environment map has no mipmaps**, and `m_defaultSamplerLinear` uses repeat addressing in both axes. An 8k map minified into a 1700-pixel frame will shimmer under camera motion, and the pole rows wrap onto each other. A mipmapped upload and a clamp-v sampler are the fix, on the asset side, when it matters (the raytracer's importance sampling will want mips anyway).
+- **`sky.comp` still declares its image as `rgba8`** while the draw image is `rgba16f` — pre-existing, MoltenVK accepts it, untouched here.
+- `DescriptorLayoutBuilder::addBinding()` is still fixed at `descriptorCount = 1`, so a pass wanting an array of textures needs that builder extended first.
+- One descriptor set per pass, at set 0. A shared "scene" set bound once across several passes (something the raytracer's three stages might want) would need the builder to take extra pre-built layouts; add it when a consumer wants it, not before.
+- `ComputePass::workgroupSize` is not reflected from the SPIR-V; a mismatch under-dispatches silently.

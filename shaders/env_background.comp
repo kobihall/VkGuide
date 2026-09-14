@@ -1,0 +1,51 @@
+#version 460
+
+// Background effect: the scene's environment map as seen through the raster camera, so the
+// models sit in front of the panorama the raytracer will eventually light them with.
+//
+// Two bindings of different types - the draw image written as a storage image and the
+// environment map read through a sampler - and a push-constant block shaped nothing like the
+// other background effects', which is the point: it is the first pass built on the general
+// ComputePass framework (src/vk_compute.h) that the old one-storage-image layout could not express.
+
+#extension GL_GOOGLE_include_directive : require
+#include "equirect.glsl"
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (rgba16f, set = 0, binding = 0) uniform writeonly image2D image;
+layout (set = 0, binding = 1) uniform sampler2D environmentMap;
+
+layout (push_constant) uniform constants {
+	// the raster camera's clip -> world transform, with the y flip the raster pass applies
+	mat4 inverseViewProj;
+	// the region of `image` the raster pass renders into, in texels. The draw image is larger
+	// than the visible frame at a render scale below 1, and the frame is what the camera's
+	// projection covers
+	vec2 drawExtent;
+	float exposure;
+	float _pad;
+} pc;
+
+void main()
+{
+	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 size = imageSize(image);
+
+	if (texelCoord.x >= size.x || texelCoord.y >= size.y) {
+		return;
+	}
+
+	// pixel centre -> normalised device coordinates. Vulkan's ndc y points down, as does the
+	// image's, so no flip here - the y-flipped projection already accounts for it
+	vec2 ndc = (vec2(texelCoord) + 0.5) / pc.drawExtent * 2.0 - 1.0;
+
+	// two points along the pixel's view ray, at different depths; their difference is the ray
+	vec4 nearPoint = pc.inverseViewProj * vec4(ndc, 0.0, 1.0);
+	vec4 farPoint = pc.inverseViewProj * vec4(ndc, 1.0, 1.0);
+	vec3 direction = normalize(farPoint.xyz / farPoint.w - nearPoint.xyz / nearPoint.w);
+
+	vec3 color = texture(environmentMap, equirectUv(direction)).rgb * pc.exposure;
+
+	imageStore(image, texelCoord, vec4(color, 1.0));
+}

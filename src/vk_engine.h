@@ -8,6 +8,7 @@
 #include <vk_display.h>
 #include <vk_loader.h>
 #include <camera.h>
+#include <vk_compute.h>
 #include <vk_tonemap.h>
 #include <rt_job.h>
 #include <rt_scene_editor.h>
@@ -50,6 +51,8 @@ constexpr unsigned int FRAME_OVERLAP = 2;
 // the same way the viewport it was aimed from does
 constexpr float CAMERA_VERTICAL_FOV_DEGREES = 70.f;
 
+// the push-constant block shared by gradient_color.comp and sky.comp: four raw vec4s each
+// shader reads what it likes from
 struct ComputePushConstants {
 	glm::vec4 data1;
 	glm::vec4 data2;
@@ -66,13 +69,17 @@ struct GPUSceneData {
 	glm::vec4 sunlightColor;
 };
 
-struct ComputeEffect {
+// one selectable compute effect that fills the draw image before the raster pass. Effects bind
+// different resources and take differently shaped push constants, so each carries the two
+// pieces of code that know its shape: how to record it and how to edit its settings
+struct BackgroundEffect {
 	const char* name;
-
-	VkPipeline pipeline;
-	VkPipelineLayout layout;
-
-	ComputePushConstants data;
+	ComputePass pass;
+	// allocates this frame's descriptor set, fills the push constants and dispatches, with the
+	// draw image in VK_IMAGE_LAYOUT_GENERAL
+	std::function<void(VkCommandBuffer cmd, const ComputePass& pass)> record;
+	// the effect's imgui controls, inside the "background" window
+	std::function<void()> drawSettings;
 };
 
 struct RenderObject {
@@ -163,6 +170,9 @@ public:
 	VkAllocationCallbacks* m_allocator = nullptr;
 	VkDebugUtilsMessengerEXT m_debugMessenger;
 	VkPhysicalDevice m_chosenGPU;
+	// limits worth checking new work against - maxPushConstantsSize, maxComputeWorkGroup* -
+	// printed once at startup
+	VkPhysicalDeviceProperties m_gpuProperties {};
 	VkDevice m_device;
 	VkSurfaceKHR m_surface;
 
@@ -189,12 +199,6 @@ public:
 
 	DescriptorAllocatorGrowable m_globalDescriptorAllocator;
 	DisplayRegistry m_displayRegistry;
-
-	VkDescriptorSet m_drawImageDescriptors;
-	VkDescriptorSetLayout m_drawImageDescriptorLayout;
-
-	//VkPipeline m_computePipeline; //unused for now, instead shaders are in m_backgroundEffects
-	VkPipelineLayout m_computePipelineLayout;
 
 	// linear rgba32f -> displayable rgba8, shared by the raytracer outputs
 	TonemapPass m_tonemapPass;
@@ -263,8 +267,15 @@ public:
 	VkCommandBuffer m_immCommandBuffer;
 	VkCommandPool m_immCommandPool;
 
-	std::vector<ComputeEffect> m_backgroundEffects;
+	std::vector<BackgroundEffect> m_backgroundEffects;
 	int m_currentBackgroundEffect{0};
+	// each effect's editable settings, owned here so the effect closures can capture `this`
+	// rather than a pointer into the vector above
+	ComputePushConstants m_gradientParams {};
+	ComputePushConstants m_skyParams {};
+	// multiplied into the environment map before it is written to the draw image, which goes to
+	// the swapchain unmapped - anything above 1 clips
+	float m_environmentBackgroundExposure { 1.f };
 
 	// a File-menu click only records the action; the native dialog it needs runs a modal loop,
 	// so runPendingFileAction() executes it once the imgui frame is finished
@@ -355,6 +366,9 @@ private:
 	void updateScene();
 	void drawRaytraceSpheres();
 	void drawBackground(VkCommandBuffer cmd);
+	// the shared shape of gradient_color.comp and sky.comp: the draw image at binding 0 and a
+	// ComputePushConstants block, dispatched over the whole draw image
+	void recordDrawImageEffect(VkCommandBuffer cmd, const ComputePass& pass, const ComputePushConstants& params);
 	void drawGeometry(VkCommandBuffer cmd);
 	void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);
 

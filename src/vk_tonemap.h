@@ -8,11 +8,11 @@
 // each frame - so the two produce directly comparable images rather than each applying its own
 // display transform.
 //
-// Built by hand in the same shape as the engine's background compute effects. When
-// docs/plans/compute-pipeline-general.md's ComputePass exists, this is a natural first thing to
-// move onto it.
+// A thin wrapper over one ComputePass (vk_compute.h): it fixes the binding order and the push
+// constant shape so callers hand over two images and a float rather than writing a set.
 
 #include <vk_types.h>
+#include <vk_compute.h>
 
 class VulkanEngine;
 struct DescriptorAllocatorGrowable;
@@ -32,7 +32,5 @@ public:
 	void dispatch(VkCommandBuffer cmd, VkDevice device, DescriptorAllocatorGrowable& allocator, const AllocatedImage& linearImage, const AllocatedImage& displayImage, float scale);
 
 private:
-	VkDescriptorSetLayout m_descriptorLayout { VK_NULL_HANDLE };
-	VkPipelineLayout m_pipelineLayout { VK_NULL_HANDLE };
-	VkPipeline m_pipeline { VK_NULL_HANDLE };
+	ComputePass m_pass;
 };

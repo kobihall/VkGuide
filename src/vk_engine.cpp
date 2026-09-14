@@ -232,18 +232,23 @@ void VulkanEngine::updateScene()
 
 void VulkanEngine::drawBackground(VkCommandBuffer cmd)
 {
-	ComputeEffect& effect = m_backgroundEffects[m_currentBackgroundEffect];
+	BackgroundEffect& effect = m_backgroundEffects[m_currentBackgroundEffect];
+	effect.record(cmd, effect.pass);
+}
 
-	// bind the gradient drawing compute pipeline
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, effect.pipeline);
+void VulkanEngine::recordDrawImageEffect(VkCommandBuffer cmd, const ComputePass& pass, const ComputePushConstants& params)
+{
+	//one set per frame from the frame's own allocator, which draw() resets when the slot comes
+	//round again - the same way every other per-frame set here is handled
+	const VkDescriptorSet set = getCurrentFrame().frameDescriptors.allocate(m_device, pass.setLayout);
 
-	// bind the descriptor set containing the draw image for the compute pipeline
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipelineLayout, 0, 1, &m_drawImageDescriptors, 0, nullptr);
+	DescriptorWriter writer;
+	writer.writeImage(0, m_drawImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.updateSet(m_device, set);
 
-	vkCmdPushConstants(cmd, m_computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &effect.data);
-
-	// execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
-	vkCmdDispatch(cmd, std::ceil(m_drawImage.imageExtent.width / 16.0), std::ceil(m_drawImage.imageExtent.height / 16.0), 1);
+	//the whole image, not just m_drawExtent, so the effect looks the same at every render scale
+	//as it always has
+	dispatchComputePassOver(cmd, pass, set, &params, m_drawImage.imageExtent);
 }
 
 void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
@@ -501,16 +506,13 @@ void VulkanEngine::run()
 			if (ImGui::Begin("background", &m_showBackgroundWindow)) {
 				ImGui::SliderFloat("Render Scale",&m_renderScale, 0.3f, 1.f);
 				
-				ComputeEffect& selected = m_backgroundEffects[m_currentBackgroundEffect];
-			
+				BackgroundEffect& selected = m_backgroundEffects[m_currentBackgroundEffect];
+
 				ImGui::Text("Selected effect: %s", selected.name);
-			
+
 				ImGui::SliderInt("Effect Index", &m_currentBackgroundEffect,0, m_backgroundEffects.size() - 1);
-			
-				ImGui::InputFloat4("data1",(float*)& selected.data.data1);
-				ImGui::InputFloat4("data2",(float*)& selected.data.data2);
-				ImGui::InputFloat4("data3",(float*)& selected.data.data3);
-				ImGui::InputFloat4("data4",(float*)& selected.data.data4);
+
+				selected.drawSettings();
 			}
 			ImGui::End();
 		}
@@ -986,6 +988,12 @@ void VulkanEngine::initVulkan()
 	m_device = vkbDevice.device;
 	m_chosenGPU = physicalDevice.physical_device;
 
+	vkGetPhysicalDeviceProperties(m_chosenGPU, &m_gpuProperties);
+	const VkPhysicalDeviceLimits& limits = m_gpuProperties.limits;
+	fmt::println("GPU: {} - maxPushConstantsSize {} bytes, maxComputeWorkGroupInvocations {}, maxComputeWorkGroupSize {}x{}x{}",
+		m_gpuProperties.deviceName, limits.maxPushConstantsSize, limits.maxComputeWorkGroupInvocations,
+		limits.maxComputeWorkGroupSize[0], limits.maxComputeWorkGroupSize[1], limits.maxComputeWorkGroupSize[2]);
+
 	vkinit::VkFunctionLoader::get_instance().load_functions(m_device);
 
 	// use vkbootstrap to get a Graphics queue
@@ -1349,20 +1357,8 @@ void VulkanEngine::initDescriptors()
 
 	m_globalDescriptorAllocator.init(m_device, 10, sizes);
 
-	//make the descriptor set layout for our compute draw
-	{
-		DescriptorLayoutBuilder builder;
-		builder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-		m_drawImageDescriptorLayout = builder.build(m_device, VK_SHADER_STAGE_COMPUTE_BIT);
-	}
-
-	// allocate a descriptor set for our draw image
-	m_drawImageDescriptors = m_globalDescriptorAllocator.allocate(m_device, m_drawImageDescriptorLayout);
-
-	DescriptorWriter writer;
-	writer.writeImage(0, m_drawImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-
-	writer.updateSet(m_device,m_drawImageDescriptors);
+	//the background effects' sets are allocated per frame from the frame allocators below; each
+	//effect's layout lives in its ComputePass (initComputePipelines())
 
 	for (int i = 0; i < FRAME_OVERLAP; i++) {
 		// create a descriptor pool
@@ -1398,7 +1394,6 @@ void VulkanEngine::initDescriptors()
 	//make sure both the descriptor allocator and the new layout get cleaned up properly
 	m_mainDeletionQueue.push_function([&]() {
 		m_globalDescriptorAllocator.destroyPools(m_device);
-		vkDestroyDescriptorSetLayout(m_device, m_drawImageDescriptorLayout, nullptr);
 		vkDestroyDescriptorSetLayout(m_device, m_gpuSceneDataDescriptorLayout, nullptr);
 		vkDestroyDescriptorSetLayout(m_device, m_singleImageDescriptorLayout, nullptr);
 	});
@@ -1416,86 +1411,123 @@ void VulkanEngine::initPipeline()
 	});
 }
 
+namespace {
+
+// the "environment" background effect's push constants; must match env_background.comp
+struct EnvironmentBackgroundPushConstants {
+	glm::mat4 inverseViewProj;
+	glm::vec2 drawExtent;
+	float exposure;
+	float pad;
+};
+
+}
+
 void VulkanEngine::initComputePipelines()
 {
-	VkPipelineLayoutCreateInfo computeLayout{};
-	computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	computeLayout.pNext = nullptr;
-	computeLayout.pSetLayouts = &m_drawImageDescriptorLayout;
-	computeLayout.setLayoutCount = 1;
+	const std::string shaderDir = m_rootPath + "shaders/";
 
-	VkPushConstantRange pushConstant{};
-	pushConstant.offset = 0;
-	pushConstant.size = sizeof(ComputePushConstants) ;
-	pushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	//gradient and sky share one shape: the draw image at binding 0 plus ComputePushConstants
+	auto buildDrawImageEffect = [&](const char* shaderFile) {
+		return ComputePassBuilder(shaderDir + shaderFile)
+			.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+			.setPushConstants<ComputePushConstants>()
+			.build(m_device);
+	};
 
-	computeLayout.pPushConstantRanges = &pushConstant;
-	computeLayout.pushConstantRangeCount = 1;
+	//a raw vec4 editor per push-constant slot, as the two ported effects have always had
+	auto drawRawPushConstantEditors = [](ComputePushConstants& params) {
+		ImGui::InputFloat4("data1", (float*)&params.data1);
+		ImGui::InputFloat4("data2", (float*)&params.data2);
+		ImGui::InputFloat4("data3", (float*)&params.data3);
+		ImGui::InputFloat4("data4", (float*)&params.data4);
+	};
 
-	checkVkResult(vkCreatePipelineLayout(m_device, &computeLayout, nullptr, &m_computePipelineLayout));
+	{
+		//default colors
+		m_gradientParams = {};
+		m_gradientParams.data1 = glm::vec4(0.325, 0.471, 0.584, 1);
+		m_gradientParams.data2 = glm::vec4(0.035, 0.125, 0.247, 1);
 
-	VkShaderModule gradientShader;
-	std::string compPath = m_rootPath + "shaders/gradient_color.comp.spv";
-	if (!vkutil::load_shader_module(compPath, m_device, &gradientShader)) {
-		fmt::print("Error when building the compute shader \n");
+		BackgroundEffect gradient;
+		gradient.name = "gradient";
+		gradient.pass = buildDrawImageEffect("gradient_color.comp.spv");
+		gradient.record = [this](VkCommandBuffer cmd, const ComputePass& pass) {
+			recordDrawImageEffect(cmd, pass, m_gradientParams);
+		};
+		gradient.drawSettings = [this, drawRawPushConstantEditors]() {
+			drawRawPushConstantEditors(m_gradientParams);
+		};
+		m_backgroundEffects.push_back(std::move(gradient));
 	}
-	
-	VkShaderModule skyShader;
-	compPath = m_rootPath + "shaders/sky.comp.spv";
-	if (!vkutil::load_shader_module(compPath, m_device, &skyShader)) {
-		fmt::print("Error when building the compute shader \n");
+
+	{
+		//default sky parameters: tint in xyz, star threshold in w
+		m_skyParams = {};
+		m_skyParams.data1 = glm::vec4(0.1, 0.2, 0.4, 0.97);
+
+		BackgroundEffect sky;
+		sky.name = "sky";
+		sky.pass = buildDrawImageEffect("sky.comp.spv");
+		sky.record = [this](VkCommandBuffer cmd, const ComputePass& pass) {
+			recordDrawImageEffect(cmd, pass, m_skyParams);
+		};
+		sky.drawSettings = [this, drawRawPushConstantEditors]() {
+			drawRawPushConstantEditors(m_skyParams);
+		};
+		m_backgroundEffects.push_back(std::move(sky));
 	}
-	
-	VkPipelineShaderStageCreateInfo stageinfo{};
-	stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stageinfo.pNext = nullptr;
-	stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-	stageinfo.module = gradientShader;
-	stageinfo.pName = "main";
 
-	VkComputePipelineCreateInfo computePipelineCreateInfo{};
-	computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-	computePipelineCreateInfo.pNext = nullptr;
-	computePipelineCreateInfo.layout = m_computePipelineLayout;
-	computePipelineCreateInfo.stage = stageinfo;
+	{
+		//the environment map seen through the raster camera. Two bindings of different types and
+		//a push-constant block shaped nothing like the other two effects' - the first pass the old
+		//one-storage-image layout could not have expressed
+		BackgroundEffect environment;
+		environment.name = "environment";
+		environment.pass = ComputePassBuilder(shaderDir + "env_background.comp.spv")
+			.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+			.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+			.setPushConstants<EnvironmentBackgroundPushConstants>()
+			.build(m_device);
+		environment.record = [this](VkCommandBuffer cmd, const ComputePass& pass) {
+			//with no map loaded the effect shows flat grey, which reads as "nothing to show"
+			//rather than as a broken effect. Both images sit in SHADER_READ_ONLY_OPTIMAL for good:
+			//createImage() leaves uploads there, and a replaced map is destroyed only after a
+			//device-wide wait, so a set written this frame can never outlive the view it names
+			const bool hasMap = m_environmentMap.image != VK_NULL_HANDLE;
+			const AllocatedImage& map = hasMap ? m_environmentMap : m_greyImage;
 
-	ComputeEffect gradient;
-	gradient.layout = m_computePipelineLayout;
-	gradient.name = "gradient";
-	gradient.data = {};
+			const VkDescriptorSet set = getCurrentFrame().frameDescriptors.allocate(m_device, pass.setLayout);
 
-	//default colors
-	gradient.data.data1 = glm::vec4(0.325, 0.471, 0.584, 1);
-	gradient.data.data2 = glm::vec4(0.035, 0.125, 0.247, 1);
-	
-	checkVkResult(vkCreateComputePipelines(m_device,VK_NULL_HANDLE,1,&computePipelineCreateInfo, nullptr, &gradient.pipeline));
+			DescriptorWriter writer;
+			writer.writeImage(0, m_drawImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+			writer.writeImage(1, map.imageView, m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+			writer.updateSet(m_device, set);
 
-	//change the shader module only to create the sky shader
-	computePipelineCreateInfo.stage.module = skyShader;
+			//m_sceneData is this frame's, set by updateScene() before recording began
+			EnvironmentBackgroundPushConstants pushConstants {};
+			pushConstants.inverseViewProj = glm::inverse(m_sceneData.viewproj);
+			pushConstants.drawExtent = glm::vec2(m_drawExtent.width, m_drawExtent.height);
+			pushConstants.exposure = m_environmentBackgroundExposure;
 
-	ComputeEffect sky;
-	sky.layout = m_computePipelineLayout;
-	sky.name = "sky";
-	sky.data = {};
-	//default sky parameters
-	sky.data.data1 = glm::vec4(0.1, 0.2, 0.4 ,0.97);
+			dispatchComputePassOver(cmd, pass, set, &pushConstants, m_drawImage.imageExtent);
+		};
+		environment.drawSettings = [this]() {
+			if (m_environmentMap.image == VK_NULL_HANDLE) {
+				ImGui::TextDisabled("No environment map loaded (File > Set Environment Map)");
+			} else {
+				ImGui::Text("%s", m_environmentMapPath.filename().string().c_str());
+			}
+			ImGui::SliderFloat("Exposure", &m_environmentBackgroundExposure, 0.f, 4.f);
+		};
+		m_backgroundEffects.push_back(std::move(environment));
+	}
 
-	checkVkResult(vkCreateComputePipelines(m_device,VK_NULL_HANDLE,1,&computePipelineCreateInfo, nullptr, &sky.pipeline));
-
-	//add the 2 background effects into the array
-	m_backgroundEffects.push_back(gradient);
-	m_backgroundEffects.push_back(sky);
-
-
-	vkDestroyShaderModule(m_device, gradientShader, nullptr);
-	vkDestroyShaderModule(m_device, skyShader, nullptr);
-
-	m_mainDeletionQueue.push_function([&]() {
-		vkDestroyPipelineLayout(m_device, m_computePipelineLayout, nullptr);
-		//vkDestroyPipeline(m_device, m_computePipeline, nullptr);
-		for(int i = 0; i < m_backgroundEffects.size(); i++){
-			vkDestroyPipeline(m_device, m_backgroundEffects[i].pipeline, nullptr);}
-		});
+	m_mainDeletionQueue.push_function([this]() {
+		for (BackgroundEffect& effect : m_backgroundEffects) {
+			effect.pass.destroy(m_device);
+		}
+	});
 }
 
 
