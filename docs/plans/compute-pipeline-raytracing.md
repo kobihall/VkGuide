@@ -270,3 +270,136 @@ Validation layers on for every step; the self-driving hook and draw-image readba
 6. **Mipmapped environment maps** — not needed here (progressive averaging over jittered rays hides aliasing, an advantage over the raster background), but a future importance-sampled environment light will want a luminance mip chain.
 7. **Per-pixel budget semantics when `K` changes** (§2.11): absolute counts clamped to `K` in `generate` is the assumption; the adaptive doc should confirm.
 8. **Multi-threading the CPU backend** (its doc's §9.4) — moot once §2.14 happens; do not spend time on it.
+
+## 9. As-built notes (implementation, 2026-09-15)
+
+Everything below is what actually got built and verified, written after the fact. Where it disagrees with §§1–8, this section is right. The CPU backend is **not yet retired** (§2.14): the user asked for the backend switch to stay until they have compared the two interactively.
+
+### 9.1 Deviations from this spec, and why
+
+Three were put to the user before implementation and approved; the rest are judgment calls filling gaps the spec left.
+
+1. **Pixel-centre mapping on both backends** (approved). The CPU camera mapped pixel `x` to `u = x / (W-1)`, putting pixel 0's sample on the frustum's edge; the raster pass uses `(x + 0.5) / W`. Both backends now use `1/W` pixels with the sample at the pixel centre (or jittered within it), so "Match viewport" is framed exactly as the raster view. Done in step 3, after the step-1 regression check (§9.3) had passed with the old mapping.
+2. **The step-1 regression check is not bit-exact and cannot be**: the scene model is float, so `0.7` becomes `0.7f`, and the CPU backend's double math sees `0.699999988`. Measured: at most 6e-8 per channel; no pixel differs by even 1/255 (§9.3).
+3. **Resolution changes and pool reallocation retire the old resources with `vkDeviceWaitIdle()`** at the Render click, the precedent scene loading and environment-map replacement already set, rather than a third deferred-destroy list. A Render is a menu-like action; a one-frame stall there is invisible.
+4. **One descriptor set serves all four stages.** Every stage's `ComputePass` declares the same eleven bindings (`shaders/crt_common.glsl`: paths, hits, queues, headers, radiance, budget, spheres, materials, accumulation, sample count, environment map), a shader simply does not declare the ones it does not use, and identically-defined layouts are compatible, so one set per frame written once is bound to all four pipelines. One push-constant block (`CrtParams`, 160 bytes) likewise serves all stages; `bounce` is the only field that changes between dispatches.
+5. **The scene file's `"render"` block saves every setting** including `maxSamples` and `samplesPerFrame` (§8 q4): defaults on read, so a scene shared between machines loses nothing. Format version 3; version 1 and 2 files still load. `newScene()` resets the render settings and `environmentIntensity` too — they are scene properties now.
+6. **The tonemap runs every frame the GPU backend owns the display image**, running or not, so `exposure` is live for a finished GPU render as well. A CPU render is tonemapped once at publish (its exposure captured at Render) and left alone. `RaytraceRenderer` tracks which backend rendered last for this.
+7. **`RaytraceJob` keeps a `pixels()` accessor rather than handing the buffer over**: the renderer uploads and tonemaps in `update()` the frame the worker is joined, exactly as `publishOutput()` did. Nothing else about the worker changed.
+8. **The `GpuRenderSnapshot` carries `useEnvironmentMap` and `environmentIntensity` by value**, and `record()` re-checks that the map still exists each frame. Clearing or replacing the map cancels the render (§2.3) through `destroyEnvironmentMap() → RaytraceRenderer::cancelRender()`, verified.
+9. **Debug views terminate the path at the shade stage** and write through the radiance slots, so they accumulate (and anti-alias) like radiance: primary direction, hit/miss, normal, and bounce heat (bounce count at termination / rayDepth). Sample-count heat is written by `resolve` directly as the mean. Switchable mid-render; the mean then mixes views until the next Render.
+10. **`RaytraceSceneEditor::findSphere(id)`** and per-sphere ids assigned by the editor (`m_nextId`, never saved). The gizmo's opaque `const void*` target id is the sphere id cast, never dereferenced.
+11. **`TRANSFER_SRC` usage on the accumulation and display images**, so a readback (a future "save render", the smoke test's dumps) needs no image recreation.
+12. **The header-readback and timestamp collection happen inside `draw()`** (`GpuPathTracer::beginFrame()` from `RaytraceRenderer::record()`), right after the frame's fence wait, so the results are two frames old rather than three — the fence for slot `N % 2` is only known signalled from that point on.
+13. **The CPU regression harness and the smoke script were temporary hooks, all removed** (`grep SMOKETEST` is empty). Two GLSL traps they found: `sample` and `active` are reserved words in GLSL 4.60.
+
+### 9.2 The API as built
+
+```cpp
+// rt_scene_types.h - the plain scene model, float
+enum class MaterialType : uint8_t { Lambertian, Metal, Phong, Dielectric };
+struct SphereMaterial { MaterialType type; glm::vec3 albedo; float fuzz, smoothness, ir; };   // every type's fields kept
+struct SceneSphere { uint64_t id; std::string name; glm::vec3 center; float radius; SphereMaterial material; };
+glm::vec3 materialPreviewColor(const SphereMaterial&);  SphereMaterial makeSphereMaterial(MaterialType, glm::vec3 albedo = 0.7);
+struct RTCameraSnapshot { glm::vec3 lookFrom, lookAt, vUp; float vfovDegrees, aperture, focusDistance; };
+struct RenderSettings { int width, height; bool matchViewport, antialiasing; int maxSamples, rayDepth; bool useFixedSeed; uint32_t seed;
+                        int samplesPerFrame; bool russianRoulette; int minBouncesBeforeRoulette; float aperture, focusDistance, exposure; };
+// RTMeshInstance, RaytraceMeshData, RESOLUTION_PRESETS moved here unchanged. rt_types.h keeps ray, hit_record, RT_INFINITY, RT_PI.
+
+// rt_scene_editor.h
+bool drawSphereParams(SceneSphere&);  bool drawMaterialParams(SphereMaterial&);   // the former virtual params()
+SceneSphere* RaytraceSceneEditor::findSphere(uint64_t id);   // null once gone; valid until the next mutation
+
+// rt_scene.h
+RTCameraSnapshot captureCameraSnapshot(VulkanEngine*, const RenderSettings&);   // both backends; aperture/focus from the settings
+// rt_scene.cpp: makeCpuMaterial(const SphereMaterial&) - the only constructor of the CPU material classes
+
+// rt_renderer.h
+enum class RaytraceBackend { Gpu, CpuLegacy };
+class RaytraceRenderer { void init(VulkanEngine*); void update(VulkanEngine*); void drawPanel(VulkanEngine*, const RaytraceSceneEditor&);
+    void record(VkCommandBuffer, VulkanEngine*); void cancelRender(); void shutdown(VulkanEngine*);
+    RenderSettings& settings(); void setSettings(const RenderSettings&); bool* visibilityFlag(); };
+
+// rt_gpu.h
+struct GpuRenderSnapshot { uint32_t width, height; RTCameraSnapshot camera; std::vector<SceneSphere> spheres; RenderSettings settings;
+                           uint32_t seed; bool useEnvironmentMap; float environmentIntensity; };
+class GpuPathTracer { void init(VulkanEngine*); void destroy(VulkanEngine*); void start(VulkanEngine*, GpuRenderSnapshot); void stop();
+    void beginFrame(VulkanEngine*); void record(VkCommandBuffer, VulkanEngine*, const AllocatedImage& display, float exposure);
+    bool isRunning(), hasImage(), hasTimestamps(); uint32_t samplesAccumulated(), maxSamples(), samplesPerFrame(), width(), height();
+    float lastFrameGpuMs(), totalGpuMs(); const std::vector<uint32_t>& pathsAlivePerBounce(); CrtDebugView debugView; };
+// CrtSphere (16 B), CrtMaterial (32 B), CrtQueueHeader (16 B) static_asserted; CRT_MAX_POOL = 4M paths, CRT_MAX_DEPTH = 16, CRT_MAX_SAMPLES_PER_FRAME = 8
+
+// rt_job.h - demoted: start(RaytraceScene&&), cancel(), bool update() (true once when joined), shutdown(), isRunning(), progress(),
+//            completed(), renderMs(), pixels(), width(), height(). No panel, no Vulkan.
+
+// vk_compute.h
+void dispatchComputePassIndirect(VkCommandBuffer, const ComputePass&, VkDescriptorSet, const void* push, VkBuffer args, VkDeviceSize offset);
+// vk_images.h
+void vkutil::memory_barrier(VkCommandBuffer, VkPipelineStageFlags2 src, VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dst, VkAccessFlags2 dstAccess);
+
+// vk_engine.h: RaytraceRenderer m_raytracer (was RaytraceJob m_raytraceJob); float m_environmentIntensity (was m_environmentBackgroundExposure,
+//   now saved with the scene, the "background" window's slider is "Environment intensity"); PreviewSphereSlot m_previewSphereSlots[FRAME_OVERLAP];
+//   updateScene() is cpu-only again and runs before the fence wait; drawRaytraceSpheres() runs after it.
+// scene_io.h: SceneDescription gains RenderSettings render; float environmentIntensity. Payload version 3.
+```
+
+**Per-frame sequence** (`GpuPathTracer::record()`), all in `draw()`'s command buffer before the raster passes: `[clear accumulation, counts, fill budget with K]` → reset header 0 (`vkCmdUpdateBuffer`) → generate (direct, `poolSize / 64` groups) → copy header 0 to the readback → for each bounce: extend (indirect, header `b & 1`) → reset header `(b+1) & 1` → shade (indirect) → copy the next header to the readback → resolve (direct over `W*H`) → tonemap. Memory barriers between every pair use `COMPUTE | DRAW_INDIRECT` and `COPY | CLEAR` stage masks with the full storage/indirect/transfer access sets — generous by design.
+
+### 9.3 Verification actually performed
+
+**Step 1 regression (CPU backend, default scene, 320×180, 8 spp, depth 8, fixed seed 7)** via a temporary dump hook, before and after the plain-data refactor: 765 of 230,400 floats differ, max difference **5.96e-8**, zero pixels differ by 1/255 or more. Scene file: `assets/scenes/sphere_scene.gltf` (version 1) opened, saved, reopened, saved again — the two saves are byte-identical and their sphere data equals the original's.
+
+**Everything below under validation layers** (`b_UseValidationLayers = true` temporarily; **0 validation messages** across the whole script and shutdown), driven by a scripted hook in `RaytraceRenderer::update()` that set the settings, called `startRender()`, waited for completion and read the display image (rgba8 → PPM) and the accumulation (rgba32f → raw) back:
+
+| Phase | Result |
+|---|---|
+| Debug views: primary direction, hit/miss, normal (320×180, 1 sample) | correct: a smooth direction gradient; the three spheres and the ground as a mask; ground normal reads +Y green |
+| Bounce heat, depth 1 | plausible heat; depth 1 shows sky only with black spheres and ground, matching `ray_color()`'s semantics |
+| **Paths alive per bounce**, default scene, K=1 | **57600 → 26370 → 914 → 420 → 160 → 85 → 59 → 42 → 0** (monotone, empty at depth 8); K=4: 230400 → 105482 → … → 0 (4× K=1 as it should be) |
+| 64 spp, K=1, roulette off, seed 7 — twice | **bit-identical** accumulation buffers (57600/57600 pixels) |
+| K=1 vs K=4, same seed | same image: mean absolute difference 0.0000, mean brightness 0.8007 both (the sample streams depend only on pixel, sample index and seed, not K) |
+| Roulette on vs off (K=4) | mean difference 0.0001, 97% of pixels identical (roulette only touches bounces ≥ 4); alive counts fall faster from bounce 4 |
+| **GPU (K=1) vs CPU, 64 spp each** | recognisably the same image (glass / red / gold left to right, ground, sky); mean absolute difference 0.0031, max 0.138 (different RNG); mean brightness **0.8007 vs 0.8007** |
+| Match viewport (1700×900, K=1) | 1,530,000-path pool (187 MB) allocated, rendered, 7.6 ms/frame |
+| 8k environment map, 16 spp | the render's background is the map, spheres lit by it |
+| Clear the map at 3 samples of a 4096-sample render | render stopped the same call (`cancelRender()`), image kept |
+| Raster preview after recolouring a sphere and adding a fifth (slot rewrite + capacity grow) | correct: green centre, blue metal fifth sphere, glass tint, gold; scene update time **0.52 ms** |
+| Shutdown after all of the above | exit 0 |
+
+**Performance** (§8 q1; Radeon Pro 560X via MoltenVK, default scene, depth 8, 64 spp, GPU timestamps, `ms/frame` = whole generate→resolve→tonemap sequence):
+
+| Resolution | K | Roulette | GPU ms/frame | ms per sample/pixel |
+|---|---|---|---|---|
+| 640×360 | 1 | off | 3.40 | 3.40 |
+| 640×360 | 1 | on | 3.38 | 3.38 |
+| 640×360 | 4 | off | 7.80 | 1.95 |
+| 640×360 | 4 | on | 7.78 | 1.95 |
+| 1280×720 | 1 | off | 8.23 | 8.23 |
+| 1280×720 | 1 | on | 8.20 | 8.20 |
+| 1280×720 | 4 | off | 19.3 | 4.83 |
+| 1280×720 | 4 | on | 17.5 | 4.38 |
+| 1700×900 | 1 | off | 7.6 | 7.6 |
+
+Roulette buys nothing on this open scene — fewer than 1% of paths survive past bounce 3 anyway; it will matter in enclosed scenes. K=4 is ~1.7× cheaper per sample than K=1 (bigger tail dispatches, same barrier count), which argues for a default of 4 at 720p and below; left at 1 so the panel's first render is the cheapest. The 1280×720 K=4 pool is 387 MB.
+
+### 9.4 Not verified — needs a human at the keyboard
+
+Interactive checks, handed to the user as the test list: the Backend combo and the greyed GPU-only rows; the progress bar, "GPU ms/frame" and "Paths alive per bounce" readouts updating live; Stop keeping the image; moving the free camera or editing a sphere mid-render changing nothing; the "Raytraced Output" window sized against the viewport at "Match viewport" for an A/B; exposure and debug view changing a finished GPU render live; aperture/focus distance (depth of field) on both backends; the scene file round-trip of the render settings and environment intensity through the File menu; the "background" window's renamed slider agreeing with the render's sky brightness; loading a version-1/2 scene; the sphere material combo keeping the other types' values when switched away and back; gizmo editing on plain-data spheres; frame-time smoothness with a 720p K=4 render running alongside the raster view.
+
+### 9.5 Answers to §8's open questions
+
+1. Performance: the table above. Default K stays 1; `CRT_MAX_POOL` at 4M paths holds 1280×720×4 and 1920×1080×2. The persistent regenerating pool is not worth revisiting until a scene keeps paths alive past bounce 3.
+2. Timestamps: supported (`timestampComputeAndGraphics`, period ~1.0 ns on this device); the readout is skipped when the limit is absent.
+3. Scene cameras: `captureCameraSnapshot(engine, settings)` is the one function to grow.
+4. Yes, all settings are saved (§9.1 item 5).
+5–7: unchanged; not needed yet.
+8. Moot.
+
+### 9.6 Known limitations left in place
+
+- The CPU backend and `RaytraceJob`, `rt_random`, `rt_hittable`, `rt_material` are still present pending §2.14.
+- `sampleBudget` is filled with K at Render and never written again (the hook, as specified); the sample-count heat view is therefore flat.
+- A debug view switched mid-render mixes into the running mean until the next Render.
+- With the environment map, the dusk map's sun makes the ground noisy at low sample counts — no importance sampling, by design (§7).
+- The environment map still has no mipmaps; the miss branch uses `textureLod(…, 0)`.
+- The raytracer records into the same command buffer as the raster frame, so a 720p K=4 render (~19 ms of GPU work) will cost the viewport its frame rate; time-budgeting K is the adaptive-sampling doc's concern.

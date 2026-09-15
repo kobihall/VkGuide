@@ -1,0 +1,67 @@
+#version 460
+
+// GPU path tracer, stage 1: primary rays. One invocation per (pixel, k) pair of the pool;
+// those under the pixel's budget become paths appended to queue 0. Every slot's radiance is
+// pre-written so a path that dies without writing (roulette, the depth cap, absorption)
+// contributes exactly zero, and a slot that was never spawned is marked as such.
+//
+// The camera is RTCamera (src/rt_job.cpp) in float: same origin, lower-left corner, horizontal
+// and vertical vectors, same lens basis, so both backends fire the same primary rays.
+
+#extension GL_GOOGLE_include_directive : require
+#include "crt_common.glsl"
+#include "crt_random.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	// no early return: queueAppend() below has barriers every invocation must reach
+	const bool inPool = index < pc.poolSize;
+
+	bool spawn = false;
+
+	if (inPool) {
+		const uint pixel = index / pc.samplesPerFrame;
+		const uint k = index - pixel * pc.samplesPerFrame;
+		const uint x = pixel % pc.width;
+		const uint y = pixel / pc.width;
+
+		spawn = k < min(sampleBudget[pixel], pc.samplesPerFrame);
+		radiance[index] = vec4(0.0, 0.0, 0.0, spawn ? 1.0 : 0.0);
+
+		if (spawn) {
+			// the stream depends only on the pixel, which sample of that pixel this is, and the render
+			const uint sampleIndex = imageLoad(sampleCount, ivec2(x, y)).r + k;
+			uint rng = pcgHash(pixel ^ pcgHash(sampleIndex ^ pcgHash(pc.seed)));
+
+			// pixel x covers [x/W, (x+1)/W) of the image plane, rows top-down; a jittered sample
+			// lands anywhere in the pixel, an un-jittered one at its centre
+			const bool jitter = (pc.flags & CRT_FLAG_JITTER) != 0u;
+			const float jx = jitter ? randomFloat(rng) : 0.5;
+			const float jy = jitter ? randomFloat(rng) : 0.5;
+			const float u = (float(x) + jx) / float(pc.width);
+			const float v = (float(pc.height - 1u - y) + jy) / float(pc.height);
+
+			vec3 origin = pc.origin.xyz;
+			vec3 target = pc.lowerLeft.xyz + u * pc.horizontal.xyz + v * pc.vertical.xyz;
+			const float lensRadius = pc.lensU.w;
+			if (lensRadius > 0.0) {
+				vec2 rd = lensRadius * randomInDisk(rng);
+				origin += rd.x * pc.lensU.xyz + rd.y * pc.lensV.xyz;
+			}
+
+			PathState path;
+			path.origin = origin;
+			path.radianceSlot = index;
+			path.direction = target - origin;
+			path.rngState = rng;
+			path.throughput = vec3(1.0);
+			path.bounce = 0u;
+			paths[index] = path;
+		}
+	}
+
+	queueAppend(0u, spawn, index);
+}

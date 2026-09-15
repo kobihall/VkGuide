@@ -94,7 +94,10 @@ VkExtent3D computeGroupCount(VkExtent3D domain, VkExtent3D workgroupSize)
 	};
 }
 
-void dispatchComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkExtent3D groupCount)
+namespace {
+
+//everything a dispatch needs bound and pushed, shared by the direct and indirect entry points
+void bindComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData)
 {
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.pipeline);
 
@@ -109,8 +112,20 @@ void dispatchComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescrip
 		}
 		vkCmdPushConstants(cmd, pass.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pass.pushConstantSize, pushData);
 	}
+}
 
+}
+
+void dispatchComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkExtent3D groupCount)
+{
+	bindComputePass(cmd, pass, set, pushData);
 	vkCmdDispatch(cmd, groupCount.width, groupCount.height, groupCount.depth);
+}
+
+void dispatchComputePassIndirect(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkBuffer argumentBuffer, VkDeviceSize argumentOffset)
+{
+	bindComputePass(cmd, pass, set, pushData);
+	vkCmdDispatchIndirect(cmd, argumentBuffer, argumentOffset);
 }
 
 void dispatchComputePassOver(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkExtent3D domain)

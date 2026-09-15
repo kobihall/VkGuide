@@ -10,7 +10,7 @@
 #include <camera.h>
 #include <vk_compute.h>
 #include <vk_tonemap.h>
-#include <rt_job.h>
+#include <rt_renderer.h>
 #include <rt_scene_editor.h>
 #include <vk_gizmo.h>
 
@@ -209,7 +209,8 @@ public:
 	// scene
 	Camera m_mainCamera;
 	RaytraceSceneEditor m_raytraceScene;
-	RaytraceJob m_raytraceJob;
+	// the raytracer: its panel, settings, backends and output window
+	RaytraceRenderer m_raytracer;
 	GPUSceneData m_sceneData;
 	VkDescriptorSetLayout m_gpuSceneDataDescriptorLayout;
 	DrawContext m_mainDrawContext;
@@ -226,11 +227,15 @@ public:
 	// simulation plane's intersections, say) can compare against the revision it last acted on
 	uint64_t m_sceneRevision { 0 };
 
-	// hdr environment lighting, part of the scene. Nothing samples it yet - the compute
-	// raytracer's miss branch is the planned consumer
+	// hdr environment lighting, part of the scene: the "environment" background effect shows it
+	// behind the models and the GPU path tracer lights the render with it on a miss
 	AllocatedImage m_environmentMap {};
 	VkExtent2D m_environmentMapExtent { 0, 0 };
 	std::filesystem::path m_environmentMapPath;
+	// scales the map as a light source, so the viewport and the render agree on how bright the
+	// sky is. A scene property, saved with the scene; the picture's brightness is the
+	// renderer's exposure setting
+	float m_environmentIntensity { 1.f };
 
 	// the file the current scene was opened from or last saved to; empty for an unsaved scene
 	std::filesystem::path m_scenePath;
@@ -242,9 +247,21 @@ public:
 
 	// a unit sphere at the origin, drawn once per raytracer sphere with a per-object transform
 	std::shared_ptr<MeshAsset> m_sphereMesh;
-	// rebuilt every frame in drawRaytraceSpheres(); RenderObject holds raw pointers into it, so
-	// it is sized once up front and not appended to while those pointers are being taken
-	std::vector<MaterialInstance> m_sphereMaterials;
+	// the preview spheres' material data, one persistent slot per frame in flight, rewritten
+	// only when the editor's revision has moved on since the slot was last written. The
+	// buffer and the descriptor sets belong to the slot's frames alone, which are provably
+	// finished when the slot comes round again, so a rewrite never races the GPU
+	struct PreviewSphereSlot {
+		AllocatedBuffer materialBuffer {};
+		// spheres the buffer has room for
+		size_t capacity { 0 };
+		DescriptorAllocatorGrowable descriptors;
+		// RenderObject holds raw pointers into it, so it is never appended to while in use
+		std::vector<MaterialInstance> materials;
+		// the editor revision the slot was written at; 0 = never
+		uint64_t revision { 0 };
+	};
+	PreviewSphereSlot m_previewSphereSlots[FRAME_OVERLAP];
 
 	// textures
 	AllocatedImage m_whiteImage;
@@ -273,9 +290,6 @@ public:
 	// rather than a pointer into the vector above
 	ComputePushConstants m_gradientParams {};
 	ComputePushConstants m_skyParams {};
-	// multiplied into the environment map before it is written to the draw image, which goes to
-	// the swapchain unmapped - anything above 1 clips
-	float m_environmentBackgroundExposure { 1.f };
 
 	// a File-menu click only records the action; the native dialog it needs runs a modal loop,
 	// so runPendingFileAction() executes it once the imgui frame is finished
@@ -363,7 +377,12 @@ private:
 	// vulkan; the gizmo wants it as-is
 	glm::mat4 rasterProjection() const;
 
+	// CPU-only scene preparation: camera, the models' draw list, the scene uniform's values.
+	// Touches no GPU resource, so it runs before the frame's fence wait and overlaps the GPU
+	// finishing the previous frame
 	void updateScene();
+	// appends the editor's spheres to the draw list. Writes this frame slot's material buffer
+	// when the spheres changed, so it must run after the slot's fence wait
 	void drawRaytraceSpheres();
 	void drawBackground(VkCommandBuffer cmd);
 	// the shared shape of gradient_color.comp and sky.comp: the draw image at binding 0 and a

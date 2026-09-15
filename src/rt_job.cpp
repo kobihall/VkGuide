@@ -3,21 +3,14 @@
 #include <algorithm>
 #include <chrono>
 
-#include <imgui.h>
-
 #include <rt_material.h>
 #include <rt_random.h>
-#include <rt_scene_editor.h>
-#include <vk_engine.h>
-#include <vk_images.h>
-#include <vk_tonemap.h>
 
 namespace {
 
-constexpr const char* OUTPUT_IMAGE_NAME = "Raytraced Output";
-
 //ray generation, ported from the sibling project's camera.h/.cpp. Lives here rather than in a
-//header because the render loop is its only caller
+//header because the render loop is its only caller. The GPU backend's generate stage is a
+//float port of this, so both fire the same primary rays for the same snapshot
 class RTCamera {
 public:
 	RTCamera(const RTCameraSnapshot& snapshot, uint32_t width, uint32_t height)
@@ -28,20 +21,26 @@ public:
 		const double viewportHeight = 2.0 * h;
 		const double viewportWidth = aspect * viewportHeight;
 
-		t = glm::normalize(snapshot.lookFrom - snapshot.lookAt);
-		n = glm::normalize(glm::cross(snapshot.vUp, t));
+		//the snapshot is float scene data; this backend's math is double
+		const glm::dvec3 lookFrom(snapshot.lookFrom);
+		const glm::dvec3 lookAt(snapshot.lookAt);
+		const glm::dvec3 vUp(snapshot.vUp);
+		const double focusDistance = snapshot.focusDistance;
+
+		t = glm::normalize(lookFrom - lookAt);
+		n = glm::normalize(glm::cross(vUp, t));
 		b = glm::cross(t, n);
 
-		m_origin = snapshot.lookFrom;
-		m_horizontal = snapshot.focusDistance * viewportWidth * n;
-		m_vertical = snapshot.focusDistance * viewportHeight * b;
-		m_lowerLeftCorner = m_origin - m_horizontal / 2.0 - m_vertical / 2.0 - snapshot.focusDistance * t;
-		m_lensRadius = snapshot.aperture / 2;
+		m_origin = lookFrom;
+		m_horizontal = focusDistance * viewportWidth * n;
+		m_vertical = focusDistance * viewportHeight * b;
+		m_lowerLeftCorner = m_origin - m_horizontal / 2.0 - m_vertical / 2.0 - focusDistance * t;
+		m_lensRadius = (double)snapshot.aperture / 2;
 	}
 
 	ray get_ray(double u, double v) const
 	{
-		//no aperture control is exposed yet, so the common case skips the lens sample entirely
+		//a closed lens skips the lens sample entirely, which also keeps the fixed-seed stream unchanged
 		if (m_lensRadius <= 0.0) {
 			return ray(m_origin, m_lowerLeftCorner + u * m_horizontal + v * m_vertical - m_origin);
 		}
@@ -79,17 +78,18 @@ glm::dvec3 ray_color(const ray& r, const RaytraceScene& scene, int depth)
 }
 
 //the pixel's linear radiance, averaged over its samples. Gamma and clamping are left to the shared
-//TonemapPass, which replaced the sibling project's write_color()
+//TonemapPass, which replaced the sibling project's write_color(). u/v are the pixel's lower-left
+//corner in [0,1]; a jittered sample lands anywhere in the pixel, an un-jittered one at its centre
 glm::vec4 renderPerPixel(const RaytraceScene& scene, const RTCamera& camera, double u, double v, double pixelWidth, double pixelHeight)
 {
 	const bool jitter = scene.settings.antialiasing;
-	const int samples = jitter ? std::max(scene.settings.samplesPerPixel, 1) : 1;
+	const int samples = jitter ? std::max(scene.settings.maxSamples, 1) : 1;
 
 	glm::dvec3 pixel_color(0, 0, 0);
 	for (int i = 0; i < samples; i++) {
 		const ray r = jitter
 			? camera.get_ray(u + Random::random_double() * pixelWidth, v + Random::random_double() * pixelHeight)
-			: camera.get_ray(u, v);
+			: camera.get_ray(u + 0.5 * pixelWidth, v + 0.5 * pixelHeight);
 		const glm::dvec3 sample = ray_color(r, scene, scene.settings.rayDepth);
 
 		//one NaN or infinite sample would poison the whole pixel's average. Dropping it darkens
@@ -110,8 +110,11 @@ bool renderScene(const RaytraceScene& scene, glm::vec4* pixels, std::atomic<floa
 
 	const RTCamera camera(scene.camera, width, height);
 
-	const double pixelWidth = 1.0 / (width - 1);
-	const double pixelHeight = 1.0 / (height - 1);
+	//pixel x covers [x/W, (x+1)/W) of the image plane, the same mapping the raster pass uses, so
+	//a "Match viewport" render frames exactly what the viewport shows. (The book divides by
+	//W-1, which puts pixel 0's centre on the frustum's edge rather than half a pixel inside it)
+	const double pixelWidth = 1.0 / width;
+	const double pixelHeight = 1.0 / height;
 
 	for (uint32_t y = 0; y < height; y++) {
 		//checked per scanline rather than once at loop entry, so Cancel takes effect promptly
@@ -137,130 +140,45 @@ bool renderScene(const RaytraceScene& scene, glm::vec4* pixels, std::atomic<floa
 
 RaytraceJob::~RaytraceJob()
 {
-	//safety net only - shutdown() is what actually tears this down, and it also releases the
-	//vulkan resources this destructor has no engine pointer to reach
-	if (m_thread.joinable()) {
-		m_cancelRequested.store(true, std::memory_order_relaxed);
-		m_thread.join();
-	}
+	shutdown();
 }
 
-void RaytraceJob::update(VulkanEngine* engine)
+void RaytraceJob::cancel()
 {
-	retirePendingImages(engine, false);
+	m_cancelRequested.store(true, std::memory_order_relaxed);
+}
 
+bool RaytraceJob::update()
+{
 	if (!m_running || !m_finished.load(std::memory_order_acquire)) {
-		return;
+		return false;
 	}
 
 	m_thread.join();
 	m_running = false;
 	m_finished.store(false, std::memory_order_relaxed);
 
-	//the worker-written fields are only safe to read from here on
-	if (m_completed) {
-		m_lastRenderMs = m_workerRenderMs;
-		publishOutput(engine);
-	}
-
-	//the pixel buffer has served its purpose either way; the gpu copy is the one that is kept
-	m_pixels.clear();
-	m_pixels.shrink_to_fit();
+	//the worker-written fields are safe to read from here on
+	return true;
 }
 
-void RaytraceJob::drawControlPanel(VulkanEngine* engine, const RaytraceSceneEditor& editor)
-{
-	if (!m_showPanel) {
-		return;
-	}
-
-	if (!ImGui::Begin("Raytrace Render", &m_showPanel)) {
-		ImGui::End();
-		return;
-	}
-
-	ImGui::Text("Last render: %.1f ms", m_lastRenderMs);
-
-	ImGui::BeginDisabled(m_running);
-	if (ImGui::Button("Render")) {
-		//snapshot taken here, on the main thread, before the worker exists
-		start(buildRaytraceScene(engine, editor, m_settings));
-	}
-	ImGui::EndDisabled();
-
-	if (m_running) {
-		ImGui::SameLine();
-		if (ImGui::Button("Cancel")) {
-			m_cancelRequested.store(true, std::memory_order_relaxed);
-			//otherwise the loop would immediately start another render and Cancel would look broken
-			m_renderEveryFrame = false;
-		}
-		ImGui::ProgressBar(m_progress.load(std::memory_order_relaxed), ImVec2(-FLT_MIN, 0));
-	}
-
-	//the sibling project re-triggered its whole (synchronous) render on every ui frame. Here a
-	//render is asynchronous, so the equivalent is to start the next one the moment the previous
-	//finishes - a render already in flight is left to complete rather than being restarted
-	ImGui::Checkbox("Render every frame", &m_renderEveryFrame);
-	if (m_renderEveryFrame && !m_running) {
-		start(buildRaytraceScene(engine, editor, m_settings));
-	}
-
-	ImGui::SeparatorText("Settings");
-
-	//these only take effect on the next Render - an in-flight render is working from its own
-	//copy of them and is unaffected
-	if (ImGui::BeginCombo("Resolution", RESOLUTION_PRESETS[m_resolutionPreset].label)) {
-		for (int i = 0; i < (int)std::size(RESOLUTION_PRESETS); i++) {
-			if (ImGui::Selectable(RESOLUTION_PRESETS[i].label, i == m_resolutionPreset)) {
-				m_resolutionPreset = i;
-				m_settings.width = RESOLUTION_PRESETS[i].width;
-				m_settings.height = RESOLUTION_PRESETS[i].height;
-			}
-		}
-		ImGui::EndCombo();
-	}
-
-	ImGui::SliderInt("Depth of ray bounces", &m_settings.rayDepth, 1, 16);
-	ImGui::Checkbox("Anti-aliasing", &m_settings.antialiasing);
-	if (m_settings.antialiasing) {
-		ImGui::SliderInt("Samples per pixel", &m_settings.samplesPerPixel, 1, 100);
-	}
-	ImGui::Checkbox("Fixed seed", &m_settings.useFixedSeed);
-	if (m_settings.useFixedSeed) {
-		ImGui::InputScalar("Seed", ImGuiDataType_U32, &m_settings.seed);
-	}
-
-	if (m_hasOutput) {
-		ImGui::SeparatorText("Output");
-		ImGui::Text("%ux%u, shown in the \"%s\" window", m_outputImage.imageExtent.width, m_outputImage.imageExtent.height, OUTPUT_IMAGE_NAME);
-	}
-
-	ImGui::End();
-}
-
-void RaytraceJob::shutdown(VulkanEngine* engine)
+void RaytraceJob::shutdown()
 {
 	if (m_thread.joinable()) {
 		m_cancelRequested.store(true, std::memory_order_relaxed);
 		m_thread.join();
 	}
 	m_running = false;
-
-	engine->m_displayRegistry.unregisterImage(OUTPUT_IMAGE_NAME);
-
-	if (m_hasOutput) {
-		engine->destroyImage(m_outputImage);
-		m_hasOutput = false;
-	}
-
-	retirePendingImages(engine, true);
+	m_pixels.clear();
+	m_pixels.shrink_to_fit();
 }
 
 void RaytraceJob::start(RaytraceScene&& scene)
 {
-	//the ray-generation math divides by (extent - 1), so a single-pixel axis has no valid
-	//spacing. The ui already keeps these well above this floor; this is the backstop
+	shutdown();
+
+	//the ray-generation math needs a real pixel size. The ui already keeps these well above this
+	//floor; this is the backstop
 	scene.settings.width = std::max(scene.settings.width, 2);
 	scene.settings.height = std::max(scene.settings.height, 2);
 
@@ -291,57 +209,5 @@ void RaytraceJob::start(RaytraceScene&& scene)
 
 		//released last, and paired with the main thread's join, so everything above is visible
 		m_finished.store(true, std::memory_order_release);
-	});
-}
-
-void RaytraceJob::publishOutput(VulkanEngine* engine)
-{
-	//order matters: imgui has to stop referencing the old image's view before the view dies
-	engine->m_displayRegistry.unregisterImage(OUTPUT_IMAGE_NAME);
-
-	if (m_hasOutput) {
-		m_pendingDestroys.push_back({ m_outputImage, (uint64_t)engine->m_frameNumber + FRAME_OVERLAP + 1 });
-		m_hasOutput = false;
-	}
-
-	const VkExtent3D extent { m_pixelWidth, m_pixelHeight, 1 };
-
-	//the linear buffer goes up through the same staging path load_image() uses for glTF textures;
-	//glm::vec4 is four packed floats, matching rgba32f texel for texel. SAMPLED as well as STORAGE,
-	//because createImage() leaves every upload in SHADER_READ_ONLY_OPTIMAL, a sampled-only layout
-	AllocatedImage linearImage = engine->createImage(m_pixels.data(), extent, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-	m_outputImage = engine->createImage(extent, TonemapPass::DISPLAY_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-	m_hasOutput = true;
-
-	engine->immediateSubmit([&](VkCommandBuffer cmd) {
-		vkutil::transition_image(cmd, linearImage.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
-		vkutil::transition_image(cmd, m_outputImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-
-		//the current frame slot's descriptor pool is not reset until the next draw(), well after
-		//immediateSubmit() has waited for this command buffer to finish
-		engine->m_tonemapPass.dispatch(cmd, engine->m_device, engine->getCurrentFrame().frameDescriptors, linearImage, m_outputImage, 1.f);
-
-		vkutil::transition_image(cmd, m_outputImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	});
-
-	//nothing references the linear image once the synchronous submit above has returned
-	engine->destroyImage(linearImage);
-
-	//the display image is left in SHADER_READ_ONLY_OPTIMAL and nothing writes it again, so unlike
-	//a per-frame render target this needs no transition in draw()
-	engine->m_displayRegistry.registerImage(OUTPUT_IMAGE_NAME, m_outputImage.imageView, { m_pixelWidth, m_pixelHeight });
-}
-
-void RaytraceJob::retirePendingImages(VulkanEngine* engine, bool force)
-{
-	const uint64_t currentFrame = (uint64_t)engine->m_frameNumber;
-
-	std::erase_if(m_pendingDestroys, [engine, currentFrame, force](const PendingImageDestroy& pending) {
-		if (!force && currentFrame < pending.retireFrame) {
-			return false;
-		}
-
-		engine->destroyImage(pending.image);
-		return true;
 	});
 }

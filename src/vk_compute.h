@@ -68,3 +68,10 @@ void dispatchComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescrip
 // extent. The shader still has to bounds-check, since the last workgroup along each axis
 // usually overhangs
 void dispatchComputePassOver(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkExtent3D domain);
+
+// the same binding, with the workgroup counts read by the GPU from `argumentBuffer` at
+// `argumentOffset` (a VkDispatchIndirectCommand: three uint32 group counts; the offset must be
+// a multiple of 4 and the buffer created with VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT). Whatever
+// wrote the arguments must be made visible to the VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT stage
+// with VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT first - the caller's barrier, as always
+void dispatchComputePassIndirect(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkBuffer argumentBuffer, VkDeviceSize argumentOffset);

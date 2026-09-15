@@ -1,0 +1,54 @@
+#version 460
+
+// GPU path tracer, stage 4: fold each pixel's K radiance slots into its running mean. Slots
+// that were not spawned (w == 0) and non-finite samples are skipped and not counted - one NaN
+// would poison the mean for good. A running mean rather than a running sum, because a future
+// adaptive budget leaves pixels with different counts, and per-pixel counts are kept for it.
+
+#extension GL_GOOGLE_include_directive : require
+#include "crt_common.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+	const uint pixel = gl_GlobalInvocationID.x;
+	if (pixel >= pc.width * pc.height) {
+		return;
+	}
+	const ivec2 coord = ivec2(pixel % pc.width, pixel / pc.width);
+
+	vec3 sum = vec3(0.0);
+	uint count = 0u;
+	for (uint k = 0u; k < pc.samplesPerFrame; k++) {
+		const vec4 slotValue = radiance[pixel * pc.samplesPerFrame + k];
+		if (slotValue.w == 0.0) {
+			continue;
+		}
+		const bool finite = all(equal(slotValue.rgb, slotValue.rgb)) && all(lessThan(abs(slotValue.rgb), vec3(CRT_INFINITY)));
+		if (!finite) {
+			continue;
+		}
+		sum += slotValue.rgb;
+		count++;
+	}
+
+	const uint n = imageLoad(sampleCount, coord).r;
+	const uint total = n + count;
+
+	if (pc.debugView == CRT_DEBUG_SAMPLE_COUNT_HEAT) {
+		// the count itself, as a grey ramp against the target - flat for a uniform budget
+		imageStore(accumulation, coord, vec4(vec3(float(total) / float(max(pc.maxSamples, 1u))), 1.0));
+		imageStore(sampleCount, coord, uvec4(total, 0u, 0u, 0u));
+		return;
+	}
+
+	if (count == 0u) {
+		return;
+	}
+
+	const vec3 mean = imageLoad(accumulation, coord).rgb;
+	const vec3 updated = (mean * float(n) + sum) / float(total);
+	imageStore(accumulation, coord, vec4(updated, 1.0));
+	imageStore(sampleCount, coord, uvec4(total, 0u, 0u, 0u));
+}

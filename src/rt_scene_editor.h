@@ -2,23 +2,23 @@
 
 // The live, persistent sphere list, and the "Scene" panel that browses the whole scene.
 //
-// It owns the spheres outright - they are the raytracer's geometry, and buildRaytraceScene()
-// copies them when a render starts. The glTF models and their mesh nodes it also lists are not
-// owned and not copied: they are read fresh out of VulkanEngine::m_models each time the panel
-// draws, so importing or removing a model is reflected immediately. Scene files themselves are
-// the engine's concern (VulkanEngine::openScene()/saveScene(), driven from the File menu).
+// It owns the spheres outright as plain data (SceneSphere, rt_scene_types.h) - they are the
+// raytracer's geometry, and a render copies them when it starts. The glTF models and their mesh
+// nodes it also lists are not owned and not copied: they are read fresh out of
+// VulkanEngine::m_models each time the panel draws, so importing or removing a model is
+// reflected immediately. Scene files themselves are the engine's concern
+// (VulkanEngine::openScene()/saveScene(), driven from the File menu).
 
-#include <rt_hittable.h>
-#include <rt_types.h>
+#include <rt_scene_types.h>
 #include <vk_types.h>
 
 class VulkanEngine;
 class TransformGizmo;
 
-struct SceneSphere {
-	std::string name;
-	std::shared_ptr<sphere> object;
-};
+// the per-object imgui controls, one per struct rather than a virtual per class. Both return
+// whether anything changed
+bool drawSphereParams(SceneSphere& sphere);
+bool drawMaterialParams(SphereMaterial& material);
 
 class RaytraceSceneEditor {
 public:
@@ -29,22 +29,28 @@ public:
 
 	const std::vector<SceneSphere>& spheres() const { return m_spheres; }
 
-	// swaps in a whole new sphere list - the load path. Goes through the same change tracking
-	// every manual edit uses, so consumers cannot miss it
+	// by stable id; null once the sphere has been deleted or the list replaced. The pointer is
+	// only good until the next mutation - do not keep it across frames
+	SceneSphere* findSphere(uint64_t id);
+	const SceneSphere* findSphere(uint64_t id) const;
+
+	// swaps in a whole new sphere list - the load path. Every sphere gets a fresh id, and it goes
+	// through the same change tracking every manual edit uses, so consumers cannot miss it
 	void replaceSpheres(std::vector<SceneSphere>&& spheres);
 
 	// incremented by every mutation: add, delete, sphere or material parameters, a gizmo drag, a
-	// loaded file. A consumer that derives data from the sphere list (the planned GPU raytracer's
-	// sphere buffer and accumulation reset, the raster preview spheres) stores the last revision
-	// it acted on and compares. Nothing ever resets it, so adding a consumer cannot starve another
+	// loaded file. A consumer that derives data from the sphere list (the raster preview spheres'
+	// material buffers, say) stores the last revision it acted on and compares. Nothing ever
+	// resets it, so adding a consumer cannot starve another
 	uint64_t revision() const { return m_revision; }
 
 	bool* visibilityFlag() { return &m_showPanel; }
 
 private:
 	void drawModels(VulkanEngine* engine);
-	void drawSphereParams(VulkanEngine* engine, int index);
-	void beginSphereGizmo(TransformGizmo& gizmo, const std::shared_ptr<sphere>& target);
+	void drawSelectedSphere(VulkanEngine* engine, int index);
+	void beginSphereGizmo(TransformGizmo& gizmo, uint64_t id);
+	void addSphere(SceneSphere sphere);
 
 	void markChanged() { m_revision++; }
 
@@ -61,6 +67,7 @@ private:
 	SelectionKind m_selectionKind { SelectionKind::None };
 	int m_selectionIndex { 0 };
 	int m_nextSphereNumber { 1 };
+	uint64_t m_nextId { 1 };
 	uint64_t m_revision { 1 };
 	bool m_showPanel { true };
 };

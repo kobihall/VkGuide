@@ -13,7 +13,7 @@
 // assets folder can move as a unit, and made absolute again on load. Reading navigates the
 // extras with simdjson, which fastgltf already links; writing hand-formats the small
 // fixed-shape payload with fmt. The payload carries a "version" so a later schema change has
-// something to branch on; version 1 files (spheres only) still load.
+// something to branch on; version 1 (spheres only) and 2 (no render settings) files still load.
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -21,7 +21,7 @@
 #include <filesystem>
 #include <vector>
 
-#include <rt_scene_editor.h>
+#include <rt_scene_types.h>
 #include <vk_types.h>
 
 struct SceneDescription {
@@ -30,10 +30,13 @@ struct SceneDescription {
 	// empty when the scene has no environment map
 	std::filesystem::path environmentMapPath;
 	std::vector<SceneSphere> spheres;
+	// how to render it, and how bright the environment lights it
+	RenderSettings render;
+	float environmentIntensity { 1.f };
 };
 
 IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);
 
-// on success out holds freshly constructed spheres and materials and absolute paths; on failure
-// it is untouched
+// on success out holds the spheres (with unassigned ids - RaytraceSceneEditor::replaceSpheres()
+// gives them theirs) and absolute paths; on failure it is untouched
 IoResult loadSceneFile(const std::filesystem::path& file, SceneDescription& out);

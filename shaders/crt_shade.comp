@@ -1,0 +1,168 @@
+#version 460
+
+// GPU path tracer, stage 3: shade every queued path from its hit record. A miss writes the
+// path's contribution (throughput x background) to its radiance slot and ends it; a hit
+// scatters through the material - src/rt_material.cpp's four materials, ported - and either
+// appends the path to the next queue or ends it. The radiance slot was pre-written as zero by
+// generate, so every path that ends without a miss contributes zero without writing.
+//
+// Russian roulette (not in the CPU backend) kills low-throughput paths after a few bounces
+// with probability 1 - max(throughput) and reweights the survivors, which is unbiased and
+// makes late bounces cheap under compaction.
+
+#extension GL_GOOGLE_include_directive : require
+#include "crt_common.glsl"
+#include "crt_random.glsl"
+#include "equirect.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+float schlick(float cosine, float refIdx)
+{
+	float r0 = (1.0 - refIdx) / (1.0 + refIdx);
+	r0 = r0 * r0;
+	return r0 + (1.0 - r0) * pow(1.0 - cosine, 5.0);
+}
+
+vec3 refractDir(vec3 uv, vec3 n, float etaiOverEtat)
+{
+	float cosTheta = min(dot(-uv, n), 1.0);
+	vec3 rOutPerp = etaiOverEtat * (uv + cosTheta * n);
+	vec3 rOutParallel = -sqrt(abs(1.0 - dot(rOutPerp, rOutPerp))) * n;
+	return rOutPerp + rOutParallel;
+}
+
+// the four materials, by type. `inDir` is the unit incoming direction. Returns false when the
+// path is absorbed
+bool scatter(GpuMaterial m, vec3 inDir, vec3 normal, bool frontFace, inout uint rng, out vec3 attenuation, out vec3 outDir)
+{
+	switch (m.type) {
+	case CRT_MATERIAL_LAMBERTIAN: {
+		// normal + a point on the unit sphere is a true cosine-weighted Lambertian distribution
+		vec3 d = normal + randomUnitVector(rng);
+		// the two can cancel almost exactly, and a zero direction turns into NaN once normalised
+		if (dot(d, d) < 1e-8) {
+			d = normal;
+		}
+		attenuation = m.albedo;
+		outDir = d;
+		return true;
+	}
+	case CRT_MATERIAL_METAL: {
+		vec3 reflected = reflect(inDir, normal);
+		outDir = reflected + m.param * randomInBall(rng);
+		attenuation = m.albedo;
+		return dot(outDir, normal) > 0.0;
+	}
+	case CRT_MATERIAL_PHONG: {
+		vec3 reflected = reflect(inDir, normal);
+		float alpha = pow(1000.0, m.param * m.param);
+		outDir = randomInHemisphere(reflected, alpha, rng);
+		attenuation = m.albedo;
+		return dot(outDir, normal) > 0.0;
+	}
+	case CRT_MATERIAL_DIELECTRIC: {
+		attenuation = vec3(1.0);
+		float ratio = frontFace ? (1.0 / m.param) : m.param;
+		float cosTheta = min(dot(-inDir, normal), 1.0);
+		float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+		bool cannotRefract = ratio * sinTheta > 1.0;
+		if (cannotRefract || schlick(cosTheta, ratio) > randomFloat(rng)) {
+			outDir = reflect(inDir, normal);
+		} else {
+			outDir = refractDir(inDir, normal, ratio);
+		}
+		return true;
+	}
+	}
+	attenuation = vec3(0.0);
+	outDir = normal;
+	return false;
+}
+
+vec3 background(vec3 direction)
+{
+	if ((pc.flags & CRT_FLAG_ENVIRONMENT_MAP) != 0u) {
+		// textureLod: compute has no derivatives to pick a level with, and the map has no mips
+		return textureLod(environmentMap, equirectUv(direction), 0.0).rgb * pc.environmentIntensity;
+	}
+	return skyGradient(direction);
+}
+
+vec3 bounceHeat(uint bounce)
+{
+	return vec3(float(bounce) / float(pc.rayDepth));
+}
+
+void main()
+{
+	const uint queue = pc.bounce & 1u;
+	const uint nextQueue = queue ^ 1u;
+	const uint index = gl_GlobalInvocationID.x;
+	// no early return: queueAppend() below has barriers every invocation must reach
+	const bool isActive = index < headers[queue].rayCount;
+
+	bool survives = false;
+	uint pathIndex = 0u;
+
+	if (isActive) {
+		pathIndex = queues[queueSlot(queue, index)];
+		PathState path = paths[pathIndex];
+		const HitRecord hit = hits[index];
+		const vec3 inDir = normalize(path.direction);
+		const bool isHit = hit.t >= 0.0;
+
+		// the debug views replace shading: each writes its value as the path's contribution
+		// and ends the path, so they accumulate (and average under jitter) like radiance
+		if (pc.debugView == CRT_DEBUG_PRIMARY_DIRECTION) {
+			radiance[path.radianceSlot] = vec4(inDir * 0.5 + 0.5, 1.0);
+		} else if (pc.debugView == CRT_DEBUG_HIT_MISS) {
+			radiance[path.radianceSlot] = vec4(isHit ? vec3(1.0) : vec3(0.0), 1.0);
+		} else if (pc.debugView == CRT_DEBUG_NORMAL) {
+			radiance[path.radianceSlot] = vec4(isHit ? hit.normal * 0.5 + 0.5 : vec3(0.0), 1.0);
+		} else if (!isHit) {
+			// the path escapes: it collects the background through everything it bounced off
+			const vec3 value = pc.debugView == CRT_DEBUG_BOUNCE_HEAT ? bounceHeat(path.bounce) : path.throughput * background(inDir);
+			radiance[path.radianceSlot] = vec4(value, 1.0);
+		} else {
+			const GpuMaterial material = materials[hit.materialAndFace >> 1u];
+			const bool frontFace = (hit.materialAndFace & 1u) != 0u;
+			uint rng = path.rngState;
+
+			vec3 attenuation;
+			vec3 outDir;
+			bool alive = scatter(material, inDir, hit.normal, frontFace, rng, attenuation, outDir);
+			vec3 throughput = path.throughput * attenuation;
+			const uint nextBounce = path.bounce + 1u;
+
+			// nowhere further to go: the CPU's ray_color() returns black at depth 0 without tracing
+			if (nextBounce >= pc.rayDepth) {
+				alive = false;
+			}
+
+			if (alive && (pc.flags & CRT_FLAG_ROULETTE) != 0u && nextBounce > pc.minBouncesBeforeRoulette) {
+				const float survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.05, 1.0);
+				if (randomFloat(rng) >= survival) {
+					alive = false;
+				} else {
+					throughput /= survival;
+				}
+			}
+
+			if (alive) {
+				path.origin = hit.position;
+				path.direction = outDir;
+				path.rngState = rng;
+				path.throughput = throughput;
+				path.bounce = nextBounce;
+				paths[pathIndex] = path;
+				survives = true;
+			} else if (pc.debugView == CRT_DEBUG_BOUNCE_HEAT) {
+				radiance[path.radianceSlot] = vec4(bounceHeat(nextBounce), 1.0);
+			}
+			// otherwise the pre-written zero stands: absorbed, killed, or out of depth
+		}
+	}
+
+	queueAppend(nextQueue, survives, pathIndex);
+}

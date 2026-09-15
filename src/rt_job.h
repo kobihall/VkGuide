@@ -1,11 +1,14 @@
 #pragma once
 
-// Owns the raytrace worker thread, its output pixels, and the GPU image that output ends up in.
+// The CPU raytracer backend: a worker thread rendering a RaytraceScene snapshot into a linear
+// pixel buffer. Kept behind RaytraceRenderer's backend switch until the GPU path tracer is
+// trusted, then deleted.
 //
 // Threading contract: the worker is handed a RaytraceScene by move at spawn time and touches
-// nothing else - no VulkanEngine, no Vulkan handle, no live editor state. Everything that has
-// to talk to Vulkan (uploading the finished buffer, registering it for display, destroying the
-// previous one) happens on the main thread in update().
+// nothing else - no VulkanEngine, no Vulkan handle, no live editor state. The main thread polls
+// update() once per frame; when it reports the render finished, the pixel buffer is readable
+// until the next start(). Nothing here touches Vulkan: the renderer that owns this uploads the
+// finished buffer.
 
 #include <atomic>
 #include <thread>
@@ -13,31 +16,34 @@
 #include <rt_scene.h>
 #include <vk_types.h>
 
-class VulkanEngine;
-class RaytraceSceneEditor;
-
 class RaytraceJob {
 public:
 	~RaytraceJob();
 
-	// call once per frame from the main thread, before the imgui frame's content is built, so
-	// a render that finished since last frame is registered in time to be drawn this frame
-	void update(VulkanEngine* engine);
+	void start(RaytraceScene&& scene);
 
-	// the render settings / Render / Cancel / progress window
-	void drawControlPanel(VulkanEngine* engine, const RaytraceSceneEditor& editor);
+	// asks the worker to stop at its next scanline; update() reports the join
+	void cancel();
 
-	// cancels and joins an in-flight render, then releases the output image. Requires the
-	// device to be idle, and must run before the display registry is torn down
-	void shutdown(VulkanEngine* engine);
+	// call once per frame from the main thread. Returns true exactly once per render, on the frame
+	// the worker has been joined - completed() then says whether it ran to the end, and pixels()
+	// holds the image if it did
+	bool update();
 
-	bool* visibilityFlag() { return &m_showPanel; }
+	// joins an in-flight render. Call before the owner is destroyed
+	void shutdown();
+
+	bool isRunning() const { return m_running; }
+	float progress() const { return m_progress.load(std::memory_order_relaxed); }
+
+	// only meaningful after update() returned true and until the next start()
+	bool completed() const { return m_completed; }
+	float renderMs() const { return m_workerRenderMs; }
+	const std::vector<glm::vec4>& pixels() const { return m_pixels; }
+	uint32_t width() const { return m_pixelWidth; }
+	uint32_t height() const { return m_pixelHeight; }
 
 private:
-	void start(RaytraceScene&& scene);
-	void publishOutput(VulkanEngine* engine);
-	void retirePendingImages(VulkanEngine* engine, bool force);
-
 	std::thread m_thread;
 
 	// shared with the worker while it runs, so atomic
@@ -55,23 +61,5 @@ private:
 	// main thread only
 	uint32_t m_pixelWidth { 0 };
 	uint32_t m_pixelHeight { 0 };
-	// duration of the last render that ran to completion, copied out of m_workerRenderMs after the join
-	float m_lastRenderMs { 0.f };
 	bool m_running { false };
-	RenderSettings m_settings;
-	int m_resolutionPreset { DEFAULT_RESOLUTION_PRESET };
-	// keeps starting a fresh render as soon as the previous one finishes
-	bool m_renderEveryFrame { false };
-	AllocatedImage m_outputImage {};
-	bool m_hasOutput { false };
-	bool m_showPanel { true };
-
-	// a replaced output image can still be referenced by command buffers that have not finished
-	// executing, so destruction waits until they provably have - the same deferral, for the same
-	// reason, that DisplayRegistry applies to its descriptor sets
-	struct PendingImageDestroy {
-		AllocatedImage image;
-		uint64_t retireFrame;
-	};
-	std::vector<PendingImageDestroy> m_pendingDestroys;
 };

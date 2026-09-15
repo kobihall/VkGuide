@@ -9,23 +9,22 @@
 #include <fastgltf/types.hpp>
 #include <simdjson.h>
 
-#include <rt_hittable.h>
-#include <rt_material.h>
 
 namespace {
 
 //bump when the payload's shape changes, and branch on it in parseSceneExtras() for older files.
-//1: spheres only. 2: adds "models" and "environmentMap"
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 2;
+//1: spheres only. 2: adds "models" and "environmentMap". 3: adds "render" and "environmentIntensity"
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 3;
 
 //---------------------------------------------------------------- writing
 
 //always a valid json number that reads back as a double: no nan/inf, and always a fraction or
-//exponent so simdjson does not hand back an integer
-std::string jsonNumber(double value)
+//exponent so simdjson does not hand back an integer. Formatted as the float it is, so the text is
+//the shortest that round-trips to the same float (0.7f prints as 0.7, not 0.699999988)
+std::string jsonNumber(float value)
 {
 	if (!std::isfinite(value)) {
-		value = 0.0;
+		value = 0.f;
 	}
 	std::string text = fmt::format("{}", value);
 	if (text.find_first_of(".eE") == std::string::npos) {
@@ -56,33 +55,27 @@ std::string jsonString(std::string_view text)
 	return out;
 }
 
-std::string jsonVec3(const glm::dvec3& v)
+std::string jsonVec3(const glm::vec3& v)
 {
 	return fmt::format("[{},{},{}]", jsonNumber(v.x), jsonNumber(v.y), jsonNumber(v.z));
 }
 
-//every material carries its complete parameters inline. The field names are the source fields'
-std::string materialJson(const material& mat)
+//every material carries its complete parameters inline - the selected type's only, since that is
+//what the material *is*; the other types' stored values are editing convenience, not scene data.
+//The field names are the source fields'
+std::string materialJson(const SphereMaterial& mat)
 {
-	const char* typeName = materialTypeName(mat.type());
+	const char* typeName = materialTypeName(mat.type);
 
-	switch (mat.type()) {
-	case MaterialType::Lambertian: {
-		const auto& m = static_cast<const lambertian&>(mat);
-		return fmt::format(R"({{"type":"{}","albedo":{}}})", typeName, jsonVec3(m.albedo));
-	}
-	case MaterialType::Metal: {
-		const auto& m = static_cast<const metal&>(mat);
-		return fmt::format(R"({{"type":"{}","albedo":{},"fuzz":{}}})", typeName, jsonVec3(m.albedo), jsonNumber(m.fuzz));
-	}
-	case MaterialType::Phong: {
-		const auto& m = static_cast<const phong&>(mat);
-		return fmt::format(R"({{"type":"{}","albedo":{},"smoothness":{}}})", typeName, jsonVec3(m.albedo), jsonNumber(m.smoothness));
-	}
-	case MaterialType::Dielectric: {
-		const auto& m = static_cast<const dielectric&>(mat);
-		return fmt::format(R"({{"type":"{}","ir":{}}})", typeName, jsonNumber(m.ir));
-	}
+	switch (mat.type) {
+	case MaterialType::Lambertian:
+		return fmt::format(R"({{"type":"{}","albedo":{}}})", typeName, jsonVec3(mat.albedo));
+	case MaterialType::Metal:
+		return fmt::format(R"({{"type":"{}","albedo":{},"fuzz":{}}})", typeName, jsonVec3(mat.albedo), jsonNumber(mat.fuzz));
+	case MaterialType::Phong:
+		return fmt::format(R"({{"type":"{}","albedo":{},"smoothness":{}}})", typeName, jsonVec3(mat.albedo), jsonNumber(mat.smoothness));
+	case MaterialType::Dielectric:
+		return fmt::format(R"({{"type":"{}","ir":{}}})", typeName, jsonNumber(mat.ir));
 	}
 
 	return fmt::format(R"({{"type":"{}"}})", typeName);
@@ -124,6 +117,15 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		json += fmt::format(R"(,"environmentMap":{})", jsonString(portablePath(scene.environmentMapPath, sceneDirectory)));
 	}
 
+	json += fmt::format(R"(,"environmentIntensity":{})", jsonNumber(scene.environmentIntensity));
+
+	//every setting, defaults on read, so a scene shared between machines loses nothing and an
+	//older build ignores the block
+	const RenderSettings& r = scene.render;
+	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"aperture":{},"focusDistance":{},"exposure":{}}})",
+		r.width, r.height, r.matchViewport, r.antialiasing, r.maxSamples, r.rayDepth, r.useFixedSeed, r.seed, r.samplesPerFrame, r.russianRoulette, r.minBouncesBeforeRoulette,
+		jsonNumber(r.aperture), jsonNumber(r.focusDistance), jsonNumber(r.exposure));
+
 	json += R"(,"spheres":[)";
 	for (size_t i = 0; i < scene.spheres.size(); i++) {
 		const SceneSphere& entry = scene.spheres[i];
@@ -131,7 +133,7 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 			json += ',';
 		}
 		json += fmt::format(R"({{"name":{},"center":{},"radius":{},"material":{}}})",
-			jsonString(entry.name), jsonVec3(entry.object->center), jsonNumber(entry.object->radius), materialJson(*entry.object->mat_ptr));
+			jsonString(entry.name), jsonVec3(entry.center), jsonNumber(entry.radius), materialJson(entry.material));
 	}
 
 	json += "]}";
@@ -175,7 +177,7 @@ bool readDouble(JsonElement result, double& out)
 	return readDouble(element, out);
 }
 
-bool readVec3(JsonElement element, glm::dvec3& out)
+bool readVec3(JsonElement element, glm::vec3& out)
 {
 	simdjson::dom::array array;
 	if (element.get_array().get(array) != simdjson::SUCCESS || array.size() != 3) {
@@ -183,16 +185,16 @@ bool readVec3(JsonElement element, glm::dvec3& out)
 	}
 	size_t i = 0;
 	for (simdjson::dom::element component : array) {
-		if (!readDouble(component, out[(glm::length_t)i++])) {
+		double value = 0.0;
+		if (!readDouble(component, value)) {
 			return false;
 		}
+		out[(glm::length_t)i++] = (float)value;
 	}
 	return true;
 }
 
-//constructs through makeMaterial() and then sets the type-specific fields, rather than
-//duplicating per-type construction here
-bool readMaterial(JsonElement element, std::shared_ptr<material>& out, std::string& error)
+bool readMaterial(JsonElement element, SphereMaterial& out, std::string& error)
 {
 	simdjson::dom::object object;
 	if (element.get_object().get(object) != simdjson::SUCCESS) {
@@ -217,13 +219,13 @@ bool readMaterial(JsonElement element, std::shared_ptr<material>& out, std::stri
 		return false;
 	}
 
-	glm::dvec3 albedo(0.7);
-	if (*type != MaterialType::Dielectric && !readVec3(object["albedo"], albedo)) {
+	//defaults for every field the file does not carry (the unselected types' parameters)
+	out = makeSphereMaterial(*type);
+
+	if (*type != MaterialType::Dielectric && !readVec3(object["albedo"], out.albedo)) {
 		error = fmt::format("{} material has no valid \"albedo\"", typeName);
 		return false;
 	}
-
-	out = makeMaterial(*type, albedo);
 
 	double value = 0.0;
 	switch (*type) {
@@ -232,27 +234,93 @@ bool readMaterial(JsonElement element, std::shared_ptr<material>& out, std::stri
 			error = "metal material has no valid \"fuzz\"";
 			return false;
 		}
-		static_cast<metal&>(*out).fuzz = std::clamp(value, 0.0, 1.0);
+		out.fuzz = std::clamp((float)value, 0.f, 1.f);
 		break;
 	case MaterialType::Phong:
 		if (!readDouble(object["smoothness"], value)) {
 			error = "phong material has no valid \"smoothness\"";
 			return false;
 		}
-		static_cast<phong&>(*out).smoothness = value;
+		out.smoothness = (float)value;
 		break;
 	case MaterialType::Dielectric:
 		if (!readDouble(object["ir"], value)) {
 			error = "dielectric material has no valid \"ir\"";
 			return false;
 		}
-		static_cast<dielectric&>(*out).ir = value;
+		out.ir = (float)value;
 		break;
 	case MaterialType::Lambertian:
 		break;
 	}
 
 	return true;
+}
+
+//optional fields: a missing or malformed one keeps the default, since older files have none
+void readOptionalInt(JsonElement element, int& out)
+{
+	int64_t value = 0;
+	if (element.get_int64().get(value) == simdjson::SUCCESS) {
+		out = (int)value;
+	}
+}
+
+void readOptionalUint(JsonElement element, uint32_t& out)
+{
+	uint64_t value = 0;
+	if (element.get_uint64().get(value) == simdjson::SUCCESS) {
+		out = (uint32_t)value;
+	}
+}
+
+void readOptionalBool(JsonElement element, bool& out)
+{
+	bool value = false;
+	if (element.get_bool().get(value) == simdjson::SUCCESS) {
+		out = value;
+	}
+}
+
+void readOptionalFloat(JsonElement element, float& out)
+{
+	double value = 0.0;
+	if (readDouble(element, value)) {
+		out = (float)value;
+	}
+}
+
+void readRenderSettings(JsonElement element, RenderSettings& out)
+{
+	simdjson::dom::object object;
+	if (element.get_object().get(object) != simdjson::SUCCESS) {
+		return;
+	}
+	readOptionalInt(object["width"], out.width);
+	readOptionalInt(object["height"], out.height);
+	readOptionalBool(object["matchViewport"], out.matchViewport);
+	readOptionalBool(object["antialiasing"], out.antialiasing);
+	readOptionalInt(object["maxSamples"], out.maxSamples);
+	readOptionalInt(object["rayDepth"], out.rayDepth);
+	readOptionalBool(object["useFixedSeed"], out.useFixedSeed);
+	readOptionalUint(object["seed"], out.seed);
+	readOptionalInt(object["samplesPerFrame"], out.samplesPerFrame);
+	readOptionalBool(object["russianRoulette"], out.russianRoulette);
+	readOptionalInt(object["minBouncesBeforeRoulette"], out.minBouncesBeforeRoulette);
+	readOptionalFloat(object["aperture"], out.aperture);
+	readOptionalFloat(object["focusDistance"], out.focusDistance);
+	readOptionalFloat(object["exposure"], out.exposure);
+
+	//a hand-edited file cannot land on something the ui could not
+	out.width = std::max(out.width, 2);
+	out.height = std::max(out.height, 2);
+	out.maxSamples = std::max(out.maxSamples, 1);
+	out.rayDepth = std::max(out.rayDepth, 1);
+	out.samplesPerFrame = std::max(out.samplesPerFrame, 1);
+	out.minBouncesBeforeRoulette = std::max(out.minBouncesBeforeRoulette, 0);
+	out.aperture = std::max(out.aperture, 0.f);
+	out.focusDistance = std::max(out.focusDistance, 0.01f);
+	out.exposure = std::max(out.exposure, 0.f);
 }
 
 struct ParseContext {
@@ -324,6 +392,11 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 		ctx.scene.environmentMapPath = resolvePath(environmentMap, ctx.sceneDirectory);
 	}
 
+	//version 3: both optional, defaults otherwise
+	readOptionalFloat(root["environmentIntensity"], ctx.scene.environmentIntensity);
+	ctx.scene.environmentIntensity = std::max(ctx.scene.environmentIntensity, 0.f);
+	readRenderSettings(root["render"], ctx.scene.render);
+
 	size_t index = 0;
 	for (simdjson::dom::element entry : spheres) {
 		simdjson::dom::object sphereObject;
@@ -341,8 +414,7 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			sphereEntry.name = fmt::format("sphere_{}", index + 1);
 		}
 
-		glm::dvec3 center;
-		if (!readVec3(sphereObject["center"], center)) {
+		if (!readVec3(sphereObject["center"], sphereEntry.center)) {
 			ctx.error = fmt::format("sphere \"{}\" has no valid \"center\"", sphereEntry.name);
 			return;
 		}
@@ -352,15 +424,15 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			ctx.error = fmt::format("sphere \"{}\" has no valid positive \"radius\"", sphereEntry.name);
 			return;
 		}
+		sphereEntry.radius = (float)radius;
 
-		std::shared_ptr<material> mat;
 		std::string materialError;
-		if (!readMaterial(sphereObject["material"], mat, materialError)) {
+		if (!readMaterial(sphereObject["material"], sphereEntry.material, materialError)) {
 			ctx.error = fmt::format("sphere \"{}\": {}", sphereEntry.name, materialError);
 			return;
 		}
 
-		sphereEntry.object = std::make_shared<sphere>(center, radius, mat);
+		//ids are the editor's to assign; a loaded sphere has none yet
 		ctx.scene.spheres.push_back(std::move(sphereEntry));
 		index++;
 	}

@@ -43,4 +43,10 @@ void forEachMeshNode(VulkanEngine* engine, const std::function<void(const MeshNo
 // scene load path, once per scene change - never per render, which is what it used to cost
 std::shared_ptr<const RaytraceMeshData> buildRaytraceMeshData(VulkanEngine* engine);
 
+// The raster camera as it is right now, plus the lens settings, as the thing a render is *of*.
+// Both backends call this at Render, so they fire the same primary rays for the same click.
+// When cameras enter the scene graph this grows a "which camera" argument; today the free
+// camera is the only source
+RTCameraSnapshot captureCameraSnapshot(VulkanEngine* engine, const RenderSettings& settings);
+
 RaytraceScene buildRaytraceScene(VulkanEngine* engine, const RaytraceSceneEditor& editor, const RenderSettings& settings);
