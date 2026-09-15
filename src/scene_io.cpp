@@ -13,8 +13,9 @@
 namespace {
 
 //bump when the payload's shape changes, and branch on it in parseSceneExtras() for older files.
-//1: spheres only. 2: adds "models" and "environmentMap". 3: adds "render" and "environmentIntensity"
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 3;
+//1: spheres only. 2: adds "models" and "environmentMap". 3: adds "render" and "environmentIntensity".
+//4: adds "cameras" and "renderCamera"; the lens and exposure move from "render" to each camera
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 4;
 
 //---------------------------------------------------------------- writing
 
@@ -122,9 +123,20 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	//every setting, defaults on read, so a scene shared between machines loses nothing and an
 	//older build ignores the block
 	const RenderSettings& r = scene.render;
-	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"aperture":{},"focusDistance":{},"exposure":{}}})",
-		r.width, r.height, r.matchViewport, r.antialiasing, r.maxSamples, r.rayDepth, r.useFixedSeed, r.seed, r.samplesPerFrame, r.russianRoulette, r.minBouncesBeforeRoulette,
-		jsonNumber(r.aperture), jsonNumber(r.focusDistance), jsonNumber(r.exposure));
+	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"unlimitedSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"restartOnChange":{}}})",
+		r.width, r.height, r.matchViewport, r.antialiasing, r.maxSamples, r.unlimitedSamples, r.rayDepth, r.useFixedSeed, r.seed, r.samplesPerFrame, r.russianRoulette, r.minBouncesBeforeRoulette, r.restartOnChange);
+
+	json += fmt::format(R"(,"renderCamera":{},"cameras":[)", scene.renderCamera);
+	for (size_t i = 0; i < scene.cameras.size(); i++) {
+		const SceneCamera& c = scene.cameras[i];
+		if (i > 0) {
+			json += ',';
+		}
+		json += fmt::format(R"({{"name":{},"position":{},"orientation":[{},{},{},{}],"fov":{},"aperture":{},"focusDistance":{},"exposure":{}}})",
+			jsonString(c.name), jsonVec3(c.position), jsonNumber(c.orientation.x), jsonNumber(c.orientation.y), jsonNumber(c.orientation.z), jsonNumber(c.orientation.w),
+			jsonNumber(c.vfovDegrees), jsonNumber(c.aperture), jsonNumber(c.focusDistance), jsonNumber(c.exposure));
+	}
+	json += ']';
 
 	json += R"(,"spheres":[)";
 	for (size_t i = 0; i < scene.spheres.size(); i++) {
@@ -301,15 +313,14 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 	readOptionalBool(object["matchViewport"], out.matchViewport);
 	readOptionalBool(object["antialiasing"], out.antialiasing);
 	readOptionalInt(object["maxSamples"], out.maxSamples);
+	readOptionalBool(object["unlimitedSamples"], out.unlimitedSamples);
 	readOptionalInt(object["rayDepth"], out.rayDepth);
 	readOptionalBool(object["useFixedSeed"], out.useFixedSeed);
 	readOptionalUint(object["seed"], out.seed);
 	readOptionalInt(object["samplesPerFrame"], out.samplesPerFrame);
 	readOptionalBool(object["russianRoulette"], out.russianRoulette);
 	readOptionalInt(object["minBouncesBeforeRoulette"], out.minBouncesBeforeRoulette);
-	readOptionalFloat(object["aperture"], out.aperture);
-	readOptionalFloat(object["focusDistance"], out.focusDistance);
-	readOptionalFloat(object["exposure"], out.exposure);
+	readOptionalBool(object["restartOnChange"], out.restartOnChange);
 
 	//a hand-edited file cannot land on something the ui could not
 	out.width = std::max(out.width, 2);
@@ -318,9 +329,58 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 	out.rayDepth = std::max(out.rayDepth, 1);
 	out.samplesPerFrame = std::max(out.samplesPerFrame, 1);
 	out.minBouncesBeforeRoulette = std::max(out.minBouncesBeforeRoulette, 0);
+}
+
+//a version-3 file kept the lens and exposure in "render"; they now belong to every camera, so
+//they seed the default camera the loader creates for such a file
+void readLegacyCameraSettings(JsonElement element, SceneCamera& out)
+{
+	simdjson::dom::object object;
+	if (element.get_object().get(object) != simdjson::SUCCESS) {
+		return;
+	}
+	readOptionalFloat(object["aperture"], out.aperture);
+	readOptionalFloat(object["focusDistance"], out.focusDistance);
+	readOptionalFloat(object["exposure"], out.exposure);
+}
+
+bool readCamera(simdjson::dom::object object, SceneCamera& out, std::string& error)
+{
+	std::string_view name;
+	if (object["name"].get_string().get(name) == simdjson::SUCCESS) {
+		out.name = std::string(name);
+	}
+	if (!readVec3(object["position"], out.position)) {
+		error = "camera has no valid \"position\"";
+		return false;
+	}
+
+	simdjson::dom::array quat;
+	if (object["orientation"].get_array().get(quat) != simdjson::SUCCESS || quat.size() != 4) {
+		error = "camera has no valid \"orientation\"";
+		return false;
+	}
+	float q[4];
+	size_t i = 0;
+	for (simdjson::dom::element component : quat) {
+		double value = 0.0;
+		if (!readDouble(component, value)) {
+			error = "camera has no valid \"orientation\"";
+			return false;
+		}
+		q[i++] = (float)value;
+	}
+	out.orientation = glm::normalize(glm::quat(q[3], q[0], q[1], q[2]));
+
+	readOptionalFloat(object["fov"], out.vfovDegrees);
+	readOptionalFloat(object["aperture"], out.aperture);
+	readOptionalFloat(object["focusDistance"], out.focusDistance);
+	readOptionalFloat(object["exposure"], out.exposure);
+	out.vfovDegrees = std::clamp(out.vfovDegrees, 1.f, 179.f);
 	out.aperture = std::max(out.aperture, 0.f);
 	out.focusDistance = std::max(out.focusDistance, 0.01f);
 	out.exposure = std::max(out.exposure, 0.f);
+	return true;
 }
 
 struct ParseContext {
@@ -396,6 +456,38 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 	readOptionalFloat(root["environmentIntensity"], ctx.scene.environmentIntensity);
 	ctx.scene.environmentIntensity = std::max(ctx.scene.environmentIntensity, 0.f);
 	readRenderSettings(root["render"], ctx.scene.render);
+
+	//version 4: cameras. An older file gets one default camera, carrying the lens settings its
+	//"render" block had
+	simdjson::dom::array cameras;
+	if (root["cameras"].get_array().get(cameras) == simdjson::SUCCESS) {
+		size_t cameraIndex = 0;
+		for (simdjson::dom::element entry : cameras) {
+			simdjson::dom::object cameraObject;
+			if (entry.get_object().get(cameraObject) != simdjson::SUCCESS) {
+				ctx.error = fmt::format("camera {} is not an object", cameraIndex);
+				return;
+			}
+			SceneCamera camera;
+			std::string cameraError;
+			if (!readCamera(cameraObject, camera, cameraError)) {
+				ctx.error = fmt::format("camera {}: {}", cameraIndex, cameraError);
+				return;
+			}
+			ctx.scene.cameras.push_back(std::move(camera));
+			cameraIndex++;
+		}
+		int64_t renderCamera = -1;
+		if (root["renderCamera"].get_int64().get(renderCamera) == simdjson::SUCCESS && renderCamera >= 0 && renderCamera < (int64_t)ctx.scene.cameras.size()) {
+			ctx.scene.renderCamera = (int)renderCamera;
+		}
+	} else {
+		SceneCamera camera;
+		camera.name = "render_camera";
+		readLegacyCameraSettings(root["render"], camera);
+		ctx.scene.cameras.push_back(std::move(camera));
+		ctx.scene.renderCamera = 0;
+	}
 
 	size_t index = 0;
 	for (simdjson::dom::element entry : spheres) {
@@ -492,7 +584,7 @@ IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::pat
 		return IoResult::failure(fmt::format("Failed to write '{}': {}", file.string(), fastgltf::getErrorMessage(error)));
 	}
 
-	return IoResult::success(fmt::format("Saved '{}': {} model(s), {} sphere(s){}", file.filename().string(), scene.modelPaths.size(), scene.spheres.size(), scene.environmentMapPath.empty() ? "" : ", environment map"));
+	return IoResult::success(fmt::format("Saved '{}': {} model(s), {} sphere(s), {} camera(s){}", file.filename().string(), scene.modelPaths.size(), scene.spheres.size(), scene.cameras.size(), scene.environmentMapPath.empty() ? "" : ", environment map"));
 }
 
 IoResult loadSceneFile(const std::filesystem::path& file, SceneDescription& out)
@@ -533,5 +625,5 @@ IoResult loadSceneFile(const std::filesystem::path& file, SceneDescription& out)
 	}
 
 	out = std::move(ctx.scene);
-	return IoResult::success(fmt::format("Read '{}': {} model(s), {} sphere(s)", file.filename().string(), out.modelPaths.size(), out.spheres.size()));
+	return IoResult::success(fmt::format("Read '{}': {} model(s), {} sphere(s), {} camera(s)", file.filename().string(), out.modelPaths.size(), out.spheres.size(), out.cameras.size()));
 }

@@ -231,8 +231,14 @@ void GpuPathTracer::uploadScene(VulkanEngine* engine)
 	m_materialsOffset = alignUp(spheresBytes, alignment);
 	const VkDeviceSize totalBytes = m_materialsOffset + sizeof(CrtMaterial) * entries;
 
+	//the previous render's buffer may still be read by the frame in flight, so it is retired
+	//through the deletion queue of the slot that frame used - flushed once its fence has been
+	//waited on, at the start of the frame after next
 	if (m_sceneBuffer.buffer != VK_NULL_HANDLE) {
-		engine->destroyBuffer(m_sceneBuffer);
+		const AllocatedBuffer old = m_sceneBuffer;
+		engine->m_frames[(engine->m_frameNumber + 1) % FRAME_OVERLAP].deletionQueue.push_function([engine, old]() {
+			engine->destroyBuffer(old);
+		});
 	}
 	m_sceneBuffer = engine->createBuffer(totalBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
 
@@ -285,19 +291,20 @@ void GpuPathTracer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 		fmt::println("GpuPathTracer: samples per frame lowered to {} to keep the pool under {} paths", samplesPerFrame, CRT_MAX_POOL);
 	}
 
-	//the previous render's frames may still be executing against the pool and scene buffers;
-	//a Render click is a menu-like action and a device-wide wait is the obviously-correct way
-	//to retire them
-	vkDeviceWaitIdle(engine->m_device);
-
-	allocatePool(engine, m_snapshot.width, m_snapshot.height, samplesPerFrame);
+	//a pool of a different size has to be reallocated, and the previous render's frames may
+	//still be executing against the old one: a device-wide wait is the obviously-correct way
+	//to retire it, and it only happens when the resolution or K changes
+	if (!m_hasPool || m_poolWidth != m_snapshot.width || m_poolHeight != m_snapshot.height || m_samplesPerFrame != samplesPerFrame) {
+		vkDeviceWaitIdle(engine->m_device);
+		allocatePool(engine, m_snapshot.width, m_snapshot.height, samplesPerFrame);
+	}
 	uploadScene(engine);
 
 	m_renderSerial++;
 	m_running = true;
 	m_clearPending = true;
 	m_samplesAccumulated = 0;
-	m_maxSamples = (uint32_t)std::max(m_snapshot.settings.maxSamples, 1);
+	m_maxSamples = m_snapshot.settings.unlimitedSamples ? 0u : (uint32_t)std::max(m_snapshot.settings.maxSamples, 1);
 	m_lastFrameGpuMs = 0.f;
 	m_totalGpuMs = 0.f;
 	m_pathsAlive.clear();
@@ -409,7 +416,7 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 			vkutil::memory_barrier(cmd, transferStage, transferAccess, computeStages, computeAccess);
 		}
 
-		//the camera, ported from RTCamera (rt_job.cpp) to float
+		//the RTIOW camera: origin, lower-left corner of the image plane, its two edges, and the lens basis
 		const RTCameraSnapshot& camera = m_snapshot.camera;
 		const float aspect = (float)m_poolWidth / (float)m_poolHeight;
 		const float theta = glm::radians(camera.vfovDegrees);
@@ -444,7 +451,7 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 			| ((m_snapshot.useEnvironmentMap && engine->m_environmentMap.image != VK_NULL_HANDLE) ? CRT_FLAG_ENVIRONMENT_MAP : 0u);
 		params.minBouncesBeforeRoulette = (uint32_t)std::max(settings.minBouncesBeforeRoulette, 0);
 		params.debugView = (uint32_t)debugView;
-		params.maxSamples = m_maxSamples;
+		params.maxSamples = std::max(m_maxSamples, 1u);
 		params.environmentIntensity = m_snapshot.environmentIntensity;
 
 		const VkDescriptorSet set = writeSet(engine, m_generate);
@@ -499,7 +506,7 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 		m_slotHeaderCount[slot] = params.rayDepth + 1;
 
 		m_samplesAccumulated += m_samplesPerFrame;
-		if (m_samplesAccumulated >= m_maxSamples) {
+		if (m_maxSamples > 0 && m_samplesAccumulated >= m_maxSamples) {
 			m_running = false;
 		}
 	}

@@ -1,56 +1,52 @@
 #pragma once
 
-// The raytracer as the user sees it: one "Raytrace Render" panel, one RenderSettings block, one
-// Render button, one "Raytraced Output" window - backed by whichever backend is selected.
+// The raytracer as the user sees it: the "Raytrace Render" panel, the RenderSettings, the
+// choice of scene camera, the Render/Stop buttons and the "Raytraced Output" window, in front
+// of the GPU path tracer (rt_gpu.h).
 //
-// The GPU path tracer (rt_gpu.h) is the real backend. The CPU raytracer (rt_job.h) stays
-// selectable behind the Backend combo so the two can be rendered from the same snapshot into
-// the same window at the same resolution and compared; when the GPU one is trusted, RaytraceJob
-// is deleted and this keeps its shape (docs/plans/compute-pipeline-raytracing.md §2.14).
+// A render is of a scene camera. It starts from what the scene, the camera and the settings
+// are at that moment; with "restart on change" (the default) the renderer watches all three
+// while the render runs and starts over the moment any of them differs from what it was
+// started from, so with unlimited samples the output window is a live, converging view of the
+// scene. A finished or stopped render is a snapshot and stays until the next Render click.
+// Exposure is the one exception: it is applied by the tonemap every frame and never restarts.
 //
-// The display image (rgba8, TonemapPass::DISPLAY_FORMAT) is persistent and owned here. The GPU
-// backend tonemaps into it every frame of a running render from inside draw()'s command buffer;
-// the CPU backend uploads its finished linear buffer and tonemaps it once. It is recreated only
-// when the render resolution changes, after a device-wide wait - a Render click is a menu-like
-// action and a one-frame stall there is simpler than a deferred-destroy list. Between frames it
-// always sits in SHADER_READ_ONLY_OPTIMAL, the layout DisplayRegistry needs.
+// The display image (rgba8, TonemapPass::DISPLAY_FORMAT) is persistent and owned here. It is
+// recreated only when the render resolution changes, after a device-wide wait - a Render is a
+// menu-like action and a one-frame stall there is simpler than a deferred-destroy list.
+// Between frames it always sits in SHADER_READ_ONLY_OPTIMAL, the layout DisplayRegistry needs.
 
 #include <chrono>
+#include <filesystem>
 
 #include <rt_gpu.h>
-#include <rt_job.h>
 #include <rt_scene_types.h>
 #include <vk_types.h>
 
 class VulkanEngine;
 class RaytraceSceneEditor;
 
-enum class RaytraceBackend {
-	Gpu,
-	CpuLegacy
-};
-
 class RaytraceRenderer {
 public:
 	// after the tonemap pass and default data exist
 	void init(VulkanEngine* engine);
 
-	// once per frame from the main thread, before the imgui frame's content is built, so a CPU
-	// render that finished since last frame is on screen this frame
-	void update(VulkanEngine* engine);
+	// once per frame from the main thread, before the imgui frame's content is built: reports
+	// a finished render and restarts a render whose inputs changed
+	void update(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 
 	void drawPanel(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 
-	// inside draw()'s command buffer, before the raster passes: this frame's GPU path-tracing
+	// inside draw()'s command buffer, before the raster passes: this frame's path-tracing
 	// work and its tonemap into the display image
-	void record(VkCommandBuffer cmd, VulkanEngine* engine);
+	void record(VkCommandBuffer cmd, VulkanEngine* engine, const RaytraceSceneEditor& editor);
 
-	// ends a running render early and keeps what it has. Also what destroying the environment
-	// map calls, since a GPU render samples it
+	// ends a running render and keeps what it has. Also what destroying the environment map
+	// calls, since a render samples it
 	void cancelRender();
 
-	// joins the CPU worker and releases every GPU resource. Requires the device to be idle, and
-	// must run before the display registry is torn down
+	// releases every GPU resource. Requires the device to be idle, and must run before the
+	// display registry is torn down
 	void shutdown(VulkanEngine* engine);
 
 	bool* visibilityFlag() { return &m_showPanel; }
@@ -60,36 +56,53 @@ public:
 	const RenderSettings& settings() const { return m_settings; }
 	void setSettings(const RenderSettings& settings);
 
+	// which scene camera renders. An id the scene no longer has falls back to its first camera
+	uint64_t renderCameraId() const { return m_renderCameraId; }
+	void setRenderCamera(uint64_t id) { m_renderCameraId = id; }
+
 private:
+	// everything a render depends on, compared every frame against what the running render
+	// was started from
+	struct RenderKey {
+		RTCameraSnapshot camera;
+		RenderSettings settings;
+		uint64_t sceneRevision { 0 };
+		std::filesystem::path environmentMapPath;
+		float environmentIntensity { 1.f };
+		uint32_t width { 0 };
+		uint32_t height { 0 };
+
+		bool operator==(const RenderKey&) const = default;
+	};
+
+	// the camera the next render would use, or null when the scene has none
+	const SceneCamera* resolveCamera(const RaytraceSceneEditor& editor);
+	RenderKey currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const SceneCamera& camera) const;
 	void startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	void ensureDisplayImage(VulkanEngine* engine, uint32_t width, uint32_t height);
 	void destroyDisplayImage(VulkanEngine* engine);
-	void publishCpuImage(VulkanEngine* engine);
 	void drawSettings(VulkanEngine* engine);
-	bool isRunning() const;
 
-	RaytraceBackend m_backend { RaytraceBackend::Gpu };
 	RenderSettings m_settings;
-	// the Resolution combo's selection: 0 is "Match viewport", 1.. index RESOLUTION_PRESETS
+	// the Resolution combo's selection: 0 is "Match viewport", 1.. index RESOLUTION_PRESETS,
+	// -1 a size from a file that matches no preset
 	int m_resolutionChoice { DEFAULT_RESOLUTION_PRESET + 1 };
+	uint64_t m_renderCameraId { 0 };
 
-	RaytraceJob m_cpu;
 	GpuPathTracer m_gpu;
 
 	AllocatedImage m_displayImage {};
 	bool m_hasDisplayImage { false };
 
-	// what the CPU backend was started with, since the job itself does not keep settings
-	int m_cpuRenderSamples { 0 };
-	float m_cpuRenderExposure { 1.f };
-	bool m_gpuWasRunning { false };
+	// what the running render was started from
+	RenderKey m_renderKey;
+	bool m_hasRender { false };
+	bool m_wasRunning { false };
 	std::chrono::steady_clock::time_point m_renderStart;
 
-	// about the last render that finished or was stopped. Its backend also says who owns the
-	// display image's contents
+	// about the last render that finished or was stopped
 	float m_lastRenderMs { 0.f };
 	int m_lastRenderSamples { 0 };
-	RaytraceBackend m_lastRenderBackend { RaytraceBackend::CpuLegacy };
 	bool m_hasLastRender { false };
 
 	bool m_showPanel { true };

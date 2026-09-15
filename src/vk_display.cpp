@@ -129,6 +129,12 @@ void DisplayRegistry::setVisible(const std::string& name, bool visible)
 	image->visible = visible;
 }
 
+bool DisplayRegistry::isVisible(const std::string& name) const
+{
+	auto found = std::find_if(images.begin(), images.end(), [&name](const DisplayImage& image) { return image.name == name; });
+	return found != images.end() && found->visible;
+}
+
 void DisplayRegistry::beginFrame(uint64_t currentFrame)
 {
 	frameNumber = currentFrame;

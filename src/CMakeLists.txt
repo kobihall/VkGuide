@@ -23,14 +23,7 @@ add_executable(vulkan_guide
     vk_loader.h
     vk_tonemap.cpp
     vk_tonemap.h
-    rt_types.h
     rt_scene_types.h
-    rt_random.cpp
-    rt_random.h
-    rt_hittable.cpp
-    rt_hittable.h
-    rt_material.cpp
-    rt_material.h
     rt_scene.cpp
     rt_scene.h
     rt_scene_editor.cpp
@@ -38,8 +31,6 @@ add_executable(vulkan_guide
     scene_io.cpp
     scene_io.h
     file_dialog.h
-    rt_job.cpp
-    rt_job.h
     rt_renderer.cpp
     rt_renderer.h
     rt_gpu.cpp

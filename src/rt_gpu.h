@@ -87,14 +87,16 @@ public:
 	// requires the device to be idle
 	void destroy(VulkanEngine* engine);
 
-	// allocates or reallocates the pool for the snapshot's size (after a device-wide wait if the
-	// size changed), uploads the spheres, and arms the next record() to clear the accumulation
+	// starts (or restarts) a render: reallocates the pool for the snapshot's size if it changed
+	// (after a device-wide wait - rare), uploads the spheres into a fresh buffer, and arms the
+	// next record() to clear the accumulation. Cheap enough to call on every camera move
 	void start(VulkanEngine* engine, GpuRenderSnapshot snapshot);
 	// keeps the image
 	void stop();
 
 	bool isRunning() const { return m_running; }
 	uint32_t samplesAccumulated() const { return m_samplesAccumulated; }
+	// 0 = unlimited
 	uint32_t maxSamples() const { return m_maxSamples; }
 	// the pool's actual samples per frame, after clamping to CRT_MAX_POOL
 	uint32_t samplesPerFrame() const { return m_samplesPerFrame; }

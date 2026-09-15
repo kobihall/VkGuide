@@ -48,6 +48,7 @@ public:
 	bool isRegistered(const std::string& name) const;
 	// aborts if name is not registered
 	void setVisible(const std::string& name, bool visible);
+	bool isVisible(const std::string& name) const;
 
 	// call once per frame before drawWindows(), with the engine's frame counter
 	void beginFrame(uint64_t currentFrame);

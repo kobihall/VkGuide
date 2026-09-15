@@ -3,15 +3,11 @@
 // The raytracer's scene model and render settings, as plain data.
 //
 // Everything here is what a scene *is* to the raytracer - spheres with tagged materials, the
-// loaded glTF geometry, a camera snapshot, how to render it - with no behaviour attached. Both
-// backends read it: the GPU path tracer uploads it as flat buffers, and the CPU backend (kept
-// behind a switch until the GPU one is trusted) constructs its own intersection/scattering
-// objects from it in buildRaytraceScene(). The editor, the gizmo adapter, the scene file and the
-// raster preview spheres all work on these structs directly, so retiring the CPU backend deletes
-// its classes without touching any of them.
-//
-// Float throughout: the GPU works in float and the editor's widgets are float widgets. The CPU
-// backend widens to double at conversion time and keeps its ported double math unchanged.
+// cameras it can be rendered from, the loaded glTF geometry, how to render it - with no
+// behaviour attached. The GPU path tracer uploads it as flat buffers; the editor, the gizmo
+// adapters, the scene file and the raster preview all work on these structs directly. Every
+// struct compares with ==, which is how the renderer notices that the thing it is rendering has
+// changed under it.
 
 #include <cstdint>
 #include <memory>
@@ -19,6 +15,8 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 //---------------------------------------------------------------- materials and spheres
 
@@ -63,6 +61,8 @@ struct SphereMaterial {
 	float smoothness { 0.5f };
 	// dielectric: index of refraction. 1.0 vacuum, 1.33 water, 1.5 glass, 2.42 diamond
 	float ir { 1.5f };
+
+	bool operator==(const SphereMaterial&) const = default;
 };
 
 inline SphereMaterial makeSphereMaterial(MaterialType type, const glm::vec3& albedo = glm::vec3(0.7f))
@@ -90,6 +90,37 @@ struct SceneSphere {
 	glm::vec3 center { 0.f, 0.f, -1.f };
 	float radius { 0.5f };
 	SphereMaterial material;
+
+	bool operator==(const SceneSphere&) const = default;
+};
+
+//---------------------------------------------------------------- cameras
+
+// A camera the scene can be rendered from: a placeable object like a sphere, with the lens
+// and display settings that belong to a camera rather than to a render. The raster viewport's
+// free camera is not one of these - it is a tool for looking at the scene - but "first-person
+// edit" lets it drive one. Orientation is a quaternion so the gizmo can rotate it freely; the
+// identity looks down -z with +y up, the same as the free camera at yaw 0, pitch 0
+struct SceneCamera {
+	// stable across edits and reorders, assigned by the editor and never saved
+	uint64_t id { 0 };
+	std::string name;
+	glm::vec3 position { 0.f, 0.f, 5.f };
+	glm::quat orientation { 1.f, 0.f, 0.f, 0.f };
+	float vfovDegrees { 70.f };
+	// the thin lens: a zero aperture is a pinhole; focusDistance is where the image plane sits
+	float aperture { 0.f };
+	float focusDistance { 6.f };
+	// display only: TonemapPass's scale for renders from this camera. Scales the picture, not
+	// the light (that is the scene's environmentIntensity)
+	float exposure { 1.f };
+
+	glm::vec3 forward() const { return orientation * glm::vec3(0.f, 0.f, -1.f); }
+	glm::vec3 up() const { return orientation * glm::vec3(0.f, 1.f, 0.f); }
+	// camera space -> world
+	glm::mat4 transform() const { return glm::translate(glm::mat4(1.f), position) * glm::mat4_cast(orientation); }
+
+	bool operator==(const SceneCamera&) const = default;
 };
 
 //---------------------------------------------------------------- glTF geometry
@@ -131,19 +162,35 @@ struct RaytraceMeshData {
 	size_t triangleCount { 0 };
 };
 
-//---------------------------------------------------------------- camera
+//---------------------------------------------------------------- camera snapshot
 
-// The raster camera's state at the instant Render was clicked. Captured by value so a render
-// never reads VulkanEngine::m_mainCamera, which keeps moving while the render runs.
+// What the path tracer's ray generation needs of a camera, by value: the look-from / look-at /
+// up form the ported RTIOW camera is built from, plus the lens. Everything about the camera
+// that affects the rays and nothing that does not (exposure is applied at display time), so
+// comparing two of these says whether a render has to start over
 struct RTCameraSnapshot {
 	glm::vec3 lookFrom { 0.f, 0.f, 0.f };
 	glm::vec3 lookAt { 0.f, 0.f, -1.f };
 	glm::vec3 vUp { 0.f, 1.f, 0.f };
 	float vfovDegrees { 70.f };
-	// a zero aperture makes the lens sampling a no-op
 	float aperture { 0.f };
 	float focusDistance { 1.f };
+
+	bool operator==(const RTCameraSnapshot&) const = default;
 };
+
+inline RTCameraSnapshot cameraSnapshot(const SceneCamera& camera)
+{
+	RTCameraSnapshot snapshot;
+	snapshot.lookFrom = camera.position;
+	snapshot.lookAt = camera.position + camera.forward();
+	snapshot.vUp = camera.up();
+	snapshot.vfovDegrees = camera.vfovDegrees;
+	//a zero focus distance would collapse the whole image plane onto one point
+	snapshot.aperture = glm::max(camera.aperture, 0.f);
+	snapshot.focusDistance = glm::max(camera.focusDistance, 0.01f);
+	return snapshot;
+}
 
 //---------------------------------------------------------------- render settings
 
@@ -167,40 +214,37 @@ inline constexpr ResolutionPreset RESOLUTION_PRESETS[] = {
 
 inline constexpr int DEFAULT_RESOLUTION_PRESET = 1;
 
-// How a render is made. Owned by RaytraceRenderer and saved with the scene; both backends read
-// it, and the panel greys out the rows the selected backend ignores
+// How a render is made. Owned by RaytraceRenderer and saved with the scene. The camera's own
+// settings (lens, exposure) live on the SceneCamera, and which camera renders is the
+// renderer's choice
 struct RenderSettings {
 	int width { RESOLUTION_PRESETS[DEFAULT_RESOLUTION_PRESET].width };
 	int height { RESOLUTION_PRESETS[DEFAULT_RESOLUTION_PRESET].height };
-	// render at the viewport's current draw resolution instead of width x height, captured at
-	// Render like everything else, so the output is pixel-for-pixel what the raster pass shows
+	// render at the viewport's current draw resolution instead of width x height, so the output
+	// is pixel-for-pixel what the raster pass shows
 	bool matchViewport { false };
-	// jitter each primary ray within its pixel and average maxSamples of them - supersampling,
-	// not Vulkan MSAA. Off traces a single un-jittered ray per pixel and stops there
+	// jitter each primary ray within its pixel and accumulate samples. Off traces a single
+	// un-jittered ray per pixel and stops there
 	bool antialiasing { true };
-	// samples per pixel this render takes: the CPU backend's per-pixel loop count, the GPU
-	// backend's stopping point
-	int maxSamples { 8 };
+	// samples per pixel a render takes before it stops by itself...
+	int maxSamples { 64 };
+	// ...unless it never does: keep refining until stopped or restarted
+	bool unlimitedSamples { false };
 	int rayDepth { 8 };
 	// seeds the render with `seed` instead of a random draw, so the same scene and settings
-	// reproduce the same image - useful when comparing renders or debugging. Both backends
-	// honour it; they do not produce the same image as each other
+	// reproduce the same image
 	bool useFixedSeed { false };
 	uint32_t seed { 1 };
-
-	// GPU only: samples per pixel added each engine frame (a K-times-larger path pool, not K loops)
+	// samples per pixel added each engine frame (a K-times-larger path pool, not K loops)
 	int samplesPerFrame { 1 };
-	// GPU only: after minBouncesBeforeRoulette, a path survives with probability max(throughput)
-	// and is reweighted, which is unbiased and makes late bounces cheap. Off for CPU comparisons
+	// after minBouncesBeforeRoulette, a path survives with probability max(throughput) and is
+	// reweighted, which is unbiased and makes late bounces cheap
 	bool russianRoulette { true };
 	int minBouncesBeforeRoulette { 3 };
+	// start the render over whenever what it renders changes: the camera moves, a sphere or
+	// the environment is edited, a setting is changed. With unlimited samples this is a live
+	// view of the scene
+	bool restartOnChange { true };
 
-	// the thin lens, both backends. A zero aperture is a pinhole; focusDistance is where the
-	// image plane sits and must stay above zero
-	float aperture { 0.f };
-	float focusDistance { 6.f };
-
-	// display only: TonemapPass's scale. Scales the picture, not the light (that is the scene's
-	// environmentIntensity)
-	float exposure { 1.f };
+	bool operator==(const RenderSettings&) const = default;
 };

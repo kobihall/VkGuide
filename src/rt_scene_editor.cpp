@@ -4,7 +4,6 @@
 #include <cstdio>
 
 #include <imgui.h>
-#include <glm/gtc/matrix_transform.hpp>
 
 #include <rt_scene.h>
 #include <vk_engine.h>
@@ -13,11 +12,19 @@
 
 namespace {
 
-//the gizmo identifies its target by an opaque pointer it never dereferences; a sphere's stable id
-//fits in one
+//the gizmo identifies its target by an opaque pointer it never dereferences; an object's stable
+//id fits in one
 const void* gizmoTargetId(uint64_t id)
 {
 	return (const void*)(uintptr_t)id;
+}
+
+//a rotation matrix from the gizmo may carry scale (SCALEU on spheres) or drift slightly; the
+//normalised columns are the orientation
+glm::quat orientationOf(const glm::mat4& m)
+{
+	const glm::mat3 basis(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])), glm::normalize(glm::vec3(m[2])));
+	return glm::normalize(glm::quat_cast(basis));
 }
 
 }
@@ -72,6 +79,29 @@ bool drawMaterialParams(SphereMaterial& material)
 	return changed;
 }
 
+bool drawCameraParams(SceneCamera& camera, bool& displayChanged)
+{
+	bool changed = ImGui::DragFloat3("position", &camera.position.x, 0.01f, 0.f, 0.f, "%.3f");
+
+	//euler angles for the widget only; the orientation itself stays a quaternion. Rebuilding
+	//the quaternion from the edited angles is exact for the angles the widget shows, so an
+	//untouched orientation is never disturbed
+	glm::vec3 eulerDegrees = glm::degrees(glm::eulerAngles(camera.orientation));
+	if (ImGui::DragFloat3("rotation (pitch, yaw, roll)", &eulerDegrees.x, 0.5f, 0.f, 0.f, "%.1f")) {
+		camera.orientation = glm::normalize(glm::quat(glm::radians(eulerDegrees)));
+		changed = true;
+	}
+
+	changed |= ImGui::SliderFloat("vertical fov", &camera.vfovDegrees, 10.f, 120.f, "%.1f");
+	changed |= ImGui::SliderFloat("aperture", &camera.aperture, 0.f, 1.f, "%.3f");
+	changed |= ImGui::SliderFloat("focus distance", &camera.focusDistance, 0.1f, 50.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+
+	//display only: applied by the tonemap every frame, so a running render need not restart
+	displayChanged = ImGui::SliderFloat("exposure", &camera.exposure, 0.f, 4.f);
+
+	return changed;
+}
+
 RaytraceSceneEditor::RaytraceSceneEditor()
 {
 	//the sibling project's hardcoded starting scene (Renderer::Renderer()), verbatim
@@ -86,12 +116,30 @@ RaytraceSceneEditor::RaytraceSceneEditor()
 	addSphere(std::move(center));
 	addSphere(std::move(left));
 	addSphere(std::move(right));
+
+	//one camera where the free camera starts, looking at the spheres
+	SceneCamera camera;
+	camera.name = "render_camera";
+	addCamera(std::move(camera));
 }
 
 void RaytraceSceneEditor::addSphere(SceneSphere sphere)
 {
 	sphere.id = m_nextId++;
 	m_spheres.push_back(std::move(sphere));
+}
+
+uint64_t RaytraceSceneEditor::addCamera(SceneCamera camera)
+{
+	camera.id = m_nextId++;
+	if (camera.name.empty()) {
+		camera.name = fmt::format("camera_{}", m_nextCameraNumber);
+	}
+	m_nextCameraNumber++;
+	const uint64_t id = camera.id;
+	m_cameras.push_back(std::move(camera));
+	markChanged();
+	return id;
 }
 
 SceneSphere* RaytraceSceneEditor::findSphere(uint64_t id)
@@ -106,6 +154,18 @@ const SceneSphere* RaytraceSceneEditor::findSphere(uint64_t id) const
 	return found == m_spheres.end() ? nullptr : &(*found);
 }
 
+SceneCamera* RaytraceSceneEditor::findCamera(uint64_t id)
+{
+	auto found = std::find_if(m_cameras.begin(), m_cameras.end(), [id](const SceneCamera& c) { return c.id == id; });
+	return found == m_cameras.end() ? nullptr : &(*found);
+}
+
+const SceneCamera* RaytraceSceneEditor::findCamera(uint64_t id) const
+{
+	auto found = std::find_if(m_cameras.begin(), m_cameras.end(), [id](const SceneCamera& c) { return c.id == id; });
+	return found == m_cameras.end() ? nullptr : &(*found);
+}
+
 void RaytraceSceneEditor::replaceSpheres(std::vector<SceneSphere>&& spheres)
 {
 	//the old spheres' ids die here. If the gizmo was editing one of them its lookup fails and it
@@ -116,6 +176,31 @@ void RaytraceSceneEditor::replaceSpheres(std::vector<SceneSphere>&& spheres)
 	}
 	m_selectionKind = SelectionKind::None;
 	m_nextSphereNumber = (int)m_spheres.size() + 1;
+	markChanged();
+}
+
+void RaytraceSceneEditor::replaceCameras(std::vector<SceneCamera>&& cameras)
+{
+	m_cameras.clear();
+	m_nextCameraNumber = 1;
+	for (SceneCamera& camera : cameras) {
+		addCamera(std::move(camera));
+	}
+	m_selectionKind = SelectionKind::None;
+	markChanged();
+}
+
+void RaytraceSceneEditor::setCameraPose(uint64_t id, const glm::vec3& position, const glm::quat& orientation)
+{
+	SceneCamera* camera = findCamera(id);
+	if (camera == nullptr) {
+		return;
+	}
+	if (camera->position == position && camera->orientation == orientation) {
+		return;
+	}
+	camera->position = position;
+	camera->orientation = orientation;
 	markChanged();
 }
 
@@ -159,21 +244,47 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 		markChanged();
 	}
 
-	const bool canDelete = m_selectionKind == SelectionKind::Sphere && m_selectionIndex < (int)m_spheres.size();
 	ImGui::SameLine();
-	ImGui::BeginDisabled(!canDelete);
-	if (ImGui::Button("Delete Sphere") && canDelete) {
-		//a gizmo editing this sphere fails its id lookup and ends itself
-		m_spheres.erase(m_spheres.begin() + m_selectionIndex);
+	if (ImGui::Button("Add Camera")) {
+		//where the viewport is looking right now, so the new camera frames what the user sees
+		SceneCamera camera = engine->cameraFromViewport();
+		addCamera(std::move(camera));
+		m_selectionKind = SelectionKind::Camera;
+		m_selectionIndex = (int)m_cameras.size() - 1;
+	}
+
+	const bool canDeleteSphere = m_selectionKind == SelectionKind::Sphere && m_selectionIndex < (int)m_spheres.size();
+	const bool canDeleteCamera = m_selectionKind == SelectionKind::Camera && m_selectionIndex < (int)m_cameras.size();
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!(canDeleteSphere || canDeleteCamera));
+	if (ImGui::Button("Delete")) {
+		//a gizmo or first-person edit on this object fails its id lookup and ends itself
+		if (canDeleteSphere) {
+			m_spheres.erase(m_spheres.begin() + m_selectionIndex);
+		} else if (canDeleteCamera) {
+			m_cameras.erase(m_cameras.begin() + m_selectionIndex);
+		}
 		m_selectionKind = SelectionKind::None;
 		markChanged();
 	}
 	ImGui::EndDisabled();
 
 	if (ImGui::BeginListBox("Objects", ImVec2(-FLT_MIN, 8 * ImGui::GetTextLineHeightWithSpacing()))) {
+		int row = 0;
+		for (int i = 0; i < (int)m_cameras.size(); i++) {
+			const bool selected = m_selectionKind == SelectionKind::Camera && m_selectionIndex == i;
+			ImGui::PushID(row++);
+			const std::string label = fmt::format("{} (camera)", m_cameras[i].name);
+			if (ImGui::Selectable(label.c_str(), selected)) {
+				m_selectionKind = SelectionKind::Camera;
+				m_selectionIndex = i;
+			}
+			ImGui::PopID();
+		}
+
 		for (int i = 0; i < (int)m_spheres.size(); i++) {
 			const bool selected = m_selectionKind == SelectionKind::Sphere && m_selectionIndex == i;
-			ImGui::PushID(i);
+			ImGui::PushID(row++);
 			if (ImGui::Selectable(m_spheres[i].name.c_str(), selected)) {
 				m_selectionKind = SelectionKind::Sphere;
 				m_selectionIndex = i;
@@ -186,7 +297,7 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 		//for a future mesh-tracing feature, not for transform editing
 		for (int i = 0; i < (int)gltfNames.size(); i++) {
 			const bool selected = m_selectionKind == SelectionKind::GltfNode && m_selectionIndex == i;
-			ImGui::PushID((int)m_spheres.size() + i);
+			ImGui::PushID(row++);
 			if (ImGui::Selectable(gltfNames[i].c_str(), selected)) {
 				m_selectionKind = SelectionKind::GltfNode;
 				m_selectionIndex = i;
@@ -198,6 +309,8 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 
 	if (m_selectionKind == SelectionKind::Sphere && m_selectionIndex < (int)m_spheres.size()) {
 		drawSelectedSphere(engine, m_selectionIndex);
+	} else if (m_selectionKind == SelectionKind::Camera && m_selectionIndex < (int)m_cameras.size()) {
+		drawSelectedCamera(engine, m_selectionIndex);
 	}
 
 	//the outcome of the last File-menu action, kept until the next one replaces it
@@ -246,14 +359,14 @@ void RaytraceSceneEditor::drawSelectedSphere(VulkanEngine* engine, int index)
 
 	ImGui::SeparatorText(sphere.name.c_str());
 
-	//scoping the widget ids to the selected sphere stops an in-progress drag, or any other
+	//scoping the widget ids to the selected object stops an in-progress drag, or any other
 	//per-widget state imgui keys by id, from carrying across a selection change
 	ImGui::PushID((int)sphere.id);
 
 	bool changed = drawSphereParams(sphere);
 
 	//the gizmo sits alongside the sliders, not instead of them: sliders for exact numbers, the
-	//gizmo for direct manipulation. Opt-in per sphere, and only one sphere at a time
+	//gizmo for direct manipulation. Opt-in per object, and only one object at a time
 	TransformGizmo& gizmo = engine->m_transformGizmo;
 	const bool editing = gizmo.isEditing(gizmoTargetId(sphere.id));
 	if (ImGui::Button(editing ? "Stop Editing Transform" : "Edit Transform")) {
@@ -271,6 +384,59 @@ void RaytraceSceneEditor::drawSelectedSphere(VulkanEngine* engine, int index)
 	ImGui::Spacing();
 
 	changed |= drawMaterialParams(sphere.material);
+
+	if (changed) {
+		markChanged();
+	}
+
+	ImGui::PopID();
+}
+
+void RaytraceSceneEditor::drawSelectedCamera(VulkanEngine* engine, int index)
+{
+	SceneCamera& camera = m_cameras[index];
+
+	ImGui::SeparatorText(camera.name.c_str());
+	ImGui::PushID((int)camera.id);
+
+	//while the viewport drives this camera its pose comes from there, not from the widgets
+	const bool firstPerson = engine->m_firstPersonCameraId == camera.id;
+
+	ImGui::BeginDisabled(firstPerson);
+	bool displayChanged = false;
+	bool changed = drawCameraParams(camera, displayChanged);
+	ImGui::EndDisabled();
+
+	TransformGizmo& gizmo = engine->m_transformGizmo;
+	const bool editing = gizmo.isEditing(gizmoTargetId(camera.id));
+	ImGui::BeginDisabled(firstPerson);
+	if (ImGui::Button(editing ? "Stop Editing Transform" : "Edit Transform")) {
+		if (editing) {
+			gizmo.endEditing();
+		} else {
+			beginCameraGizmo(gizmo, camera.id);
+		}
+	}
+	ImGui::EndDisabled();
+
+	//the other way to place a camera: look through it. The viewport takes this camera's pose
+	//and fov, and every move of the viewport moves the camera
+	ImGui::SameLine();
+	if (ImGui::Button(firstPerson ? "Stop First-Person Edit" : "First-Person Edit")) {
+		if (firstPerson) {
+			engine->endFirstPersonEdit();
+		} else {
+			gizmo.endEditing();
+			engine->beginFirstPersonEdit(camera.id);
+		}
+	}
+	if (editing) {
+		ImGui::SameLine();
+		ImGui::TextDisabled("(drag the gizmo in the viewport)");
+	} else if (firstPerson) {
+		ImGui::SameLine();
+		ImGui::TextDisabled("(fly the viewport: RMB look, WASD)");
+	}
 
 	if (changed) {
 		markChanged();
@@ -308,4 +474,29 @@ void RaytraceSceneEditor::beginSphereGizmo(TransformGizmo& gizmo, uint64_t id)
 		},
 		//a sphere has no meaningful rotation, so translate plus uniform scale (the radius) only
 		ImGuizmo::TRANSLATE | ImGuizmo::SCALEU);
+}
+
+void RaytraceSceneEditor::beginCameraGizmo(TransformGizmo& gizmo, uint64_t id)
+{
+	gizmo.beginEditing(
+		gizmoTargetId(id),
+		[this, id]() -> std::optional<glm::mat4> {
+			const SceneCamera* c = findCamera(id);
+			if (c == nullptr) {
+				return std::nullopt;
+			}
+			return c->transform();
+		},
+		[this, id](const glm::mat4& m) {
+			SceneCamera* c = findCamera(id);
+			if (c == nullptr) {
+				return;
+			}
+			c->position = glm::vec3(m[3]);
+			c->orientation = orientationOf(m);
+			markChanged();
+		},
+		//a camera is placed and aimed; its size is its fov. Local mode so the rotation rings
+		//follow the camera's own axes
+		ImGuizmo::TRANSLATE | ImGuizmo::ROTATE, ImGuizmo::LOCAL);
 }

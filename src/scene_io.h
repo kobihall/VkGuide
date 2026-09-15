@@ -13,7 +13,8 @@
 // assets folder can move as a unit, and made absolute again on load. Reading navigates the
 // extras with simdjson, which fastgltf already links; writing hand-formats the small
 // fixed-shape payload with fmt. The payload carries a "version" so a later schema change has
-// something to branch on; version 1 (spheres only) and 2 (no render settings) files still load.
+// something to branch on; version 1 (spheres only), 2 (no render settings) and 3 (no cameras)
+// files still load.
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -30,6 +31,10 @@ struct SceneDescription {
 	// empty when the scene has no environment map
 	std::filesystem::path environmentMapPath;
 	std::vector<SceneSphere> spheres;
+	// the cameras it can be rendered from, and which one the renderer had selected (an index
+	// into cameras; -1 for none). Ids are not saved - the editor assigns them on load
+	std::vector<SceneCamera> cameras;
+	int renderCamera { -1 };
 	// how to render it, and how bright the environment lights it
 	RenderSettings render;
 	float environmentIntensity { 1.f };

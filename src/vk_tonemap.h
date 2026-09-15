@@ -3,10 +3,8 @@
 // Converts a linear rgba32f radiance image into an rgba8 image that can be shown directly:
 // scale, zero out NaNs, clamp to [0,1], gamma 2 (shaders/tonemap.comp).
 //
-// Every raytracer output goes through this one pass - the CPU raytracer uploads its finished
-// buffer and runs it once, and the planned compute raytracer runs it on its accumulation image
-// each frame - so the two produce directly comparable images rather than each applying its own
-// display transform.
+// Every raytracer output goes through this one pass - the GPU path tracer runs it on its
+// accumulation image each frame - so any future output applies the same display transform.
 //
 // A thin wrapper over one ComputePass (vk_compute.h): it fixes the binding order and the push
 // constant shape so callers hand over two images and a float rather than writing a set.

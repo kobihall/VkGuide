@@ -217,3 +217,7 @@ Timings are from a `CMAKE_BUILD_TYPE=Debug` (`-O0`) build and aren't comparable 
 
 **Not verified — needs a human at the keyboard**: the material combo and per-type controls, the Anti-aliasing / Samples per pixel / Fixed seed controls, and that editing a material updates the raster preview sphere's colour. Renders also look slightly different from the sibling project's, because of the true-Lambertian change.
 
+
+## 10. Retired (2026-09-15)
+
+The CPU raytracer this doc built was replaced by the GPU path tracer (`docs/plans/completed/compute-pipeline-raytracing.md`) and deleted in the working tree that followed commit `68b2106` ("Temporary replanning"), after the user had compared the two backends interactively and found them to render the same scene. Deleted: `src/rt_job.h/.cpp` (worker thread, `RTCamera`, `publishOutput`), `src/rt_random.h/.cpp`, `src/rt_hittable.h/.cpp`, `src/rt_material.h/.cpp`, `src/rt_types.h` (`ray`, `hit_record`, `RT_INFINITY`), `RaytraceScene` and its `hit()`, and the Backend combo. What survives, on the GPU side: the scene editor and its panel, the four materials and their sampling math (ported function for function to `shaders/crt_shade.comp` and `crt_random.glsl`), the thin-lens camera (`crt_generate.comp`), the resolution presets, `RenderSettings`, `TonemapPass`, the "Raytraced Output" window, `RaytraceMeshData` and `forEachMeshNode()`. The git history before that point is the archive of the CPU code.

@@ -61,3 +61,20 @@ void vkutil::copy_image_to_image(VkCommandBuffer cmd, VkImage source, VkImage de
 
 	vkinit::VkFunctionLoader::get_instance().vkCmdBlitImage2KHR(cmd, &blitInfo);
 }
+void vkutil::memory_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess)
+{
+	VkMemoryBarrier2 barrier { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	barrier.pNext = nullptr;
+	barrier.srcStageMask = srcStage;
+	barrier.srcAccessMask = srcAccess;
+	barrier.dstStageMask = dstStage;
+	barrier.dstAccessMask = dstAccess;
+
+	VkDependencyInfo depInfo {};
+	depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	depInfo.pNext = nullptr;
+	depInfo.memoryBarrierCount = 1;
+	depInfo.pMemoryBarriers = &barrier;
+
+	vkinit::VkFunctionLoader::get_instance().vkCmdPipelineBarrier2KHR(cmd, &depInfo);
+}

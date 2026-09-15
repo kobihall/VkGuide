@@ -9,6 +9,8 @@
 
 #include <stb_image.h>
 #include <glm/gtc/packing.hpp>
+#include <glm/gtc/constants.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include <stdio.h>			// printf, fprintf
 #include <stdlib.h>			// abort, getenv
@@ -35,6 +37,8 @@
 
 constexpr bool b_UseValidationLayers = false;
 
+constexpr const char* SCENE_MIRROR_DISPLAY_NAME = "Scene Mirror";
+
 void VulkanEngine::init()
 {
 	m_rootPath = "../";
@@ -55,8 +59,8 @@ void VulkanEngine::init()
 	//debug view of the main draw image. Hidden by default, shown from the "Windows" menu.
 	//note this mirrors the whole draw image, so at a render scale below 1 the unused border
 	//still holds the previous frame's pixels
-	m_displayRegistry.registerImage("Scene Mirror", m_drawImage.imageView, { m_drawImage.imageExtent.width, m_drawImage.imageExtent.height });
-	m_displayRegistry.setVisible("Scene Mirror", false);
+	m_displayRegistry.registerImage(SCENE_MIRROR_DISPLAY_NAME, m_drawImage.imageView, { m_drawImage.imageExtent.width, m_drawImage.imageExtent.height });
+	m_displayRegistry.setVisible(SCENE_MIRROR_DISPLAY_NAME, false);
 
 	m_mainCamera.velocity = glm::vec3(0.f);
 	m_mainCamera.position = glm::vec3(0, 0, 5);
@@ -121,7 +125,7 @@ void VulkanEngine::draw()
 
 	// this frame's GPU path tracing, first: it only touches its own buffers and the raytracer's
 	// display image, which it leaves readable for drawImgui()
-	m_raytracer.record(cmd, this);
+	m_raytracer.record(cmd, this, m_raytraceScene);
 
 	// transition our main draw image into general layout so we can write into it
 	// we will overwrite it all so we don't care about what was the older layout
@@ -204,8 +208,6 @@ void VulkanEngine::updateScene()
 {
 	//begin clock
 	auto start = std::chrono::system_clock::now();
-
-	m_mainCamera.update();
 
 	m_mainDrawContext.opaqueSurfaces.clear();
 
@@ -352,8 +354,10 @@ void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 				VkViewport viewport = {};
 				viewport.x = 0;
 				viewport.y = 0;
-				viewport.width = (float)m_windowExtent.width;
-				viewport.height = (float)m_windowExtent.height;
+				//the region the blit shows, not the window: the two disagreed after a resize and the
+				//geometry was clipped and stretched against the imgui overlays
+				viewport.width = (float)m_drawExtent.width;
+				viewport.height = (float)m_drawExtent.height;
 				viewport.minDepth = 0.f;
 				viewport.maxDepth = 1.f;
 
@@ -362,8 +366,8 @@ void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 				VkRect2D scissor = {};
 				scissor.offset.x = 0;
 				scissor.offset.y = 0;
-				scissor.extent.width = m_windowExtent.width;
-				scissor.extent.height = m_windowExtent.height;
+				scissor.extent.width = m_drawExtent.width;
+				scissor.extent.height = m_drawExtent.height;
 
 				vkCmdSetScissor(cmd, 0, 1, &scissor);
 			}
@@ -480,6 +484,10 @@ void VulkanEngine::run()
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
+		//the camera moves first, so the gizmo, the overlays, the panels and the raster pass all
+		//see this frame's pose - a camera updated after the gizmo was drawn trails it by a frame
+		updateViewportCamera();
+
 		//first, so the window ImGuizmo draws into sits behind every panel built after it
 		m_transformGizmo.beginFrame();
 
@@ -487,7 +495,7 @@ void VulkanEngine::run()
 
 		//before the imgui content below, so a raytrace that finished since the last frame has
 		//its output on screen this frame rather than the next one
-		m_raytracer.update(this);
+		m_raytracer.update(this, m_raytraceScene);
 
 		if (ImGui::BeginMainMenuBar()) {
 			drawFileMenu();
@@ -540,6 +548,8 @@ void VulkanEngine::run()
 		}
 
 		m_displayRegistry.drawWindows();
+
+		drawCameraOverlays();
 
 		//after the panels, so an "Edit Transform" click shows the gizmo this frame. ImGuizmo
 		//maps clip space to the screen itself, y up, so it gets the un-flipped projection
@@ -646,10 +656,137 @@ void VulkanEngine::setCameraCapture(bool active)
 	m_cameraCaptureActive = active;
 }
 
+float VulkanEngine::rasterVerticalFov() const
+{
+	if (m_firstPersonCameraId != 0) {
+		if (const SceneCamera* camera = m_raytraceScene.findCamera(m_firstPersonCameraId)) {
+			return camera->vfovDegrees;
+		}
+	}
+	return CAMERA_VERTICAL_FOV_DEGREES;
+}
+
 glm::mat4 VulkanEngine::rasterProjection() const
 {
 	//forward-z, not vkguide's reversed near/far - see CLAUDE.md's MoltenVK notes
-	return glm::perspective(glm::radians(CAMERA_VERTICAL_FOV_DEGREES), (float)m_windowExtent.width / (float)m_windowExtent.height, 0.1f, 10000.f);
+	return glm::perspective(glm::radians(rasterVerticalFov()), (float)m_windowExtent.width / (float)m_windowExtent.height, 0.1f, 10000.f);
+}
+
+SceneCamera VulkanEngine::cameraFromViewport() const
+{
+	SceneCamera camera;
+	camera.position = m_mainCamera.position;
+	camera.orientation = glm::normalize(glm::quat_cast(glm::mat3(const_cast<Camera&>(m_mainCamera).getRotationMatrix())));
+	camera.vfovDegrees = CAMERA_VERTICAL_FOV_DEGREES;
+	return camera;
+}
+
+void VulkanEngine::beginFirstPersonEdit(uint64_t cameraId)
+{
+	const SceneCamera* camera = m_raytraceScene.findCamera(cameraId);
+	if (camera == nullptr) {
+		return;
+	}
+
+	//the free camera is yaw/pitch only (no roll), so the scene camera's orientation is reduced
+	//to the yaw and pitch of its forward vector: Camera::getRotationMatrix() yaws about -y then
+	//pitches about +x, giving forward = (sin yaw cos pitch, sin pitch, -cos yaw cos pitch)
+	const glm::vec3 forward = glm::normalize(camera->forward());
+	m_mainCamera.position = camera->position;
+	m_mainCamera.pitch = glm::asin(glm::clamp(forward.y, -1.f, 1.f));
+	m_mainCamera.yaw = glm::atan(forward.x, -forward.z);
+	m_mainCamera.velocity = glm::vec3(0.f);
+	m_firstPersonCameraId = cameraId;
+}
+
+void VulkanEngine::endFirstPersonEdit()
+{
+	//the viewport keeps the pose it is at; the camera keeps what was last written into it
+	m_firstPersonCameraId = 0;
+}
+
+void VulkanEngine::updateViewportCamera()
+{
+	m_mainCamera.update();
+
+	if (m_firstPersonCameraId == 0) {
+		return;
+	}
+	if (m_raytraceScene.findCamera(m_firstPersonCameraId) == nullptr) {
+		//deleted or the scene was replaced under the edit
+		m_firstPersonCameraId = 0;
+		return;
+	}
+	//the viewport's pose becomes the camera's; a resting viewport writes nothing
+	m_raytraceScene.setCameraPose(m_firstPersonCameraId, m_mainCamera.position, glm::normalize(glm::quat_cast(glm::mat3(m_mainCamera.getRotationMatrix()))));
+}
+
+void VulkanEngine::drawCameraOverlays()
+{
+	const std::vector<SceneCamera>& cameras = m_raytraceScene.cameras();
+	if (cameras.empty()) {
+		return;
+	}
+
+	const ImGuiViewport* viewport = ImGui::GetMainViewport();
+	ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+	const glm::mat4 viewProj = rasterProjection() * m_mainCamera.getViewMatrix();
+
+	//world -> screen through the raster view; nothing behind the viewport is drawn
+	auto project = [&](const glm::vec3& world, ImVec2& out) {
+		const glm::vec4 clip = viewProj * glm::vec4(world, 1.f);
+		if (clip.w <= 0.001f) {
+			return false;
+		}
+		const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+		out = ImVec2(viewport->Pos.x + (ndc.x * 0.5f + 0.5f) * viewport->Size.x, viewport->Pos.y + (0.5f - ndc.y * 0.5f) * viewport->Size.y);
+		return true;
+	};
+	auto line = [&](const glm::vec3& a, const glm::vec3& b, ImU32 color) {
+		ImVec2 pa, pb;
+		if (project(a, pa) && project(b, pb)) {
+			drawList->AddLine(pa, pb, color, 1.5f);
+		}
+	};
+
+	//the frustum's aspect is the render's, so the outline shows what a render would frame
+	const RenderSettings& settings = m_raytracer.settings();
+	const float aspect = settings.matchViewport
+		? (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u)
+		: (float)std::max(settings.width, 1) / (float)std::max(settings.height, 1);
+
+	for (const SceneCamera& camera : cameras) {
+		//the flown camera is the viewport itself; its outline would fill the screen
+		if (camera.id == m_firstPersonCameraId) {
+			continue;
+		}
+		const bool isRenderCamera = camera.id == m_raytracer.renderCameraId();
+		const ImU32 color = isRenderCamera ? IM_COL32(255, 220, 80, 255) : IM_COL32(200, 200, 200, 160);
+
+		//a short pyramid along -z: the apex is the camera, the base a frame at `depth` sized by the fov
+		const float depth = 0.5f;
+		const float halfHeight = depth * glm::tan(glm::radians(camera.vfovDegrees) * 0.5f);
+		const float halfWidth = halfHeight * aspect;
+		const glm::mat4 transform = camera.transform();
+		auto corner = [&](float x, float y) { return glm::vec3(transform * glm::vec4(x, y, -depth, 1.f)); };
+		const glm::vec3 apex = camera.position;
+		const glm::vec3 c0 = corner(-halfWidth, -halfHeight);
+		const glm::vec3 c1 = corner(halfWidth, -halfHeight);
+		const glm::vec3 c2 = corner(halfWidth, halfHeight);
+		const glm::vec3 c3 = corner(-halfWidth, halfHeight);
+		line(apex, c0, color);
+		line(apex, c1, color);
+		line(apex, c2, color);
+		line(apex, c3, color);
+		line(c0, c1, color);
+		line(c1, c2, color);
+		line(c2, c3, color);
+		line(c3, c0, color);
+		//an "up" triangle on the top edge, so the roll is readable
+		const glm::vec3 top = corner(0.f, halfHeight * 1.5f);
+		line(c3, top, color);
+		line(top, c2, color);
+	}
 }
 
 namespace {
@@ -724,7 +861,12 @@ void VulkanEngine::newScene()
 {
 	clearModels();
 	clearEnvironmentMap();
+	m_firstPersonCameraId = 0;
 	m_raytraceScene.replaceSpheres({});
+	//an empty scene still has somewhere to render from
+	SceneCamera camera;
+	camera.name = "render_camera";
+	m_raytraceScene.replaceCameras({ camera });
 	m_raytracer.setSettings(RenderSettings {});
 	m_environmentIntensity = 1.f;
 	m_scenePath.clear();
@@ -739,6 +881,12 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 	}
 	scene.environmentMapPath = m_environmentMapPath;
 	scene.spheres = m_raytraceScene.spheres();
+	scene.cameras = m_raytraceScene.cameras();
+	for (size_t i = 0; i < scene.cameras.size(); i++) {
+		if (scene.cameras[i].id == m_raytracer.renderCameraId()) {
+			scene.renderCamera = (int)i;
+		}
+	}
 	scene.render = m_raytracer.settings();
 	scene.environmentIntensity = m_environmentIntensity;
 
@@ -776,8 +924,13 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 			problems.push_back(mapLoaded.message);
 		}
 	}
+	m_firstPersonCameraId = 0;
 	m_raytraceScene.replaceSpheres(std::move(scene.spheres));
+	m_raytraceScene.replaceCameras(std::move(scene.cameras));
 	m_raytracer.setSettings(scene.render);
+	if (scene.renderCamera >= 0 && scene.renderCamera < (int)m_raytraceScene.cameras().size()) {
+		m_raytracer.setRenderCamera(m_raytraceScene.cameras()[scene.renderCamera].id);
+	}
 	m_environmentIntensity = scene.environmentIntensity;
 	m_scenePath = absoluteNormalized(path);
 
@@ -1036,7 +1189,7 @@ void VulkanEngine::createSwapchain(uint32_t width, uint32_t height)
 		.set_desired_format(VkSurfaceFormatKHR{ .format = m_swapchainImageFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
 		.set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR)
 		.set_desired_extent(width, height)
-		.add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+		.add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
 		.build();
 	vkbErr(swapchain_ret);
 
@@ -1069,6 +1222,15 @@ void VulkanEngine::resizeSwapchain()
 	m_windowExtent.height = h;
 
 	createSwapchain(m_windowExtent.width, m_windowExtent.height);
+
+	//the draw images follow the window, so the raster keeps the swapchain's aspect and the
+	//"Scene Mirror" window shows the new image. The device is idle, so the old views can go now
+	const bool mirrorVisible = m_displayRegistry.isVisible(SCENE_MIRROR_DISPLAY_NAME);
+	m_displayRegistry.unregisterImage(SCENE_MIRROR_DISPLAY_NAME);
+	destroyDrawImages();
+	createDrawImages(m_windowExtent);
+	m_displayRegistry.registerImage(SCENE_MIRROR_DISPLAY_NAME, m_drawImage.imageView, { m_drawImage.imageExtent.width, m_drawImage.imageExtent.height });
+	m_displayRegistry.setVisible(SCENE_MIRROR_DISPLAY_NAME, mirrorVisible);
 
 	m_resizeRequested = false;
 }
@@ -1249,11 +1411,22 @@ GPUMeshBuffers VulkanEngine::uploadMesh(std::span<uint32_t> indices, std::span<V
 void VulkanEngine::initSwapchain()
 {
 	createSwapchain(m_windowExtent.width, m_windowExtent.height);
+	createDrawImages(m_windowExtent);
 
-	//draw image size will match the window
+	//add to deletion queues: whatever draw images the members hold at shutdown
+	m_mainDeletionQueue.push_function([this]() {
+		destroyDrawImages();
+	});
+}
+
+void VulkanEngine::createDrawImages(VkExtent2D extent)
+{
+	//the draw image is the window's size in points (the swapchain is the framebuffer, 2x that on
+	//a retina display, and the blit scales up). Same aspect as the swapchain by construction,
+	//so m_drawExtent, the raster viewport and the blit region always agree
 	VkExtent3D drawImageExtent = {
-		m_windowExtent.width,
-		m_windowExtent.height,
+		extent.width,
+		extent.height,
 		1
 	};
 
@@ -1299,15 +1472,17 @@ void VulkanEngine::initSwapchain()
 	VkImageViewCreateInfo dview_info = vkinit::imageview_create_info(m_depthImage.imageFormat, m_depthImage.image, VK_IMAGE_ASPECT_DEPTH_BIT);
 
 	checkVkResult(vkCreateImageView(m_device, &dview_info, nullptr, &m_depthImage.imageView));
+}
 
-	//add to deletion queues
-	m_mainDeletionQueue.push_function([this]() {
-		vkDestroyImageView(m_device, m_drawImage.imageView, nullptr);
-		vmaDestroyImage(m_memAllocator, m_drawImage.image, m_drawImage.allocation);
+void VulkanEngine::destroyDrawImages()
+{
+	vkDestroyImageView(m_device, m_drawImage.imageView, nullptr);
+	vmaDestroyImage(m_memAllocator, m_drawImage.image, m_drawImage.allocation);
 
-		vkDestroyImageView(m_device, m_depthImage.imageView, nullptr);
-		vmaDestroyImage(m_memAllocator, m_depthImage.image, m_depthImage.allocation);
-	});
+	vkDestroyImageView(m_device, m_depthImage.imageView, nullptr);
+	vmaDestroyImage(m_memAllocator, m_depthImage.image, m_depthImage.allocation);
+	m_drawImage = {};
+	m_depthImage = {};
 }
 
 void VulkanEngine::initCommands()
@@ -1713,12 +1888,12 @@ static MeshAsset makeUnitSphereMesh(VulkanEngine* engine, uint32_t rings, uint32
 	vertices.reserve((size_t)(rings + 1) * (segments + 1));
 
 	for (uint32_t ring = 0; ring <= rings; ring++) {
-		const double theta = RT_PI * (double)ring / (double)rings;
+		const double theta = glm::pi<double>() * (double)ring / (double)rings;
 		const double sinTheta = sin(theta);
 		const double cosTheta = cos(theta);
 
 		for (uint32_t segment = 0; segment <= segments; segment++) {
-			const double phi = 2.0 * RT_PI * (double)segment / (double)segments;
+			const double phi = 2.0 * glm::pi<double>() * (double)segment / (double)segments;
 
 			Vertex vtx;
 			vtx.position = glm::vec3(sinTheta * cos(phi), cosTheta, sinTheta * sin(phi));
@@ -1918,8 +2093,8 @@ void VulkanEngine::cleanup()
 		//make sure the gpu has stopped doing its things
 		vkDeviceWaitIdle(m_device);
 
-		//cancels and joins any in-flight raytrace, and releases its output image and the GPU
-		//tracer's resources while the display registry it is registered with is still alive
+			//stops any in-flight render and releases its output image and the GPU tracer's resources
+		//while the display registry it is registered with is still alive
 		m_raytracer.shutdown(this);
 
 		m_models.clear();

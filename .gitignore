@@ -5,6 +5,7 @@
 
 *.sh
 *.spv
+*.hdr
 imgui.ini
 compile.sh
 run.sh

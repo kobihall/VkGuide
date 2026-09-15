@@ -209,8 +209,11 @@ public:
 	// scene
 	Camera m_mainCamera;
 	RaytraceSceneEditor m_raytraceScene;
-	// the raytracer: its panel, settings, backends and output window
+	// the raytracer: its panel, settings, the GPU path tracer and the output window
 	RaytraceRenderer m_raytracer;
+	// the scene camera the viewport is currently flying (first-person edit): every frame the
+	// viewport's pose is written into it. 0 = none, the viewport is a free camera
+	uint64_t m_firstPersonCameraId { 0 };
 	GPUSceneData m_sceneData;
 	VkDescriptorSetLayout m_gpuSceneDataDescriptorLayout;
 	DrawContext m_mainDrawContext;
@@ -330,6 +333,18 @@ public:
 	IoResult openScene(const std::filesystem::path& path);
 	IoResult saveScene(const std::filesystem::path& path);
 
+	// the raster camera's projection in OpenGL clip convention (y up). updateScene() flips y for
+	// vulkan; the gizmo wants it as-is. Uses the flown camera's fov during a first-person edit
+	glm::mat4 rasterProjection() const;
+	float rasterVerticalFov() const;
+
+	// the viewport's pose as a scene camera - what "Add Camera" creates
+	SceneCamera cameraFromViewport() const;
+	// first-person edit: the viewport takes the camera's pose and fov, and drives the camera
+	// until endFirstPersonEdit(); deleting the camera ends it too
+	void beginFirstPersonEdit(uint64_t cameraId);
+	void endFirstPersonEdit();
+
 	// the scene's parts. importGltf() adds a model (models are keyed uniquely, so the same file
 	// can be imported twice); loadEnvironmentMap() takes a Radiance .hdr into m_environmentMap
 	// (rgba16f), replacing any previous one
@@ -364,6 +379,9 @@ private:
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
 	void resizeSwapchain();
+	// the draw and depth images, at the window's size in points; recreated on resize
+	void createDrawImages(VkExtent2D extent);
+	void destroyDrawImages();
 
 	void setCameraCapture(bool active);
 
@@ -373,9 +391,14 @@ private:
 	// m_raytraceMeshData and m_sceneRevision, after any change to m_models
 	void rebuildSceneDerivedData();
 
-	// the raster camera's projection in OpenGL clip convention (y up). updateScene() flips y for
-	// vulkan; the gizmo wants it as-is
-	glm::mat4 rasterProjection() const;
+
+	// the free camera's movement and, in a first-person edit, its pose into the scene camera.
+	// At the top of the frame, before anything reads the camera - the gizmo, the panels, the
+	// raster pass - so they all see the same pose
+	void updateViewportCamera();
+	// wireframe frustums for the scene's cameras, drawn over the viewport through imgui's
+	// background draw list; the render camera brighter, the flown one not at all
+	void drawCameraOverlays();
 
 	// CPU-only scene preparation: camera, the models' draw list, the scene uniform's values.
 	// Touches no GPU resource, so it runs before the frame's fence wait and overlaps the GPU
