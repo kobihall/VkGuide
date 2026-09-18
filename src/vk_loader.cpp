@@ -321,6 +321,8 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 
 			materialResources.colorImage = images[img];
 			materialResources.colorSampler = file.samplers[sampler];
+			//kept for the path tracer's texture array (see GLTFMaterial::baseColorImage)
+			newMat->baseColorImage = images[img];
 		}
 		// build material
 		newMat->data = engine->m_metalRoughMaterial.writeMaterial(engine->m_device, passType, materialResources, file.descriptorPool);
