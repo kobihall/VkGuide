@@ -13,10 +13,15 @@ struct GLTFMaterial {
 	MaterialInstance data;
 
 	// the raw pbr factors this material was authored with, kept on the cpu side alongside the
-	// gpu uniform they are also written into. No consumer yet - retained so a future feature
-	// that shades glTF geometry on the cpu does not have to re-parse the source file for them
+	// gpu uniform they are also written into, so anything shading this geometry outside the
+	// raster pipeline (the path tracer) does not have to re-parse the source file for them
 	glm::vec4 colorFactors { 1.f };
 	glm::vec2 metalRoughFactors { 0.f };
+
+	// the base-colour texture, or a null image when the material has none. The raster path
+	// reaches it through `data`'s descriptor set; the path tracer needs the image itself, to find
+	// which layer of RaytraceTextureArray holds it
+	AllocatedImage baseColorImage {};
 };
 
 struct Bounds {

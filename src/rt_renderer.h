@@ -51,6 +51,21 @@ public:
 
 	bool* visibilityFlag() { return &m_showPanel; }
 
+	// Ray-triangle tests one frame of a render at this size would do: pixels x samples per frame
+	// x triangles. With no acceleration structure over the triangles, the extend stage tests every
+	// ray against every one of them, so this single number is very nearly the whole cost of a
+	// frame - and it grows with the product of three things the user sets independently.
+	//
+	// It exists because exceeding it is not a slow render but a dead machine: a compute dispatch
+	// that overruns the GPU's watchdog gets the driver killed, and on macOS the window server goes
+	// with it (a 1M-triangle model at 1080p is ~2e12 tests in one frame, which panicked the kernel
+	// once already). A BVH is the real fix and removes the need for this; until then the budget is
+	// enforced rather than advertised.
+	static double estimatedTestsPerFrame(const RenderSettings& settings, size_t triangleCount);
+	// roughly a second of this stage on the development GPU, which leaves the watchdog a wide
+	// margin. Deliberately not a setting: the override below is per-render and never saved
+	static constexpr double TESTS_PER_FRAME_BUDGET = 5.0e8;
+
 	// saved with the scene
 	RenderSettings& settings() { return m_settings; }
 	const RenderSettings& settings() const { return m_settings; }
@@ -67,6 +82,10 @@ private:
 		RTCameraSnapshot camera;
 		RenderSettings settings;
 		uint64_t sceneRevision { 0 };
+		// the engine's own, bumped when the loaded models change. The editor's revision moves for
+		// most of those too, but not for every one - a model whose nodes were all deleted already
+		// adds and removes nothing
+		uint64_t modelRevision { 0 };
 		std::filesystem::path environmentMapPath;
 		float environmentIntensity { 1.f };
 		uint32_t width { 0 };
@@ -79,6 +98,10 @@ private:
 	const SceneCamera* resolveCamera(const RaytraceSceneEditor& editor);
 	RenderKey currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const SceneCamera& camera) const;
 	void startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor);
+	// the scene's mesh objects flattened to world-space triangles, rebuilt only when the models or
+	// the objects placing them have actually changed since the last build. A render restarted by a
+	// camera drag happens every frame and must not pay for this
+	void ensureTriangleData(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	void ensureDisplayImage(VulkanEngine* engine, uint32_t width, uint32_t height);
 	void destroyDisplayImage(VulkanEngine* engine);
 	void drawSettings(VulkanEngine* engine);
@@ -90,6 +113,12 @@ private:
 	uint64_t m_renderCameraId { 0 };
 
 	GpuPathTracer m_gpu;
+
+	// the triangles the next render will trace, and the two revisions they were built from
+	std::shared_ptr<const RaytraceTriangleData> m_triangles;
+	uint64_t m_trianglesSceneRevision { 0 };
+	uint64_t m_trianglesModelRevision { 0 };
+	bool m_hasTriangles { false };
 
 	AllocatedImage m_displayImage {};
 	bool m_hasDisplayImage { false };
@@ -104,6 +133,14 @@ private:
 	float m_lastRenderMs { 0.f };
 	int m_lastRenderSamples { 0 };
 	bool m_hasLastRender { false };
+
+	// the user has explicitly accepted a render over the budget for the scene as it stands. Reset
+	// by anything that changes what would be rendered, so an acknowledgement can never carry over
+	// to a heavier scene than the one it was given for
+	bool m_acceptedHeavyRender { false };
+	double m_acceptedTests { 0.0 };
+	// why the last startRender() refused, empty when it did not
+	std::string m_blockedReason;
 
 	bool m_showPanel { true };
 };

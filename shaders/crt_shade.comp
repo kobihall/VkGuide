@@ -125,9 +125,17 @@ void main()
 			const vec3 value = pc.debugView == CRT_DEBUG_BOUNCE_HEAT ? bounceHeat(path.bounce) : path.throughput * background(inDir);
 			radiance[path.radianceSlot] = vec4(value, 1.0);
 		} else {
-			const GpuMaterial material = materials[hit.materialAndFace >> 1u];
+			GpuMaterial material = materials[hit.materialAndFace >> 1u];
 			const bool frontFace = (hit.materialAndFace & 1u) != 0u;
 			uint rng = path.rngState;
+
+			// a textured material's albedo is its factor modulated by the texture, exactly as
+			// glTF defines base colour. textureLod: compute has no derivatives to pick a level
+			// with, and the array has no mips
+			if (material.albedoLayer >= 0) {
+				const vec3 texel = textureLod(albedoTextures, vec3(hit.uv, float(material.albedoLayer)), 0.0).rgb;
+				material.albedo *= srgbToLinear(texel);
+			}
 
 			vec3 attenuation;
 			vec3 outDir;

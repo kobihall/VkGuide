@@ -54,6 +54,8 @@ void VulkanEngine::init()
 	initIMGUI();
 	initDefaultData();
 
+	//before the tracer: its descriptor sets always name the array's view, so it must exist first
+	m_raytraceTextures.init(this);
 	m_raytracer.init(this);
 
 	//debug view of the main draw image. Hidden by default, shown from the "Windows" menu.
@@ -68,14 +70,15 @@ void VulkanEngine::init()
 	m_mainCamera.pitch = 0;
 	m_mainCamera.yaw = 0;
 
-	//the default scene: the tutorial's structure model plus the editor's seeded spheres. Not a
-	//file - "Save Scene" writes one wherever the user chooses. A missing asset is reported
-	//rather than fatal; the app is usable with an empty scene
-	m_lastFileResult = importGltf(m_rootPath + "assets/structure.glb");
+	//the startup scene is a file like any other, opened through the same path File > Open Scene
+	//uses - nothing about it is hardcoded, so editing and saving it changes what the app starts
+	//with. A missing or unreadable file is reported rather than fatal: the app is perfectly
+	//usable with the empty scene openScene() leaves behind
+	m_lastFileResult = openScene(m_rootPath + "assets/scenes/sphere_scene.gltf");
 	if (!m_lastFileResult.ok) {
 		fmt::println("{}", m_lastFileResult.message);
 	}
-	
+
 	//everything went fine
 	m_isInitialized = true;
 }
@@ -211,8 +214,19 @@ void VulkanEngine::updateScene()
 
 	m_mainDrawContext.opaqueSurfaces.clear();
 
-	for (auto& [name, model] : m_models) {
-		model->Draw(glm::mat4{ 1.f }, m_mainDrawContext);
+	//the viewport draws the scene's mesh objects, not the loaded models: an object's transform is
+	//the node's world transform, a deleted object draws nothing, and a hidden one is skipped. That
+	//is what makes the gizmo and the outliner agree with what is on screen, and it is the same
+	//list the raytracer traces
+	for (const SceneMeshObject& object : m_raytraceScene.meshObjects()) {
+		if (!object.visible) {
+			continue;
+		}
+		const auto found = m_meshNodes.find({ object.modelKey, object.nodeIndex });
+		if (found == m_meshNodes.end() || found->second == nullptr) {
+			continue;
+		}
+		found->second->drawSurfaces(object.transform, m_mainDrawContext);
 	}
 
 	glm::mat4 view = m_mainCamera.getViewMatrix();
@@ -806,6 +820,19 @@ std::filesystem::path absoluteNormalized(const std::filesystem::path& path)
 void VulkanEngine::rebuildSceneDerivedData()
 {
 	m_raytraceMeshData = buildRaytraceMeshData(this);
+
+	//the resolved nodes, so drawing the scene's mesh objects is a lookup rather than a tree walk
+	//per object per frame. Raw pointers, valid exactly as long as m_models holds their model -
+	//which is why nothing else may rebuild this
+	m_meshNodes.clear();
+	forEachMeshNode(this, [this](std::string_view modelKey, uint32_t nodeIndex, const MeshNode& node) {
+		m_meshNodes[{ std::string(modelKey), nodeIndex }] = &node;
+	});
+
+	//the path tracer's base-colour textures, from the same models, so a triangle's material layer
+	//and the array it indexes are always built together
+	m_raytraceTextures.rebuild(this);
+
 	m_sceneRevision++;
 }
 
@@ -828,8 +855,13 @@ IoResult VulkanEngine::importGltf(const std::filesystem::path& path)
 
 	rebuildSceneDerivedData();
 
-	return IoResult::success(fmt::format("Imported '{}' as '{}'. Scene now has {} model(s), {} surface instance(s), {} triangles",
-		path.filename().string(), key, m_models.size(), m_raytraceMeshData->instances.size(), m_raytraceMeshData->triangleCount));
+	//a freshly imported model places one scene object per mesh node, at the transform it was
+	//authored with, so importing looks exactly as it always did - the objects are what makes each
+	//of those nodes movable and deletable afterwards
+	m_raytraceScene.addMeshObjects(defaultMeshObjects(*m_raytraceMeshData, key));
+
+	return IoResult::success(fmt::format("Imported '{}' as '{}'. Scene now has {} model(s), {} mesh object(s), {} triangles",
+		path.filename().string(), key, m_models.size(), m_raytraceScene.meshObjects().size(), m_raytraceMeshData->triangleCount));
 }
 
 void VulkanEngine::removeGltf(const std::string& name)
@@ -844,6 +876,8 @@ void VulkanEngine::removeGltf(const std::string& name)
 	//simple, obviously-correct way to retire them for a menu-driven action
 	vkDeviceWaitIdle(m_device);
 	m_models.erase(it);
+	//the objects placing this model's nodes go with it: their geometry has just stopped existing
+	m_raytraceScene.removeMeshObjectsOf(name);
 	rebuildSceneDerivedData();
 }
 
@@ -854,6 +888,7 @@ void VulkanEngine::clearModels()
 	}
 	vkDeviceWaitIdle(m_device);
 	m_models.clear();
+	m_raytraceScene.replaceMeshObjects({});
 	rebuildSceneDerivedData();
 }
 
@@ -876,9 +911,32 @@ void VulkanEngine::newScene()
 IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 {
 	SceneDescription scene;
+	//the models, and the index each one's key maps to, since a mesh object refers to its model by
+	//position in this list rather than by a key the next load would re-derive
+	std::map<std::string, int> modelIndices;
 	for (const auto& [name, model] : m_models) {
+		modelIndices[name] = (int)scene.modelPaths.size();
 		scene.modelPaths.push_back(model->sourcePath);
 	}
+
+	scene.hasMeshObjects = true;
+	for (const SceneMeshObject& object : m_raytraceScene.meshObjects()) {
+		const auto found = modelIndices.find(object.modelKey);
+		if (found == modelIndices.end()) {
+			//an object whose model is gone has nothing to be written against
+			continue;
+		}
+		SceneMeshObjectRecord record;
+		record.model = found->second;
+		record.nodeIndex = object.nodeIndex;
+		record.name = object.name;
+		record.transform = object.transform;
+		record.visible = object.visible;
+		record.materialMode = object.materialMode;
+		record.material = object.material;
+		scene.meshObjects.push_back(std::move(record));
+	}
+
 	scene.environmentMapPath = m_environmentMapPath;
 	scene.spheres = m_raytraceScene.spheres();
 	scene.cameras = m_raytraceScene.cameras();
@@ -912,11 +970,51 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	clearModels();
 	clearEnvironmentMap();
 	std::vector<std::string> problems;
+	//the key each model actually got, by its position in the file's list: importGltf() derives a
+	//key from the file stem and uniquifies it, so the same file twice is two different keys
+	std::vector<std::string> modelKeys;
 	for (const std::filesystem::path& modelPath : scene.modelPaths) {
+		const size_t before = m_models.size();
 		IoResult imported = importGltf(modelPath);
 		if (!imported.ok) {
 			problems.push_back(imported.message);
+			modelKeys.push_back({});
+			continue;
 		}
+		//the key the import just added, found by what is new rather than by re-deriving the rule
+		std::string key;
+		if (m_models.size() > before) {
+			for (const auto& [name, model] : m_models) {
+				if (model != nullptr && model->sourcePath == absoluteNormalized(modelPath) && std::find(modelKeys.begin(), modelKeys.end(), name) == modelKeys.end()) {
+					key = name;
+					break;
+				}
+			}
+		}
+		modelKeys.push_back(std::move(key));
+	}
+
+	//the placed objects the file recorded replace the defaults every import just added. A
+	//version-4 file has none, and its models keep those defaults - every node at its authored
+	//transform, which is what that file meant
+	if (scene.hasMeshObjects) {
+		std::vector<SceneMeshObject> objects;
+		for (const SceneMeshObjectRecord& record : scene.meshObjects) {
+			if (record.model < 0 || record.model >= (int)modelKeys.size() || modelKeys[record.model].empty()) {
+				//its model failed to load; the problem is already reported above
+				continue;
+			}
+			SceneMeshObject object;
+			object.name = record.name;
+			object.modelKey = modelKeys[record.model];
+			object.nodeIndex = record.nodeIndex;
+			object.transform = record.transform;
+			object.visible = record.visible;
+			object.materialMode = record.materialMode;
+			object.material = record.material;
+			objects.push_back(std::move(object));
+		}
+		m_raytraceScene.replaceMeshObjects(std::move(objects));
 	}
 	if (!scene.environmentMapPath.empty()) {
 		IoResult mapLoaded = loadEnvironmentMap(scene.environmentMapPath);
@@ -2099,6 +2197,9 @@ void VulkanEngine::cleanup()
 
 		m_models.clear();
 		m_raytraceMeshData.reset();
+		m_meshNodes.clear();
+		//after the tracer, whose descriptor sets name the array's view
+		m_raytraceTextures.destroy(this);
 		destroyEnvironmentMap();
 
 		m_metalRoughMaterial.clearResources(m_device);
@@ -2134,9 +2235,11 @@ void VulkanEngine::glfw_error_callback(int error, const char* description)
 	fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
 
-void MeshNode::Draw(const glm::mat4& topMatrix, DrawContext& ctx)
+void MeshNode::drawSurfaces(const glm::mat4& worldMatrix, DrawContext& ctx) const
 {
-	glm::mat4 nodeMatrix = topMatrix * worldTransform;
+	if (mesh == nullptr) {
+		return;
+	}
 
 	for (auto& s : mesh->surfaces) {
 		RenderObject def;
@@ -2145,15 +2248,20 @@ void MeshNode::Draw(const glm::mat4& topMatrix, DrawContext& ctx)
 		def.indexBuffer = mesh->meshBuffers.indexBuffer.buffer;
 		def.material = &s.material->data;
 		def.bounds = s.bounds;
-		def.transform = nodeMatrix;
+		def.transform = worldMatrix;
 		def.vertexBufferAddress = mesh->meshBuffers.vertexBufferAddress;
-		
+
 		if (s.material->data.passType == MaterialPass::Transparent) {
 			ctx.transparentSurfaces.push_back(def);
 		} else {
 			ctx.opaqueSurfaces.push_back(def);
 		}
 	}
+}
+
+void MeshNode::Draw(const glm::mat4& topMatrix, DrawContext& ctx)
+{
+	drawSurfaces(topMatrix * worldTransform, ctx);
 
 	// recurse down
 	Node::Draw(topMatrix, ctx);

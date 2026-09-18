@@ -126,40 +126,139 @@ struct SceneCamera {
 //---------------------------------------------------------------- glTF geometry
 
 struct MeshAsset;
+struct GLTFMaterial;
 
-// One glTF GeoSurface placed in the world: which retained mesh it indexes into, that surface's
-// index range, the owning node's world transform, and the raw material factors the surface was
-// authored with. Geometry stays in object space - a consumer that needs world-space triangles
-// applies worldTransform itself. Per surface rather than per node because a surface is the
-// finest granularity that has exactly one material.
+// One glTF GeoSurface of one mesh-bearing node, in the node's own object space: which retained
+// mesh it indexes into, that surface's index range, and the material it was authored with. Per
+// surface rather than per node because a surface is the finest granularity that has exactly one
+// material.
 //
-// Deliberately without an intersection routine: nothing traces triangles yet. This is the
-// bottom-level/top-level split a future BVH or GPU mesh path would want anyway.
-struct RTMeshInstance {
-	// the node's name, suffixed with the surface index when the node's mesh has several surfaces
-	std::string name;
+// Geometry stays in object space here. A placed SceneMeshObject carries the world transform, and
+// buildTriangleData() is what multiplies the two together.
+struct RTMeshSurface {
 	// into RaytraceMeshData::meshes
 	size_t meshIndex { 0 };
 	// into that mesh's cpuIndices
 	uint32_t firstIndex { 0 };
 	uint32_t indexCount { 0 };
-	glm::mat4 worldTransform { 1.f };
-	glm::vec4 colorFactors { 1.f };
-	glm::vec2 metalRoughFactors { 0.f };
+	// held alive here so the factors and the base-colour image survive as long as this data does.
+	// The MaterialInstance inside it belongs to the owning model's descriptor pool and must never
+	// be used through this pointer - only colorFactors, metalRoughFactors and baseColorImage
+	std::shared_ptr<const GLTFMaterial> material;
 };
 
-// The loaded glTF scene as the raytracer sees it: every unique mesh once, plus one instance per
-// mesh-bearing node and surface. Built once per scene load by buildRaytraceMeshData() and shared
-// immutably (shared_ptr<const>) with every render snapshot taken afterwards, instead of being
-// rebuilt on every Render click.
+// One mesh-bearing glTF node of one loaded model, identified the way a SceneMeshObject refers to
+// it: the model's key in VulkanEngine::m_models, and the node's position in the deterministic
+// walk order forEachMeshNode() visits that model in.
+struct RTMeshNode {
+	std::string modelKey;
+	uint32_t nodeIndex { 0 };
+	// the source glTF node's name, for the browser
+	std::string name;
+	// the transform the node was authored with, which a newly imported object is placed at
+	glm::mat4 authoredTransform { 1.f };
+	std::vector<RTMeshSurface> surfaces;
+	size_t triangleCount { 0 };
+};
+
+// The loaded glTF models as the raytracer sees them: every unique mesh once, plus every
+// mesh-bearing node. Built once per change to VulkanEngine::m_models by buildRaytraceMeshData()
+// and shared immutably (shared_ptr<const>), so moving an object never re-reads the models.
 //
 // The MeshAssets are held alive here past a scene replacement, but LoadedGLTF::clearAll() will
 // already have destroyed their GPU buffers by then. Raytracer code must NEVER read
 // MeshAsset::meshBuffers through this - only cpuVertices and cpuIndices, which stay valid.
 struct RaytraceMeshData {
 	std::vector<std::shared_ptr<const MeshAsset>> meshes;
-	std::vector<RTMeshInstance> instances;
+	std::vector<RTMeshNode> nodes;
 	size_t triangleCount { 0 };
+
+	// the node a SceneMeshObject names, or null once its model has been removed
+	const RTMeshNode* findNode(const std::string& modelKey, uint32_t nodeIndex) const
+	{
+		for (const RTMeshNode& node : nodes) {
+			if (node.nodeIndex == nodeIndex && node.modelKey == modelKey) {
+				return &node;
+			}
+		}
+		return nullptr;
+	}
+};
+
+//---------------------------------------------------------------- mesh objects
+
+// How the raytracer shades a placed mesh object
+enum class MeshMaterialMode : uint8_t {
+	// the glTF material each of its surfaces was authored with: the base-colour factor modulated
+	// by the base-colour texture, scattered as a diffuse surface
+	Gltf,
+	// one raytracer material (the same four a sphere offers) for the whole object, replacing the
+	// glTF material and its texture entirely
+	Override
+};
+
+// One mesh-bearing glTF node placed in the scene: a first-class object like a sphere or a
+// camera, with the same stable id, the same gizmo editing and the same delete.
+//
+// The geometry itself stays in the loaded model, named by modelKey + nodeIndex; everything the
+// user can edit about the *placed* object - its name, where it sits, whether it is shown, how it
+// is shaded - lives here. Deleting an object therefore removes it from the scene and leaves the
+// model loaded, which is what lets one imported file be placed more than once.
+struct SceneMeshObject {
+	// stable across edits and reorders, assigned by the editor; shares one id space with the
+	// spheres and cameras so the gizmo's opaque target id cannot collide
+	uint64_t id { 0 };
+	std::string name;
+	// into VulkanEngine::m_models, and into that model's forEachMeshNode() walk order
+	std::string modelKey;
+	uint32_t nodeIndex { 0 };
+	// world transform, seeded from the node's authored transform at import and owned here after
+	glm::mat4 transform { 1.f };
+	bool visible { true };
+	MeshMaterialMode materialMode { MeshMaterialMode::Gltf };
+	SphereMaterial material;
+
+	bool operator==(const SceneMeshObject&) const = default;
+};
+
+//---------------------------------------------------------------- world-space triangles
+
+// One world-space triangle, laid out exactly as the GPU reads it (shaders/crt_common.glsl
+// GpuTriangle). std430 pads a vec3 to 16 bytes anyway, so each position and normal carries one
+// of the triangle's six uv components in the spare w rather than wasting the slot.
+struct RaytraceTriangle {
+	// xyz world position, w that vertex's u
+	glm::vec4 p0 { 0.f };
+	glm::vec4 p1 { 0.f };
+	glm::vec4 p2 { 0.f };
+	// xyz world normal - not normalised, since the shader normalises after interpolating - and
+	// w that vertex's v
+	glm::vec4 n0 { 0.f };
+	glm::vec4 n1 { 0.f };
+	glm::vec4 n2 { 0.f };
+	// into RaytraceTriangleData::materials
+	uint32_t material { 0 };
+	uint32_t pad[3] { 0, 0, 0 };
+};
+static_assert(sizeof(RaytraceTriangle) == 112);
+
+// A material a triangle is shaded with: the same tagged material a sphere uses, plus the
+// base-colour texture that modulates its albedo (a layer of the raytracer's texture array, -1
+// for untextured)
+struct RaytraceTriMaterial {
+	SphereMaterial material;
+	int albedoLayer { -1 };
+
+	bool operator==(const RaytraceTriMaterial&) const = default;
+};
+
+// Every visible mesh object flattened into world-space triangles, ready to upload as one buffer.
+// Rebuilt by buildTriangleData() only when the models or the objects placing them actually
+// change - never per render - and shared immutably with the snapshot of every render started
+// while it is current.
+struct RaytraceTriangleData {
+	std::vector<RaytraceTriangle> triangles;
+	std::vector<RaytraceTriMaterial> materials;
 };
 
 //---------------------------------------------------------------- camera snapshot

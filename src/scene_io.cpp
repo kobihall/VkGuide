@@ -15,7 +15,9 @@ namespace {
 //bump when the payload's shape changes, and branch on it in parseSceneExtras() for older files.
 //1: spheres only. 2: adds "models" and "environmentMap". 3: adds "render" and "environmentIntensity".
 //4: adds "cameras" and "renderCamera"; the lens and exposure move from "render" to each camera
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 4;
+//5: adds "meshObjects", the placed glTF nodes. A version-4 file has none, and loading it places
+//   every node of every model at its authored transform - exactly what importing does
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 5;
 
 //---------------------------------------------------------------- writing
 
@@ -146,6 +148,29 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		}
 		json += fmt::format(R"({{"name":{},"center":{},"radius":{},"material":{}}})",
 			jsonString(entry.name), jsonVec3(entry.center), jsonNumber(entry.radius), materialJson(entry.material));
+	}
+
+	json += ']';
+
+	//version 5: the placed mesh objects. The transform goes out as the sixteen raw matrix
+	//elements in glm's (column-major) order rather than as decomposed translation/rotation/scale,
+	//so a save and reload is bit-exact and no euler ambiguity can creep in
+	json += R"(,"meshObjects":[)";
+	for (size_t i = 0; i < scene.meshObjects.size(); i++) {
+		const SceneMeshObjectRecord& object = scene.meshObjects[i];
+		if (i > 0) {
+			json += ',';
+		}
+		std::string matrix;
+		for (int element = 0; element < 16; element++) {
+			if (element > 0) {
+				matrix += ',';
+			}
+			matrix += jsonNumber((&object.transform[0][0])[element]);
+		}
+		json += fmt::format(R"({{"name":{},"model":{},"node":{},"transform":[{}],"visible":{},"shading":"{}","material":{}}})",
+			jsonString(object.name), object.model, object.nodeIndex, matrix, object.visible,
+			object.materialMode == MeshMaterialMode::Override ? "override" : "gltf", materialJson(object.material));
 	}
 
 	json += "]}";
@@ -528,6 +553,68 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 		ctx.scene.spheres.push_back(std::move(sphereEntry));
 		index++;
 	}
+
+	//version 5: the placed mesh objects. Absent in an older file, which the loader reads as "place
+	//every node at its authored transform"
+	simdjson::dom::array meshObjects;
+	if (root["meshObjects"].get_array().get(meshObjects) == simdjson::SUCCESS) {
+		ctx.scene.hasMeshObjects = true;
+
+		size_t objectIndex = 0;
+		for (simdjson::dom::element entry : meshObjects) {
+			simdjson::dom::object object;
+			if (entry.get_object().get(object) != simdjson::SUCCESS) {
+				ctx.error = fmt::format("mesh object {} is not an object", objectIndex);
+				return;
+			}
+
+			SceneMeshObjectRecord record;
+
+			std::string_view name;
+			if (object["name"].get_string().get(name) == simdjson::SUCCESS) {
+				record.name = std::string(name);
+			} else {
+				record.name = fmt::format("mesh_{}", objectIndex + 1);
+			}
+
+			int64_t model = -1;
+			if (object["model"].get_int64().get(model) != simdjson::SUCCESS || model < 0 || model >= (int64_t)ctx.scene.modelPaths.size()) {
+				ctx.error = fmt::format("mesh object \"{}\" names model {}, which the scene does not have", record.name, model);
+				return;
+			}
+			record.model = (int)model;
+			readOptionalUint(object["node"], record.nodeIndex);
+
+			simdjson::dom::array matrix;
+			if (object["transform"].get_array().get(matrix) != simdjson::SUCCESS || matrix.size() != 16) {
+				ctx.error = fmt::format("mesh object \"{}\" has no valid 16-element \"transform\"", record.name);
+				return;
+			}
+			int element = 0;
+			for (simdjson::dom::element component : matrix) {
+				double value = 0.0;
+				if (!readDouble(component, value)) {
+					ctx.error = fmt::format("mesh object \"{}\" has a non-numeric \"transform\" element", record.name);
+					return;
+				}
+				(&record.transform[0][0])[element++] = (float)value;
+			}
+
+			readOptionalBool(object["visible"], record.visible);
+
+			std::string_view shading;
+			if (object["shading"].get_string().get(shading) == simdjson::SUCCESS && shading == "override") {
+				record.materialMode = MeshMaterialMode::Override;
+			}
+			//the override's parameters are written whichever mode is selected, so switching a saved
+			//object back to "override" finds what it had. A file without them keeps the defaults
+			std::string materialError;
+			readMaterial(object["material"], record.material, materialError);
+
+			ctx.scene.meshObjects.push_back(std::move(record));
+			objectIndex++;
+		}
+	}
 }
 
 }
@@ -539,11 +626,18 @@ std::filesystem::path absoluteDirectoryOf(const std::filesystem::path& file)
 	return (ec ? file : absolute).lexically_normal().parent_path();
 }
 
-IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file)
+IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& fileIn)
 {
-	if (file.empty()) {
+	if (fileIn.empty()) {
 		return IoResult::failure("No path given");
 	}
+
+	//fastgltf's exporter rejects a path with no directory component at all ("invalid glTF
+	//directory"), so a bare "scene.gltf" would fail for no reason the caller could see. Resolving
+	//against the working directory first gives it something to write next to
+	std::error_code absoluteEc;
+	const std::filesystem::path absolute = std::filesystem::absolute(fileIn, absoluteEc);
+	const std::filesystem::path file = absoluteEc ? fileIn : absolute.lexically_normal();
 
 	//FileExporter creates a single missing directory level; the default save location is nested
 	if (!file.parent_path().empty()) {

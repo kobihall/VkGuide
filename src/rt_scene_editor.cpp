@@ -1,7 +1,9 @@
 #include <rt_scene_editor.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include <imgui.h>
 
@@ -25,6 +27,11 @@ glm::quat orientationOf(const glm::mat4& m)
 {
 	const glm::mat3 basis(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])), glm::normalize(glm::vec3(m[2])));
 	return glm::normalize(glm::quat_cast(basis));
+}
+
+const char* meshMaterialModeName(MeshMaterialMode mode)
+{
+	return mode == MeshMaterialMode::Gltf ? "glTF material" : "override";
 }
 
 }
@@ -102,26 +109,70 @@ bool drawCameraParams(SceneCamera& camera, bool& displayChanged)
 	return changed;
 }
 
+bool drawMeshObjectParams(SceneMeshObject& object)
+{
+	//a mesh object owns a full transform, so the widgets show it the way every editor does -
+	//translation, euler rotation, scale. ImGuizmo's own decompose/recompose pair is what the
+	//gizmo uses internally, so dragging a field and dragging a handle agree exactly. Recomposed
+	//only when something was actually edited: round-tripping every frame would let the matrix
+	//drift through the euler representation
+	float translation[3];
+	float rotation[3];
+	float scale[3];
+	ImGuizmo::DecomposeMatrixToComponents(&object.transform[0][0], translation, rotation, scale);
+
+	bool transformChanged = ImGui::DragFloat3("position", translation, 0.01f, 0.f, 0.f, "%.3f");
+	transformChanged |= ImGui::DragFloat3("rotation", rotation, 0.5f, 0.f, 0.f, "%.1f");
+	transformChanged |= ImGui::DragFloat3("scale", scale, 0.01f, 0.f, 0.f, "%.3f");
+	if (transformChanged) {
+		//a zero scale is a matrix that cannot be decomposed back into anything, so the object
+		//could never be dragged out of it again
+		for (int axis = 0; axis < 3; axis++) {
+			if (std::abs(scale[axis]) < 1e-4f) {
+				scale[axis] = scale[axis] < 0.f ? -1e-4f : 1e-4f;
+			}
+		}
+		ImGuizmo::RecomposeMatrixFromComponents(translation, rotation, scale, &object.transform[0][0]);
+	}
+
+	bool changed = transformChanged;
+	changed |= ImGui::Checkbox("visible", &object.visible);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Hidden objects are drawn by neither the viewport nor the raytracer");
+	}
+
+	ImGui::Spacing();
+
+	if (ImGui::BeginCombo("shading", meshMaterialModeName(object.materialMode))) {
+		for (MeshMaterialMode mode : { MeshMaterialMode::Gltf, MeshMaterialMode::Override }) {
+			if (ImGui::Selectable(meshMaterialModeName(mode), mode == object.materialMode) && mode != object.materialMode) {
+				object.materialMode = mode;
+				changed = true;
+			}
+		}
+		ImGui::EndCombo();
+	}
+
+	if (object.materialMode == MeshMaterialMode::Gltf) {
+		ImGui::TextDisabled("base colour and texture, as authored");
+	} else {
+		//an override replaces the glTF material outright, texture included
+		changed |= drawMaterialParams(object.material);
+	}
+
+	return changed;
+}
+
 RaytraceSceneEditor::RaytraceSceneEditor()
 {
-	//the sibling project's hardcoded starting scene (Renderer::Renderer()), verbatim
-	SceneSphere ground { 0, "ground", glm::vec3(0.f, -100.5f, -1.f), 100.f, makeSphereMaterial(MaterialType::Lambertian, glm::vec3(1.f, 1.f, 1.f)) };
-	SceneSphere center { 0, "center_sphere", glm::vec3(0.f, 0.f, -1.f), 0.5f, makeSphereMaterial(MaterialType::Lambertian, glm::vec3(0.7f, 0.3f, 0.3f)) };
-	SceneSphere left { 0, "left_sphere", glm::vec3(-1.f, 0.f, -1.f), 0.5f, makeSphereMaterial(MaterialType::Dielectric) };
-	left.material.ir = 1.5f;
-	SceneSphere right { 0, "right_sphere", glm::vec3(1.f, 0.f, -1.f), 0.5f, makeSphereMaterial(MaterialType::Phong, glm::vec3(0.8f, 0.6f, 0.2f)) };
-	right.material.smoothness = 0.3f;
-
-	addSphere(std::move(ground));
-	addSphere(std::move(center));
-	addSphere(std::move(left));
-	addSphere(std::move(right));
-
-	//one camera where the free camera starts, looking at the spheres
+	//an empty scene still has somewhere to render from. Everything else arrives from the file the
+	//engine opens at startup, or from File > New Scene
 	SceneCamera camera;
 	camera.name = "render_camera";
 	addCamera(std::move(camera));
 }
+
+//---------------------------------------------------------------- object storage
 
 void RaytraceSceneEditor::addSphere(SceneSphere sphere)
 {
@@ -140,6 +191,29 @@ uint64_t RaytraceSceneEditor::addCamera(SceneCamera camera)
 	m_cameras.push_back(std::move(camera));
 	markChanged();
 	return id;
+}
+
+void RaytraceSceneEditor::addMeshObjects(std::vector<SceneMeshObject>&& objects)
+{
+	if (objects.empty()) {
+		return;
+	}
+	for (SceneMeshObject& object : objects) {
+		object.id = m_nextId++;
+		m_meshObjects.push_back(std::move(object));
+	}
+	markChanged();
+}
+
+void RaytraceSceneEditor::removeMeshObjectsOf(const std::string& modelKey)
+{
+	const size_t before = m_meshObjects.size();
+	std::erase_if(m_meshObjects, [&modelKey](const SceneMeshObject& object) { return object.modelKey == modelKey; });
+	if (m_meshObjects.size() != before) {
+		//the selection may have been one of them; it is looked up by id, so a stale one resolves
+		//to nothing and the details panel simply shows nothing
+		markChanged();
+	}
 }
 
 SceneSphere* RaytraceSceneEditor::findSphere(uint64_t id)
@@ -166,6 +240,18 @@ const SceneCamera* RaytraceSceneEditor::findCamera(uint64_t id) const
 	return found == m_cameras.end() ? nullptr : &(*found);
 }
 
+SceneMeshObject* RaytraceSceneEditor::findMeshObject(uint64_t id)
+{
+	auto found = std::find_if(m_meshObjects.begin(), m_meshObjects.end(), [id](const SceneMeshObject& o) { return o.id == id; });
+	return found == m_meshObjects.end() ? nullptr : &(*found);
+}
+
+const SceneMeshObject* RaytraceSceneEditor::findMeshObject(uint64_t id) const
+{
+	auto found = std::find_if(m_meshObjects.begin(), m_meshObjects.end(), [id](const SceneMeshObject& o) { return o.id == id; });
+	return found == m_meshObjects.end() ? nullptr : &(*found);
+}
+
 void RaytraceSceneEditor::replaceSpheres(std::vector<SceneSphere>&& spheres)
 {
 	//the old spheres' ids die here. If the gizmo was editing one of them its lookup fails and it
@@ -190,6 +276,17 @@ void RaytraceSceneEditor::replaceCameras(std::vector<SceneCamera>&& cameras)
 	markChanged();
 }
 
+void RaytraceSceneEditor::replaceMeshObjects(std::vector<SceneMeshObject>&& objects)
+{
+	m_meshObjects.clear();
+	for (SceneMeshObject& object : objects) {
+		object.id = m_nextId++;
+		m_meshObjects.push_back(std::move(object));
+	}
+	m_selectionKind = SelectionKind::None;
+	markChanged();
+}
+
 void RaytraceSceneEditor::setCameraPose(uint64_t id, const glm::vec3& position, const glm::quat& orientation)
 {
 	SceneCamera* camera = findCamera(id);
@@ -203,6 +300,103 @@ void RaytraceSceneEditor::setCameraPose(uint64_t id, const glm::vec3& position, 
 	camera->orientation = orientation;
 	markChanged();
 }
+
+//---------------------------------------------------------------- creating and removing
+
+void RaytraceSceneEditor::select(SelectionKind kind, uint64_t id)
+{
+	m_selectionKind = kind;
+	m_selectionId = id;
+	//a rename in progress belongs to the row that started it
+	m_renamingId = 0;
+}
+
+void RaytraceSceneEditor::createSphere()
+{
+	SceneSphere sphere;
+	sphere.name = fmt::format("sphere_{}", m_nextSphereNumber++);
+	addSphere(std::move(sphere));
+	markChanged();
+	select(SelectionKind::Sphere, m_spheres.back().id);
+}
+
+void RaytraceSceneEditor::createCamera(VulkanEngine* engine)
+{
+	//where the viewport is looking right now, so the new camera frames what the user sees
+	const uint64_t id = addCamera(engine->cameraFromViewport());
+	select(SelectionKind::Camera, id);
+}
+
+void RaytraceSceneEditor::duplicateSelection()
+{
+	switch (m_selectionKind) {
+	case SelectionKind::Sphere: {
+		const SceneSphere* source = findSphere(m_selectionId);
+		if (source == nullptr) {
+			return;
+		}
+		SceneSphere copy = *source;
+		copy.name = fmt::format("{}_copy", source->name);
+		addSphere(std::move(copy));
+		markChanged();
+		select(SelectionKind::Sphere, m_spheres.back().id);
+		break;
+	}
+	case SelectionKind::MeshObject: {
+		//the copy places the same model node a second time - the geometry is shared, only the
+		//placement is duplicated, which is what makes one imported file usable as many objects
+		const SceneMeshObject* source = findMeshObject(m_selectionId);
+		if (source == nullptr) {
+			return;
+		}
+		SceneMeshObject copy = *source;
+		copy.name = fmt::format("{}_copy", source->name);
+		std::vector<SceneMeshObject> one { std::move(copy) };
+		addMeshObjects(std::move(one));
+		select(SelectionKind::MeshObject, m_meshObjects.back().id);
+		break;
+	}
+	case SelectionKind::Camera: {
+		const SceneCamera* source = findCamera(m_selectionId);
+		if (source == nullptr) {
+			return;
+		}
+		SceneCamera copy = *source;
+		copy.name = fmt::format("{}_copy", source->name);
+		select(SelectionKind::Camera, addCamera(std::move(copy)));
+		break;
+	}
+	case SelectionKind::None:
+		break;
+	}
+}
+
+void RaytraceSceneEditor::deleteSelection()
+{
+	//a gizmo or first-person edit on this object fails its id lookup next frame and ends itself
+	switch (m_selectionKind) {
+	case SelectionKind::Sphere:
+		std::erase_if(m_spheres, [this](const SceneSphere& s) { return s.id == m_selectionId; });
+		break;
+	case SelectionKind::Camera:
+		std::erase_if(m_cameras, [this](const SceneCamera& c) { return c.id == m_selectionId; });
+		break;
+	case SelectionKind::MeshObject:
+		//the model stays loaded: another object may place the same node, and the model row's
+		//"Restore objects" can put this one back
+		std::erase_if(m_meshObjects, [this](const SceneMeshObject& o) { return o.id == m_selectionId; });
+		break;
+	case SelectionKind::None:
+		return;
+	}
+
+	m_selectionKind = SelectionKind::None;
+	m_selectionId = 0;
+	m_renamingId = 0;
+	markChanged();
+}
+
+//---------------------------------------------------------------- the panel
 
 void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 {
@@ -225,93 +419,10 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 		}
 	}
 
-	drawModels(engine);
-
-	ImGui::SeparatorText("Objects");
-
-	//read fresh every frame, so a scene loaded or unloaded at runtime shows up straight away
-	std::vector<std::string> gltfNames;
-	forEachMeshNode(engine, [&gltfNames](const MeshNode& node) {
-		gltfNames.push_back(node.name.empty() ? "(unnamed node)" : node.name);
-	});
-
-	if (ImGui::Button("Add Sphere")) {
-		SceneSphere sphere;
-		sphere.name = fmt::format("sphere_{}", m_nextSphereNumber++);
-		addSphere(std::move(sphere));
-		m_selectionKind = SelectionKind::Sphere;
-		m_selectionIndex = (int)m_spheres.size() - 1;
-		markChanged();
-	}
-
-	ImGui::SameLine();
-	if (ImGui::Button("Add Camera")) {
-		//where the viewport is looking right now, so the new camera frames what the user sees
-		SceneCamera camera = engine->cameraFromViewport();
-		addCamera(std::move(camera));
-		m_selectionKind = SelectionKind::Camera;
-		m_selectionIndex = (int)m_cameras.size() - 1;
-	}
-
-	const bool canDeleteSphere = m_selectionKind == SelectionKind::Sphere && m_selectionIndex < (int)m_spheres.size();
-	const bool canDeleteCamera = m_selectionKind == SelectionKind::Camera && m_selectionIndex < (int)m_cameras.size();
-	ImGui::SameLine();
-	ImGui::BeginDisabled(!(canDeleteSphere || canDeleteCamera));
-	if (ImGui::Button("Delete")) {
-		//a gizmo or first-person edit on this object fails its id lookup and ends itself
-		if (canDeleteSphere) {
-			m_spheres.erase(m_spheres.begin() + m_selectionIndex);
-		} else if (canDeleteCamera) {
-			m_cameras.erase(m_cameras.begin() + m_selectionIndex);
-		}
-		m_selectionKind = SelectionKind::None;
-		markChanged();
-	}
-	ImGui::EndDisabled();
-
-	if (ImGui::BeginListBox("Objects", ImVec2(-FLT_MIN, 8 * ImGui::GetTextLineHeightWithSpacing()))) {
-		int row = 0;
-		for (int i = 0; i < (int)m_cameras.size(); i++) {
-			const bool selected = m_selectionKind == SelectionKind::Camera && m_selectionIndex == i;
-			ImGui::PushID(row++);
-			const std::string label = fmt::format("{} (camera)", m_cameras[i].name);
-			if (ImGui::Selectable(label.c_str(), selected)) {
-				m_selectionKind = SelectionKind::Camera;
-				m_selectionIndex = i;
-			}
-			ImGui::PopID();
-		}
-
-		for (int i = 0; i < (int)m_spheres.size(); i++) {
-			const bool selected = m_selectionKind == SelectionKind::Sphere && m_selectionIndex == i;
-			ImGui::PushID(row++);
-			if (ImGui::Selectable(m_spheres[i].name.c_str(), selected)) {
-				m_selectionKind = SelectionKind::Sphere;
-				m_selectionIndex = i;
-			}
-			ImGui::PopID();
-		}
-
-		//glTF meshes are listed so the browser already knows they exist, but they are not
-		//traceable - selecting one deliberately shows nothing further. This is the placeholder
-		//for a future mesh-tracing feature, not for transform editing
-		for (int i = 0; i < (int)gltfNames.size(); i++) {
-			const bool selected = m_selectionKind == SelectionKind::GltfNode && m_selectionIndex == i;
-			ImGui::PushID(row++);
-			if (ImGui::Selectable(gltfNames[i].c_str(), selected)) {
-				m_selectionKind = SelectionKind::GltfNode;
-				m_selectionIndex = i;
-			}
-			ImGui::PopID();
-		}
-		ImGui::EndListBox();
-	}
-
-	if (m_selectionKind == SelectionKind::Sphere && m_selectionIndex < (int)m_spheres.size()) {
-		drawSelectedSphere(engine, m_selectionIndex);
-	} else if (m_selectionKind == SelectionKind::Camera && m_selectionIndex < (int)m_cameras.size()) {
-		drawSelectedCamera(engine, m_selectionIndex);
-	}
+	ImGui::Spacing();
+	drawToolbar(engine);
+	drawObjectTree(engine);
+	drawSelection(engine);
 
 	//the outcome of the last File-menu action, kept until the next one replaces it
 	ImGui::Spacing();
@@ -320,43 +431,289 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 	ImGui::End();
 }
 
-void RaytraceSceneEditor::drawModels(VulkanEngine* engine)
+void RaytraceSceneEditor::drawToolbar(VulkanEngine* engine)
 {
-	ImGui::SeparatorText("Models");
+	//one add button with a typed menu behind it, the way every scene editor does it, rather than
+	//one button per object kind growing along the toolbar
+	if (ImGui::Button("+ Add")) {
+		ImGui::OpenPopup("##add");
+	}
 
-	if (engine->m_models.empty()) {
-		ImGui::TextDisabled("none - File > Import glTF Model...");
+	if (ImGui::BeginPopup("##add")) {
+		if (ImGui::MenuItem("Sphere")) {
+			createSphere();
+		}
+		if (ImGui::MenuItem("Camera")) {
+			createCamera(engine);
+		}
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+			ImGui::SetTooltip("Placed at the viewport's current pose");
+		}
+		ImGui::Separator();
+		if (ImGui::MenuItem("Mesh from glTF file...")) {
+			//the native dialog runs a modal loop, so it cannot open from inside the imgui frame;
+			//the engine runs it once this frame's ui is finished, exactly as the File menu does
+			engine->m_pendingFileAction = VulkanEngine::FileAction::ImportGltf;
+		}
+		ImGui::EndPopup();
+	}
+
+	const bool hasSelection = m_selectionKind != SelectionKind::None;
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!hasSelection);
+	if (ImGui::Button("Duplicate")) {
+		duplicateSelection();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Delete")) {
+		deleteSelection();
+	}
+	ImGui::EndDisabled();
+
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Right-click an object to rename, duplicate or delete it.\nDel deletes the selection.");
+	}
+}
+
+void RaytraceSceneEditor::drawObjectTree(VulkanEngine* engine)
+{
+	//a bordered scrolling region, so a scene with a hundred mesh nodes does not push the object's
+	//own parameters off the bottom of the panel
+	const float height = 12 * ImGui::GetTextLineHeightWithSpacing();
+	if (ImGui::BeginChild("##objects", ImVec2(0, height), ImGuiChildFlags_Borders)) {
+		drawCameraRows();
+		drawSphereRows();
+		drawModelRows(engine);
+	}
+	ImGui::EndChild();
+
+	//Del anywhere in the panel, as long as no text field is taking keys
+	if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+		deleteSelection();
+	}
+}
+
+bool RaytraceSceneEditor::drawObjectRow(SelectionKind kind, uint64_t id, const std::string& name)
+{
+	bool alive = true;
+	ImGui::PushID((int)id);
+
+	if (m_renamingId == id) {
+		//the row becomes its own text field until the edit is committed or abandoned
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (!ImGui::IsAnyItemActive()) {
+			ImGui::SetKeyboardFocusHere();
+		}
+		const bool entered = ImGui::InputText("##rename", m_renameBuffer, sizeof(m_renameBuffer), ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+		//Enter, or clicking away with the text changed, commits; Escape leaves imgui's own buffer
+		//reverted and only deactivates, so it cancels
+		if (entered || ImGui::IsItemDeactivatedAfterEdit()) {
+			std::string* target = nullptr;
+			switch (kind) {
+			case SelectionKind::Camera:
+				if (SceneCamera* camera = findCamera(id)) {
+					target = &camera->name;
+				}
+				break;
+			case SelectionKind::Sphere:
+				if (SceneSphere* sphere = findSphere(id)) {
+					target = &sphere->name;
+				}
+				break;
+			case SelectionKind::MeshObject:
+				if (SceneMeshObject* object = findMeshObject(id)) {
+					target = &object->name;
+				}
+				break;
+			case SelectionKind::None:
+				break;
+			}
+			if (target != nullptr && m_renameBuffer[0] != '\0') {
+				*target = m_renameBuffer;
+				markChanged();
+			}
+		}
+		if (entered || ImGui::IsItemDeactivated()) {
+			m_renamingId = 0;
+		}
+		ImGui::PopID();
+		return alive;
+	}
+
+	const bool selected = m_selectionKind == kind && m_selectionId == id;
+	if (ImGui::Selectable(name.c_str(), selected)) {
+		select(kind, id);
+	}
+
+	if (ImGui::BeginPopupContextItem("##context")) {
+		//right-clicking a row acts on that row, not on whatever was selected before
+		if (!(m_selectionKind == kind && m_selectionId == id)) {
+			select(kind, id);
+		}
+		if (ImGui::MenuItem("Rename")) {
+			std::snprintf(m_renameBuffer, sizeof(m_renameBuffer), "%s", name.c_str());
+			m_renamingId = id;
+		}
+		if (ImGui::MenuItem("Duplicate")) {
+			duplicateSelection();
+		}
+		ImGui::Separator();
+		if (ImGui::MenuItem("Delete", "Del")) {
+			deleteSelection();
+			alive = false;
+		}
+		ImGui::EndPopup();
+	}
+
+	ImGui::PopID();
+	return alive;
+}
+
+void RaytraceSceneEditor::drawCameraRows()
+{
+	if (!ImGui::TreeNodeEx("Cameras", ImGuiTreeNodeFlags_DefaultOpen)) {
+		return;
+	}
+	if (m_cameras.empty()) {
+		ImGui::TextDisabled("none");
+	}
+	for (size_t i = 0; i < m_cameras.size(); i++) {
+		//a deleting row invalidates the vector, so the walk stops there and picks up next frame
+		if (!drawObjectRow(SelectionKind::Camera, m_cameras[i].id, m_cameras[i].name)) {
+			break;
+		}
+	}
+	ImGui::TreePop();
+}
+
+void RaytraceSceneEditor::drawSphereRows()
+{
+	if (!ImGui::TreeNodeEx("Spheres", ImGuiTreeNodeFlags_DefaultOpen)) {
+		return;
+	}
+	if (m_spheres.empty()) {
+		ImGui::TextDisabled("none");
+	}
+	for (size_t i = 0; i < m_spheres.size(); i++) {
+		if (!drawObjectRow(SelectionKind::Sphere, m_spheres[i].id, m_spheres[i].name)) {
+			break;
+		}
+	}
+	ImGui::TreePop();
+}
+
+void RaytraceSceneEditor::drawModelRows(VulkanEngine* engine)
+{
+	if (!ImGui::TreeNodeEx("Models", ImGuiTreeNodeFlags_DefaultOpen)) {
 		return;
 	}
 
-	//removal happens after the loop: erasing while iterating the map is not an option
+	if (engine->m_models.empty()) {
+		ImGui::TextDisabled("none - Add > Mesh from glTF file...");
+		ImGui::TreePop();
+		return;
+	}
+
+	//a model removed mid-iteration would invalidate the map, so the action is deferred
 	std::string toRemove;
-	for (const auto& [name, model] : engine->m_models) {
-		ImGui::PushID(name.c_str());
-		if (ImGui::SmallButton("Remove")) {
-			toRemove = name;
-		}
-		ImGui::SameLine();
-		ImGui::TextUnformatted(name.c_str());
-		if (ImGui::IsItemHovered()) {
+	std::string toRestore;
+
+	for (const auto& [key, model] : engine->m_models) {
+		ImGui::PushID(key.c_str());
+		const bool open = ImGui::TreeNodeEx(key.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+		if (ImGui::IsItemHovered() && model != nullptr) {
 			ImGui::SetTooltip("%s", model->sourcePath.string().c_str());
 		}
+
+		if (ImGui::BeginPopupContextItem("##model")) {
+			if (ImGui::MenuItem("Restore objects")) {
+				//puts back the nodes of this model that have no object placing them - the way out
+				//of having deleted one and wanted it back
+				toRestore = key;
+			}
+			ImGui::Separator();
+			if (ImGui::MenuItem("Remove model")) {
+				toRemove = key;
+			}
+			ImGui::EndPopup();
+		}
+
+		if (open) {
+			bool any = false;
+			for (size_t i = 0; i < m_meshObjects.size(); i++) {
+				if (m_meshObjects[i].modelKey != key) {
+					continue;
+				}
+				any = true;
+				//a hidden object still lists, just greyed, so it can be found and shown again
+				const bool visible = m_meshObjects[i].visible;
+				if (!visible) {
+					ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+				}
+				const bool alive = drawObjectRow(SelectionKind::MeshObject, m_meshObjects[i].id, m_meshObjects[i].name);
+				if (!visible) {
+					ImGui::PopStyleColor();
+				}
+				if (!alive) {
+					break;
+				}
+			}
+			if (!any) {
+				ImGui::TextDisabled("no objects - right-click to restore");
+			}
+			ImGui::TreePop();
+		}
+
 		ImGui::PopID();
+	}
+
+	ImGui::TreePop();
+
+	if (!toRestore.empty() && engine->m_raytraceMeshData != nullptr) {
+		std::vector<SceneMeshObject> missing;
+		for (SceneMeshObject& candidate : defaultMeshObjects(*engine->m_raytraceMeshData, toRestore)) {
+			const bool placed = std::any_of(m_meshObjects.begin(), m_meshObjects.end(), [&](const SceneMeshObject& existing) {
+				return existing.modelKey == candidate.modelKey && existing.nodeIndex == candidate.nodeIndex;
+			});
+			if (!placed) {
+				missing.push_back(std::move(candidate));
+			}
+		}
+		addMeshObjects(std::move(missing));
 	}
 
 	if (!toRemove.empty()) {
 		engine->removeGltf(toRemove);
-		//the glTF rows below are about to change length, so a glTF selection is meaningless now
-		if (m_selectionKind == SelectionKind::GltfNode) {
-			m_selectionKind = SelectionKind::None;
-		}
 	}
 }
 
-void RaytraceSceneEditor::drawSelectedSphere(VulkanEngine* engine, int index)
+void RaytraceSceneEditor::drawSelection(VulkanEngine* engine)
 {
-	SceneSphere& sphere = m_spheres[index];
+	switch (m_selectionKind) {
+	case SelectionKind::Sphere:
+		if (SceneSphere* sphere = findSphere(m_selectionId)) {
+			drawSelectedSphere(engine, *sphere);
+		}
+		break;
+	case SelectionKind::Camera:
+		if (SceneCamera* camera = findCamera(m_selectionId)) {
+			drawSelectedCamera(engine, *camera);
+		}
+		break;
+	case SelectionKind::MeshObject:
+		if (SceneMeshObject* object = findMeshObject(m_selectionId)) {
+			drawSelectedMeshObject(engine, *object);
+		}
+		break;
+	case SelectionKind::None:
+		break;
+	}
+}
 
+void RaytraceSceneEditor::drawSelectedSphere(VulkanEngine* engine, SceneSphere& sphere)
+{
 	ImGui::SeparatorText(sphere.name.c_str());
 
 	//scoping the widget ids to the selected object stops an in-progress drag, or any other
@@ -392,10 +749,8 @@ void RaytraceSceneEditor::drawSelectedSphere(VulkanEngine* engine, int index)
 	ImGui::PopID();
 }
 
-void RaytraceSceneEditor::drawSelectedCamera(VulkanEngine* engine, int index)
+void RaytraceSceneEditor::drawSelectedCamera(VulkanEngine* engine, SceneCamera& camera)
 {
-	SceneCamera& camera = m_cameras[index];
-
 	ImGui::SeparatorText(camera.name.c_str());
 	ImGui::PushID((int)camera.id);
 
@@ -444,6 +799,46 @@ void RaytraceSceneEditor::drawSelectedCamera(VulkanEngine* engine, int index)
 
 	ImGui::PopID();
 }
+
+void RaytraceSceneEditor::drawSelectedMeshObject(VulkanEngine* engine, SceneMeshObject& object)
+{
+	ImGui::SeparatorText(object.name.c_str());
+	ImGui::PushID((int)object.id);
+
+	//which geometry this object places, and how much of it there is to trace
+	if (engine->m_raytraceMeshData != nullptr) {
+		if (const RTMeshNode* node = engine->m_raytraceMeshData->findNode(object.modelKey, object.nodeIndex)) {
+			ImGui::TextDisabled("%s / %s - %zu triangle(s)", object.modelKey.c_str(), node->name.c_str(), node->triangleCount);
+		} else {
+			ImGui::TextDisabled("%s - geometry missing", object.modelKey.c_str());
+		}
+	}
+
+	bool changed = drawMeshObjectParams(object);
+
+	//the same opt-in gizmo a sphere gets, with the full operation set a mesh object can use
+	TransformGizmo& gizmo = engine->m_transformGizmo;
+	const bool editing = gizmo.isEditing(gizmoTargetId(object.id));
+	if (ImGui::Button(editing ? "Stop Editing Transform" : "Edit Transform")) {
+		if (editing) {
+			gizmo.endEditing();
+		} else {
+			beginMeshGizmo(gizmo, object.id);
+		}
+	}
+	if (editing) {
+		ImGui::SameLine();
+		ImGui::TextDisabled("(drag the gizmo in the viewport)");
+	}
+
+	if (changed) {
+		markChanged();
+	}
+
+	ImGui::PopID();
+}
+
+//---------------------------------------------------------------- gizmo adapters
 
 void RaytraceSceneEditor::beginSphereGizmo(TransformGizmo& gizmo, uint64_t id)
 {
@@ -499,4 +894,29 @@ void RaytraceSceneEditor::beginCameraGizmo(TransformGizmo& gizmo, uint64_t id)
 		//a camera is placed and aimed; its size is its fov. Local mode so the rotation rings
 		//follow the camera's own axes
 		ImGuizmo::TRANSLATE | ImGuizmo::ROTATE, ImGuizmo::LOCAL);
+}
+
+void RaytraceSceneEditor::beginMeshGizmo(TransformGizmo& gizmo, uint64_t id)
+{
+	gizmo.beginEditing(
+		gizmoTargetId(id),
+		//the only object whose transform *is* a matrix, so both directions are the identity
+		[this, id]() -> std::optional<glm::mat4> {
+			const SceneMeshObject* object = findMeshObject(id);
+			if (object == nullptr) {
+				return std::nullopt;
+			}
+			return object->transform;
+		},
+		[this, id](const glm::mat4& m) {
+			SceneMeshObject* object = findMeshObject(id);
+			if (object == nullptr) {
+				return;
+			}
+			object->transform = m;
+			markChanged();
+		},
+		//the full set: a mesh object is the one thing in the scene with a meaningful rotation and
+		//a meaningful non-uniform scale
+		ImGuizmo::TRANSLATE | ImGuizmo::ROTATE | ImGuizmo::SCALE);
 }

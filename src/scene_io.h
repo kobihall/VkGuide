@@ -25,12 +25,32 @@
 #include <rt_scene_types.h>
 #include <vk_types.h>
 
+// One placed mesh object as a file records it. Identical to SceneMeshObject except that the model
+// is an index into SceneDescription::modelPaths rather than a key: the keys are assigned by
+// VulkanEngine::importGltf() as it loads them and are not stable across a save and reload, while
+// the order of the model list is.
+struct SceneMeshObjectRecord {
+	int model { 0 };
+	uint32_t nodeIndex { 0 };
+	std::string name;
+	glm::mat4 transform { 1.f };
+	bool visible { true };
+	MeshMaterialMode materialMode { MeshMaterialMode::Gltf };
+	SphereMaterial material;
+};
+
 struct SceneDescription {
 	// absolute paths
 	std::vector<std::filesystem::path> modelPaths;
 	// empty when the scene has no environment map
 	std::filesystem::path environmentMapPath;
 	std::vector<SceneSphere> spheres;
+	// the mesh objects placing the models' nodes. `hasMeshObjects` tells an absent list (a
+	// version-4 file, which predates them - the loader then places every node at its authored
+	// transform, as importing does) apart from a scene that genuinely has none because the user
+	// deleted them all
+	std::vector<SceneMeshObjectRecord> meshObjects;
+	bool hasMeshObjects { false };
 	// the cameras it can be rendered from, and which one the renderer had selected (an index
 	// into cameras; -1 for none). Ids are not saved - the editor assigns them on load
 	std::vector<SceneCamera> cameras;

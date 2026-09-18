@@ -1,0 +1,60 @@
+#pragma once
+
+// Every loaded model's base-colour texture in one 2D array image, so the path tracer can pick a
+// triangle's texture with a plain layer index.
+//
+// Why an array rather than an array *of descriptors*: indexing a descriptor array by a value
+// that varies per invocation needs VK_EXT_descriptor_indexing and non-uniform indexing, which
+// MoltenVK only offers through Metal argument buffers and which this project (Vulkan 1.2 + KHR
+// extensions, see CLAUDE.md) does not enable. One sampler2DArray at a fixed binding needs none
+// of that: the layer is an ordinary integer the shader computes.
+//
+// The cost is that every texture is resampled to one common size. That is done on the GPU with
+// vkCmdBlitImage, so a rebuild is one immediate submit and no CPU image work at all.
+
+#include <unordered_map>
+
+#include <vk_types.h>
+
+class VulkanEngine;
+
+class RaytraceTextureArray {
+public:
+	// the square size every source texture is blitted to. Big enough for the base-colour detail
+	// a path trace resolves, small enough that a scene's worth of them is a few tens of MB
+	static constexpr uint32_t LAYER_SIZE = 512;
+	// a hard cap on layers, so a pathological scene cannot try to allocate gigabytes. Textures
+	// past it are dropped and the surfaces using them fall back to their colour factor alone
+	static constexpr uint32_t MAX_LAYERS = 64;
+
+	// allocates the one-layer fallback, which is what the array is whenever no model has a
+	// texture. The binding must always name a valid view, so the array is never absent
+	void init(VulkanEngine* engine);
+	// requires the device to be idle
+	void destroy(VulkanEngine* engine);
+
+	// rebuilds from every model currently loaded in the engine. Called from the same scene-change
+	// path that rebuilds the mesh data, so the layers and RaytraceTriangleData agree by
+	// construction. Waits for the device: a model import is a menu-driven action
+	void rebuild(VulkanEngine* engine);
+
+	// the layer holding a glTF image, or -1 for one this array does not have (no texture on the
+	// material, or the layer cap reached)
+	int layerOf(VkImage image) const;
+
+	// always valid, always in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, never null
+	const AllocatedImage& image() const { return m_array; }
+	uint32_t layerCount() const { return m_layerCount; }
+
+private:
+	void destroyArray(VulkanEngine* engine);
+	// the array image plus its VK_IMAGE_VIEW_TYPE_2D_ARRAY view. VulkanEngine::createImage()
+	// builds single-layer 2D images only, so this is the one place that spells out both
+	void createArray(VulkanEngine* engine, uint32_t layers);
+
+	AllocatedImage m_array {};
+	uint32_t m_layerCount { 1 };
+	// source glTF image -> its layer. Keyed by VkImage because that is what a GLTFMaterial holds
+	// and what makes two materials sharing one texture share one layer
+	std::unordered_map<VkImage, int> m_layers;
+};

@@ -5,6 +5,7 @@
 
 #include <imgui.h>
 
+#include <rt_scene.h>
 #include <rt_scene_editor.h>
 #include <vk_engine.h>
 #include <vk_images.h>
@@ -40,6 +41,7 @@ RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, c
 	//toggling the watch itself is not a reason to start over
 	key.settings.restartOnChange = false;
 	key.sceneRevision = editor.revision();
+	key.modelRevision = engine->m_sceneRevision;
 	key.environmentMapPath = engine->m_environmentMapPath;
 	key.environmentIntensity = engine->m_environmentIntensity;
 	key.width = m_settings.matchViewport ? engine->m_drawExtent.width : (uint32_t)m_settings.width;
@@ -129,11 +131,51 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		ImGui::TextDisabled("No render yet");
 	}
 
-	ImGui::BeginDisabled(running || camera == nullptr);
+	//what the next render would cost, from the triangles as they stand. Shown before the button
+	//rather than after the refusal, so the number that decides the outcome is visible first
+	const size_t triangleCount = m_triangles != nullptr ? m_triangles->triangles.size() : 0;
+	RenderSettings prospective = m_settings;
+	if (prospective.matchViewport) {
+		prospective.width = (int)engine->m_drawExtent.width;
+		prospective.height = (int)engine->m_drawExtent.height;
+	}
+	const double tests = estimatedTestsPerFrame(prospective, triangleCount);
+	const bool overBudget = tests > TESTS_PER_FRAME_BUDGET;
+
+	if (triangleCount > 0) {
+		ImGui::Text("%zu triangle(s), %.1e ray-triangle tests/frame", triangleCount, tests);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Every ray is tested against every triangle: there is no acceleration\nstructure yet, so this is pixels x samples/frame x triangles.");
+		}
+	}
+
+	if (overBudget) {
+		//a frame this long does not fail as a slow render - it trips the GPU watchdog and takes
+		//the display driver down with it, so the button is closed until it is accepted explicitly
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
+		ImGui::TextWrapped("Too heavy to render safely: over the %.0e tests/frame budget. A frame this long can hang the GPU driver. Lower the resolution or samples per frame, or hide some objects.", TESTS_PER_FRAME_BUDGET);
+		ImGui::PopStyleColor();
+		if (ImGui::Checkbox("Render anyway (may freeze or crash the display)", &m_acceptedHeavyRender)) {
+			//the acknowledgement is for this cost only; making the scene heavier withdraws it
+			m_acceptedTests = tests;
+		}
+	} else {
+		m_acceptedHeavyRender = false;
+	}
+
+	const bool blocked = overBudget && !(m_acceptedHeavyRender && tests <= m_acceptedTests);
+
+	ImGui::BeginDisabled(running || camera == nullptr || blocked);
 	if (ImGui::Button("Render")) {
 		startRender(engine, editor);
 	}
 	ImGui::EndDisabled();
+
+	if (!m_blockedReason.empty() && !running) {
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
+		ImGui::TextWrapped("%s", m_blockedReason.c_str());
+		ImGui::PopStyleColor();
+	}
 
 	if (running) {
 		ImGui::SameLine();
@@ -254,6 +296,13 @@ void RaytraceRenderer::drawSettings(VulkanEngine* engine)
 	}
 }
 
+double RaytraceRenderer::estimatedTestsPerFrame(const RenderSettings& settings, size_t triangleCount)
+{
+	const double pixels = (double)std::max(settings.width, 2) * (double)std::max(settings.height, 2);
+	const double samples = (double)std::clamp(settings.samplesPerFrame, 1, CRT_MAX_SAMPLES_PER_FRAME);
+	return pixels * samples * (double)triangleCount;
+}
+
 void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor)
 {
 	const SceneCamera* camera = resolveCamera(editor);
@@ -277,6 +326,24 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	settings.rayDepth = std::clamp(settings.rayDepth, 1, CRT_MAX_DEPTH);
 	settings.samplesPerFrame = std::clamp(settings.samplesPerFrame, 1, CRT_MAX_SAMPLES_PER_FRAME);
 
+	//the triangles first: the budget check below needs to know how many there are
+	ensureTriangleData(engine, editor);
+	const size_t triangleCount = m_triangles != nullptr ? m_triangles->triangles.size() : 0;
+
+	//the one thing that must never be started by accident. Over the budget the frame runs long
+	//enough to trip the GPU watchdog, and the failure mode is not a dropped frame - it is the
+	//display driver being killed. Refused here rather than in the panel so that no caller can
+	//reach it another way, and acknowledged only for the exact cost that was shown
+	const double tests = estimatedTestsPerFrame(settings, triangleCount);
+	if (tests > TESTS_PER_FRAME_BUDGET && !(m_acceptedHeavyRender && tests <= m_acceptedTests)) {
+		m_blockedReason = fmt::format("{} triangles at {}x{}x{} is {:.1e} ray-triangle tests per frame, over the {:.0e} budget. Lower the resolution or samples per frame, hide some objects, or accept it below - there is no acceleration structure yet, so this scales with every one of the three",
+			triangleCount, settings.width, settings.height, settings.samplesPerFrame, tests, TESTS_PER_FRAME_BUDGET);
+		fmt::println("RaytraceRenderer: render refused - {}", m_blockedReason);
+		m_gpu.stop();
+		return;
+	}
+	m_blockedReason.clear();
+
 	ensureDisplayImage(engine, (uint32_t)settings.width, (uint32_t)settings.height);
 
 	GpuRenderSnapshot snapshot;
@@ -284,6 +351,8 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	snapshot.height = (uint32_t)settings.height;
 	snapshot.camera = cameraSnapshot(*camera);
 	snapshot.spheres = editor.spheres();
+	//shared, not copied: the tracer compares it by pointer to decide whether it needs re-uploading
+	snapshot.triangles = m_triangles;
 	snapshot.settings = settings;
 	snapshot.seed = settings.useFixedSeed ? settings.seed : (uint32_t)std::random_device {}();
 	snapshot.useEnvironmentMap = engine->m_environmentMap.image != VK_NULL_HANDLE;
@@ -313,6 +382,26 @@ void RaytraceRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const R
 	vkutil::transition_image(cmd, m_displayImage.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 	m_gpu.record(cmd, engine, m_displayImage, exposure);
 	vkutil::transition_image(cmd, m_displayImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+void RaytraceRenderer::ensureTriangleData(VulkanEngine* engine, const RaytraceSceneEditor& editor)
+{
+	//the editor's revision moves for any object edit (a gizmo drag included) and the engine's for
+	//any change to the loaded models. Between them they cover everything buildTriangleData() reads,
+	//so an unchanged pair means the triangles it would produce are the ones already held
+	if (m_hasTriangles && m_trianglesSceneRevision == editor.revision() && m_trianglesModelRevision == engine->m_sceneRevision) {
+		return;
+	}
+
+	if (engine->m_raytraceMeshData == nullptr) {
+		m_triangles.reset();
+	} else {
+		m_triangles = buildTriangleData(*engine->m_raytraceMeshData, editor.meshObjects(), engine->m_raytraceTextures);
+	}
+
+	m_trianglesSceneRevision = editor.revision();
+	m_trianglesModelRevision = engine->m_sceneRevision;
+	m_hasTriangles = true;
 }
 
 void RaytraceRenderer::ensureDisplayImage(VulkanEngine* engine, uint32_t width, uint32_t height)

@@ -29,6 +29,7 @@ struct CrtParams {
 	uint32_t bounce;
 	uint32_t rayDepth;
 	uint32_t sphereCount;
+	uint32_t triangleCount;
 	uint32_t flags;
 	uint32_t minBouncesBeforeRoulette;
 	uint32_t debugView;
@@ -36,7 +37,6 @@ struct CrtParams {
 	float environmentIntensity;
 	float pad0;
 	float pad1;
-	float pad2;
 };
 static_assert(sizeof(CrtParams) == 160);
 
@@ -49,7 +49,7 @@ constexpr uint32_t CRT_WORKGROUP = 64;
 
 //mirrors of the remaining GLSL structs, for buffer sizing only
 constexpr VkDeviceSize PATH_STATE_SIZE = 48;
-constexpr VkDeviceSize HIT_RECORD_SIZE = 32;
+constexpr VkDeviceSize HIT_RECORD_SIZE = 48;
 
 //header slots per frame slot in the readback buffer: one after generate, one after every shade
 constexpr uint32_t READBACK_HEADERS_PER_SLOT = CRT_MAX_DEPTH + 1;
@@ -103,13 +103,15 @@ void GpuPathTracer::init(VulkanEngine* engine)
 			.addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) // accumulation
 			.addBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) // sample count
 			.addBinding(10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) // environment map
+			.addBinding(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // triangles
+			.addBinding(12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) // base-colour texture array
 			.setPushConstants<CrtParams>()
 			.setWorkgroupSize(CRT_WORKGROUP)
 			.build(engine->m_device);
 	};
 
 	m_generate = buildStage("crt_generate.comp.spv");
-	m_extend = buildStage("crt_extend_sphere.comp.spv");
+	m_extend = buildStage("crt_extend.comp.spv");
 	m_shade = buildStage("crt_shade.comp.spv");
 	m_resolve = buildStage("crt_resolve.comp.spv");
 
@@ -142,6 +144,9 @@ void GpuPathTracer::destroy(VulkanEngine* engine)
 	if (m_sceneBuffer.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_sceneBuffer);
 		m_sceneBuffer = {};
+		m_hasUpload = false;
+		m_uploadedTriangles.reset();
+		m_uploadedSpheres.clear();
 	}
 	if (m_headerReadback.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_headerReadback);
@@ -217,19 +222,68 @@ void GpuPathTracer::freePool(VulkanEngine* engine)
 	m_hasImage = false;
 }
 
+namespace {
+
+//the tagged-union form the shader scatters with. `albedoLayer` is the caller's, since only a
+//triangle's glTF material has one
+CrtMaterial gpuMaterial(const SphereMaterial& material, int albedoLayer)
+{
+	CrtMaterial out {};
+	out.albedo = material.albedo;
+	out.type = (uint32_t)material.type;
+	out.albedoLayer = albedoLayer;
+	switch (material.type) {
+	case MaterialType::Lambertian:
+		out.param = 0.f;
+		break;
+	case MaterialType::Metal:
+		out.param = std::min(material.fuzz, 1.f);
+		break;
+	case MaterialType::Phong:
+		out.param = material.smoothness;
+		break;
+	case MaterialType::Dielectric:
+		out.param = material.ir;
+		break;
+	}
+	return out;
+}
+
+}
+
 void GpuPathTracer::uploadScene(VulkanEngine* engine)
 {
-	//one buffer, spheres then materials, materialIndex == sphere index. Uploaded once per render:
-	//the snapshot never changes, so a single CPU_TO_GPU buffer flushed once is all it needs
+	//one buffer: spheres, then every material (the spheres' first, so materialIndex == sphere
+	//index still holds), then the world-space triangles.
+	//
+	//A render restarted by a camera drag arrives here every frame with the same geometry, and a
+	//loaded model's triangles are megabytes: re-allocating and re-writing them 60 times a second
+	//would cost more than the tracing. So the upload is skipped outright when the snapshot holds
+	//exactly what the buffer already does - the spheres by value, the triangles by pointer, since
+	//buildTriangleData() only ever produces a new object when the geometry really changed
+	if (m_hasUpload && m_uploadedSpheres == m_snapshot.spheres && m_uploadedTriangles == m_snapshot.triangles) {
+		return;
+	}
+
 	const std::vector<SceneSphere>& spheres = m_snapshot.spheres;
+	const RaytraceTriangleData* triangleData = m_snapshot.triangles.get();
+
 	m_sphereCount = (uint32_t)spheres.size();
-	//a zero-length buffer range is invalid, so an empty scene still gets one (unused) entry
-	const uint32_t entries = std::max(m_sphereCount, 1u);
+	m_triangleCount = triangleData != nullptr ? (uint32_t)triangleData->triangles.size() : 0;
+	const uint32_t triangleMaterials = triangleData != nullptr ? (uint32_t)triangleData->materials.size() : 0;
+
+	//a zero-length buffer range is invalid, so an empty list still gets one (unused) entry
+	const VkDeviceSize sphereEntries = std::max(m_sphereCount, 1u);
+	const VkDeviceSize materialEntries = std::max(m_sphereCount + triangleMaterials, 1u);
+	const VkDeviceSize triangleEntries = std::max(m_triangleCount, 1u);
 
 	const VkDeviceSize alignment = std::max<VkDeviceSize>(engine->m_gpuProperties.limits.minStorageBufferOffsetAlignment, 16);
-	const VkDeviceSize spheresBytes = sizeof(CrtSphere) * entries;
+	const VkDeviceSize spheresBytes = sizeof(CrtSphere) * sphereEntries;
 	m_materialsOffset = alignUp(spheresBytes, alignment);
-	const VkDeviceSize totalBytes = m_materialsOffset + sizeof(CrtMaterial) * entries;
+	m_materialsBytes = sizeof(CrtMaterial) * materialEntries;
+	m_trianglesOffset = alignUp(m_materialsOffset + m_materialsBytes, alignment);
+	m_trianglesBytes = sizeof(RaytraceTriangle) * triangleEntries;
+	const VkDeviceSize totalBytes = m_trianglesOffset + m_trianglesBytes;
 
 	//the previous render's buffer may still be read by the frame in flight, so it is retired
 	//through the deletion queue of the slot that frame used - flushed once its fence has been
@@ -248,30 +302,36 @@ void GpuPathTracer::uploadScene(VulkanEngine* engine)
 	CrtMaterial* gpuMaterials = (CrtMaterial*)(mapped + m_materialsOffset);
 
 	for (uint32_t i = 0; i < m_sphereCount; i++) {
-		const SceneSphere& s = spheres[i];
-		gpuSpheres[i].center = s.center;
-		gpuSpheres[i].radius = s.radius;
+		gpuSpheres[i].center = spheres[i].center;
+		gpuSpheres[i].radius = spheres[i].radius;
+		//a sphere carries no uvs, so it is never textured
+		gpuMaterials[i] = gpuMaterial(spheres[i].material, -1);
+	}
 
-		CrtMaterial& m = gpuMaterials[i];
-		m.albedo = s.material.albedo;
-		m.type = (uint32_t)s.material.type;
-		switch (s.material.type) {
-		case MaterialType::Lambertian:
-			m.param = 0.f;
-			break;
-		case MaterialType::Metal:
-			m.param = std::min(s.material.fuzz, 1.f);
-			break;
-		case MaterialType::Phong:
-			m.param = s.material.smoothness;
-			break;
-		case MaterialType::Dielectric:
-			m.param = s.material.ir;
-			break;
+	if (triangleData != nullptr) {
+		for (uint32_t i = 0; i < triangleMaterials; i++) {
+			const RaytraceTriMaterial& entry = triangleData->materials[i];
+			gpuMaterials[m_sphereCount + i] = gpuMaterial(entry.material, entry.albedoLayer);
+		}
+
+		//RaytraceTriangle is laid out as the shader reads it, so the triangles copy straight in.
+		//Their material indices are rebased past the spheres' here, once, rather than in the
+		//extend stage per ray
+		RaytraceTriangle* gpuTriangles = (RaytraceTriangle*)(mapped + m_trianglesOffset);
+		memcpy(gpuTriangles, triangleData->triangles.data(), sizeof(RaytraceTriangle) * m_triangleCount);
+		for (uint32_t i = 0; i < m_triangleCount; i++) {
+			gpuTriangles[i].material += m_sphereCount;
 		}
 	}
 
 	vmaFlushAllocation(engine->m_memAllocator, m_sceneBuffer.allocation, 0, totalBytes); //flush vma on MoltenVK
+
+	m_uploadedSpheres = spheres;
+	m_uploadedTriangles = m_snapshot.triangles;
+	m_hasUpload = true;
+
+	fmt::println("GpuPathTracer: scene uploaded - {} sphere(s), {} triangle(s), {} material(s), {:.1f} MB",
+		m_sphereCount, m_triangleCount, m_sphereCount + triangleMaterials, double(totalBytes) / (1024.0 * 1024.0));
 }
 
 void GpuPathTracer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
@@ -370,10 +430,14 @@ VkDescriptorSet GpuPathTracer::writeSet(VulkanEngine* engine, const ComputePass&
 	writer.writeBuffer(4, m_radiance.buffer, sizeof(glm::vec4) * (VkDeviceSize)m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 	writer.writeBuffer(5, m_sampleBudget.buffer, sizeof(uint32_t) * (VkDeviceSize)m_poolWidth * m_poolHeight, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 	writer.writeBuffer(6, m_sceneBuffer.buffer, m_materialsOffset, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(7, m_sceneBuffer.buffer, sizeof(CrtMaterial) * std::max(m_sphereCount, 1u), m_materialsOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	writer.writeBuffer(7, m_sceneBuffer.buffer, m_materialsBytes, m_materialsOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 	writer.writeImage(8, m_accumulation.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 	writer.writeImage(9, m_sampleCount.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 	writer.writeImage(10, map.imageView, engine->m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	writer.writeBuffer(11, m_sceneBuffer.buffer, m_trianglesBytes, m_trianglesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	//the array always exists, even for a scene with no textures at all, so the binding is never
+	//left naming nothing
+	writer.writeImage(12, engine->m_raytraceTextures.image().imageView, engine->m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 	writer.updateSet(engine->m_device, set);
 
 	return set;
@@ -446,6 +510,7 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 		params.bounce = 0;
 		params.rayDepth = (uint32_t)std::clamp(settings.rayDepth, 1, CRT_MAX_DEPTH);
 		params.sphereCount = m_sphereCount;
+		params.triangleCount = m_triangleCount;
 		params.flags = (settings.antialiasing ? CRT_FLAG_JITTER : 0u)
 			| (settings.russianRoulette ? CRT_FLAG_ROULETTE : 0u)
 			| ((m_snapshot.useEnvironmentMap && engine->m_environmentMap.image != VK_NULL_HANDLE) ? CRT_FLAG_ENVIRONMENT_MAP : 0u);

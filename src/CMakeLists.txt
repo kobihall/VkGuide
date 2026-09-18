@@ -28,6 +28,8 @@ add_executable(vulkan_guide
     rt_scene.h
     rt_scene_editor.cpp
     rt_scene_editor.h
+    rt_textures.cpp
+    rt_textures.h
     scene_io.cpp
     scene_io.h
     file_dialog.h

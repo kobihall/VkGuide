@@ -12,6 +12,7 @@
 #include <vk_tonemap.h>
 #include <rt_renderer.h>
 #include <rt_scene_editor.h>
+#include <rt_textures.h>
 #include <vk_gizmo.h>
 
 #include <filesystem>
@@ -100,6 +101,12 @@ struct DrawContext {
 
 struct MeshNode : public Node {
 	std::shared_ptr<MeshAsset> mesh;
+
+	// this node's own surfaces at an explicit world transform, without recursing into its
+	// children: each mesh-bearing child is its own scene object carrying its own transform, so
+	// the scene's mesh objects draw through this rather than through Draw()
+	void drawSurfaces(const glm::mat4& worldMatrix, DrawContext& ctx) const;
+
 	virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx) override;
 };
 
@@ -223,9 +230,16 @@ public:
 	// rest of the scene, and openScene()/saveScene() move all three together
 	std::map<std::string, std::shared_ptr<LoadedGLTF>> m_models;
 
-	// the models as the cpu raytracer sees them, rebuilt by rebuildSceneDerivedData() exactly
-	// when m_models changes and shared immutably with every render snapshot - see RaytraceMeshData
+	// the models as the raytracer sees them, rebuilt by rebuildSceneDerivedData() exactly when
+	// m_models changes and shared immutably with every render snapshot - see RaytraceMeshData
 	std::shared_ptr<const RaytraceMeshData> m_raytraceMeshData;
+	// every loaded model's mesh nodes by (model key, node index), so a SceneMeshObject resolves to
+	// the geometry it places without re-walking every node tree each frame. Raw pointers into
+	// m_models, so this is rebuilt by the same path, and only by it
+	std::map<std::pair<std::string, uint32_t>, const MeshNode*> m_meshNodes;
+	// every model's base-colour textures in one array image, for the path tracer's triangles.
+	// Rebuilt alongside the mesh data, so the layers a triangle's material names always exist
+	RaytraceTextureArray m_raytraceTextures;
 	// bumped whenever m_models changes, so anything that derives data from the models (a future
 	// simulation plane's intersections, say) can compare against the revision it last acted on
 	uint64_t m_sceneRevision { 0 };

@@ -5,7 +5,7 @@
 	},
 	"nodes":[
 		{
-			"name":"raytracer_sphere_scene"
+			"name":"vulkan_guide_scene"
 		}
 	],
 	"scene":0,
@@ -15,7 +15,47 @@
 				0
 			],
 			"extras":{
-				"version":1,
+				"version":4,
+				"models":[
+					
+				],
+				"environmentIntensity":1.0,
+				"render":{
+					"width":1920,
+					"height":1080,
+					"matchViewport":false,
+					"antialiasing":true,
+					"maxSamples":64,
+					"unlimitedSamples":false,
+					"rayDepth":8,
+					"useFixedSeed":false,
+					"seed":1,
+					"samplesPerFrame":1,
+					"russianRoulette":true,
+					"minBouncesBeforeRoulette":3,
+					"restartOnChange":true
+				},
+				"renderCamera":0,
+				"cameras":[
+					{
+						"name":"render_camera",
+						"position":[
+							0.0,
+							0.0,
+							5.0
+						],
+						"orientation":[
+							0.0,
+							0.0,
+							0.0,
+							1.0
+						],
+						"fov":70.0,
+						"aperture":0.0,
+						"focusDistance":6.0,
+						"exposure":1.0
+					}
+				],
 				"spheres":[
 					{
 						"name":"ground",
@@ -84,7 +124,7 @@
 					}
 				]
 			},
-			"name":"Raytracer Sphere Scene"
+			"name":"vulkan_guide scene"
 		}
 	],
 	"extensions":{

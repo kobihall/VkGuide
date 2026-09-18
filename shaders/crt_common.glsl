@@ -37,15 +37,18 @@ struct PathState {
 	uint bounce;
 };
 
-// 32 bytes, by QUEUE POSITION, not path index - extend writes hits[i] for queue entry i and
-// shade reads the same. t < 0 is a miss. Geometry-agnostic on purpose: a triangle extend writes
-// the same record
+// 48 bytes, by QUEUE POSITION, not path index - extend writes hits[i] for queue entry i and
+// shade reads the same. t < 0 is a miss. Geometry-agnostic: a sphere and a triangle write the
+// same record, and shade never learns which one it came from. A sphere leaves uv at zero, which
+// is harmless because a sphere's material never carries a texture
 struct HitRecord {
 	vec3 position;
 	float t;
 	vec3 normal;
 	// material index << 1 | front face
 	uint materialAndFace;
+	vec2 uv;
+	vec2 pad;
 };
 
 struct GpuSphere {
@@ -53,14 +56,35 @@ struct GpuSphere {
 	float radius;
 };
 
+// 112 bytes, world space, one flat array with no acceleration structure over it. std430 pads a
+// vec3 to 16 bytes regardless, so the six spare w components carry the triangle's three uvs
+// instead of being wasted. src/rt_scene_types.h RaytraceTriangle
+struct GpuTriangle {
+	// xyz position, w that vertex's u
+	vec4 p0;
+	vec4 p1;
+	vec4 p2;
+	// xyz normal (un-normalised), w that vertex's v
+	vec4 n0;
+	vec4 n1;
+	vec4 n2;
+	// into materials[], already offset past the spheres' own materials by the upload
+	uint material;
+	uint pad0;
+	uint pad1;
+	uint pad2;
+};
+
 struct GpuMaterial {
 	vec3 albedo;
 	// fuzz | smoothness | ir, by type
 	float param;
 	uint type;
+	// layer of albedoTextures modulating the albedo, or -1 for an untextured material. Spheres
+	// are always -1
+	int albedoLayer;
 	uint pad0;
 	uint pad1;
-	uint pad2;
 };
 
 // == VkDispatchIndirectCommand followed by the count. The allocator keeps groupCountX equal to
@@ -82,12 +106,18 @@ layout (std430, set = 0, binding = 4) buffer RadianceBuffer { vec4 radiance[]; }
 // per pixel: how many of this frame's K slots to spawn (the adaptive-sampling hook)
 layout (std430, set = 0, binding = 5) readonly buffer BudgetBuffer { uint sampleBudget[]; };
 layout (std430, set = 0, binding = 6) readonly buffer SphereBuffer { GpuSphere spheres[]; };
+// spheres' materials first (materials[i] belongs to spheres[i]), then the triangles', which is
+// why GpuTriangle::material is already offset by sphereCount
 layout (std430, set = 0, binding = 7) readonly buffer MaterialBuffer { GpuMaterial materials[]; };
 // the running mean per pixel
 layout (rgba32f, set = 0, binding = 8) uniform image2D accumulation;
 // samples folded into the mean per pixel
 layout (r32ui, set = 0, binding = 9) uniform uimage2D sampleCount;
 layout (set = 0, binding = 10) uniform sampler2D environmentMap;
+layout (std430, set = 0, binding = 11) readonly buffer TriangleBuffer { GpuTriangle triangles[]; };
+// every model's base-colour texture, one per layer. An array image rather than an array of
+// descriptors so no descriptor indexing is needed - see src/rt_textures.h
+layout (set = 0, binding = 12) uniform sampler2DArray albedoTextures;
 
 // src/rt_gpu.cpp CrtParams
 layout (push_constant) uniform Params {
@@ -107,6 +137,7 @@ layout (push_constant) uniform Params {
 	uint bounce;
 	uint rayDepth;
 	uint sphereCount;
+	uint triangleCount;
 	uint flags;
 	uint minBouncesBeforeRoulette;
 	uint debugView;
@@ -114,7 +145,6 @@ layout (push_constant) uniform Params {
 	float environmentIntensity;
 	float pad0;
 	float pad1;
-	float pad2;
 } pc;
 
 uint queueSlot(uint queue, uint index)
@@ -196,6 +226,55 @@ bool hitSphere(GpuSphere s, vec3 origin, vec3 direction, float tMin, float tMax,
 		}
 	}
 	return true;
+}
+
+// Ray-triangle by Moller-Trumbore: solves for the barycentric coordinates and t directly,
+// without ever forming the triangle's plane. Two-sided - a glTF model's back faces are hit and
+// shaded like its front faces, so an open mesh (a wall, a leaf) is visible from behind rather
+// than invisible. `direction` must be normalised, so t is a world distance. Returns the hit in
+// [tMin, tMax] with its barycentrics, which the caller interpolates the normal and uv with
+bool hitTriangle(GpuTriangle tri, vec3 origin, vec3 direction, float tMin, float tMax, out float tHit, out vec2 bary)
+{
+	vec3 edge1 = tri.p1.xyz - tri.p0.xyz;
+	vec3 edge2 = tri.p2.xyz - tri.p0.xyz;
+	vec3 pvec = cross(direction, edge2);
+	float det = dot(edge1, pvec);
+
+	// a determinant of zero is a ray parallel to the triangle's plane; the epsilon also rejects
+	// the degenerate zero-area triangles that survive some exporters
+	if (abs(det) < 1e-12) {
+		return false;
+	}
+
+	float invDet = 1.0 / det;
+	vec3 tvec = origin - tri.p0.xyz;
+	float u = dot(tvec, pvec) * invDet;
+	if (u < 0.0 || u > 1.0) {
+		return false;
+	}
+
+	vec3 qvec = cross(tvec, edge1);
+	float v = dot(direction, qvec) * invDet;
+	if (v < 0.0 || u + v > 1.0) {
+		return false;
+	}
+
+	float t = dot(edge2, qvec) * invDet;
+	if (t < tMin || t > tMax) {
+		return false;
+	}
+
+	tHit = t;
+	bary = vec2(u, v);
+	return true;
+}
+
+// sRGB -> linear, for the base-colour textures. glTF stores them encoded, and the tracer works
+// in linear light throughout: skipping this leaves every texture looking washed out and makes
+// its energy wrong at every bounce
+vec3 srgbToLinear(vec3 c)
+{
+	return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), greaterThan(c, vec3(0.04045)));
 }
 
 // the CPU backend's sky: white at the horizon blending to light blue overhead

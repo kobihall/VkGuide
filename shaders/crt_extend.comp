@@ -1,0 +1,101 @@
+#version 460
+
+// GPU path tracer, stage 2: intersect every queued path with the scene and write one HitRecord
+// per queue position. Shade reads that record and never learns which kind of geometry produced
+// it, which is the whole point of the split - spheres and triangles differ only here.
+//
+// A linear scan over both lists, with no acceleration structure: the spheres are a handful of
+// user-placed objects, and the triangles are whatever the loaded models add up to. This is the
+// stage a BVH replaces, and nothing else in the tracer has to change when it does.
+
+#extension GL_GOOGLE_include_directive : require
+#include "crt_common.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+	const uint queue = pc.bounce & 1u;
+	const uint index = gl_GlobalInvocationID.x;
+	// no barriers in this stage, so the overhang of the last workgroup can simply leave
+	if (index >= headers[queue].rayCount) {
+		return;
+	}
+
+	const uint pathIndex = queues[queueSlot(queue, index)];
+	const PathState path = paths[pathIndex];
+
+	const vec3 origin = path.origin;
+	const vec3 direction = normalize(path.direction);
+
+	float closest = CRT_INFINITY;
+	int hitSphereIndex = -1;
+	int hitTriangleIndex = -1;
+	vec2 hitBary = vec2(0.0);
+
+	for (uint s = 0u; s < pc.sphereCount; s++) {
+		float t;
+		if (hitSphere(spheres[s], origin, direction, CRT_T_MIN, closest, t)) {
+			closest = t;
+			hitSphereIndex = int(s);
+		}
+	}
+
+	for (uint i = 0u; i < pc.triangleCount; i++) {
+		float t;
+		vec2 bary;
+		if (hitTriangle(triangles[i], origin, direction, CRT_T_MIN, closest, t, bary)) {
+			closest = t;
+			hitTriangleIndex = int(i);
+			hitBary = bary;
+			// a triangle in front of the sphere wins outright; both are tested against the same
+			// running `closest`, so whichever was written last is the nearest
+			hitSphereIndex = -1;
+		}
+	}
+
+	HitRecord record;
+	record.uv = vec2(0.0);
+	record.pad = vec2(0.0);
+
+	if (hitTriangleIndex >= 0) {
+		const GpuTriangle tri = triangles[hitTriangleIndex];
+		const float u = hitBary.x;
+		const float v = hitBary.y;
+		const float w = 1.0 - u - v;
+
+		record.position = origin + closest * direction;
+		record.t = closest;
+		record.uv = w * vec2(tri.p0.w, tri.n0.w) + u * vec2(tri.p1.w, tri.n1.w) + v * vec2(tri.p2.w, tri.n2.w);
+
+		// the interpolated shading normal, which is what makes a low-poly mesh shade smoothly.
+		// A mesh with no NORMAL attribute loaded as (1,0,0) everywhere, so a degenerate result
+		// falls back to the geometric normal rather than producing NaN
+		vec3 normal = w * tri.n0.xyz + u * tri.n1.xyz + v * tri.n2.xyz;
+		if (dot(normal, normal) < 1e-12) {
+			normal = cross(tri.p1.xyz - tri.p0.xyz, tri.p2.xyz - tri.p0.xyz);
+		}
+		normal = normalize(normal);
+
+		// as for spheres: the stored normal always faces the incoming ray, and the bit records
+		// which side was hit, so a two-sided triangle shades correctly from behind
+		const bool frontFace = dot(direction, normal) < 0.0;
+		record.normal = frontFace ? normal : -normal;
+		record.materialAndFace = (tri.material << 1u) | (frontFace ? 1u : 0u);
+	} else if (hitSphereIndex >= 0) {
+		const GpuSphere s = spheres[hitSphereIndex];
+		record.position = origin + closest * direction;
+		record.t = closest;
+		const vec3 outward = (record.position - s.center) / s.radius;
+		const bool frontFace = dot(direction, outward) < 0.0;
+		record.normal = frontFace ? outward : -outward;
+		record.materialAndFace = (uint(hitSphereIndex) << 1u) | (frontFace ? 1u : 0u);
+	} else {
+		record.position = vec3(0.0);
+		record.t = -1.0;
+		record.normal = vec3(0.0);
+		record.materialAndFace = 0u;
+	}
+
+	hits[index] = record;
+}

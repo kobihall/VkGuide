@@ -36,7 +36,10 @@ struct CrtMaterial {
 	// fuzz | smoothness | ir, by type
 	float param;
 	uint32_t type;
-	uint32_t pad[3];
+	// layer of the raytracer's texture array modulating the albedo, -1 for untextured. Always -1
+	// for a sphere, which has no uvs to sample with
+	int32_t albedoLayer;
+	uint32_t pad[2];
 };
 static_assert(sizeof(CrtMaterial) == 32);
 
@@ -73,6 +76,9 @@ struct GpuRenderSnapshot {
 	uint32_t height { 0 };
 	RTCameraSnapshot camera;
 	std::vector<SceneSphere> spheres;
+	// the scene's mesh objects already flattened to world space, shared immutably. Null for a
+	// scene with no models; compared by pointer to decide whether an upload is needed at all
+	std::shared_ptr<const RaytraceTriangleData> triangles;
 	RenderSettings settings;
 	// the seed actually used (settings.seed if fixed, otherwise drawn at Render)
 	uint32_t seed { 0 };
@@ -155,10 +161,21 @@ private:
 	AllocatedImage m_accumulation {};
 	AllocatedImage m_sampleCount {};
 
-	// the snapshot's spheres, one buffer, uploaded once per render
+	// the snapshot's geometry: spheres, then every material (the spheres' first), then the
+	// world-space triangles, in one buffer. Rebuilt only when the scene it holds actually
+	// differs from what is already there - a camera drag under restart-on-change starts a new
+	// render every frame, and re-uploading a model's triangles each time would dominate it
 	AllocatedBuffer m_sceneBuffer {};
 	uint32_t m_sphereCount { 0 };
+	uint32_t m_triangleCount { 0 };
 	VkDeviceSize m_materialsOffset { 0 };
+	VkDeviceSize m_materialsBytes { 0 };
+	VkDeviceSize m_trianglesOffset { 0 };
+	VkDeviceSize m_trianglesBytes { 0 };
+	// what m_sceneBuffer currently holds, to compare the next render's snapshot against
+	std::vector<SceneSphere> m_uploadedSpheres;
+	std::shared_ptr<const RaytraceTriangleData> m_uploadedTriangles;
+	bool m_hasUpload { false };
 
 	// per frame slot: timestamps (two queries) and the queue headers after each producer
 	VkQueryPool m_queryPool { VK_NULL_HANDLE };
