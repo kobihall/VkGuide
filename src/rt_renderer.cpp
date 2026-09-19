@@ -42,6 +42,7 @@ RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, c
 	key.settings.restartOnChange = false;
 	key.sceneRevision = editor.revision();
 	key.modelRevision = engine->m_sceneRevision;
+	key.accelRevision = m_accelRevision;
 	key.environmentMapPath = engine->m_environmentMapPath;
 	key.environmentIntensity = engine->m_environmentIntensity;
 	key.width = m_settings.matchViewport ? engine->m_drawExtent.width : (uint32_t)m_settings.width;
@@ -131,21 +132,22 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		ImGui::TextDisabled("No render yet");
 	}
 
-	//what the next render would cost, from the triangles as they stand. Shown before the button
-	//rather than after the refusal, so the number that decides the outcome is visible first
-	const size_t triangleCount = m_triangles != nullptr ? m_triangles->triangles.size() : 0;
+	//what the next render would cost, from the scene as it stands. Shown before the button rather
+	//than after the refusal, so the number that decides the outcome is visible first
+	ensureSceneAccel(engine, editor);
 	RenderSettings prospective = m_settings;
 	if (prospective.matchViewport) {
 		prospective.width = (int)engine->m_drawExtent.width;
 		prospective.height = (int)engine->m_drawExtent.height;
 	}
-	const double tests = estimatedTestsPerFrame(prospective, triangleCount);
-	const bool overBudget = tests > TESTS_PER_FRAME_BUDGET;
+	const double costPerRay = m_sceneAccel != nullptr ? std::max((double)m_sceneAccel->tlas.sceneSahCost, 1.0) : 1.0;
+	const double work = estimatedWorkPerFrame(prospective, costPerRay);
+	const bool overBudget = work > WORK_PER_FRAME_BUDGET;
 
-	if (triangleCount > 0) {
-		ImGui::Text("%zu triangle(s), %.1e ray-triangle tests/frame", triangleCount, tests);
+	if (m_sceneAccel != nullptr && m_sceneAccel->meshInstanceCount > 0) {
+		ImGui::Text("%zu triangle(s) placed, ~%.0f steps/ray, %.1e steps/frame", m_sceneAccel->placedTriangles, costPerRay, work);
 		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Every ray is tested against every triangle: there is no acceleration\nstructure yet, so this is pixels x samples/frame x triangles.");
+			ImGui::SetTooltip("The BVH's expected cost of one ray (SAH: node visits + primitive tests),\ntimes pixels x samples/frame. What the render guard below is judged on.");
 		}
 	}
 
@@ -153,17 +155,17 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		//a frame this long does not fail as a slow render - it trips the GPU watchdog and takes
 		//the display driver down with it, so the button is closed until it is accepted explicitly
 		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
-		ImGui::TextWrapped("Too heavy to render safely: over the %.0e tests/frame budget. A frame this long can hang the GPU driver. Lower the resolution or samples per frame, or hide some objects.", TESTS_PER_FRAME_BUDGET);
+		ImGui::TextWrapped("Too heavy to render safely: over the %.0e steps/frame budget. A frame this long can hang the GPU driver. Lower the resolution or samples per frame, or hide some objects.", WORK_PER_FRAME_BUDGET);
 		ImGui::PopStyleColor();
 		if (ImGui::Checkbox("Render anyway (may freeze or crash the display)", &m_acceptedHeavyRender)) {
 			//the acknowledgement is for this cost only; making the scene heavier withdraws it
-			m_acceptedTests = tests;
+			m_acceptedWork = work;
 		}
 	} else {
 		m_acceptedHeavyRender = false;
 	}
 
-	const bool blocked = overBudget && !(m_acceptedHeavyRender && tests <= m_acceptedTests);
+	const bool blocked = overBudget && !(m_acceptedHeavyRender && work <= m_acceptedWork);
 
 	ImGui::BeginDisabled(running || camera == nullptr || blocked);
 	if (ImGui::Button("Render")) {
@@ -207,6 +209,15 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		}
 	}
 
+	//what the BVH did for the last frame traced, running or finished
+	const TraversalWork& traversal = m_gpu.traversalWork();
+	if (traversal.rays > 0) {
+		ImGui::Text("BVH work per ray: %.1f nodes + %.1f primitives (camera rays %.1f + %.1f)", traversal.nodesPerRay(), traversal.primitivesPerRay(), traversal.primaryNodesPerRay(), traversal.primaryPrimitivesPerRay());
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Counted by the extend stage over every bounce of the last frame. Unlike a\ntiming it does not move with the GPU's clocks, so it compares builders fairly\neven on a thermally throttling laptop. A wide node tests 8 boxes and a binary\nnode 2, so compare node counts within a layout, and time across layouts.");
+		}
+	}
+
 	//the compaction readout: the counts must fall monotonically
 	const std::vector<uint32_t>& alive = m_gpu.pathsAlivePerBounce();
 	if (!alive.empty()) {
@@ -219,6 +230,8 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 
 	ImGui::SeparatorText("Settings");
 	drawSettings(engine);
+
+	drawAccelSettings(engine);
 
 	if (m_hasDisplayImage) {
 		ImGui::SeparatorText("Output");
@@ -296,11 +309,11 @@ void RaytraceRenderer::drawSettings(VulkanEngine* engine)
 	}
 }
 
-double RaytraceRenderer::estimatedTestsPerFrame(const RenderSettings& settings, size_t triangleCount)
+double RaytraceRenderer::estimatedWorkPerFrame(const RenderSettings& settings, double costPerRay)
 {
 	const double pixels = (double)std::max(settings.width, 2) * (double)std::max(settings.height, 2);
 	const double samples = (double)std::clamp(settings.samplesPerFrame, 1, CRT_MAX_SAMPLES_PER_FRAME);
-	return pixels * samples * (double)triangleCount;
+	return pixels * samples * costPerRay;
 }
 
 void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor)
@@ -326,18 +339,18 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	settings.rayDepth = std::clamp(settings.rayDepth, 1, CRT_MAX_DEPTH);
 	settings.samplesPerFrame = std::clamp(settings.samplesPerFrame, 1, CRT_MAX_SAMPLES_PER_FRAME);
 
-	//the triangles first: the budget check below needs to know how many there are
-	ensureTriangleData(engine, editor);
-	const size_t triangleCount = m_triangles != nullptr ? m_triangles->triangles.size() : 0;
+	//the scene first: the budget check below needs its cost per ray
+	ensureSceneAccel(engine, editor);
+	const double costPerRay = m_sceneAccel != nullptr ? std::max((double)m_sceneAccel->tlas.sceneSahCost, 1.0) : 1.0;
 
 	//the one thing that must never be started by accident. Over the budget the frame runs long
 	//enough to trip the GPU watchdog, and the failure mode is not a dropped frame - it is the
 	//display driver being killed. Refused here rather than in the panel so that no caller can
 	//reach it another way, and acknowledged only for the exact cost that was shown
-	const double tests = estimatedTestsPerFrame(settings, triangleCount);
-	if (tests > TESTS_PER_FRAME_BUDGET && !(m_acceptedHeavyRender && tests <= m_acceptedTests)) {
-		m_blockedReason = fmt::format("{} triangles at {}x{}x{} is {:.1e} ray-triangle tests per frame, over the {:.0e} budget. Lower the resolution or samples per frame, hide some objects, or accept it below - there is no acceleration structure yet, so this scales with every one of the three",
-			triangleCount, settings.width, settings.height, settings.samplesPerFrame, tests, TESTS_PER_FRAME_BUDGET);
+	const double work = estimatedWorkPerFrame(settings, costPerRay);
+	if (work > WORK_PER_FRAME_BUDGET && !(m_acceptedHeavyRender && work <= m_acceptedWork)) {
+		m_blockedReason = fmt::format("~{:.0f} BVH steps per ray at {}x{}x{} is {:.1e} per frame, over the {:.0e} budget. Lower the resolution or samples per frame, hide some objects, or accept it below",
+			costPerRay, settings.width, settings.height, settings.samplesPerFrame, work, WORK_PER_FRAME_BUDGET);
 		fmt::println("RaytraceRenderer: render refused - {}", m_blockedReason);
 		m_gpu.stop();
 		return;
@@ -350,9 +363,8 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	snapshot.width = (uint32_t)settings.width;
 	snapshot.height = (uint32_t)settings.height;
 	snapshot.camera = cameraSnapshot(*camera);
-	snapshot.spheres = editor.spheres();
 	//shared, not copied: the tracer compares it by pointer to decide whether it needs re-uploading
-	snapshot.triangles = m_triangles;
+	snapshot.scene = m_sceneAccel;
 	snapshot.settings = settings;
 	snapshot.seed = settings.useFixedSeed ? settings.seed : (uint32_t)std::random_device {}();
 	snapshot.useEnvironmentMap = engine->m_environmentMap.image != VK_NULL_HANDLE;
@@ -384,24 +396,132 @@ void RaytraceRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const R
 	vkutil::transition_image(cmd, m_displayImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
-void RaytraceRenderer::ensureTriangleData(VulkanEngine* engine, const RaytraceSceneEditor& editor)
+void RaytraceRenderer::prepareGeometry(VulkanEngine* engine)
 {
-	//the editor's revision moves for any object edit (a gizmo drag included) and the engine's for
-	//any change to the loaded models. Between them they cover everything buildTriangleData() reads,
-	//so an unchanged pair means the triangles it would produce are the ones already held
-	if (m_hasTriangles && m_trianglesSceneRevision == editor.revision() && m_trianglesModelRevision == engine->m_sceneRevision) {
+	if (engine->m_raytraceMeshData == nullptr) {
+		m_blasCache.clear();
+		m_blasSet.reset();
+		m_geometry.reset();
+	} else {
+		m_blasSet = m_blasCache.build(*engine->m_raytraceMeshData, m_accelSettings);
+		m_geometry = std::make_shared<const RaytraceGeometry>(packGeometry(*m_blasSet));
+	}
+	m_accelRevision++;
+	//the instances name BLASes by their place in the set, so the top level has to follow
+	m_hasSceneAccel = false;
+}
+
+void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceSceneEditor& editor)
+{
+	//a scene loaded before the renderer saw its models (or with BVH settings it has not built yet)
+	if (m_blasSet == nullptr && engine->m_raytraceMeshData != nullptr) {
+		prepareGeometry(engine);
+	}
+
+	//compared by value rather than by the editor's revision, which also moves for every camera
+	//change: a camera drag restarts the render each frame, and must not rebuild the TLAS each time
+	if (m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
+		&& m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelSpheres == editor.spheres()) {
 		return;
 	}
 
-	if (engine->m_raytraceMeshData == nullptr) {
-		m_triangles.reset();
-	} else {
-		m_triangles = buildTriangleData(*engine->m_raytraceMeshData, editor.meshObjects(), engine->m_raytraceTextures);
+	static const RaytraceMeshData noMeshes;
+	const RaytraceMeshData& meshData = engine->m_raytraceMeshData != nullptr ? *engine->m_raytraceMeshData : noMeshes;
+	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.spheres(), engine->m_raytraceTextures);
+
+	m_sceneAccelObjects = editor.meshObjects();
+	m_sceneAccelSpheres = editor.spheres();
+	m_sceneAccelModelRevision = engine->m_sceneRevision;
+	m_sceneAccelRevision = m_accelRevision;
+	m_hasSceneAccel = true;
+}
+
+void RaytraceRenderer::drawAccelSettings(VulkanEngine* engine)
+{
+	if (!ImGui::CollapsingHeader("Acceleration structure")) {
+		return;
 	}
 
-	m_trianglesSceneRevision = editor.revision();
-	m_trianglesModelRevision = engine->m_sceneRevision;
-	m_hasTriangles = true;
+	AccelSettings& pending = m_pendingAccelSettings;
+	BvhBuildOptions& options = pending.blas;
+
+	if (ImGui::BeginCombo("Builder", bvhBuilderName(options.builder))) {
+		for (uint32_t i = 0; i < (uint32_t)BvhBuilder::Count; i++) {
+			if (ImGui::Selectable(bvhBuilderName((BvhBuilder)i), options.builder == (BvhBuilder)i)) {
+				options.builder = (BvhBuilder)i;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	if (ImGui::BeginCombo("Node layout", bvhLayoutName(pending.layout))) {
+		for (uint32_t i = 0; i < (uint32_t)BvhLayout::Count; i++) {
+			if (ImGui::Selectable(bvhLayoutName((BvhLayout)i), pending.layout == (BvhLayout)i)) {
+				pending.layout = (BvhLayout)i;
+			}
+		}
+		ImGui::EndCombo();
+	}
+
+	int maxLeafSize = (int)options.maxLeafSize;
+	if (ImGui::SliderInt("Max leaf size", &maxLeafSize, 1, 16)) {
+		options.maxLeafSize = (uint32_t)maxLeafSize;
+	}
+	if (pending.layout == BvhLayout::Cwbvh8 && options.maxLeafSize > BVH_CWBVH_MAX_LEAF_SIZE) {
+		ImGui::SameLine();
+		ImGui::TextDisabled("(CWBVH: %u)", BVH_CWBVH_MAX_LEAF_SIZE);
+	}
+	if (options.builder == BvhBuilder::BinnedSah || options.builder == BvhBuilder::SpatialSah) {
+		int bins = (int)options.binCount;
+		if (ImGui::SliderInt("Bins", &bins, 4, 256, "%d", ImGuiSliderFlags_Logarithmic)) {
+			options.binCount = (uint32_t)bins;
+		}
+	}
+	if (options.builder == BvhBuilder::SpatialSah) {
+		ImGui::SliderFloat("Split budget", &options.spatialBudget, 0.f, 2.f, "%.2f x triangles");
+		ImGui::SliderFloat("Overlap threshold", &options.spatialAlpha, 1e-7f, 1.f, "%.0e", ImGuiSliderFlags_Logarithmic);
+	}
+	if (options.builder != BvhBuilder::Midpoint) {
+		ImGui::SliderFloat("Node cost", &options.traversalCost, 0.1f, 4.f, "%.2f");
+		ImGui::SliderFloat("Triangle cost", &options.intersectionCost, 0.1f, 4.f, "%.2f");
+	}
+
+	const bool changed = !(pending == m_accelSettings);
+	ImGui::BeginDisabled(!changed);
+	if (ImGui::Button("Rebuild BVH")) {
+		//every loaded mesh is rebuilt with the new settings, on this thread: a model's worth of BLASes
+		//takes seconds at worst, and the frame waiting for it is the clearest signal it is working
+		m_accelSettings = pending;
+		prepareGeometry(engine);
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ImGui::Button("Defaults")) {
+		pending = defaultAccelSettings();
+	}
+	if (changed) {
+		ImGui::SameLine();
+		ImGui::TextDisabled("(not applied)");
+	}
+
+	if (m_blasSet != nullptr && !m_blasSet->blases.empty()) {
+		const RaytraceBlasSet& set = *m_blasSet;
+		ImGui::Text("BLAS: %zu mesh(es), %zu triangles, built in %.0f ms", set.blases.size(), set.triangles, set.buildMs);
+		ImGui::Text("  %zu nodes, depth %u, %.1f MB", set.nodes, set.maxDepth, (double)set.bytes / (1024.0 * 1024.0));
+		ImGui::Text("  %.1f%% spatial-split duplicates, mean SAH cost %.1f", set.triangles > 0 ? 100.0 * ((double)set.triangleRefs / (double)set.triangles - 1.0) : 0.0, set.meanSahCost);
+		for (const std::string& error : set.errors) {
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
+			ImGui::TextWrapped("Not traced: %s", error.c_str());
+			ImGui::PopStyleColor();
+		}
+	}
+	if (m_sceneAccel != nullptr) {
+		const Tlas& tlas = m_sceneAccel->tlas;
+		ImGui::Text("TLAS: %u mesh instance(s) + %u sphere(s), %u nodes, %.2f ms", m_sceneAccel->meshInstanceCount, m_sceneAccel->sphereCount, tlas.bvh.nodeCount, tlas.buildMs);
+		ImGui::Text("  scene SAH cost %.1f per ray", tlas.sceneSahCost);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Expected node visits + primitive tests for a random ray through the whole scene.\nLower is faster; compare builders and layouts by this and by the GPU time per frame.\nThe \"BVH traversal cost\" debug view shows the real cost per pixel.");
+		}
+	}
 }
 
 void RaytraceRenderer::ensureDisplayImage(VulkanEngine* engine, uint32_t width, uint32_t height)
@@ -454,4 +574,3 @@ void RaytraceRenderer::shutdown(VulkanEngine* engine)
 		m_hasDisplayImage = false;
 	}
 }
-

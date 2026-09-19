@@ -21,6 +21,7 @@
 #define CRT_DEBUG_NORMAL 3u
 #define CRT_DEBUG_BOUNCE_HEAT 4u
 #define CRT_DEBUG_SAMPLE_COUNT_HEAT 5u
+#define CRT_DEBUG_TRAVERSAL_COST 6u
 
 #define CRT_MATERIAL_LAMBERTIAN 0u
 #define CRT_MATERIAL_METAL 1u
@@ -48,32 +49,47 @@ struct HitRecord {
 	// material index << 1 | front face
 	uint materialAndFace;
 	vec2 uv;
+	// x = BVH nodes visited, y = primitives tested finding this hit (the traversal-cost debug view)
 	vec2 pad;
 };
 
-struct GpuSphere {
-	vec3 center;
-	float radius;
+// 48 bytes: one triangle of one BLAS, in its mesh's object space, as the traversal intersects it -
+// the first vertex and the two edges from it. v0.w is the triangle's index within its mesh (uint
+// bits), which finds its GpuTriangleAttributes after leaves re-ordered it and spatial splits
+// duplicated it. src/bvh_layout.h BvhTriangle
+struct BvhTriangle {
+	vec4 v0;
+	vec4 e1;
+	vec4 e2;
 };
 
-// 112 bytes, world space, one flat array with no acceleration structure over it. std430 pads a
-// vec3 to 16 bytes regardless, so the six spare w components carry the triangle's three uvs
-// instead of being wasted. src/rt_scene_types.h RaytraceTriangle
-struct GpuTriangle {
-	// xyz position, w that vertex's u
-	vec4 p0;
-	vec4 p1;
-	vec4 p2;
-	// xyz normal (un-normalised), w that vertex's v
+// 64 bytes, per triangle of a mesh in its original order: what shading needs once the triangle is
+// the closest hit. Object space. src/rt_accel.h GpuTriangleAttributes
+struct GpuTriangleAttributes {
+	// xyz normal (un-normalised), w that vertex's u
 	vec4 n0;
 	vec4 n1;
 	vec4 n2;
-	// into materials[], already offset past the spheres' own materials by the upload
-	uint material;
-	uint pad0;
-	uint pad1;
-	uint pad2;
+	// xyz the three v's, w the surface index within the mesh (uint bits)
+	vec4 vAndSurface;
 };
+
+// 64 bytes, in TLAS slot order: a placed mesh (its BLAS, its world-to-object transform, its
+// per-surface material table) or a sphere. src/rt_accel.h GpuInstance
+struct GpuInstance {
+	// rows of the world-to-object transform. A sphere: row0 = centre xyz, radius w
+	vec4 row0;
+	vec4 row1;
+	vec4 row2;
+	// the BLAS's first node, or CRT_INSTANCE_SPHERE
+	uint nodeBase;
+	uint triangleBase;
+	uint attributeBase;
+	// a mesh: into instanceMaterials[], by surface. A sphere: its material index
+	uint materialBase;
+};
+
+#define CRT_INSTANCE_SPHERE 0xFFFFFFFFu
 
 struct GpuMaterial {
 	vec3 albedo;
@@ -105,19 +121,33 @@ layout (std430, set = 0, binding = 3) buffer HeaderBuffer { QueueHeader headers[
 layout (std430, set = 0, binding = 4) buffer RadianceBuffer { vec4 radiance[]; };
 // per pixel: how many of this frame's K slots to spawn (the adaptive-sampling hook)
 layout (std430, set = 0, binding = 5) readonly buffer BudgetBuffer { uint sampleBudget[]; };
-layout (std430, set = 0, binding = 6) readonly buffer SphereBuffer { GpuSphere spheres[]; };
-// spheres' materials first (materials[i] belongs to spheres[i]), then the triangles', which is
-// why GpuTriangle::material is already offset by sphereCount
+// every placed mesh and sphere, in TLAS slot order
+layout (std430, set = 0, binding = 6) readonly buffer InstanceBuffer { GpuInstance instances[]; };
+// spheres' materials first (materials[i] belongs to sphere i), then the meshes'
 layout (std430, set = 0, binding = 7) readonly buffer MaterialBuffer { GpuMaterial materials[]; };
 // the running mean per pixel
 layout (rgba32f, set = 0, binding = 8) uniform image2D accumulation;
 // samples folded into the mean per pixel
 layout (r32ui, set = 0, binding = 9) uniform uimage2D sampleCount;
 layout (set = 0, binding = 10) uniform sampler2D environmentMap;
-layout (std430, set = 0, binding = 11) readonly buffer TriangleBuffer { GpuTriangle triangles[]; };
+// every BLAS's triangles, concatenated; an instance's triangleBase finds its own
+layout (std430, set = 0, binding = 11) readonly buffer BlasTriangleBuffer { BvhTriangle blasTriangles[]; };
 // every model's base-colour texture, one per layer. An array image rather than an array of
 // descriptors so no descriptor indexing is needed - see src/rt_textures.h
 layout (set = 0, binding = 12) uniform sampler2DArray albedoTextures;
+// every BLAS's nodes, concatenated (4 words per node binary, 5 CWBVH); an instance's nodeBase
+// finds its own. src/bvh_layout.h PackedBvh
+layout (std430, set = 0, binding = 13) readonly buffer BlasNodeBuffer { uvec4 blasNodes[]; };
+// every mesh's per-triangle shading data, concatenated; an instance's attributeBase finds its own
+layout (std430, set = 0, binding = 14) readonly buffer AttributeBuffer { GpuTriangleAttributes triangleAttributes[]; };
+// the top level: binary layout, leaves naming instances[] slots
+layout (std430, set = 0, binding = 15) readonly buffer TlasNodeBuffer { uvec4 tlasNodes[]; };
+// per mesh instance, per surface: the index into materials[]
+layout (std430, set = 0, binding = 16) readonly buffer InstanceMaterialBuffer { uint instanceMaterials[]; };
+// the extend stage's work, per bounce: [2 * bounce] BVH nodes visited, [2 * bounce + 1] primitives
+// tested, summed over every ray of the frame. Zeroed each frame and read back like the queue
+// headers: the hardware-independent measure of a BVH (src/rt_gpu.h traversalWork)
+layout (std430, set = 0, binding = 17) buffer TraversalStatsBuffer { uint traversalStats[]; };
 
 // src/rt_gpu.cpp CrtParams
 layout (push_constant) uniform Params {
@@ -136,8 +166,9 @@ layout (push_constant) uniform Params {
 	uint seed;
 	uint bounce;
 	uint rayDepth;
-	uint sphereCount;
-	uint triangleCount;
+	// 0 when there is nothing to trace (or the TLAS failed to build)
+	uint instanceCount;
+	uint pad2;
 	uint flags;
 	uint minBouncesBeforeRoulette;
 	uint debugView;
@@ -197,12 +228,12 @@ void queueAppend(uint queue, bool survives, uint pathIndex)
 // the closest-approach vector rather than |oc|^2 - r^2, which cancels catastrophically for the
 // radius-100 ground sphere seen from a unit away. `direction` must be normalised, so t is a
 // world distance. Returns the nearest root in [tMin, tMax]
-bool hitSphere(GpuSphere s, vec3 origin, vec3 direction, float tMin, float tMax, out float tHit)
+bool hitSphere(vec4 s, vec3 origin, vec3 direction, float tMin, float tMax, out float tHit)
 {
-	vec3 f = origin - s.center;
+	vec3 f = origin - s.xyz;
 	float bPrime = -dot(f, direction);
 	vec3 closest = f + bPrime * direction;
-	float delta = s.radius * s.radius - dot(closest, closest);
+	float delta = s.w * s.w - dot(closest, closest);
 	if (delta < 0.0) {
 		return false;
 	}
@@ -212,7 +243,7 @@ bool hitSphere(GpuSphere s, vec3 origin, vec3 direction, float tMin, float tMax,
 		// a tangent graze through the origin: no meaningful hit
 		return false;
 	}
-	float c = dot(f, f) - s.radius * s.radius;
+	float c = dot(f, f) - s.w * s.w;
 	float t0 = c / q;
 	float t1 = q;
 	float tNear = min(t0, t1);
@@ -231,23 +262,24 @@ bool hitSphere(GpuSphere s, vec3 origin, vec3 direction, float tMin, float tMax,
 // Ray-triangle by Moller-Trumbore: solves for the barycentric coordinates and t directly,
 // without ever forming the triangle's plane. Two-sided - a glTF model's back faces are hit and
 // shaded like its front faces, so an open mesh (a wall, a leaf) is visible from behind rather
-// than invisible. `direction` must be normalised, so t is a world distance. Returns the hit in
-// [tMin, tMax] with its barycentrics, which the caller interpolates the normal and uv with
-bool hitTriangle(GpuTriangle tri, vec3 origin, vec3 direction, float tMin, float tMax, out float tHit, out vec2 bary)
+// than invisible. Runs in the mesh's object space, where `direction` is not unit length; t is
+// still the world-space parameter, because the object-space ray is the same line. Returns the
+// hit in [tMin, tMax] with its barycentrics. src/bvh_layout.cpp intersectBvhTriangle
+bool hitTriangle(BvhTriangle tri, vec3 origin, vec3 direction, float tMin, float tMax, out float tHit, out vec2 bary)
 {
-	vec3 edge1 = tri.p1.xyz - tri.p0.xyz;
-	vec3 edge2 = tri.p2.xyz - tri.p0.xyz;
+	vec3 edge1 = tri.e1.xyz;
+	vec3 edge2 = tri.e2.xyz;
 	vec3 pvec = cross(direction, edge2);
 	float det = dot(edge1, pvec);
 
-	// a determinant of zero is a ray parallel to the triangle's plane; the epsilon also rejects
-	// the degenerate zero-area triangles that survive some exporters
-	if (abs(det) < 1e-12) {
+	// only an exactly parallel ray or a zero-area triangle: in object space under a scaled instance
+	// a fixed epsilon would reject perfectly good small triangles
+	if (abs(det) < 1e-30) {
 		return false;
 	}
 
 	float invDet = 1.0 / det;
-	vec3 tvec = origin - tri.p0.xyz;
+	vec3 tvec = origin - tri.v0.xyz;
 	float u = dot(tvec, pvec) * invDet;
 	if (u < 0.0 || u > 1.0) {
 		return false;

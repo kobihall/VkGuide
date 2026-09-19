@@ -16,6 +16,8 @@ Planning-only, as of 2026-08-23. Nothing in `src/`/`shaders/` has been implement
 6. **`docs/plans/simulation-domain.md`** — A placeable `SimulationPlane` scene object; derives 2D boundary geometry from wherever the loaded scene's meshes intersect it; a COMSOL-style panel for assigning boundary-condition types independently of the scene data. PDE-agnostic — produces a boundary mask, simulates nothing itself. Depends on (2) (reuses CPU mesh data added there) and (3) (gizmo, scene-load hooks).
 7. **`docs/plans/wave-simulation.md`** — A 2D wave-equation solver running on (6)'s grid, with Start/Pause/Stop controls and live mouse injection. Depends on (6), (4), and (1).
 
+**BVH (implemented 2026-09-18, after (5)):** `docs/plans/completed/bvh-acceleration.md` — the two-level BVH that replaced (5)'s linear triangle scan: swappable builders and GPU node layouts, a CPU mirror + `bin/bvh_bench` for verification, measurements in its §9.
+
 **Outside the numbered sequence:** `docs/plans/adaptive-sampling.md` — a barebones plan for the sample-allocation policy that fills the per-pixel budget the wavefront path tracer (5) threads through from the start; depends on (5). And `docs/plans/depth-of-field.md` — a short, human-oriented to-do for wiring up the CPU raytracer's aperture and focus distance, which the user is implementing by hand. Depends only on (2) and can be done any time.
 
 ## Dependency graph

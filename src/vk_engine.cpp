@@ -833,6 +833,10 @@ void VulkanEngine::rebuildSceneDerivedData()
 	//and the array it indexes are always built together
 	m_raytraceTextures.rebuild(this);
 
+	//the path tracer's BLASes, one per mesh not already built: the BVH work belongs to loading, not
+	//to the first render
+	m_raytracer.prepareGeometry(this);
+
 	m_sceneRevision++;
 }
 

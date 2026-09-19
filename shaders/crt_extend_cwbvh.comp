@@ -1,0 +1,6 @@
+#version 460
+
+// The extend stage with compressed 8-wide (CWBVH) BLASes. The body is crt_extend.glsl
+#define CRT_BVH_CWBVH 1
+#extension GL_GOOGLE_include_directive : require
+#include "crt_extend.glsl"

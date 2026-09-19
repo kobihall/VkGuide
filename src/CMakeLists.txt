@@ -1,3 +1,24 @@
+# The BVH builders, layouts and two-level scene: plain C++ with no Vulkan, shared by the app and
+# the CPU verification tool (tests/bvh_bench.cpp)
+add_library(rt_bvh STATIC
+    bvh.h
+    bvh_build.cpp
+    bvh_split.h
+    bvh_split_object.cpp
+    bvh_split_spatial.cpp
+    bvh_layout.cpp
+    bvh_layout.h
+    bvh_scene.cpp
+    bvh_scene.h)
+target_include_directories(rt_bvh PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(rt_bvh PUBLIC glm fmt::fmt)
+# optimised even in a Debug build: BLAS construction runs at model import, and unoptimised glm is
+# one to two orders of magnitude slower - minutes instead of seconds on a large model
+option(RT_BVH_ALWAYS_OPTIMIZE "Compile the BVH library with -O2 in every configuration" ON)
+if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
+    target_compile_options(rt_bvh PRIVATE -O2)
+endif()
+
 # Add source to this project's executable.
 add_executable(vulkan_guide
     main.cpp
@@ -37,6 +58,8 @@ add_executable(vulkan_guide
     rt_renderer.h
     rt_gpu.cpp
     rt_gpu.h
+    rt_accel.cpp
+    rt_accel.h
     camera.cpp
     camera.h)
 
@@ -45,7 +68,7 @@ set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGE
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide PUBLIC vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
+target_link_libraries(vulkan_guide PUBLIC rt_bvh vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
 
 target_link_libraries(vulkan_guide PRIVATE GPUOpen::VulkanMemoryAllocator)
 

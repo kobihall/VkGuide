@@ -4,7 +4,7 @@
 //
 // Everything here is what a scene *is* to the raytracer - spheres with tagged materials, the
 // cameras it can be rendered from, the loaded glTF geometry, how to render it - with no
-// behaviour attached. The GPU path tracer uploads it as flat buffers; the editor, the gizmo
+// behaviour attached. The GPU path tracer builds its BVHs from it (rt_accel.h); the editor, the gizmo
 // adapters, the scene file and the raster preview all work on these structs directly. Every
 // struct compares with ==, which is how the renderer notices that the thing it is rendering has
 // changed under it.
@@ -133,8 +133,8 @@ struct GLTFMaterial;
 // surface rather than per node because a surface is the finest granularity that has exactly one
 // material.
 //
-// Geometry stays in object space here. A placed SceneMeshObject carries the world transform, and
-// buildTriangleData() is what multiplies the two together.
+// Geometry stays in object space here, and in the BVH built over it. A placed SceneMeshObject
+// carries the world transform, which the path tracer's TLAS applies to the ray, never to the mesh.
 struct RTMeshSurface {
 	// into RaytraceMeshData::meshes
 	size_t meshIndex { 0 };
@@ -221,26 +221,7 @@ struct SceneMeshObject {
 	bool operator==(const SceneMeshObject&) const = default;
 };
 
-//---------------------------------------------------------------- world-space triangles
-
-// One world-space triangle, laid out exactly as the GPU reads it (shaders/crt_common.glsl
-// GpuTriangle). std430 pads a vec3 to 16 bytes anyway, so each position and normal carries one
-// of the triangle's six uv components in the spare w rather than wasting the slot.
-struct RaytraceTriangle {
-	// xyz world position, w that vertex's u
-	glm::vec4 p0 { 0.f };
-	glm::vec4 p1 { 0.f };
-	glm::vec4 p2 { 0.f };
-	// xyz world normal - not normalised, since the shader normalises after interpolating - and
-	// w that vertex's v
-	glm::vec4 n0 { 0.f };
-	glm::vec4 n1 { 0.f };
-	glm::vec4 n2 { 0.f };
-	// into RaytraceTriangleData::materials
-	uint32_t material { 0 };
-	uint32_t pad[3] { 0, 0, 0 };
-};
-static_assert(sizeof(RaytraceTriangle) == 112);
+//---------------------------------------------------------------- mesh materials
 
 // A material a triangle is shaded with: the same tagged material a sphere uses, plus the
 // base-colour texture that modulates its albedo (a layer of the raytracer's texture array, -1
@@ -250,15 +231,6 @@ struct RaytraceTriMaterial {
 	int albedoLayer { -1 };
 
 	bool operator==(const RaytraceTriMaterial&) const = default;
-};
-
-// Every visible mesh object flattened into world-space triangles, ready to upload as one buffer.
-// Rebuilt by buildTriangleData() only when the models or the objects placing them actually
-// change - never per render - and shared immutably with the snapshot of every render started
-// while it is current.
-struct RaytraceTriangleData {
-	std::vector<RaytraceTriangle> triangles;
-	std::vector<RaytraceTriMaterial> materials;
 };
 
 //---------------------------------------------------------------- camera snapshot

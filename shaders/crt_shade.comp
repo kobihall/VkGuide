@@ -94,6 +94,16 @@ vec3 bounceHeat(uint bounce)
 	return vec3(float(bounce) / float(pc.rayDepth));
 }
 
+// node visits + primitive tests of the ray that reached this hit, as a jet ramp: blue is cheap, red
+// is CRT_TRAVERSAL_HEAT_SCALE or more. Where the BVH struggles - overlapping instances, long thin
+// triangles, grazing rays along walls - lights up
+#define CRT_TRAVERSAL_HEAT_SCALE 256.0
+vec3 traversalHeat(float cost)
+{
+	const float t = clamp(cost / CRT_TRAVERSAL_HEAT_SCALE, 0.0, 1.0);
+	return clamp(vec3(1.5 - abs(4.0 * t - 3.0), 1.5 - abs(4.0 * t - 2.0), 1.5 - abs(4.0 * t - 1.0)), 0.0, 1.0);
+}
+
 void main()
 {
 	const uint queue = pc.bounce & 1u;
@@ -120,6 +130,9 @@ void main()
 			radiance[path.radianceSlot] = vec4(isHit ? vec3(1.0) : vec3(0.0), 1.0);
 		} else if (pc.debugView == CRT_DEBUG_NORMAL) {
 			radiance[path.radianceSlot] = vec4(isHit ? hit.normal * 0.5 + 0.5 : vec3(0.0), 1.0);
+		} else if (pc.debugView == CRT_DEBUG_TRAVERSAL_COST) {
+			// the extend stage left this ray's cost in the record's spare pair, hit or miss
+			radiance[path.radianceSlot] = vec4(traversalHeat(hit.pad.x + hit.pad.y), 1.0);
 		} else if (!isHit) {
 			// the path escapes: it collects the background through everything it bounced off
 			const vec3 value = pc.debugView == CRT_DEBUG_BOUNCE_HEAT ? bounceHeat(path.bounce) : path.throughput * background(inDir);

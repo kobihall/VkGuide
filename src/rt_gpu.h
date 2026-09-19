@@ -1,8 +1,9 @@
 #pragma once
 
-// The GPU path tracer: a wavefront tracer over the sphere scene, progressive, in compute.
+// The GPU path tracer: a wavefront tracer over the scene's spheres and meshes, progressive, in
+// compute, with a two-level BVH (rt_accel.h, shaders/crt_bvh.glsl) finding every hit.
 //
-// One render is a snapshot taken at start() - camera, spheres, settings, seed - refined by
+// One render is a snapshot taken at start() - camera, scene, settings, seed - refined by
 // samplesPerFrame samples per pixel every engine frame until maxSamples, or stop(). Per frame,
 // record() runs generate -> [extend -> shade] x rayDepth -> resolve over a path pool of
 // width x height x samplesPerFrame paths, with index queues compacted per bounce by a
@@ -11,12 +12,14 @@
 // docs/plans/compute-pipeline-raytracing.md §2.7-§2.12; the buffer contracts are
 // shaders/crt_common.glsl, mirrored below with static_asserts.
 //
-// Everything Vulkan-facing is owned here: the four ComputePasses, every pool buffer, the
-// accumulation images, the sphere upload, timestamp queries and the queue-header readback.
-// The renderer owns the display image and the panel.
+// Everything Vulkan-facing is owned here: the ComputePasses (one extend build per BVH layout),
+// every pool buffer, the accumulation images, the scene upload (the BVH geometry device-local, the
+// per-edit instances and TLAS host-visible), timestamp queries and the queue-header and traversal
+// counter readbacks. The renderer owns the display image, the BVH settings and the panel.
 
 #include <vector>
 
+#include <rt_accel.h>
 #include <rt_scene_types.h>
 #include <vk_compute.h>
 #include <vk_types.h>
@@ -24,13 +27,8 @@
 class VulkanEngine;
 
 // C++ mirrors of the std430 structs in shaders/crt_common.glsl. vec3 pads to 16 bytes there, so
-// every struct is laid out with an explicit fourth component
-struct CrtSphere {
-	glm::vec3 center;
-	float radius;
-};
-static_assert(sizeof(CrtSphere) == 16);
-
+// every struct is laid out with an explicit fourth component. The acceleration structure's own
+// (GpuInstance, GpuTriangleAttributes, BvhTriangle) are in rt_accel.h and bvh_layout.h
 struct CrtMaterial {
 	glm::vec3 albedo;
 	// fuzz | smoothness | ir, by type
@@ -58,6 +56,22 @@ inline constexpr uint32_t CRT_MAX_POOL = 4u * 1024u * 1024u;
 inline constexpr int CRT_MAX_DEPTH = 16;
 inline constexpr int CRT_MAX_SAMPLES_PER_FRAME = 8;
 
+// one frame's traversal work, summed over the extend dispatches of every bounce
+struct TraversalWork {
+	uint64_t rays { 0 };
+	uint64_t nodes { 0 };
+	uint64_t primitives { 0 };
+	// bounce 0 alone: camera rays, coherent and cheaper than the bounces after
+	uint64_t primaryRays { 0 };
+	uint64_t primaryNodes { 0 };
+	uint64_t primaryPrimitives { 0 };
+
+	double nodesPerRay() const { return rays > 0 ? (double)nodes / (double)rays : 0.0; }
+	double primitivesPerRay() const { return rays > 0 ? (double)primitives / (double)rays : 0.0; }
+	double primaryNodesPerRay() const { return primaryRays > 0 ? (double)primaryNodes / (double)primaryRays : 0.0; }
+	double primaryPrimitivesPerRay() const { return primaryRays > 0 ? (double)primaryPrimitives / (double)primaryRays : 0.0; }
+};
+
 enum class CrtDebugView : uint32_t {
 	None = 0,
 	PrimaryDirection,
@@ -65,6 +79,7 @@ enum class CrtDebugView : uint32_t {
 	Normal,
 	BounceHeat,
 	SampleCountHeat,
+	TraversalCost,
 	Count
 };
 
@@ -75,10 +90,9 @@ struct GpuRenderSnapshot {
 	uint32_t width { 0 };
 	uint32_t height { 0 };
 	RTCameraSnapshot camera;
-	std::vector<SceneSphere> spheres;
-	// the scene's mesh objects already flattened to world space, shared immutably. Null for a
-	// scene with no models; compared by pointer to decide whether an upload is needed at all
-	std::shared_ptr<const RaytraceTriangleData> triangles;
+	// the spheres and placed meshes, with their BVHs, shared immutably. Compared by pointer to
+	// decide whether an upload is needed at all: a new one is only ever built for a real change
+	std::shared_ptr<const RaytraceSceneAccel> scene;
 	RenderSettings settings;
 	// the seed actually used (settings.seed if fixed, otherwise drawn at Render)
 	uint32_t seed { 0 };
@@ -126,6 +140,9 @@ public:
 	bool hasTimestamps() const { return m_hasTimestamps; }
 	float lastFrameGpuMs() const { return m_lastFrameGpuMs; }
 	float totalGpuMs() const { return m_totalGpuMs; }
+	// what the BVH traversal did in the last frame read back: counted, not timed, so it compares
+	// builders and layouts reliably even on a GPU whose clocks move (a throttling laptop)
+	const TraversalWork& traversalWork() const { return m_traversalWork; }
 	// paths alive entering each bounce, [0] being what generate spawned; the proof the
 	// compaction works. From the last frame read back
 	const std::vector<uint32_t>& pathsAlivePerBounce() const { return m_pathsAlive; }
@@ -137,11 +154,16 @@ private:
 	void allocatePool(VulkanEngine* engine, uint32_t width, uint32_t height, uint32_t samplesPerFrame);
 	void freePool(VulkanEngine* engine);
 	void uploadScene(VulkanEngine* engine);
+	void uploadGeometry(VulkanEngine* engine, const std::shared_ptr<const RaytraceGeometry>& geometry);
+	// hands a buffer the frame in flight may still read to the deletion queue of that frame's slot
+	void retireBuffer(VulkanEngine* engine, AllocatedBuffer& buffer);
 	void collectReadbacks(VulkanEngine* engine, uint32_t slot);
 	VkDescriptorSet writeSet(VulkanEngine* engine, const ComputePass& pass);
 
 	ComputePass m_generate;
+	// one extend pipeline per BLAS layout; the scene's layout picks which one runs
 	ComputePass m_extend;
+	ComputePass m_extendCwbvh;
 	ComputePass m_shade;
 	ComputePass m_resolve;
 
@@ -161,21 +183,30 @@ private:
 	AllocatedImage m_accumulation {};
 	AllocatedImage m_sampleCount {};
 
-	// the snapshot's geometry: spheres, then every material (the spheres' first), then the
-	// world-space triangles, in one buffer. Rebuilt only when the scene it holds actually
-	// differs from what is already there - a camera drag under restart-on-change starts a new
-	// render every frame, and re-uploading a model's triangles each time would dominate it
+	// the BLASes' nodes, triangles and shading attributes, device-local. Uploaded once per BLAS set
+	// - on a model import or a BVH settings change - through a staging buffer
+	AllocatedBuffer m_geometryBuffer {};
+	VkDeviceSize m_blasNodesOffset { 0 };
+	VkDeviceSize m_blasNodesBytes { 0 };
+	VkDeviceSize m_blasTrianglesOffset { 0 };
+	VkDeviceSize m_blasTrianglesBytes { 0 };
+	VkDeviceSize m_attributesOffset { 0 };
+	VkDeviceSize m_attributesBytes { 0 };
+	std::shared_ptr<const RaytraceGeometry> m_uploadedGeometry;
+
+	// the per-edit part: instances, materials, the per-surface material table and the TLAS.
+	// Small, host-visible, and replaced whenever the scene changes - a gizmo drag under
+	// restart-on-change rebuilds it every frame, which is why the geometry lives elsewhere
 	AllocatedBuffer m_sceneBuffer {};
-	uint32_t m_sphereCount { 0 };
-	uint32_t m_triangleCount { 0 };
+	VkDeviceSize m_instancesBytes { 0 };
 	VkDeviceSize m_materialsOffset { 0 };
 	VkDeviceSize m_materialsBytes { 0 };
-	VkDeviceSize m_trianglesOffset { 0 };
-	VkDeviceSize m_trianglesBytes { 0 };
-	// what m_sceneBuffer currently holds, to compare the next render's snapshot against
-	std::vector<SceneSphere> m_uploadedSpheres;
-	std::shared_ptr<const RaytraceTriangleData> m_uploadedTriangles;
-	bool m_hasUpload { false };
+	VkDeviceSize m_instanceMaterialsOffset { 0 };
+	VkDeviceSize m_instanceMaterialsBytes { 0 };
+	VkDeviceSize m_tlasOffset { 0 };
+	VkDeviceSize m_tlasBytes { 0 };
+	uint32_t m_instanceCount { 0 };
+	std::shared_ptr<const RaytraceSceneAccel> m_uploadedScene;
 
 	// per frame slot: timestamps (two queries) and the queue headers after each producer
 	VkQueryPool m_queryPool { VK_NULL_HANDLE };
@@ -194,5 +225,8 @@ private:
 	uint32_t m_maxSamples { 0 };
 	float m_lastFrameGpuMs { 0.f };
 	float m_totalGpuMs { 0.f };
+	TraversalWork m_traversalWork;
+	AllocatedBuffer m_traversalStats {};
+	AllocatedBuffer m_statsReadback {};
 	std::vector<uint32_t> m_pathsAlive;
 };

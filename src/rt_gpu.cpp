@@ -28,8 +28,8 @@ struct CrtParams {
 	uint32_t seed;
 	uint32_t bounce;
 	uint32_t rayDepth;
-	uint32_t sphereCount;
-	uint32_t triangleCount;
+	uint32_t instanceCount;
+	uint32_t pad2;
 	uint32_t flags;
 	uint32_t minBouncesBeforeRoulette;
 	uint32_t debugView;
@@ -54,6 +54,9 @@ constexpr VkDeviceSize HIT_RECORD_SIZE = 48;
 //header slots per frame slot in the readback buffer: one after generate, one after every shade
 constexpr uint32_t READBACK_HEADERS_PER_SLOT = CRT_MAX_DEPTH + 1;
 
+//shaders/crt_common.glsl traversalStats: nodes visited and primitives tested, per bounce
+constexpr VkDeviceSize TRAVERSAL_STATS_BYTES = sizeof(uint32_t) * 2 * CRT_MAX_DEPTH;
+
 VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment)
 {
 	return (value + alignment - 1) / alignment * alignment;
@@ -76,6 +79,8 @@ const char* crtDebugViewName(CrtDebugView view)
 		return "bounce heat";
 	case CrtDebugView::SampleCountHeat:
 		return "sample-count heat";
+	case CrtDebugView::TraversalCost:
+		return "BVH traversal cost";
 	case CrtDebugView::Count:
 		break;
 	}
@@ -98,13 +103,18 @@ void GpuPathTracer::init(VulkanEngine* engine)
 			.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // headers
 			.addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // radiance
 			.addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // sample budget
-			.addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // spheres
+			.addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // instances
 			.addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // materials
 			.addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) // accumulation
 			.addBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) // sample count
 			.addBinding(10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) // environment map
-			.addBinding(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // triangles
+			.addBinding(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // BLAS triangles
 			.addBinding(12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) // base-colour texture array
+			.addBinding(13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // BLAS nodes
+			.addBinding(14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // triangle attributes
+			.addBinding(15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // TLAS nodes
+			.addBinding(16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // per-instance surface materials
+			.addBinding(17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // traversal counters
 			.setPushConstants<CrtParams>()
 			.setWorkgroupSize(CRT_WORKGROUP)
 			.build(engine->m_device);
@@ -112,6 +122,7 @@ void GpuPathTracer::init(VulkanEngine* engine)
 
 	m_generate = buildStage("crt_generate.comp.spv");
 	m_extend = buildStage("crt_extend.comp.spv");
+	m_extendCwbvh = buildStage("crt_extend_cwbvh.comp.spv");
 	m_shade = buildStage("crt_shade.comp.spv");
 	m_resolve = buildStage("crt_resolve.comp.spv");
 
@@ -133,6 +144,8 @@ void GpuPathTracer::init(VulkanEngine* engine)
 	fmt::println("GpuPathTracer: timestamps {} (period {} ns)", m_hasTimestamps ? "available" : "unavailable", m_timestampPeriodNs);
 
 	m_headerReadback = engine->createBuffer((VkDeviceSize)FRAME_OVERLAP * READBACK_HEADERS_PER_SLOT * sizeof(CrtQueueHeader), VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_TO_CPU);
+	m_traversalStats = engine->createBuffer(TRAVERSAL_STATS_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_statsReadback = engine->createBuffer((VkDeviceSize)FRAME_OVERLAP * TRAVERSAL_STATS_BYTES, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_TO_CPU);
 	m_slotRender.assign(FRAME_OVERLAP, 0);
 	m_slotHeaderCount.assign(FRAME_OVERLAP, 0);
 }
@@ -144,13 +157,22 @@ void GpuPathTracer::destroy(VulkanEngine* engine)
 	if (m_sceneBuffer.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_sceneBuffer);
 		m_sceneBuffer = {};
-		m_hasUpload = false;
-		m_uploadedTriangles.reset();
-		m_uploadedSpheres.clear();
 	}
+	if (m_geometryBuffer.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_geometryBuffer);
+		m_geometryBuffer = {};
+	}
+	m_uploadedScene.reset();
+	m_uploadedGeometry.reset();
 	if (m_headerReadback.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_headerReadback);
 		m_headerReadback = {};
+	}
+	if (m_traversalStats.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_traversalStats);
+		engine->destroyBuffer(m_statsReadback);
+		m_traversalStats = {};
+		m_statsReadback = {};
 	}
 	if (m_queryPool != VK_NULL_HANDLE) {
 		vkDestroyQueryPool(engine->m_device, m_queryPool, nullptr);
@@ -159,6 +181,7 @@ void GpuPathTracer::destroy(VulkanEngine* engine)
 
 	m_generate.destroy(engine->m_device);
 	m_extend.destroy(engine->m_device);
+	m_extendCwbvh.destroy(engine->m_device);
 	m_shade.destroy(engine->m_device);
 	m_resolve.destroy(engine->m_device);
 }
@@ -251,87 +274,114 @@ CrtMaterial gpuMaterial(const SphereMaterial& material, int albedoLayer)
 
 }
 
-void GpuPathTracer::uploadScene(VulkanEngine* engine)
+void GpuPathTracer::retireBuffer(VulkanEngine* engine, AllocatedBuffer& buffer)
 {
-	//one buffer: spheres, then every material (the spheres' first, so materialIndex == sphere
-	//index still holds), then the world-space triangles.
-	//
-	//A render restarted by a camera drag arrives here every frame with the same geometry, and a
-	//loaded model's triangles are megabytes: re-allocating and re-writing them 60 times a second
-	//would cost more than the tracing. So the upload is skipped outright when the snapshot holds
-	//exactly what the buffer already does - the spheres by value, the triangles by pointer, since
-	//buildTriangleData() only ever produces a new object when the geometry really changed
-	if (m_hasUpload && m_uploadedSpheres == m_snapshot.spheres && m_uploadedTriangles == m_snapshot.triangles) {
+	if (buffer.buffer == VK_NULL_HANDLE) {
+		return;
+	}
+	//the previous render's buffer may still be read by the frame in flight, so it goes to the
+	//deletion queue of the slot that frame used - flushed once its fence has been waited on, at the
+	//start of the frame after next
+	const AllocatedBuffer old = buffer;
+	engine->m_frames[(engine->m_frameNumber + 1) % FRAME_OVERLAP].deletionQueue.push_function([engine, old]() {
+		engine->destroyBuffer(old);
+	});
+	buffer = {};
+}
+
+void GpuPathTracer::uploadGeometry(VulkanEngine* engine, const std::shared_ptr<const RaytraceGeometry>& geometry)
+{
+	if (m_uploadedGeometry == geometry && m_geometryBuffer.buffer != VK_NULL_HANDLE) {
 		return;
 	}
 
-	const std::vector<SceneSphere>& spheres = m_snapshot.spheres;
-	const RaytraceTriangleData* triangleData = m_snapshot.triangles.get();
+	//three ranges in one device-local buffer. The traversal reads nodes and triangles on every step
+	//of every ray, so they belong in VRAM rather than in host-visible memory the GPU would fetch
+	//across the bus; a zero-length range is invalid, so an empty one still gets one (unused) entry
+	const VkDeviceSize alignment = std::max<VkDeviceSize>(engine->m_gpuProperties.limits.minStorageBufferOffsetAlignment, 16);
+	const size_t nodes = geometry != nullptr ? geometry->nodes.size() : 0;
+	const size_t triangles = geometry != nullptr ? geometry->triangles.size() : 0;
+	const size_t attributes = geometry != nullptr ? geometry->attributes.size() : 0;
+	m_blasNodesOffset = 0;
+	m_blasNodesBytes = sizeof(glm::uvec4) * std::max<size_t>(nodes, 1);
+	m_blasTrianglesOffset = alignUp(m_blasNodesOffset + m_blasNodesBytes, alignment);
+	m_blasTrianglesBytes = sizeof(BvhTriangle) * std::max<size_t>(triangles, 1);
+	m_attributesOffset = alignUp(m_blasTrianglesOffset + m_blasTrianglesBytes, alignment);
+	m_attributesBytes = sizeof(GpuTriangleAttributes) * std::max<size_t>(attributes, 1);
+	const VkDeviceSize totalBytes = m_attributesOffset + m_attributesBytes;
 
-	m_sphereCount = (uint32_t)spheres.size();
-	m_triangleCount = triangleData != nullptr ? (uint32_t)triangleData->triangles.size() : 0;
-	const uint32_t triangleMaterials = triangleData != nullptr ? (uint32_t)triangleData->materials.size() : 0;
+	AllocatedBuffer staging = engine->createBuffer(totalBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+	uint8_t* mapped = (uint8_t*)staging.info.pMappedData;
+	memset(mapped, 0, totalBytes);
+	if (geometry != nullptr) {
+		memcpy(mapped + m_blasNodesOffset, geometry->nodes.data(), sizeof(glm::uvec4) * nodes);
+		memcpy(mapped + m_blasTrianglesOffset, geometry->triangles.data(), sizeof(BvhTriangle) * triangles);
+		memcpy(mapped + m_attributesOffset, geometry->attributes.data(), sizeof(GpuTriangleAttributes) * attributes);
+	}
+	vmaFlushAllocation(engine->m_memAllocator, staging.allocation, 0, totalBytes); //flush vma on MoltenVK
 
-	//a zero-length buffer range is invalid, so an empty list still gets one (unused) entry
-	const VkDeviceSize sphereEntries = std::max(m_sphereCount, 1u);
-	const VkDeviceSize materialEntries = std::max(m_sphereCount + triangleMaterials, 1u);
-	const VkDeviceSize triangleEntries = std::max(m_triangleCount, 1u);
+	retireBuffer(engine, m_geometryBuffer);
+	m_geometryBuffer = engine->createBuffer(totalBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		VkBufferCopy copy {};
+		copy.size = totalBytes;
+		vkCmdCopyBuffer(cmd, staging.buffer, m_geometryBuffer.buffer, 1, &copy);
+	});
+	engine->destroyBuffer(staging);
+
+	m_uploadedGeometry = geometry;
+	fmt::println("GpuPathTracer: BVH geometry uploaded - {} node words, {} triangles, {} attribute records, {:.1f} MB",
+		nodes, triangles, attributes, double(totalBytes) / (1024.0 * 1024.0));
+}
+
+void GpuPathTracer::uploadScene(VulkanEngine* engine)
+{
+	const std::shared_ptr<const RaytraceSceneAccel>& scene = m_snapshot.scene;
+	uploadGeometry(engine, scene != nullptr ? scene->geometry : nullptr);
+
+	//a render restarted by a camera drag arrives here every frame with the same scene; the scene
+	//object is only ever rebuilt for a real change, so the pointer says whether anything moved
+	if (m_uploadedScene == scene && m_sceneBuffer.buffer != VK_NULL_HANDLE) {
+		return;
+	}
+
+	const size_t instances = scene != nullptr ? scene->instances.size() : 0;
+	const size_t materials = scene != nullptr ? scene->materials.size() : 0;
+	const size_t instanceMaterials = scene != nullptr ? scene->instanceMaterials.size() : 0;
+	const size_t tlasWords = scene != nullptr ? scene->tlas.bvh.nodes.size() : 0;
+	//nothing is traced through a TLAS that failed to pack; the instance count is what the shader checks
+	const bool traceable = scene != nullptr && scene->tlas.bvh.error.empty() && scene->tlas.bvh.nodeCount > 0;
+	m_instanceCount = traceable ? (uint32_t)instances : 0;
 
 	const VkDeviceSize alignment = std::max<VkDeviceSize>(engine->m_gpuProperties.limits.minStorageBufferOffsetAlignment, 16);
-	const VkDeviceSize spheresBytes = sizeof(CrtSphere) * sphereEntries;
-	m_materialsOffset = alignUp(spheresBytes, alignment);
-	m_materialsBytes = sizeof(CrtMaterial) * materialEntries;
-	m_trianglesOffset = alignUp(m_materialsOffset + m_materialsBytes, alignment);
-	m_trianglesBytes = sizeof(RaytraceTriangle) * triangleEntries;
-	const VkDeviceSize totalBytes = m_trianglesOffset + m_trianglesBytes;
+	m_instancesBytes = sizeof(GpuInstance) * std::max<size_t>(instances, 1);
+	m_materialsOffset = alignUp(m_instancesBytes, alignment);
+	m_materialsBytes = sizeof(CrtMaterial) * std::max<size_t>(materials, 1);
+	m_instanceMaterialsOffset = alignUp(m_materialsOffset + m_materialsBytes, alignment);
+	m_instanceMaterialsBytes = sizeof(uint32_t) * std::max<size_t>(instanceMaterials, 1);
+	m_tlasOffset = alignUp(m_instanceMaterialsOffset + m_instanceMaterialsBytes, alignment);
+	m_tlasBytes = sizeof(glm::uvec4) * std::max<size_t>(tlasWords, 4);
+	const VkDeviceSize totalBytes = m_tlasOffset + m_tlasBytes;
 
-	//the previous render's buffer may still be read by the frame in flight, so it is retired
-	//through the deletion queue of the slot that frame used - flushed once its fence has been
-	//waited on, at the start of the frame after next
-	if (m_sceneBuffer.buffer != VK_NULL_HANDLE) {
-		const AllocatedBuffer old = m_sceneBuffer;
-		engine->m_frames[(engine->m_frameNumber + 1) % FRAME_OVERLAP].deletionQueue.push_function([engine, old]() {
-			engine->destroyBuffer(old);
-		});
-	}
+	retireBuffer(engine, m_sceneBuffer);
 	m_sceneBuffer = engine->createBuffer(totalBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
 
 	uint8_t* mapped = (uint8_t*)m_sceneBuffer.info.pMappedData;
 	memset(mapped, 0, totalBytes);
-	CrtSphere* gpuSpheres = (CrtSphere*)mapped;
-	CrtMaterial* gpuMaterials = (CrtMaterial*)(mapped + m_materialsOffset);
-
-	for (uint32_t i = 0; i < m_sphereCount; i++) {
-		gpuSpheres[i].center = spheres[i].center;
-		gpuSpheres[i].radius = spheres[i].radius;
-		//a sphere carries no uvs, so it is never textured
-		gpuMaterials[i] = gpuMaterial(spheres[i].material, -1);
-	}
-
-	if (triangleData != nullptr) {
-		for (uint32_t i = 0; i < triangleMaterials; i++) {
-			const RaytraceTriMaterial& entry = triangleData->materials[i];
-			gpuMaterials[m_sphereCount + i] = gpuMaterial(entry.material, entry.albedoLayer);
+	if (scene != nullptr) {
+		memcpy(mapped, scene->instances.data(), sizeof(GpuInstance) * instances);
+		CrtMaterial* gpuMaterials = (CrtMaterial*)(mapped + m_materialsOffset);
+		for (size_t i = 0; i < materials; i++) {
+			gpuMaterials[i] = gpuMaterial(scene->materials[i].material, scene->materials[i].albedoLayer);
 		}
-
-		//RaytraceTriangle is laid out as the shader reads it, so the triangles copy straight in.
-		//Their material indices are rebased past the spheres' here, once, rather than in the
-		//extend stage per ray
-		RaytraceTriangle* gpuTriangles = (RaytraceTriangle*)(mapped + m_trianglesOffset);
-		memcpy(gpuTriangles, triangleData->triangles.data(), sizeof(RaytraceTriangle) * m_triangleCount);
-		for (uint32_t i = 0; i < m_triangleCount; i++) {
-			gpuTriangles[i].material += m_sphereCount;
-		}
+		memcpy(mapped + m_instanceMaterialsOffset, scene->instanceMaterials.data(), sizeof(uint32_t) * instanceMaterials);
+		memcpy(mapped + m_tlasOffset, scene->tlas.bvh.nodes.data(), sizeof(glm::uvec4) * tlasWords);
 	}
-
 	vmaFlushAllocation(engine->m_memAllocator, m_sceneBuffer.allocation, 0, totalBytes); //flush vma on MoltenVK
 
-	m_uploadedSpheres = spheres;
-	m_uploadedTriangles = m_snapshot.triangles;
-	m_hasUpload = true;
-
-	fmt::println("GpuPathTracer: scene uploaded - {} sphere(s), {} triangle(s), {} material(s), {:.1f} MB",
-		m_sphereCount, m_triangleCount, m_sphereCount + triangleMaterials, double(totalBytes) / (1024.0 * 1024.0));
+	m_uploadedScene = scene;
+	fmt::println("GpuPathTracer: scene uploaded - {} instance(s) ({} sphere(s)), {} material(s), {} TLAS node(s), {:.2f} MB",
+		instances, scene != nullptr ? scene->sphereCount : 0, materials, tlasWords / 4, double(totalBytes) / (1024.0 * 1024.0));
 }
 
 void GpuPathTracer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
@@ -367,6 +417,7 @@ void GpuPathTracer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 	m_maxSamples = m_snapshot.settings.unlimitedSamples ? 0u : (uint32_t)std::max(m_snapshot.settings.maxSamples, 1);
 	m_lastFrameGpuMs = 0.f;
 	m_totalGpuMs = 0.f;
+	m_traversalWork = {};
 	m_pathsAlive.clear();
 }
 
@@ -389,6 +440,8 @@ void GpuPathTracer::collectReadbacks(VulkanEngine* engine, uint32_t slot)
 	const bool currentRender = m_slotRender[slot] == m_renderSerial;
 	m_slotRender[slot] = 0;
 
+	const uint32_t headerCount = m_slotHeaderCount[slot];
+
 	if (m_hasTimestamps) {
 		//value, availability pairs for the two queries
 		uint64_t results[4] = {};
@@ -400,7 +453,6 @@ void GpuPathTracer::collectReadbacks(VulkanEngine* engine, uint32_t slot)
 		}
 	}
 
-	const uint32_t headerCount = m_slotHeaderCount[slot];
 	if (headerCount > 0 && currentRender) {
 		const VkDeviceSize offset = (VkDeviceSize)slot * READBACK_HEADERS_PER_SLOT * sizeof(CrtQueueHeader);
 		const VkDeviceSize bytes = (VkDeviceSize)headerCount * sizeof(CrtQueueHeader);
@@ -410,6 +462,21 @@ void GpuPathTracer::collectReadbacks(VulkanEngine* engine, uint32_t slot)
 		for (uint32_t i = 0; i < headerCount; i++) {
 			m_pathsAlive[i] = headers[i].rayCount;
 		}
+
+		//the traversal counters, per extended queue - every queue but the last
+		const VkDeviceSize statsOffset = (VkDeviceSize)slot * TRAVERSAL_STATS_BYTES;
+		vmaInvalidateAllocation(engine->m_memAllocator, m_statsReadback.allocation, statsOffset, TRAVERSAL_STATS_BYTES);
+		const uint32_t* stats = (const uint32_t*)((const uint8_t*)m_statsReadback.info.pMappedData + statsOffset);
+		TraversalWork work;
+		for (uint32_t bounce = 0; bounce + 1 < headerCount; bounce++) {
+			work.rays += headers[bounce].rayCount;
+			work.nodes += stats[2 * bounce];
+			work.primitives += stats[2 * bounce + 1];
+		}
+		work.primaryRays = headers[0].rayCount;
+		work.primaryNodes = stats[0];
+		work.primaryPrimitives = stats[1];
+		m_traversalWork = work;
 	}
 }
 
@@ -429,15 +496,20 @@ VkDescriptorSet GpuPathTracer::writeSet(VulkanEngine* engine, const ComputePass&
 	writer.writeBuffer(3, m_headers.buffer, sizeof(CrtQueueHeader) * 2, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 	writer.writeBuffer(4, m_radiance.buffer, sizeof(glm::vec4) * (VkDeviceSize)m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 	writer.writeBuffer(5, m_sampleBudget.buffer, sizeof(uint32_t) * (VkDeviceSize)m_poolWidth * m_poolHeight, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(6, m_sceneBuffer.buffer, m_materialsOffset, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	writer.writeBuffer(6, m_sceneBuffer.buffer, m_instancesBytes, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 	writer.writeBuffer(7, m_sceneBuffer.buffer, m_materialsBytes, m_materialsOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 	writer.writeImage(8, m_accumulation.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 	writer.writeImage(9, m_sampleCount.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 	writer.writeImage(10, map.imageView, engine->m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-	writer.writeBuffer(11, m_sceneBuffer.buffer, m_trianglesBytes, m_trianglesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	writer.writeBuffer(11, m_geometryBuffer.buffer, m_blasTrianglesBytes, m_blasTrianglesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 	//the array always exists, even for a scene with no textures at all, so the binding is never
 	//left naming nothing
 	writer.writeImage(12, engine->m_raytraceTextures.image().imageView, engine->m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	writer.writeBuffer(13, m_geometryBuffer.buffer, m_blasNodesBytes, m_blasNodesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	writer.writeBuffer(14, m_geometryBuffer.buffer, m_attributesBytes, m_attributesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	writer.writeBuffer(15, m_sceneBuffer.buffer, m_tlasBytes, m_tlasOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	writer.writeBuffer(16, m_sceneBuffer.buffer, m_instanceMaterialsBytes, m_instanceMaterialsOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	writer.writeBuffer(17, m_traversalStats.buffer, TRAVERSAL_STATS_BYTES, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 	writer.updateSet(engine->m_device, set);
 
 	return set;
@@ -509,8 +581,7 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 		params.seed = m_snapshot.seed;
 		params.bounce = 0;
 		params.rayDepth = (uint32_t)std::clamp(settings.rayDepth, 1, CRT_MAX_DEPTH);
-		params.sphereCount = m_sphereCount;
-		params.triangleCount = m_triangleCount;
+		params.instanceCount = m_instanceCount;
 		params.flags = (settings.antialiasing ? CRT_FLAG_JITTER : 0u)
 			| (settings.russianRoulette ? CRT_FLAG_ROULETTE : 0u)
 			| ((m_snapshot.useEnvironmentMap && engine->m_environmentMap.image != VK_NULL_HANDLE) ? CRT_FLAG_ENVIRONMENT_MAP : 0u);
@@ -520,6 +591,9 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 		params.environmentIntensity = m_snapshot.environmentIntensity;
 
 		const VkDescriptorSet set = writeSet(engine, m_generate);
+		//the extend build that traverses the layout this scene's BLASes were packed in
+		const bool cwbvh = m_snapshot.scene != nullptr && m_snapshot.scene->blases != nullptr && m_snapshot.scene->blases->settings.layout == BvhLayout::Cwbvh8;
+		const ComputePass& extend = cwbvh ? m_extendCwbvh : m_extend;
 
 		const VkDeviceSize readbackBase = (VkDeviceSize)slot * READBACK_HEADERS_PER_SLOT * sizeof(CrtQueueHeader);
 		auto copyHeader = [&](uint32_t queue, uint32_t readbackIndex) {
@@ -539,6 +613,7 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 
 		//generate: every (pixel, k) pair, appending the spawned paths to queue 0
 		resetHeader(0);
+		vkCmdFillBuffer(cmd, m_traversalStats.buffer, 0, VK_WHOLE_SIZE, 0);
 		vkutil::memory_barrier(cmd, transferStage, transferAccess, computeStages, computeAccess);
 		dispatchComputePass(cmd, m_generate, set, &params, { (m_poolSize + CRT_WORKGROUP - 1) / CRT_WORKGROUP, 1, 1 });
 		vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages | transferStage, computeAccess | transferAccess);
@@ -550,7 +625,7 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 			params.bounce = bounce;
 
 			//extend over the current queue: a hit record per queue position
-			dispatchComputePassIndirect(cmd, m_extend, set, &params, m_headers.buffer, current * sizeof(CrtQueueHeader));
+			dispatchComputePassIndirect(cmd, extend, set, &params, m_headers.buffer, current * sizeof(CrtQueueHeader));
 			//hits visible to shade, and the next header - read as arguments by the previous
 			//bounce - free to be reset
 			vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages | transferStage, computeAccess | transferAccess);
@@ -562,6 +637,12 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 			vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages | transferStage, computeAccess | transferAccess);
 			copyHeader(next, bounce + 1);
 		}
+
+		//the frame's traversal counters, read back with the headers FRAME_OVERLAP frames later
+		VkBufferCopy statsRegion {};
+		statsRegion.dstOffset = (VkDeviceSize)slot * TRAVERSAL_STATS_BYTES;
+		statsRegion.size = TRAVERSAL_STATS_BYTES;
+		vkCmdCopyBuffer(cmd, m_traversalStats.buffer, m_statsReadback.buffer, 1, &statsRegion);
 
 		//resolve: fold each pixel's K slots into the running mean
 		dispatchComputePass(cmd, m_resolve, set, &params, { (m_poolWidth * m_poolHeight + CRT_WORKGROUP - 1) / CRT_WORKGROUP, 1, 1 });

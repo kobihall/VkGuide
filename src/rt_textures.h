@@ -34,7 +34,7 @@ public:
 	void destroy(VulkanEngine* engine);
 
 	// rebuilds from every model currently loaded in the engine. Called from the same scene-change
-	// path that rebuilds the mesh data, so the layers and RaytraceTriangleData agree by
+	// path that rebuilds the mesh data, so the layers the scene's materials name agree by
 	// construction. Waits for the device: a model import is a menu-driven action
 	void rebuild(VulkanEngine* engine);
 
