@@ -1,9 +1,9 @@
 // GPU path tracer, stage 2: intersect every queued path with the scene and write one HitRecord
 // per queue position. Shade reads that record and never learns which kind of geometry produced
-// it, which is the whole point of the split - spheres and triangles differ only here.
+// it, which is the whole point of the split - shapes and triangles differ only here.
 //
-// The scene is a two-level BVH (crt_bvh.glsl): a TLAS over the placed meshes and the spheres, and
-// a BLAS per mesh in its object space. This file is the stage's body; crt_extend.comp and
+// The scene is a two-level BVH (crt_bvh.glsl): a TLAS over the placed meshes and the bounded
+// shapes, and a BLAS per mesh in its object space; the unbounded shapes are tested outside it. This file is the stage's body; crt_extend.comp and
 // crt_extend_cwbvh.comp include it with the binary and the CWBVH BLAS traversal respectively, and
 // src/rt_gpu.cpp picks the pipeline matching the layout the scene was built with.
 
@@ -47,10 +47,12 @@ void extendPath(uint queue, uint index)
 	record.position = origin + trace.t * direction;
 	record.t = trace.t;
 
-	vec3 normal;
+	vec3 objectNormal;
 	uint material;
-	if (instance.nodeBase == CRT_INSTANCE_SPHERE) {
-		normal = (record.position - instance.row0.xyz) / instance.row0.w;
+	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
+		// the hit point back in the unit primitive's space, where its normal is defined
+		const vec4 p = vec4(record.position, 1.0);
+		objectNormal = shapeNormal(instance.triangleBase, vec3(dot(instance.row0, p), dot(instance.row1, p), dot(instance.row2, p)));
 		material = instance.materialBase;
 	} else {
 		// only the closest hit fetches its shading data: the traversal touched positions alone
@@ -65,21 +67,21 @@ void extendPath(uint queue, uint index)
 		// the interpolated shading normal, which is what makes a low-poly mesh shade smoothly. A
 		// mesh with no NORMAL attribute loaded as (1,0,0) everywhere, so a degenerate result falls
 		// back to the geometric normal rather than producing NaN
-		vec3 objectNormal = w * attributes.n0.xyz + u * attributes.n1.xyz + v * attributes.n2.xyz;
+		objectNormal = w * attributes.n0.xyz + u * attributes.n1.xyz + v * attributes.n2.xyz;
 		if (dot(objectNormal, objectNormal) < 1e-12) {
 			objectNormal = cross(tri.e1.xyz, tri.e2.xyz);
 		}
-		// to world space by the inverse transpose of object-to-world, which is the transpose of the
-		// world-to-object rows the instance stores: it keeps the normal perpendicular to the surface
-		// under a non-uniform scale
-		normal = objectNormal.x * instance.row0.xyz + objectNormal.y * instance.row1.xyz + objectNormal.z * instance.row2.xyz;
 
 		material = instanceMaterials[instance.materialBase + floatBitsToUint(attributes.vAndSurface.w)];
 	}
+	// to world space by the inverse transpose of object-to-world, which is the transpose of the
+	// world-to-object rows the instance stores: it keeps the normal perpendicular to the surface
+	// under a non-uniform scale - a stretched sphere's as much as a mesh's
+	vec3 normal = objectNormal.x * instance.row0.xyz + objectNormal.y * instance.row1.xyz + objectNormal.z * instance.row2.xyz;
 	normal = normalize(normal);
 
 	// the stored normal always faces the incoming ray, and the bit records which side was hit, so a
-	// two-sided triangle - and the inside of a glass sphere - shades correctly
+	// two-sided triangle - and the inside of a glass shape - shades correctly
 	const bool frontFace = dot(direction, normal) < 0.0;
 	record.normal = frontFace ? normal : -normal;
 	record.materialAndFace = (material << 1u) | (frontFace ? 1u : 0u);

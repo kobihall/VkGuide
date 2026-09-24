@@ -2,6 +2,7 @@
 
 #include <rt_scene.h>
 #include <scene_io.h>
+#include <shape_mesh.h>
 #include <file_dialog.h>
 #include <vk_ui.h>
 
@@ -95,8 +96,8 @@ void VulkanEngine::draw()
 	getCurrentFrame().deletionQueue.flush();
 	getCurrentFrame().frameDescriptors.clearPools(m_device);
 
-	// after the fence wait: this may rewrite the frame slot's persistent sphere-material buffer
-	drawRaytraceSpheres();
+	// after the fence wait: this may rewrite the frame slot's persistent shape-material buffer
+	drawRaytraceShapes();
 
 	checkVkResult(vkResetFences(m_device, 1, &getCurrentFrame().renderFence));
 
@@ -901,13 +902,15 @@ void VulkanEngine::newScene()
 	clearModels();
 	clearEnvironmentMap();
 	m_firstPersonCameraId = 0;
-	m_raytraceScene.replaceSpheres({});
+	m_raytraceScene.replaceShapes({});
 	//an empty scene still has somewhere to render from
 	SceneCamera camera;
 	camera.name = "render_camera";
 	m_raytraceScene.replaceCameras({ camera });
 	m_raytracer.setSettings(RenderSettings {});
 	m_environmentIntensity = 1.f;
+	m_solidBackground = false;
+	m_backgroundColor = glm::vec3(0.f);
 	m_scenePath.clear();
 	m_lastFileResult = IoResult::success("New empty scene");
 }
@@ -942,7 +945,7 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 	}
 
 	scene.environmentMapPath = m_environmentMapPath;
-	scene.spheres = m_raytraceScene.spheres();
+	scene.shapes = m_raytraceScene.shapes();
 	scene.cameras = m_raytraceScene.cameras();
 	for (size_t i = 0; i < scene.cameras.size(); i++) {
 		if (scene.cameras[i].id == m_raytracer.renderCameraId()) {
@@ -951,6 +954,9 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 	}
 	scene.render = m_raytracer.settings();
 	scene.environmentIntensity = m_environmentIntensity;
+	if (m_solidBackground) {
+		scene.backgroundColor = m_backgroundColor;
+	}
 
 	IoResult result = saveSceneFile(scene, path);
 	if (result.ok) {
@@ -1027,19 +1033,21 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 		}
 	}
 	m_firstPersonCameraId = 0;
-	m_raytraceScene.replaceSpheres(std::move(scene.spheres));
+	m_raytraceScene.replaceShapes(std::move(scene.shapes));
 	m_raytraceScene.replaceCameras(std::move(scene.cameras));
 	m_raytracer.setSettings(scene.render);
 	if (scene.renderCamera >= 0 && scene.renderCamera < (int)m_raytraceScene.cameras().size()) {
 		m_raytracer.setRenderCamera(m_raytraceScene.cameras()[scene.renderCamera].id);
 	}
 	m_environmentIntensity = scene.environmentIntensity;
+	m_solidBackground = scene.backgroundColor.has_value();
+	m_backgroundColor = scene.backgroundColor.value_or(glm::vec3(0.f));
 	m_scenePath = absoluteNormalized(path);
 
 	if (!problems.empty()) {
 		return IoResult::failure(fmt::format("Opened '{}' with {} problem(s): {}", path.filename().string(), problems.size(), fmt::join(problems, "; ")));
 	}
-	return IoResult::success(fmt::format("Opened '{}': {} model(s), {} sphere(s){}", path.filename().string(), m_models.size(), m_raytraceScene.spheres().size(),
+	return IoResult::success(fmt::format("Opened '{}': {} model(s), {} shape(s){}", path.filename().string(), m_models.size(), m_raytraceScene.shapes().size(),
 		m_environmentMapPath.empty() ? "" : ", environment map"));
 }
 
@@ -1662,18 +1670,18 @@ void VulkanEngine::initDescriptors()
 		m_frames[i].frameDescriptors = DescriptorAllocatorGrowable{};
 		m_frames[i].frameDescriptors.init(m_device, 1000, frame_sizes);
 
-		//the preview spheres' long-lived material sets, one allocator per frame slot
-		std::vector<DescriptorAllocatorGrowable::PoolSizeRatio> sphere_sizes = {
+		//the preview shapes' long-lived material sets, one allocator per frame slot
+		std::vector<DescriptorAllocatorGrowable::PoolSizeRatio> shape_sizes = {
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },
 			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 },
 		};
-		m_previewSphereSlots[i].descriptors.init(m_device, 64, sphere_sizes);
+		m_previewShapeSlots[i].descriptors.init(m_device, 64, shape_sizes);
 	
 		m_mainDeletionQueue.push_function([&, i]() {
 			m_frames[i].frameDescriptors.destroyPools(m_device);
-			m_previewSphereSlots[i].descriptors.destroyPools(m_device);
-			if (m_previewSphereSlots[i].capacity > 0) {
-				destroyBuffer(m_previewSphereSlots[i].materialBuffer);
+			m_previewShapeSlots[i].descriptors.destroyPools(m_device);
+			if (m_previewShapeSlots[i].capacity > 0) {
+				destroyBuffer(m_previewShapeSlots[i].materialBuffer);
 			}
 		});
 	}
@@ -1980,93 +1988,59 @@ void VulkanEngine::initIMGUI()
 	});
 }
 
-//a unit uv sphere at the origin. Vertex colours are left white so that the per-sphere material's
-//colorFactors is what carries the colour - mesh.vert multiplies the two together
-static MeshAsset makeUnitSphereMesh(VulkanEngine* engine, uint32_t rings, uint32_t segments)
+//a shape's unit primitive as a drawable mesh: one surface, its bounds the mesh's own, and no
+//material - drawRaytraceShapes() supplies a per-shape one rather than going through
+//MeshNode::Draw(), which is what would otherwise read it
+static MeshAsset makeShapePreviewMesh(VulkanEngine* engine, ShapeKind kind)
 {
-	std::vector<Vertex> vertices;
-	std::vector<uint32_t> indices;
+	ShapeMeshData data = buildShapeMesh(kind);
 
-	vertices.reserve((size_t)(rings + 1) * (segments + 1));
-
-	for (uint32_t ring = 0; ring <= rings; ring++) {
-		const double theta = glm::pi<double>() * (double)ring / (double)rings;
-		const double sinTheta = sin(theta);
-		const double cosTheta = cos(theta);
-
-		for (uint32_t segment = 0; segment <= segments; segment++) {
-			const double phi = 2.0 * glm::pi<double>() * (double)segment / (double)segments;
-
-			Vertex vtx;
-			vtx.position = glm::vec3(sinTheta * cos(phi), cosTheta, sinTheta * sin(phi));
-			//on a unit sphere centred on the origin the position is also the normal
-			vtx.normal = vtx.position;
-			vtx.color = glm::vec4(1.f);
-			vtx.uv_x = (float)segment / (float)segments;
-			vtx.uv_y = (float)ring / (float)rings;
-
-			vertices.push_back(vtx);
-		}
-	}
-
-	indices.reserve((size_t)rings * segments * 6);
-
-	for (uint32_t ring = 0; ring < rings; ring++) {
-		for (uint32_t segment = 0; segment < segments; segment++) {
-			const uint32_t a = ring * (segments + 1) + segment;
-			const uint32_t b = a + segments + 1;
-
-			indices.push_back(a);
-			indices.push_back(b);
-			indices.push_back(a + 1);
-
-			indices.push_back(a + 1);
-			indices.push_back(b);
-			indices.push_back(b + 1);
-		}
+	glm::vec3 minPos = data.vertices[0].position;
+	glm::vec3 maxPos = minPos;
+	for (const Vertex& vertex : data.vertices) {
+		minPos = glm::min(minPos, vertex.position);
+		maxPos = glm::max(maxPos, vertex.position);
 	}
 
 	MeshAsset mesh;
-	mesh.name = "raytracer_sphere";
+	mesh.name = fmt::format("raytracer_{}", shapeTraits(kind).name);
 
 	GeoSurface surface;
 	surface.startIndex = 0;
-	surface.count = (uint32_t)indices.size();
-	surface.bounds.origin = glm::vec3(0.f);
-	surface.bounds.extents = glm::vec3(1.f);
-	surface.bounds.sphereRadius = 1.f;
-	//no material: drawRaytraceSpheres() supplies a per-sphere one rather than going through
-	//MeshNode::Draw(), which is what would otherwise read this
+	surface.count = (uint32_t)data.indices.size();
+	surface.bounds.origin = (maxPos + minPos) * 0.5f;
+	surface.bounds.extents = (maxPos - minPos) * 0.5f;
+	surface.bounds.sphereRadius = glm::length(surface.bounds.extents);
 	mesh.surfaces.push_back(surface);
 
-	mesh.cpuIndices = indices;
-	mesh.cpuVertices = vertices;
-	mesh.meshBuffers = engine->uploadMesh(indices, vertices);
+	mesh.meshBuffers = engine->uploadMesh(data.indices, data.vertices);
+	mesh.cpuIndices = std::move(data.indices);
+	mesh.cpuVertices = std::move(data.vertices);
 
 	return mesh;
 }
 
-void VulkanEngine::drawRaytraceSpheres()
+void VulkanEngine::drawRaytraceShapes()
 {
-	const std::vector<SceneSphere>& spheres = m_raytraceScene.spheres();
+	const std::vector<SceneShape>& shapes = m_raytraceScene.shapes();
 
-	if (m_sphereMesh == nullptr || spheres.empty()) {
+	if (shapes.empty()) {
 		return;
 	}
 
-	PreviewSphereSlot& slot = m_previewSphereSlots[m_frameNumber % FRAME_OVERLAP];
+	PreviewShapeSlot& slot = m_previewShapeSlots[m_frameNumber % FRAME_OVERLAP];
 	const size_t stride = sizeof(GLTFMetallic_Roughness::MaterialConstants);
 
 	//the slot's last frame has been waited on, so its buffer and sets are free to rewrite - and
-	//they only are rewritten when something about the spheres changed
-	if (slot.revision != m_raytraceScene.revision() || slot.capacity < spheres.size()) {
-		if (slot.capacity < spheres.size()) {
+	//they only are rewritten when something about the shapes changed
+	if (slot.revision != m_raytraceScene.revision() || slot.capacity < shapes.size()) {
+		if (slot.capacity < shapes.size()) {
 			if (slot.capacity > 0) {
 				destroyBuffer(slot.materialBuffer);
 			}
-			//one buffer for the whole set, indexed per sphere by offset - the same layout
+			//one buffer for the whole set, indexed per shape by offset - the same layout
 			//loadGltf() uses for a file's materials
-			slot.capacity = spheres.size();
+			slot.capacity = shapes.size();
 			slot.materialBuffer = createBuffer(stride * slot.capacity, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
 		}
 
@@ -2074,10 +2048,10 @@ void VulkanEngine::drawRaytraceSpheres()
 
 		slot.descriptors.clearPools(m_device);
 		slot.materials.clear();
-		slot.materials.resize(spheres.size());
+		slot.materials.resize(shapes.size());
 
-		for (size_t i = 0; i < spheres.size(); i++) {
-			constants[i].colorFactors = glm::vec4(materialPreviewColor(spheres[i].material), 1.f);
+		for (size_t i = 0; i < shapes.size(); i++) {
+			constants[i].colorFactors = glm::vec4(materialPreviewColor(shapes[i].material), 1.f);
 			constants[i].metalRoughFactors = glm::vec4(1.f, 0.5f, 0.f, 0.f);
 
 			GLTFMetallic_Roughness::MaterialResources resources;
@@ -2091,23 +2065,23 @@ void VulkanEngine::drawRaytraceSpheres()
 			slot.materials[i] = m_metalRoughMaterial.writeMaterial(m_device, MaterialPass::MainColor, resources, slot.descriptors);
 		}
 
-		vmaFlushAllocation(m_memAllocator, slot.materialBuffer.allocation, 0, stride * spheres.size());//flush vma on MoltenVK
+		vmaFlushAllocation(m_memAllocator, slot.materialBuffer.allocation, 0, stride * shapes.size());//flush vma on MoltenVK
 		slot.revision = m_raytraceScene.revision();
 	}
 
-	const GeoSurface& surface = m_sphereMesh->surfaces[0];
-
-	for (size_t i = 0; i < spheres.size(); i++) {
-		const SceneSphere& s = spheres[i];
+	for (size_t i = 0; i < shapes.size(); i++) {
+		const SceneShape& shape = shapes[i];
+		const MeshAsset& mesh = *m_shapeMeshes[(size_t)shape.kind];
+		const GeoSurface& surface = mesh.surfaces[0];
 
 		RenderObject obj;
 		obj.indexCount = surface.count;
 		obj.firstIndex = surface.startIndex;
-		obj.indexBuffer = m_sphereMesh->meshBuffers.indexBuffer.buffer;
+		obj.indexBuffer = mesh.meshBuffers.indexBuffer.buffer;
 		obj.material = &slot.materials[i];
 		obj.bounds = surface.bounds;
-		obj.transform = glm::translate(glm::mat4(1.f), s.center) * glm::scale(glm::mat4(1.f), glm::vec3(s.radius));
-		obj.vertexBufferAddress = m_sphereMesh->meshBuffers.vertexBufferAddress;
+		obj.transform = shape.objectToWorld();
+		obj.vertexBufferAddress = mesh.meshBuffers.vertexBufferAddress;
 
 		m_mainDrawContext.opaqueSurfaces.push_back(obj);
 	}
@@ -2181,11 +2155,14 @@ void VulkanEngine::initDefaultData()
 
 	m_defaultData = m_metalRoughMaterial.writeMaterial(m_device,MaterialPass::MainColor,materialResources, m_globalDescriptorAllocator);
 
-	m_sphereMesh = std::make_shared<MeshAsset>(makeUnitSphereMesh(this, 24, 32));
-	m_mainDeletionQueue.push_function([this]() {
-		destroyBuffer(m_sphereMesh->meshBuffers.indexBuffer);
-		destroyBuffer(m_sphereMesh->meshBuffers.vertexBuffer);
-	});
+	for (const ShapeKind kind : SHAPE_KINDS) {
+		std::shared_ptr<MeshAsset> mesh = std::make_shared<MeshAsset>(makeShapePreviewMesh(this, kind));
+		m_shapeMeshes[(size_t)kind] = mesh;
+		m_mainDeletionQueue.push_function([this, mesh]() {
+			destroyBuffer(mesh->meshBuffers.indexBuffer);
+			destroyBuffer(mesh->meshBuffers.vertexBuffer);
+		});
+	}
 
 }
 

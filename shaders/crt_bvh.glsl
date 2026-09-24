@@ -40,6 +40,9 @@ vec3 safeReciprocal(vec3 d)
 	return 1.0 / mix(d, signs * 1e-12, lessThan(abs(d), vec3(1e-12)));
 }
 
+// the analytic shapes, which need safeReciprocal
+#include "crt_shape.glsl"
+
 // near distance of a hit box, or CRT_INFINITY for a miss (Bikker, "How to build a BVH" part 2)
 float slabNear(vec3 bmin, vec3 bmax, vec3 origin, vec3 reciprocal, float tMin, float tMax)
 {
@@ -232,16 +235,20 @@ void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 di
 
 //---------------------------------------------------------------- TLAS
 
-// one instance: a sphere directly in world space, a mesh by carrying the ray into its object space.
-// The direction is deliberately not renormalised there - origin + t * direction is then the same
-// point in both spaces, so t, tMin and the running closest hit carry across unchanged
+// one instance, mesh or shape, by carrying the ray into its object space. The direction is
+// deliberately not renormalised there - origin + t * direction is then the same point in both
+// spaces, so t, tMin and the running closest hit carry across unchanged
 void testInstance(uint slot, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit)
 {
 	const GpuInstance instance = instances[slot];
-	if (instance.nodeBase == CRT_INSTANCE_SPHERE) {
+	const vec4 o = vec4(origin, 1.0);
+	const vec3 localOrigin = vec3(dot(instance.row0, o), dot(instance.row1, o), dot(instance.row2, o));
+	const vec3 localDirection = vec3(dot(instance.row0.xyz, direction), dot(instance.row1.xyz, direction), dot(instance.row2.xyz, direction));
+
+	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
 		g_primitivesTested++;
 		float t;
-		if (hitSphere(instance.row0, origin, direction, tMin, tMax, t)) {
+		if (hitShape(instance.triangleBase, localOrigin, localDirection, tMin, tMax, t)) {
 			tMax = t;
 			hit.t = t;
 			hit.instance = slot;
@@ -249,9 +256,6 @@ void testInstance(uint slot, vec3 origin, vec3 direction, float tMin, inout floa
 		return;
 	}
 
-	const vec4 o = vec4(origin, 1.0);
-	const vec3 localOrigin = vec3(dot(instance.row0, o), dot(instance.row1, o), dot(instance.row2, o));
-	const vec3 localDirection = vec3(dot(instance.row0.xyz, direction), dot(instance.row1.xyz, direction), dot(instance.row2.xyz, direction));
 	traverseBlas(instance, slot, localOrigin, localDirection, tMin, tMax, hit);
 }
 
@@ -266,8 +270,12 @@ bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHi
 	hit.instance = 0u;
 	hit.triangle = 0u;
 	hit.bary = vec2(0.0);
-	if (pc.instanceCount == 0u) {
-		return false;
+	// the unbounded shapes first: a near plane hit then prunes the TLAS walk
+	for (uint i = 0u; i < pc.unboundedCount; i++) {
+		testInstance(i, origin, direction, tMin, tMax, hit);
+	}
+	if (pc.tlasInstanceCount == 0u) {
+		return hit.t < CRT_INFINITY;
 	}
 
 	const vec3 reciprocal = safeReciprocal(direction);
@@ -287,13 +295,13 @@ bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHi
 
 		if (w2.w > 0u && tLeft < CRT_INFINITY) {
 			for (uint i = w0.w; i < w0.w + w2.w; i++) {
-				testInstance(i, origin, direction, tMin, tMax, hit);
+				testInstance(pc.unboundedCount + i, origin, direction, tMin, tMax, hit);
 			}
 			tLeft = CRT_INFINITY;
 		}
 		if (w3.w > 0u && tRight < CRT_INFINITY) {
 			for (uint i = w1.w; i < w1.w + w3.w; i++) {
-				testInstance(i, origin, direction, tMin, tMax, hit);
+				testInstance(pc.unboundedCount + i, origin, direction, tMin, tMax, hit);
 			}
 			tRight = CRT_INFINITY;
 		}

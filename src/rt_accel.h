@@ -2,7 +2,7 @@
 
 // The path tracer's acceleration structure, from the engine's side: which BVH settings the scene
 // is built with, the bottom-level structures of the loaded meshes (built once per mesh and cached),
-// and the per-edit top level over the placed objects and spheres - with the shading data that
+// and the per-edit top level over the placed objects and shapes - with the shading data that
 // goes with them, laid out as the GPU reads it (shaders/crt_common.glsl).
 //
 // Two lifetimes, deliberately separate:
@@ -10,8 +10,8 @@
 //    the BVH settings, so it is built when a model is imported (or the settings change) and never
 //    again - moving, adding or deleting an object does not touch it. This is where build time is
 //    spent, and it is spent up front.
-//  - RaytraceSceneAccel: the instances (one per visible mesh object, one per sphere), their
-//    materials, and the TLAS over them. Cheap; rebuilt whenever an object or sphere changes.
+//  - RaytraceSceneAccel: the instances (one per visible mesh object, one per shape), their
+//    materials, and the TLAS over them. Cheap; rebuilt whenever an object or shape changes.
 
 #include <memory>
 #include <string>
@@ -90,23 +90,25 @@ private:
 	std::unordered_map<const MeshAsset*, std::shared_ptr<const RaytraceBlas>> m_cache;
 };
 
-// one instance as the GPU reads it (crt_common.glsl GpuInstance), stored in TLAS slot order
+// one instance as the GPU reads it (crt_common.glsl GpuInstance): the unbounded shapes first, then
+// the TLAS's instances in its slot order
 struct GpuInstance {
-	// rows of the world-to-object transform. A sphere: row0 = centre xyz, radius w
+	// rows of the world-to-object transform, a mesh's and a shape's alike
 	glm::vec4 row0;
 	glm::vec4 row1;
 	glm::vec4 row2;
-	// the BLAS's first node, or GPU_INSTANCE_SPHERE for a sphere
+	// the BLAS's first node, or GPU_INSTANCE_SHAPE for a shape
 	uint32_t nodeBase;
-	// the BLAS's first triangle (BvhTriangle) and first attribute record
+	// a mesh: the BLAS's first triangle (BvhTriangle). A shape: its ShapeKind
 	uint32_t triangleBase;
+	// a mesh: the BLAS's first attribute record
 	uint32_t attributeBase;
-	// a mesh: into instanceMaterials[], indexed by surface. A sphere: its material directly
+	// a mesh: into instanceMaterials[], indexed by surface. A shape: its material directly
 	uint32_t materialBase;
 };
 static_assert(sizeof(GpuInstance) == 64);
 
-inline constexpr uint32_t GPU_INSTANCE_SPHERE = 0xFFFFFFFFu;
+inline constexpr uint32_t GPU_INSTANCE_SHAPE = 0xFFFFFFFFu;
 
 // Where each BLAS sits in the shared geometry buffers: nodes (in nodes, not words), triangles and
 // attributes, all concatenated in RaytraceBlasSet order
@@ -132,19 +134,21 @@ struct RaytraceSceneAccel {
 	std::shared_ptr<const RaytraceBlasSet> blases;
 	std::shared_ptr<const RaytraceGeometry> geometry;
 	Tlas tlas;
-	// in TLAS slot order: tlas.bvh leaves index this directly
+	// the first unboundedCount are the unbounded shapes; after them, TLAS slot order, so a tlas.bvh
+	// leaf's slot plus unboundedCount indexes this directly
 	std::vector<GpuInstance> instances;
+	uint32_t unboundedCount { 0 };
 	std::vector<uint32_t> instanceMaterials;
-	// every material: the spheres' first (a sphere's material index is its sphere index), then the
-	// mesh objects'
+	// every material: the shapes' first (a shape's material index is its index in the list), then
+	// the mesh objects'
 	std::vector<RaytraceTriMaterial> materials;
-	uint32_t sphereCount { 0 };
+	uint32_t shapeCount { 0 };
 	uint32_t meshInstanceCount { 0 };
 	// triangles the placed instances add up to, counting every placement
 	size_t placedTriangles { 0 };
 };
 
-// Builds the top level over the visible mesh objects and the spheres. `geometry` must be
+// Builds the top level over the visible mesh objects and the shapes. `geometry` must be
 // packGeometry(*blases); it is passed in so it is packed once per BLAS set, not per edit
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
-	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneSphere>& spheres, const RaytraceTextureArray& textures);
+	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const RaytraceTextureArray& textures);

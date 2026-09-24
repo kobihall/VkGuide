@@ -17,7 +17,12 @@ namespace {
 //4: adds "cameras" and "renderCamera"; the lens and exposure move from "render" to each camera
 //5: adds "meshObjects", the placed glTF nodes. A version-4 file has none, and loading it places
 //   every node of every model at its authored transform - exactly what importing does
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 5;
+//6: "spheres" becomes "geometry", every analytic shape in one list, each record naming its "type"
+//   and carrying a "position", an "orientation" when the kind has one, and its sizes by name. An
+//   older file's "spheres" still reads, as spheres
+//7: adds the "emissive" material ("color", "strength") and "background", a solid colour for missed
+//   rays; absent means the environment map or the sky, as before
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 7;
 
 //---------------------------------------------------------------- writing
 
@@ -63,10 +68,16 @@ std::string jsonVec3(const glm::vec3& v)
 	return fmt::format("[{},{},{}]", jsonNumber(v.x), jsonNumber(v.y), jsonNumber(v.z));
 }
 
+//x, y, z, w - named explicitly rather than trusting glm's memory order
+std::string jsonQuat(const glm::quat& q)
+{
+	return fmt::format("[{},{},{},{}]", jsonNumber(q.x), jsonNumber(q.y), jsonNumber(q.z), jsonNumber(q.w));
+}
+
 //every material carries its complete parameters inline - the selected type's only, since that is
 //what the material *is*; the other types' stored values are editing convenience, not scene data.
 //The field names are the source fields'
-std::string materialJson(const SphereMaterial& mat)
+std::string materialJson(const SceneMaterial& mat)
 {
 	const char* typeName = materialTypeName(mat.type);
 
@@ -79,6 +90,8 @@ std::string materialJson(const SphereMaterial& mat)
 		return fmt::format(R"({{"type":"{}","albedo":{},"smoothness":{}}})", typeName, jsonVec3(mat.albedo), jsonNumber(mat.smoothness));
 	case MaterialType::Dielectric:
 		return fmt::format(R"({{"type":"{}","ir":{}}})", typeName, jsonNumber(mat.ir));
+	case MaterialType::Emissive:
+		return fmt::format(R"({{"type":"{}","color":{},"strength":{}}})", typeName, jsonVec3(mat.albedo), jsonNumber(mat.strength));
 	}
 
 	return fmt::format(R"({{"type":"{}"}})", typeName);
@@ -121,6 +134,9 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	}
 
 	json += fmt::format(R"(,"environmentIntensity":{})", jsonNumber(scene.environmentIntensity));
+	if (scene.backgroundColor.has_value()) {
+		json += fmt::format(R"(,"background":{})", jsonVec3(*scene.backgroundColor));
+	}
 
 	//every setting, defaults on read, so a scene shared between machines loses nothing and an
 	//older build ignores the block
@@ -134,20 +150,29 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		if (i > 0) {
 			json += ',';
 		}
-		json += fmt::format(R"({{"name":{},"position":{},"orientation":[{},{},{},{}],"fov":{},"aperture":{},"focusDistance":{},"exposure":{}}})",
-			jsonString(c.name), jsonVec3(c.position), jsonNumber(c.orientation.x), jsonNumber(c.orientation.y), jsonNumber(c.orientation.z), jsonNumber(c.orientation.w),
+		json += fmt::format(R"({{"name":{},"position":{},"orientation":{},"fov":{},"aperture":{},"focusDistance":{},"exposure":{}}})",
+			jsonString(c.name), jsonVec3(c.position), jsonQuat(c.orientation),
 			jsonNumber(c.vfovDegrees), jsonNumber(c.aperture), jsonNumber(c.focusDistance), jsonNumber(c.exposure));
 	}
 	json += ']';
 
-	json += R"(,"spheres":[)";
-	for (size_t i = 0; i < scene.spheres.size(); i++) {
-		const SceneSphere& entry = scene.spheres[i];
+	//every kind through its traits: the sizes go out under the names the editor shows, so a
+	//cylinder reads {"radius":0.5,"height":2} rather than as a raw scale vector
+	json += R"(,"geometry":[)";
+	for (size_t i = 0; i < scene.shapes.size(); i++) {
+		const SceneShape& shape = scene.shapes[i];
+		const ShapeTraits& traits = shapeTraits(shape.kind);
 		if (i > 0) {
 			json += ',';
 		}
-		json += fmt::format(R"({{"name":{},"center":{},"radius":{},"material":{}}})",
-			jsonString(entry.name), jsonVec3(entry.center), jsonNumber(entry.radius), materialJson(entry.material));
+		json += fmt::format(R"({{"type":"{}","name":{},"position":{})", traits.name, jsonString(shape.name), jsonVec3(shape.position));
+		if (traits.rotatable) {
+			json += fmt::format(R"(,"orientation":{})", jsonQuat(shape.orientation));
+		}
+		for (const ShapeParam& param : traits.params) {
+			json += fmt::format(R"(,"{}":{})", param.name, jsonNumber(shapeParamValue(shape, param)));
+		}
+		json += fmt::format(R"(,"material":{}}})", materialJson(shape.material));
 	}
 
 	json += ']';
@@ -231,7 +256,27 @@ bool readVec3(JsonElement element, glm::vec3& out)
 	return true;
 }
 
-bool readMaterial(JsonElement element, SphereMaterial& out, std::string& error)
+//written x, y, z, w by jsonQuat()
+bool readQuat(JsonElement element, glm::quat& out)
+{
+	simdjson::dom::array array;
+	if (element.get_array().get(array) != simdjson::SUCCESS || array.size() != 4) {
+		return false;
+	}
+	float q[4];
+	size_t i = 0;
+	for (simdjson::dom::element component : array) {
+		double value = 0.0;
+		if (!readDouble(component, value)) {
+			return false;
+		}
+		q[i++] = (float)value;
+	}
+	out = glm::normalize(glm::quat(q[3], q[0], q[1], q[2]));
+	return true;
+}
+
+bool readMaterial(JsonElement element, SceneMaterial& out, std::string& error)
 {
 	simdjson::dom::object object;
 	if (element.get_object().get(object) != simdjson::SUCCESS) {
@@ -257,10 +302,12 @@ bool readMaterial(JsonElement element, SphereMaterial& out, std::string& error)
 	}
 
 	//defaults for every field the file does not carry (the unselected types' parameters)
-	out = makeSphereMaterial(*type);
+	out = makeSceneMaterial(*type);
 
-	if (*type != MaterialType::Dielectric && !readVec3(object["albedo"], out.albedo)) {
-		error = fmt::format("{} material has no valid \"albedo\"", typeName);
+	//a light's colour is what it emits, not an albedo, and the file says so
+	const char* colorKey = *type == MaterialType::Emissive ? "color" : "albedo";
+	if (*type != MaterialType::Dielectric && !readVec3(object[colorKey], out.albedo)) {
+		error = fmt::format("{} material has no valid \"{}\"", typeName, colorKey);
 		return false;
 	}
 
@@ -286,6 +333,13 @@ bool readMaterial(JsonElement element, SphereMaterial& out, std::string& error)
 			return false;
 		}
 		out.ir = (float)value;
+		break;
+	case MaterialType::Emissive:
+		if (!readDouble(object["strength"], value) || value < 0.0) {
+			error = "emissive material has no valid \"strength\"";
+			return false;
+		}
+		out.strength = (float)value;
 		break;
 	case MaterialType::Lambertian:
 		break;
@@ -347,9 +401,10 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 	readOptionalInt(object["minBouncesBeforeRoulette"], out.minBouncesBeforeRoulette);
 	readOptionalBool(object["restartOnChange"], out.restartOnChange);
 
-	//a hand-edited file cannot land on something the ui could not
-	out.width = std::max(out.width, 2);
-	out.height = std::max(out.height, 2);
+	//a hand-edited file cannot land on something the ui could not: the custom-resolution fields
+	//hold to the same bounds
+	out.width = std::clamp(out.width, MIN_RENDER_DIMENSION, MAX_RENDER_DIMENSION);
+	out.height = std::clamp(out.height, MIN_RENDER_DIMENSION, MAX_RENDER_DIMENSION);
 	out.maxSamples = std::max(out.maxSamples, 1);
 	out.rayDepth = std::max(out.rayDepth, 1);
 	out.samplesPerFrame = std::max(out.samplesPerFrame, 1);
@@ -380,22 +435,10 @@ bool readCamera(simdjson::dom::object object, SceneCamera& out, std::string& err
 		return false;
 	}
 
-	simdjson::dom::array quat;
-	if (object["orientation"].get_array().get(quat) != simdjson::SUCCESS || quat.size() != 4) {
+	if (!readQuat(object["orientation"], out.orientation)) {
 		error = "camera has no valid \"orientation\"";
 		return false;
 	}
-	float q[4];
-	size_t i = 0;
-	for (simdjson::dom::element component : quat) {
-		double value = 0.0;
-		if (!readDouble(component, value)) {
-			error = "camera has no valid \"orientation\"";
-			return false;
-		}
-		q[i++] = (float)value;
-	}
-	out.orientation = glm::normalize(glm::quat(q[3], q[0], q[1], q[2]));
 
 	readOptionalFloat(object["fov"], out.vfovDegrees);
 	readOptionalFloat(object["aperture"], out.aperture);
@@ -405,6 +448,68 @@ bool readCamera(simdjson::dom::object object, SceneCamera& out, std::string& err
 	out.aperture = std::max(out.aperture, 0.f);
 	out.focusDistance = std::max(out.focusDistance, 0.01f);
 	out.exposure = std::max(out.exposure, 0.f);
+	return true;
+}
+
+//One "geometry" record, or - `legacySphere` - one record of an older file's "spheres" list, which
+//had no "type" and called the position "center". Every size the kind has must be present and
+//positive; a missing orientation is the identity
+bool readShape(simdjson::dom::object object, bool legacySphere, size_t index, SceneShape& out, std::string& error)
+{
+	std::optional<ShapeKind> kind;
+	if (legacySphere) {
+		kind = ShapeKind::Sphere;
+	} else {
+		std::string_view typeName;
+		if (object["type"].get_string().get(typeName) != simdjson::SUCCESS) {
+			error = fmt::format("geometry {} has no \"type\"", index);
+			return false;
+		}
+		for (const ShapeKind candidate : SHAPE_KINDS) {
+			if (typeName == shapeTraits(candidate).name) {
+				kind = candidate;
+			}
+		}
+		if (!kind.has_value()) {
+			error = fmt::format("geometry {} has unknown type \"{}\"", index, typeName);
+			return false;
+		}
+	}
+
+	const ShapeTraits& traits = shapeTraits(*kind);
+	out = makeShape(*kind);
+
+	std::string_view name;
+	if (object["name"].get_string().get(name) == simdjson::SUCCESS) {
+		out.name = std::string(name);
+	} else {
+		out.name = fmt::format("{}_{}", traits.name, index + 1);
+	}
+
+	const char* positionKey = legacySphere ? "center" : "position";
+	if (!readVec3(object[positionKey], out.position)) {
+		error = fmt::format("{} \"{}\" has no valid \"{}\"", traits.name, out.name, positionKey);
+		return false;
+	}
+
+	if (traits.rotatable) {
+		readQuat(object["orientation"], out.orientation);
+	}
+
+	for (const ShapeParam& param : traits.params) {
+		double value = 0.0;
+		if (!readDouble(object[param.name], value) || !(value > 0.0)) {
+			error = fmt::format("{} \"{}\" has no valid positive \"{}\"", traits.name, out.name, param.name);
+			return false;
+		}
+		setShapeParam(out, param, (float)value);
+	}
+
+	std::string materialError;
+	if (!readMaterial(object["material"], out.material, materialError)) {
+		error = fmt::format("{} \"{}\": {}", traits.name, out.name, materialError);
+		return false;
+	}
 	return true;
 }
 
@@ -425,7 +530,7 @@ std::filesystem::path resolvePath(std::string_view text, const std::filesystem::
 }
 
 //fires from inside the parse, once per entity that has extras. The simdjson object is only valid
-//for the duration of the call, so the spheres are built here rather than after loadGltf returns
+//for the duration of the call, so the shapes are built here rather than after loadGltf returns
 void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fastgltf::Category category, void* userPointer)
 {
 	if (category != fastgltf::Category::Scenes || extras == nullptr) {
@@ -434,14 +539,16 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 
 	ParseContext& ctx = *static_cast<ParseContext*>(userPointer);
 	if (ctx.found) {
-		//the first scene carrying sphere data wins
+		//the first scene carrying scene data wins
 		return;
 	}
 
 	simdjson::dom::object& root = *extras;
 
-	simdjson::dom::array spheres;
-	if (root["spheres"].get_array().get(spheres) != simdjson::SUCCESS) {
+	//version 6 on keeps its shapes in "geometry"; every earlier version had "spheres"
+	simdjson::dom::array geometry;
+	const bool legacySpheres = root["geometry"].get_array().get(geometry) != simdjson::SUCCESS;
+	if (legacySpheres && root["spheres"].get_array().get(geometry) != simdjson::SUCCESS) {
 		//extras of some other kind - an ordinary glTF file's own application data
 		return;
 	}
@@ -482,6 +589,12 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 	ctx.scene.environmentIntensity = std::max(ctx.scene.environmentIntensity, 0.f);
 	readRenderSettings(root["render"], ctx.scene.render);
 
+	//version 7: optional, the environment or the sky otherwise
+	glm::vec3 background;
+	if (readVec3(root["background"], background)) {
+		ctx.scene.backgroundColor = glm::max(background, glm::vec3(0.f));
+	}
+
 	//version 4: cameras. An older file gets one default camera, carrying the lens settings its
 	//"render" block had
 	simdjson::dom::array cameras;
@@ -515,42 +628,18 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 	}
 
 	size_t index = 0;
-	for (simdjson::dom::element entry : spheres) {
-		simdjson::dom::object sphereObject;
-		if (entry.get_object().get(sphereObject) != simdjson::SUCCESS) {
-			ctx.error = fmt::format("sphere {} is not an object", index);
+	for (simdjson::dom::element entry : geometry) {
+		simdjson::dom::object shapeObject;
+		if (entry.get_object().get(shapeObject) != simdjson::SUCCESS) {
+			ctx.error = fmt::format("geometry {} is not an object", index);
 			return;
 		}
-
-		SceneSphere sphereEntry;
-
-		std::string_view name;
-		if (sphereObject["name"].get_string().get(name) == simdjson::SUCCESS) {
-			sphereEntry.name = std::string(name);
-		} else {
-			sphereEntry.name = fmt::format("sphere_{}", index + 1);
-		}
-
-		if (!readVec3(sphereObject["center"], sphereEntry.center)) {
-			ctx.error = fmt::format("sphere \"{}\" has no valid \"center\"", sphereEntry.name);
+		//ids are the editor's to assign; a loaded shape has none yet
+		SceneShape shape;
+		if (!readShape(shapeObject, legacySpheres, index, shape, ctx.error)) {
 			return;
 		}
-
-		double radius = 0.0;
-		if (!readDouble(sphereObject["radius"], radius) || !(radius > 0.0)) {
-			ctx.error = fmt::format("sphere \"{}\" has no valid positive \"radius\"", sphereEntry.name);
-			return;
-		}
-		sphereEntry.radius = (float)radius;
-
-		std::string materialError;
-		if (!readMaterial(sphereObject["material"], sphereEntry.material, materialError)) {
-			ctx.error = fmt::format("sphere \"{}\": {}", sphereEntry.name, materialError);
-			return;
-		}
-
-		//ids are the editor's to assign; a loaded sphere has none yet
-		ctx.scene.spheres.push_back(std::move(sphereEntry));
+		ctx.scene.shapes.push_back(std::move(shape));
 		index++;
 	}
 
@@ -678,7 +767,7 @@ IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::pat
 		return IoResult::failure(fmt::format("Failed to write '{}': {}", file.string(), fastgltf::getErrorMessage(error)));
 	}
 
-	return IoResult::success(fmt::format("Saved '{}': {} model(s), {} sphere(s), {} camera(s){}", file.filename().string(), scene.modelPaths.size(), scene.spheres.size(), scene.cameras.size(), scene.environmentMapPath.empty() ? "" : ", environment map"));
+	return IoResult::success(fmt::format("Saved '{}': {} model(s), {} shape(s), {} camera(s){}", file.filename().string(), scene.modelPaths.size(), scene.shapes.size(), scene.cameras.size(), scene.environmentMapPath.empty() ? "" : ", environment map"));
 }
 
 IoResult loadSceneFile(const std::filesystem::path& file, SceneDescription& out)
@@ -715,9 +804,9 @@ IoResult loadSceneFile(const std::filesystem::path& file, SceneDescription& out)
 		return IoResult::failure(fmt::format("'{}': {}", file.string(), ctx.error));
 	}
 	if (!ctx.found) {
-		return IoResult::failure(fmt::format("'{}' is a glTF file but not a saved scene (no scene extras with a \"spheres\" array). Use Import glTF Model for model files", file.string()));
+		return IoResult::failure(fmt::format("'{}' is a glTF file but not a saved scene (no scene extras with a \"geometry\" array). Use Import glTF Model for model files", file.string()));
 	}
 
 	out = std::move(ctx.scene);
-	return IoResult::success(fmt::format("Read '{}': {} model(s), {} sphere(s), {} camera(s)", file.filename().string(), out.modelPaths.size(), out.spheres.size(), out.cameras.size()));
+	return IoResult::success(fmt::format("Read '{}': {} model(s), {} shape(s), {} camera(s)", file.filename().string(), out.modelPaths.size(), out.shapes.size(), out.cameras.size()));
 }

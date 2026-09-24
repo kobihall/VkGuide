@@ -82,6 +82,9 @@ bool scatter(GpuMaterial m, vec3 inDir, vec3 normal, bool frontFace, inout uint 
 
 vec3 background(vec3 direction)
 {
+	if ((pc.flags & CRT_FLAG_SOLID_BACKGROUND) != 0u) {
+		return pc.background.rgb;
+	}
 	if ((pc.flags & CRT_FLAG_ENVIRONMENT_MAP) != 0u) {
 		// textureLod: compute has no derivatives to pick a level with, and the map has no mips
 		return textureLod(environmentMap, equirectUv(direction), 0.0).rgb * pc.environmentIntensity;
@@ -136,6 +139,11 @@ void main()
 		} else if (!isHit) {
 			// the path escapes: it collects the background through everything it bounced off
 			const vec3 value = pc.debugView == CRT_DEBUG_BOUNCE_HEAT ? bounceHeat(path.bounce) : path.throughput * background(inDir);
+			radiance[path.radianceSlot] = vec4(value, 1.0);
+		} else if (materials[hit.materialAndFace >> 1u].type == CRT_MATERIAL_EMISSIVE) {
+			// a light ends the path with what it emits, through everything the path bounced off
+			const GpuMaterial light = materials[hit.materialAndFace >> 1u];
+			const vec3 value = pc.debugView == CRT_DEBUG_BOUNCE_HEAT ? bounceHeat(path.bounce) : path.throughput * light.albedo * light.param;
 			radiance[path.radianceSlot] = vec4(value, 1.0);
 		} else {
 			GpuMaterial material = materials[hit.materialAndFace >> 1u];

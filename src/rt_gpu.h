@@ -1,6 +1,6 @@
 #pragma once
 
-// The GPU path tracer: a wavefront tracer over the scene's spheres and meshes, progressive, in
+// The GPU path tracer: a wavefront tracer over the scene's shapes and meshes, progressive, in
 // compute, with a two-level BVH (rt_accel.h, shaders/crt_bvh.glsl) finding every hit.
 //
 // One render is a snapshot taken at start() - camera, scene, settings, seed - refined by
@@ -31,11 +31,11 @@ class VulkanEngine;
 // (GpuInstance, GpuTriangleAttributes, BvhTriangle) are in rt_accel.h and bvh_layout.h
 struct CrtMaterial {
 	glm::vec3 albedo;
-	// fuzz | smoothness | ir, by type
+	// fuzz | smoothness | ir | strength, by type
 	float param;
 	uint32_t type;
 	// layer of the raytracer's texture array modulating the albedo, -1 for untextured. Always -1
-	// for a sphere, which has no uvs to sample with
+	// for a shape, which has no uvs to sample with
 	int32_t albedoLayer;
 	uint32_t pad[2];
 };
@@ -90,7 +90,7 @@ struct GpuRenderSnapshot {
 	uint32_t width { 0 };
 	uint32_t height { 0 };
 	RTCameraSnapshot camera;
-	// the spheres and placed meshes, with their BVHs, shared immutably. Compared by pointer to
+	// the shapes and placed meshes, with their BVHs, shared immutably. Compared by pointer to
 	// decide whether an upload is needed at all: a new one is only ever built for a real change
 	std::shared_ptr<const RaytraceSceneAccel> scene;
 	RenderSettings settings;
@@ -99,6 +99,9 @@ struct GpuRenderSnapshot {
 	// sample the engine's environment map on a miss; false falls back to the sky gradient
 	bool useEnvironmentMap { false };
 	float environmentIntensity { 1.f };
+	// a missed ray sees backgroundColor instead of the environment map or the sky gradient
+	bool solidBackground { false };
+	glm::vec3 backgroundColor { 0.f };
 };
 
 class GpuPathTracer {
@@ -108,7 +111,7 @@ public:
 	void destroy(VulkanEngine* engine);
 
 	// starts (or restarts) a render: reallocates the pool for the snapshot's size if it changed
-	// (after a device-wide wait - rare), uploads the spheres into a fresh buffer, and arms the
+	// (after a device-wide wait - rare), uploads the scene into a fresh buffer, and arms the
 	// next record() to clear the accumulation. Cheap enough to call on every camera move
 	void start(VulkanEngine* engine, GpuRenderSnapshot snapshot);
 	// keeps the image
@@ -205,7 +208,8 @@ private:
 	VkDeviceSize m_instanceMaterialsBytes { 0 };
 	VkDeviceSize m_tlasOffset { 0 };
 	VkDeviceSize m_tlasBytes { 0 };
-	uint32_t m_instanceCount { 0 };
+	uint32_t m_tlasInstanceCount { 0 };
+	uint32_t m_unboundedCount { 0 };
 	std::shared_ptr<const RaytraceSceneAccel> m_uploadedScene;
 
 	// per frame slot: timestamps (two queries) and the queue headers after each producer

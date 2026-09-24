@@ -1,6 +1,6 @@
 // Shared by every stage of the GPU path tracer (crt_*.comp): the buffer contracts, the one
 // descriptor set every stage binds, the push-constant block, the queue allocator and the
-// sphere test. The C++ side is src/rt_gpu.h/.cpp, which mirrors the structs with
+// triangle test (the shapes' are crt_shape.glsl). The C++ side is src/rt_gpu.h/.cpp, which mirrors the structs with
 // static_asserts - std430 pads every vec3 to 16 bytes, so each struct carries an explicit
 // fourth component.
 //
@@ -14,6 +14,7 @@
 #define CRT_FLAG_JITTER 1u
 #define CRT_FLAG_ROULETTE 2u
 #define CRT_FLAG_ENVIRONMENT_MAP 4u
+#define CRT_FLAG_SOLID_BACKGROUND 8u
 
 #define CRT_DEBUG_NONE 0u
 #define CRT_DEBUG_PRIMARY_DIRECTION 1u
@@ -27,6 +28,7 @@
 #define CRT_MATERIAL_METAL 1u
 #define CRT_MATERIAL_PHONG 2u
 #define CRT_MATERIAL_DIELECTRIC 3u
+#define CRT_MATERIAL_EMISSIVE 4u
 
 // 48 bytes, by path index (== the pool slot the path was spawned in)
 struct PathState {
@@ -39,9 +41,9 @@ struct PathState {
 };
 
 // 48 bytes, by QUEUE POSITION, not path index - extend writes hits[i] for queue entry i and
-// shade reads the same. t < 0 is a miss. Geometry-agnostic: a sphere and a triangle write the
-// same record, and shade never learns which one it came from. A sphere leaves uv at zero, which
-// is harmless because a sphere's material never carries a texture
+// shade reads the same. t < 0 is a miss. Geometry-agnostic: a shape and a triangle write the
+// same record, and shade never learns which one it came from. A shape leaves uv at zero, which
+// is harmless because a shape's material never carries a texture
 struct HitRecord {
 	vec3 position;
 	float t;
@@ -74,29 +76,31 @@ struct GpuTriangleAttributes {
 	vec4 vAndSurface;
 };
 
-// 64 bytes, in TLAS slot order: a placed mesh (its BLAS, its world-to-object transform, its
-// per-surface material table) or a sphere. src/rt_accel.h GpuInstance
+// 64 bytes: a placed mesh (its BLAS, its per-surface material table) or a placed shape, either
+// under its world-to-object transform. The unbounded shapes first, then TLAS slot order.
+// src/rt_accel.h GpuInstance
 struct GpuInstance {
-	// rows of the world-to-object transform. A sphere: row0 = centre xyz, radius w
+	// rows of the world-to-object transform
 	vec4 row0;
 	vec4 row1;
 	vec4 row2;
-	// the BLAS's first node, or CRT_INSTANCE_SPHERE
+	// the BLAS's first node, or CRT_INSTANCE_SHAPE
 	uint nodeBase;
+	// a mesh: the BLAS's first triangle. A shape: its CRT_SHAPE_* kind
 	uint triangleBase;
 	uint attributeBase;
-	// a mesh: into instanceMaterials[], by surface. A sphere: its material index
+	// a mesh: into instanceMaterials[], by surface. A shape: its material index
 	uint materialBase;
 };
 
-#define CRT_INSTANCE_SPHERE 0xFFFFFFFFu
+#define CRT_INSTANCE_SHAPE 0xFFFFFFFFu
 
 struct GpuMaterial {
 	vec3 albedo;
-	// fuzz | smoothness | ir, by type
+	// fuzz | smoothness | ir | strength, by type
 	float param;
 	uint type;
-	// layer of albedoTextures modulating the albedo, or -1 for an untextured material. Spheres
+	// layer of albedoTextures modulating the albedo, or -1 for an untextured material. Shapes'
 	// are always -1
 	int albedoLayer;
 	uint pad0;
@@ -121,9 +125,9 @@ layout (std430, set = 0, binding = 3) buffer HeaderBuffer { QueueHeader headers[
 layout (std430, set = 0, binding = 4) buffer RadianceBuffer { vec4 radiance[]; };
 // per pixel: how many of this frame's K slots to spawn (the adaptive-sampling hook)
 layout (std430, set = 0, binding = 5) readonly buffer BudgetBuffer { uint sampleBudget[]; };
-// every placed mesh and sphere, in TLAS slot order
+// every placed mesh and shape: the unbounded shapes, then TLAS slot order
 layout (std430, set = 0, binding = 6) readonly buffer InstanceBuffer { GpuInstance instances[]; };
-// spheres' materials first (materials[i] belongs to sphere i), then the meshes'
+// shapes' materials first (materials[i] belongs to shape i), then the meshes'
 layout (std430, set = 0, binding = 7) readonly buffer MaterialBuffer { GpuMaterial materials[]; };
 // the running mean per pixel
 layout (rgba32f, set = 0, binding = 8) uniform image2D accumulation;
@@ -159,6 +163,8 @@ layout (push_constant) uniform Params {
 	vec4 lensU;
 	// b
 	vec4 lensV;
+	// rgb what a missed ray sees when CRT_FLAG_SOLID_BACKGROUND is set
+	vec4 background;
 	uint width;
 	uint height;
 	uint samplesPerFrame;
@@ -166,9 +172,11 @@ layout (push_constant) uniform Params {
 	uint seed;
 	uint bounce;
 	uint rayDepth;
-	// 0 when there is nothing to trace (or the TLAS failed to build)
-	uint instanceCount;
-	uint pad2;
+	// instances reached through the TLAS, from instances[unboundedCount]; 0 when there are none
+	// (or the TLAS failed to build)
+	uint tlasInstanceCount;
+	// the unbounded shapes at the front of instances[], which every ray tests outside the TLAS
+	uint unboundedCount;
 	uint flags;
 	uint minBouncesBeforeRoulette;
 	uint debugView;
@@ -223,41 +231,6 @@ void queueAppend(uint queue, bool survives, uint pathIndex)
 }
 
 //---------------------------------------------------------------- geometry
-
-// Ray-sphere in the numerically stable form (Ray Tracing Gems ch. 7): the discriminant from
-// the closest-approach vector rather than |oc|^2 - r^2, which cancels catastrophically for the
-// radius-100 ground sphere seen from a unit away. `direction` must be normalised, so t is a
-// world distance. Returns the nearest root in [tMin, tMax]
-bool hitSphere(vec4 s, vec3 origin, vec3 direction, float tMin, float tMax, out float tHit)
-{
-	vec3 f = origin - s.xyz;
-	float bPrime = -dot(f, direction);
-	vec3 closest = f + bPrime * direction;
-	float delta = s.w * s.w - dot(closest, closest);
-	if (delta < 0.0) {
-		return false;
-	}
-
-	float q = bPrime + (bPrime >= 0.0 ? 1.0 : -1.0) * sqrt(delta);
-	if (abs(q) < 1e-20) {
-		// a tangent graze through the origin: no meaningful hit
-		return false;
-	}
-	float c = dot(f, f) - s.w * s.w;
-	float t0 = c / q;
-	float t1 = q;
-	float tNear = min(t0, t1);
-	float tFar = max(t0, t1);
-
-	tHit = tNear;
-	if (tHit < tMin || tHit > tMax) {
-		tHit = tFar;
-		if (tHit < tMin || tHit > tMax) {
-			return false;
-		}
-	}
-	return true;
-}
 
 // Ray-triangle by Moller-Trumbore: solves for the barycentric coordinates and t directly,
 // without ever forming the triangle's plane. Two-sided - a glTF model's back faces are hit and

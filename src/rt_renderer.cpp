@@ -45,6 +45,8 @@ RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, c
 	key.accelRevision = m_accelRevision;
 	key.environmentMapPath = engine->m_environmentMapPath;
 	key.environmentIntensity = engine->m_environmentIntensity;
+	key.solidBackground = engine->m_solidBackground;
+	key.backgroundColor = engine->m_backgroundColor;
 	key.width = m_settings.matchViewport ? engine->m_drawExtent.width : (uint32_t)m_settings.width;
 	key.height = m_settings.matchViewport ? engine->m_drawExtent.height : (uint32_t)m_settings.height;
 	return key;
@@ -80,15 +82,20 @@ void RaytraceRenderer::setSettings(const RenderSettings& settings)
 {
 	m_settings = settings;
 
-	//the combo's selection follows the settings, not the other way round
+	//the combo's selection follows the settings, not the other way round. The custom fields always
+	//track the loaded size too, so switching to Custom starts from what is on screen
+	m_customWidth = m_settings.width;
+	m_customHeight = m_settings.height;
 	if (m_settings.matchViewport) {
-		m_resolutionChoice = 0;
+		m_resolutionChoice = RESOLUTION_VIEWPORT;
 		return;
 	}
-	m_resolutionChoice = -1;
+	//a size that is not one of the presets is a custom one, whether it was typed in here or
+	//came out of a scene file
+	m_resolutionChoice = RESOLUTION_CUSTOM;
 	for (int i = 0; i < (int)std::size(RESOLUTION_PRESETS); i++) {
 		if (RESOLUTION_PRESETS[i].width == m_settings.width && RESOLUTION_PRESETS[i].height == m_settings.height) {
-			m_resolutionChoice = i + 1;
+			m_resolutionChoice = i;
 		}
 	}
 }
@@ -245,27 +252,55 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 void RaytraceRenderer::drawSettings(VulkanEngine* engine)
 {
 	std::string resolutionLabel;
-	if (m_resolutionChoice == 0) {
+	if (m_resolutionChoice == RESOLUTION_VIEWPORT) {
 		resolutionLabel = fmt::format("Match viewport ({} x {})", engine->m_drawExtent.width, engine->m_drawExtent.height);
-	} else if (m_resolutionChoice > 0) {
-		resolutionLabel = RESOLUTION_PRESETS[m_resolutionChoice - 1].label;
+	} else if (m_resolutionChoice == RESOLUTION_CUSTOM) {
+		resolutionLabel = fmt::format("Custom ({} x {})", m_settings.width, m_settings.height);
 	} else {
-		resolutionLabel = fmt::format("{} x {} (from file)", m_settings.width, m_settings.height);
+		resolutionLabel = RESOLUTION_PRESETS[m_resolutionChoice].label;
 	}
 	if (ImGui::BeginCombo("Resolution", resolutionLabel.c_str())) {
-		if (ImGui::Selectable("Match viewport", m_resolutionChoice == 0)) {
-			m_resolutionChoice = 0;
+		if (ImGui::Selectable("Match viewport", m_resolutionChoice == RESOLUTION_VIEWPORT)) {
+			m_resolutionChoice = RESOLUTION_VIEWPORT;
 			m_settings.matchViewport = true;
 		}
 		for (int i = 0; i < (int)std::size(RESOLUTION_PRESETS); i++) {
-			if (ImGui::Selectable(RESOLUTION_PRESETS[i].label, i + 1 == m_resolutionChoice)) {
-				m_resolutionChoice = i + 1;
+			if (ImGui::Selectable(RESOLUTION_PRESETS[i].label, i == m_resolutionChoice)) {
+				m_resolutionChoice = i;
 				m_settings.matchViewport = false;
 				m_settings.width = RESOLUTION_PRESETS[i].width;
 				m_settings.height = RESOLUTION_PRESETS[i].height;
 			}
 		}
+		//picking Custom keeps whatever size was showing, so the fields below open on it rather
+		//than on some unrelated default
+		if (ImGui::Selectable("Custom...", m_resolutionChoice == RESOLUTION_CUSTOM)) {
+			m_resolutionChoice = RESOLUTION_CUSTOM;
+			m_settings.matchViewport = false;
+			m_customWidth = m_settings.width;
+			m_customHeight = m_settings.height;
+		}
 		ImGui::EndCombo();
+	}
+
+	if (m_resolutionChoice == RESOLUTION_CUSTOM) {
+		//InputInt commits on Enter or on leaving the field, not per keystroke, so the "1" typed on
+		//the way to "1280" never becomes a resolution of its own (and never restarts the render)
+		const ImGuiInputTextFlags commitFlags = ImGuiInputTextFlags_CharsDecimal;
+		const float fieldWidth = ImGui::CalcItemWidth() * 0.5f - ImGui::GetStyle().ItemInnerSpacing.x;
+
+		ImGui::SetNextItemWidth(fieldWidth);
+		if (ImGui::InputInt("##customWidth", &m_customWidth, 0, 0, commitFlags)) {
+			m_customWidth = std::clamp(m_customWidth, MIN_RENDER_DIMENSION, MAX_RENDER_DIMENSION);
+			m_settings.width = m_customWidth;
+		}
+		ImGui::SameLine(0.f, ImGui::GetStyle().ItemInnerSpacing.x);
+		ImGui::SetNextItemWidth(fieldWidth);
+		if (ImGui::InputInt("Custom size", &m_customHeight, 0, 0, commitFlags)) {
+			m_customHeight = std::clamp(m_customHeight, MIN_RENDER_DIMENSION, MAX_RENDER_DIMENSION);
+			m_settings.height = m_customHeight;
+		}
+		ImGui::TextDisabled("Width x height, %d to %d", MIN_RENDER_DIMENSION, MAX_RENDER_DIMENSION);
 	}
 
 	ImGui::Checkbox("Anti-aliasing", &m_settings.antialiasing);
@@ -369,6 +404,8 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	snapshot.seed = settings.useFixedSeed ? settings.seed : (uint32_t)std::random_device {}();
 	snapshot.useEnvironmentMap = engine->m_environmentMap.image != VK_NULL_HANDLE;
 	snapshot.environmentIntensity = engine->m_environmentIntensity;
+	snapshot.solidBackground = engine->m_solidBackground;
+	snapshot.backgroundColor = engine->m_backgroundColor;
 
 	m_renderKey = currentKey(engine, editor, *camera);
 	m_hasRender = true;
@@ -421,16 +458,16 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	//compared by value rather than by the editor's revision, which also moves for every camera
 	//change: a camera drag restarts the render each frame, and must not rebuild the TLAS each time
 	if (m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
-		&& m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelSpheres == editor.spheres()) {
+		&& m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelShapes == editor.shapes()) {
 		return;
 	}
 
 	static const RaytraceMeshData noMeshes;
 	const RaytraceMeshData& meshData = engine->m_raytraceMeshData != nullptr ? *engine->m_raytraceMeshData : noMeshes;
-	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.spheres(), engine->m_raytraceTextures);
+	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), engine->m_raytraceTextures);
 
 	m_sceneAccelObjects = editor.meshObjects();
-	m_sceneAccelSpheres = editor.spheres();
+	m_sceneAccelShapes = editor.shapes();
 	m_sceneAccelModelRevision = engine->m_sceneRevision;
 	m_sceneAccelRevision = m_accelRevision;
 	m_hasSceneAccel = true;
@@ -516,7 +553,10 @@ void RaytraceRenderer::drawAccelSettings(VulkanEngine* engine)
 	}
 	if (m_sceneAccel != nullptr) {
 		const Tlas& tlas = m_sceneAccel->tlas;
-		ImGui::Text("TLAS: %u mesh instance(s) + %u sphere(s), %u nodes, %.2f ms", m_sceneAccel->meshInstanceCount, m_sceneAccel->sphereCount, tlas.bvh.nodeCount, tlas.buildMs);
+		ImGui::Text("TLAS: %u mesh instance(s) + %u shape(s), %u nodes, %.2f ms", m_sceneAccel->meshInstanceCount, m_sceneAccel->shapeCount - m_sceneAccel->unboundedCount, tlas.bvh.nodeCount, tlas.buildMs);
+		if (m_sceneAccel->unboundedCount > 0) {
+			ImGui::Text("+ %u infinite plane(s), tested by every ray", m_sceneAccel->unboundedCount);
+		}
 		ImGui::Text("  scene SAH cost %.1f per ray", tlas.sceneSahCost);
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Expected node visits + primitive tests for a random ray through the whole scene.\nLower is faster; compare builders and layouts by this and by the GPU time per frame.\nThe \"BVH traversal cost\" debug view shows the real cost per pixel.");

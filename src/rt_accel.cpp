@@ -167,7 +167,7 @@ RaytraceGeometry packGeometry(const RaytraceBlasSet& blases)
 }
 
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
-	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneSphere>& spheres, const RaytraceTextureArray& textures)
+	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const RaytraceTextureArray& textures)
 {
 	auto accel = std::make_shared<RaytraceSceneAccel>();
 	accel->blases = blases;
@@ -175,20 +175,20 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 
 	std::vector<SceneInstance> instances;
 	//per instance, what its GPU record needs beyond the TLAS: a mesh's BLAS and material table base,
-	//or a sphere's material
+	//or a shape's material
 	std::vector<uint32_t> materialBase;
 
-	//spheres first, so a sphere's material index is its index in the list, as the shade stage has
-	//always assumed
-	for (uint32_t i = 0; i < spheres.size(); i++) {
-		accel->materials.push_back(RaytraceTriMaterial { spheres[i].material, -1 });
+	//shapes first, so a shape's material index is its index in the list
+	for (uint32_t i = 0; i < shapes.size(); i++) {
+		accel->materials.push_back(RaytraceTriMaterial { shapes[i].material, -1 });
 		SceneInstance instance;
-		instance.kind = SceneInstanceKind::Sphere;
-		instance.sphere = glm::vec4(spheres[i].center, spheres[i].radius);
+		instance.kind = SceneInstanceKind::Shape;
+		instance.shape = shapes[i].kind;
+		instance.objectToWorld = shapes[i].objectToWorld();
 		instances.push_back(instance);
 		materialBase.push_back(i);
 	}
-	accel->sphereCount = (uint32_t)spheres.size();
+	accel->shapeCount = (uint32_t)shapes.size();
 
 	//one material per distinct glTF material, and one per object that overrides its own
 	std::unordered_map<const GLTFMaterial*, uint32_t> gltfMaterials;
@@ -252,25 +252,33 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	}
 	accel->tlas = buildTlas(blasPointers, instances);
 
-	//the GPU's instance records in TLAS slot order, so a TLAS leaf names its instance directly
-	for (const uint32_t index : accel->tlas.bvh.primOrder) {
+	//the GPU's instance records: the unbounded shapes, which every ray tests directly, then the TLAS
+	//slot order, so a TLAS leaf names its instance by slot + unboundedCount
+	auto gpuInstance = [&](uint32_t index) {
 		const SceneInstance& instance = instances[index];
+		const glm::mat4& m = accel->tlas.worldToObject[index];
 		GpuInstance gpu {};
+		gpu.row0 = glm::vec4(m[0][0], m[1][0], m[2][0], m[3][0]);
+		gpu.row1 = glm::vec4(m[0][1], m[1][1], m[2][1], m[3][1]);
+		gpu.row2 = glm::vec4(m[0][2], m[1][2], m[2][2], m[3][2]);
 		gpu.materialBase = materialBase[index];
-		if (instance.kind == SceneInstanceKind::Sphere) {
-			gpu.row0 = instance.sphere;
-			gpu.nodeBase = GPU_INSTANCE_SPHERE;
+		if (instance.kind == SceneInstanceKind::Shape) {
+			gpu.nodeBase = GPU_INSTANCE_SHAPE;
+			gpu.triangleBase = (uint32_t)instance.shape;
 		} else {
-			const glm::mat4& m = accel->tlas.worldToObject[index];
-			gpu.row0 = glm::vec4(m[0][0], m[1][0], m[2][0], m[3][0]);
-			gpu.row1 = glm::vec4(m[0][1], m[1][1], m[2][1], m[3][1]);
-			gpu.row2 = glm::vec4(m[0][2], m[1][2], m[2][2], m[3][2]);
 			const BlasPlacement& placement = geometry->placements[instance.blas];
 			gpu.nodeBase = placement.nodeBase;
 			gpu.triangleBase = placement.triangleBase;
 			gpu.attributeBase = placement.attributeBase;
 		}
-		accel->instances.push_back(gpu);
+		return gpu;
+	};
+	for (const uint32_t index : accel->tlas.unbounded) {
+		accel->instances.push_back(gpuInstance(index));
+	}
+	accel->unboundedCount = (uint32_t)accel->tlas.unbounded.size();
+	for (const uint32_t index : accel->tlas.bvh.primOrder) {
+		accel->instances.push_back(gpuInstance(index));
 	}
 
 	if (!accel->tlas.bvh.error.empty()) {

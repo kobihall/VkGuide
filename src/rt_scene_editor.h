@@ -1,6 +1,6 @@
 #pragma once
 
-// The live, persistent list of scene objects the raytracer owns - spheres, cameras and the
+// The live, persistent list of scene objects the raytracer owns - analytic shapes, cameras and the
 // placed glTF mesh objects - and the "Scene" panel that browses and edits them.
 //
 // All three kinds are plain data (rt_scene_types.h) owned outright here; a render copies what it
@@ -9,6 +9,8 @@
 // unloads, and carries only what the user can edit about the placed instance. Deleting the
 // object leaves the model loaded. Scene files themselves are the engine's concern
 // (VulkanEngine::openScene()/saveScene(), driven from the File menu).
+
+#include <array>
 
 #include <rt_scene_types.h>
 #include <vk_types.h>
@@ -19,8 +21,8 @@ class TransformGizmo;
 // the per-object imgui controls, one per struct rather than a virtual per class. Each returns
 // whether anything the render depends on changed; drawCameraParams() also reports a change to
 // a display-only setting (exposure), which does not warrant restarting a render
-bool drawSphereParams(SceneSphere& sphere);
-bool drawMaterialParams(SphereMaterial& material);
+bool drawShapeParams(SceneShape& shape);
+bool drawMaterialParams(SceneMaterial& material);
 bool drawCameraParams(SceneCamera& camera, bool& displayChanged);
 bool drawMeshObjectParams(SceneMeshObject& object);
 
@@ -32,14 +34,14 @@ public:
 
 	void drawPanel(VulkanEngine* engine);
 
-	const std::vector<SceneSphere>& spheres() const { return m_spheres; }
+	const std::vector<SceneShape>& shapes() const { return m_shapes; }
 	const std::vector<SceneCamera>& cameras() const { return m_cameras; }
 	const std::vector<SceneMeshObject>& meshObjects() const { return m_meshObjects; }
 
 	// by stable id; null once the object has been deleted or the list replaced. The pointer
 	// is only good until the next mutation - do not keep it across frames
-	SceneSphere* findSphere(uint64_t id);
-	const SceneSphere* findSphere(uint64_t id) const;
+	SceneShape* findShape(uint64_t id);
+	const SceneShape* findShape(uint64_t id) const;
 	SceneCamera* findCamera(uint64_t id);
 	const SceneCamera* findCamera(uint64_t id) const;
 	SceneMeshObject* findMeshObject(uint64_t id);
@@ -47,7 +49,7 @@ public:
 
 	// the load path: swaps in whole new lists. Every object gets a fresh id, and both go
 	// through the same change tracking every manual edit uses, so consumers cannot miss it
-	void replaceSpheres(std::vector<SceneSphere>&& spheres);
+	void replaceShapes(std::vector<SceneShape>&& shapes);
 	void replaceCameras(std::vector<SceneCamera>&& cameras);
 	void replaceMeshObjects(std::vector<SceneMeshObject>&& objects);
 
@@ -64,10 +66,10 @@ public:
 	// restart renders
 	void setCameraPose(uint64_t id, const glm::vec3& position, const glm::quat& orientation);
 
-	// incremented by every mutation that a render depends on: add, delete, sphere, material,
+	// incremented by every mutation that a render depends on: add, delete, shape, material,
 	// camera or mesh-object parameters, a gizmo drag, a loaded file. A consumer that derives data
 	// from the scene (the renderer's restart-on-change and its triangle data, the raster preview
-	// spheres' material buffers) stores the last revision it acted on and compares. Nothing ever
+	// shapes' material buffers) stores the last revision it acted on and compares. Nothing ever
 	// resets it, so adding a consumer cannot starve another
 	uint64_t revision() const { return m_revision; }
 
@@ -80,28 +82,29 @@ private:
 	enum class SelectionKind {
 		None,
 		Camera,
-		Sphere,
+		Shape,
 		MeshObject
 	};
 
 	void drawToolbar(VulkanEngine* engine);
 	void drawObjectTree(VulkanEngine* engine);
 	void drawCameraRows();
-	void drawSphereRows();
+	// the Geometry folder: every shape, in one sub-folder per kind
+	void drawGeometryRows();
 	void drawModelRows(VulkanEngine* engine);
 	// one selectable row, with the shared rename-in-place and right-click context menu. Returns
 	// false when the row deleted its own object, in which case the caller must stop touching it
 	bool drawObjectRow(SelectionKind kind, uint64_t id, const std::string& name);
 	void drawSelection(VulkanEngine* engine);
-	void drawSelectedSphere(VulkanEngine* engine, SceneSphere& sphere);
+	void drawSelectedShape(VulkanEngine* engine, SceneShape& shape);
 	void drawSelectedCamera(VulkanEngine* engine, SceneCamera& camera);
 	void drawSelectedMeshObject(VulkanEngine* engine, SceneMeshObject& object);
-	void beginSphereGizmo(TransformGizmo& gizmo, uint64_t id);
+	void beginShapeGizmo(TransformGizmo& gizmo, uint64_t id);
 	void beginCameraGizmo(TransformGizmo& gizmo, uint64_t id);
 	void beginMeshGizmo(TransformGizmo& gizmo, uint64_t id);
-	void addSphere(SceneSphere sphere);
-	// the Add menu's two creating entries, also reachable from the context menu's Duplicate
-	void createSphere();
+	void addShape(SceneShape shape);
+	// the Add menu's creating entries
+	void createShape(ShapeKind kind);
 	void createCamera(VulkanEngine* engine);
 	void duplicateSelection();
 	// removes whatever is selected, whichever kind it is, and clears the selection
@@ -110,7 +113,7 @@ private:
 
 	void markChanged() { m_revision++; }
 
-	std::vector<SceneSphere> m_spheres;
+	std::vector<SceneShape> m_shapes;
 	std::vector<SceneCamera> m_cameras;
 	std::vector<SceneMeshObject> m_meshObjects;
 
@@ -120,9 +123,10 @@ private:
 	uint64_t m_renamingId { 0 };
 	char m_renameBuffer[128] {};
 
-	int m_nextSphereNumber { 1 };
+	// by ShapeKind: the number the next new shape of that kind is named with
+	std::array<int, SHAPE_KIND_COUNT> m_nextShapeNumber {};
 	int m_nextCameraNumber { 1 };
-	// spheres, cameras and mesh objects share one id space, so the gizmo's opaque target id
+	// shapes, cameras and mesh objects share one id space, so the gizmo's opaque target id
 	// cannot collide
 	uint64_t m_nextId { 1 };
 	uint64_t m_revision { 1 };

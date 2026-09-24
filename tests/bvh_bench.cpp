@@ -155,7 +155,8 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	//the scene: every mesh node as an instance, plus two spheres so the analytic path is covered
+	//the scene: every mesh node as an instance, plus one of every analytic shape so each shape's path
+	//- and the infinite plane's, outside the TLAS - is covered
 	std::mt19937 rng(1234);
 	std::uniform_real_distribution<float> unit(0.f, 1.f);
 	std::vector<SceneInstance> instances;
@@ -194,8 +195,18 @@ int main(int argc, char* argv[])
 	}
 	const glm::vec3 center = sceneBounds.center();
 	const float radius = glm::length(sceneBounds.extent()) * 0.5f;
-	instances.push_back({ SceneInstanceKind::Sphere, 0, glm::mat4(1.f), glm::vec4(center, radius * 0.05f) });
-	instances.push_back({ SceneInstanceKind::Sphere, 0, glm::mat4(1.f), glm::vec4(sceneBounds.min, radius * 0.1f) });
+	auto addShape = [&](ShapeKind shape, const glm::vec3& position, const glm::vec3& size) {
+		const glm::vec3 axis = glm::normalize(glm::vec3(unit(rng) - 0.5f, unit(rng) - 0.5f, unit(rng) - 0.5f) + 1e-3f);
+		const glm::mat4 rotation = glm::rotate(glm::mat4(1.f), unit(rng) * 6.28f, axis);
+		instances.push_back({ SceneInstanceKind::Shape, 0, shape, glm::translate(glm::mat4(1.f), position) * rotation * glm::scale(glm::mat4(1.f), size) });
+	};
+	addShape(ShapeKind::Sphere, center, glm::vec3(radius * 0.05f));
+	addShape(ShapeKind::Sphere, sceneBounds.min, glm::vec3(radius * 0.1f));
+	addShape(ShapeKind::Quad, center + glm::vec3(radius * 0.2f, 0.f, 0.f), glm::vec3(radius * 0.3f, 1.f, radius * 0.2f));
+	addShape(ShapeKind::Box, center - glm::vec3(radius * 0.2f, 0.f, 0.f), glm::vec3(radius * 0.1f, radius * 0.3f, radius * 0.05f));
+	addShape(ShapeKind::Cylinder, center + glm::vec3(0.f, radius * 0.2f, 0.f), glm::vec3(radius * 0.08f, radius * 0.3f, radius * 0.08f));
+	//tilted, so it cuts through the scene rather than lying under it
+	addShape(ShapeKind::Plane, center - glm::vec3(0.f, radius * 0.3f, 0.f), glm::vec3(1.f));
 
 	fmt::println("{}: {} meshes, {} instances, {} unique triangles, {} placed triangles{}", path.filename().string(), loaded.meshes.size(), loaded.nodes.size(), uniqueTriangles, world.size(), perturb ? " (perturbed)" : "");
 	fmt::println("bounds ({:.2f}, {:.2f}, {:.2f}) - ({:.2f}, {:.2f}, {:.2f})", sceneBounds.min.x, sceneBounds.min.y, sceneBounds.min.z, sceneBounds.max.x, sceneBounds.max.y, sceneBounds.max.z);
@@ -224,7 +235,7 @@ int main(int argc, char* argv[])
 		}
 	}
 
-	//brute force: every ray against every placed triangle and sphere
+	//brute force: every ray against every placed triangle and every shape, no tree at either level
 	const auto bruteStart = std::chrono::steady_clock::now();
 	std::vector<Reference> reference(rayCount);
 	parallelFor(rayCount, [&](size_t r) {
@@ -241,8 +252,14 @@ int main(int argc, char* argv[])
 			}
 		}
 		for (const SceneInstance& instance : instances) {
+			if (instance.kind != SceneInstanceKind::Shape) {
+				continue;
+			}
+			const glm::mat4 worldToObject = glm::inverse(instance.objectToWorld);
+			const glm::vec3 origin = glm::vec3(worldToObject * glm::vec4(ray.origin, 1.f));
+			const glm::vec3 direction = glm::mat3(worldToObject) * ray.direction;
 			float t;
-			if (instance.kind == SceneInstanceKind::Sphere && intersectSphere(instance.sphere, ray.origin, ray.direction, ray.tMin, tMax, t)) {
+			if (intersectShape(instance.shape, origin, direction, ray.tMin, tMax, t)) {
 				tMax = t;
 				out.hit = true;
 				out.t = t;

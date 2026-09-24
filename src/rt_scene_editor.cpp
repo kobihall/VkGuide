@@ -21,12 +21,25 @@ const void* gizmoTargetId(uint64_t id)
 	return (const void*)(uintptr_t)id;
 }
 
-//a rotation matrix from the gizmo may carry scale (SCALEU on spheres) or drift slightly; the
+//a rotation matrix from the gizmo may carry scale (a shape's size) or drift slightly; the
 //normalised columns are the orientation
 glm::quat orientationOf(const glm::mat4& m)
 {
 	const glm::mat3 basis(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])), glm::normalize(glm::vec3(m[2])));
 	return glm::normalize(glm::quat_cast(basis));
+}
+
+//euler angles for the widget only; the orientation itself stays a quaternion. Rebuilding the
+//quaternion from the edited angles is exact for the angles the widget shows, so an untouched
+//orientation is never disturbed
+bool drawOrientation(glm::quat& orientation)
+{
+	glm::vec3 eulerDegrees = glm::degrees(glm::eulerAngles(orientation));
+	if (ImGui::DragFloat3("rotation (pitch, yaw, roll)", &eulerDegrees.x, 0.5f, 0.f, 0.f, "%.1f")) {
+		orientation = glm::normalize(glm::quat(glm::radians(eulerDegrees)));
+		return true;
+	}
+	return false;
 }
 
 const char* meshMaterialModeName(MeshMaterialMode mode)
@@ -36,19 +49,31 @@ const char* meshMaterialModeName(MeshMaterialMode mode)
 
 }
 
-bool drawSphereParams(SceneSphere& sphere)
+bool drawShapeParams(SceneShape& shape)
 {
+	const ShapeTraits& traits = shapeTraits(shape.kind);
+
+	bool changed = ImGui::DragFloat3("position", &shape.position.x, 0.01f, 0.f, 0.f, "%.3f");
+	if (traits.rotatable) {
+		changed |= drawOrientation(shape.orientation);
+	}
+
 	//the sibling project used SliderScalar with a fixed 0.001-2 radius / -1-1 position range,
 	//which cannot represent its own default scene: the ground sphere is radius 100 at y=-100.5,
 	//and a slider clamps a value into range the moment it is touched, so selecting the ground
 	//sphere and nudging the slider silently collapsed it. Drag for position (unbounded) and a
-	//logarithmic slider for radius keep the same controls without that trap
-	bool changed = ImGui::SliderFloat("radius", &sphere.radius, 0.001f, 200.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-	changed |= ImGui::DragFloat3("position", &sphere.center.x, 0.01f, 0.f, 0.f, "%.3f");
+	//logarithmic slider for every size keep the same controls without that trap
+	for (const ShapeParam& param : traits.params) {
+		float value = shapeParamValue(shape, param);
+		if (ImGui::SliderFloat(param.name, &value, 0.001f, 200.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
+			setShapeParam(shape, param, value);
+			changed = true;
+		}
+	}
 	return changed;
 }
 
-bool drawMaterialParams(SphereMaterial& material)
+bool drawMaterialParams(SceneMaterial& material)
 {
 	bool changed = false;
 
@@ -81,6 +106,10 @@ bool drawMaterialParams(SphereMaterial& material)
 		//1.0 is vacuum; 1.33 water, 1.5 glass, 2.42 diamond
 		changed |= ImGui::SliderFloat("index of refraction", &material.ir, 1.f, 3.f, "%.3f");
 		break;
+	case MaterialType::Emissive:
+		changed |= ImGui::ColorEdit3("colour", &material.albedo.x);
+		changed |= ImGui::SliderFloat("strength", &material.strength, 0.f, 1000.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+		break;
 	}
 
 	return changed;
@@ -89,15 +118,7 @@ bool drawMaterialParams(SphereMaterial& material)
 bool drawCameraParams(SceneCamera& camera, bool& displayChanged)
 {
 	bool changed = ImGui::DragFloat3("position", &camera.position.x, 0.01f, 0.f, 0.f, "%.3f");
-
-	//euler angles for the widget only; the orientation itself stays a quaternion. Rebuilding
-	//the quaternion from the edited angles is exact for the angles the widget shows, so an
-	//untouched orientation is never disturbed
-	glm::vec3 eulerDegrees = glm::degrees(glm::eulerAngles(camera.orientation));
-	if (ImGui::DragFloat3("rotation (pitch, yaw, roll)", &eulerDegrees.x, 0.5f, 0.f, 0.f, "%.1f")) {
-		camera.orientation = glm::normalize(glm::quat(glm::radians(eulerDegrees)));
-		changed = true;
-	}
+	changed |= drawOrientation(camera.orientation);
 
 	changed |= ImGui::SliderFloat("vertical fov", &camera.vfovDegrees, 10.f, 120.f, "%.1f");
 	changed |= ImGui::SliderFloat("aperture", &camera.aperture, 0.f, 1.f, "%.3f");
@@ -165,6 +186,8 @@ bool drawMeshObjectParams(SceneMeshObject& object)
 
 RaytraceSceneEditor::RaytraceSceneEditor()
 {
+	m_nextShapeNumber.fill(1);
+
 	//an empty scene still has somewhere to render from. Everything else arrives from the file the
 	//engine opens at startup, or from File > New Scene
 	SceneCamera camera;
@@ -174,10 +197,10 @@ RaytraceSceneEditor::RaytraceSceneEditor()
 
 //---------------------------------------------------------------- object storage
 
-void RaytraceSceneEditor::addSphere(SceneSphere sphere)
+void RaytraceSceneEditor::addShape(SceneShape shape)
 {
-	sphere.id = m_nextId++;
-	m_spheres.push_back(std::move(sphere));
+	shape.id = m_nextId++;
+	m_shapes.push_back(std::move(shape));
 }
 
 uint64_t RaytraceSceneEditor::addCamera(SceneCamera camera)
@@ -216,16 +239,16 @@ void RaytraceSceneEditor::removeMeshObjectsOf(const std::string& modelKey)
 	}
 }
 
-SceneSphere* RaytraceSceneEditor::findSphere(uint64_t id)
+SceneShape* RaytraceSceneEditor::findShape(uint64_t id)
 {
-	auto found = std::find_if(m_spheres.begin(), m_spheres.end(), [id](const SceneSphere& s) { return s.id == id; });
-	return found == m_spheres.end() ? nullptr : &(*found);
+	auto found = std::find_if(m_shapes.begin(), m_shapes.end(), [id](const SceneShape& s) { return s.id == id; });
+	return found == m_shapes.end() ? nullptr : &(*found);
 }
 
-const SceneSphere* RaytraceSceneEditor::findSphere(uint64_t id) const
+const SceneShape* RaytraceSceneEditor::findShape(uint64_t id) const
 {
-	auto found = std::find_if(m_spheres.begin(), m_spheres.end(), [id](const SceneSphere& s) { return s.id == id; });
-	return found == m_spheres.end() ? nullptr : &(*found);
+	auto found = std::find_if(m_shapes.begin(), m_shapes.end(), [id](const SceneShape& s) { return s.id == id; });
+	return found == m_shapes.end() ? nullptr : &(*found);
 }
 
 SceneCamera* RaytraceSceneEditor::findCamera(uint64_t id)
@@ -252,16 +275,17 @@ const SceneMeshObject* RaytraceSceneEditor::findMeshObject(uint64_t id) const
 	return found == m_meshObjects.end() ? nullptr : &(*found);
 }
 
-void RaytraceSceneEditor::replaceSpheres(std::vector<SceneSphere>&& spheres)
+void RaytraceSceneEditor::replaceShapes(std::vector<SceneShape>&& shapes)
 {
-	//the old spheres' ids die here. If the gizmo was editing one of them its lookup fails and it
+	//the old shapes' ids die here. If the gizmo was editing one of them its lookup fails and it
 	//stops on its own next frame
-	m_spheres.clear();
-	for (SceneSphere& sphere : spheres) {
-		addSphere(std::move(sphere));
+	m_shapes.clear();
+	m_nextShapeNumber.fill(1);
+	for (SceneShape& shape : shapes) {
+		m_nextShapeNumber[(size_t)shape.kind]++;
+		addShape(std::move(shape));
 	}
 	m_selectionKind = SelectionKind::None;
-	m_nextSphereNumber = (int)m_spheres.size() + 1;
 	markChanged();
 }
 
@@ -311,13 +335,13 @@ void RaytraceSceneEditor::select(SelectionKind kind, uint64_t id)
 	m_renamingId = 0;
 }
 
-void RaytraceSceneEditor::createSphere()
+void RaytraceSceneEditor::createShape(ShapeKind kind)
 {
-	SceneSphere sphere;
-	sphere.name = fmt::format("sphere_{}", m_nextSphereNumber++);
-	addSphere(std::move(sphere));
+	SceneShape shape = makeShape(kind);
+	shape.name = fmt::format("{}_{}", shapeTraits(kind).name, m_nextShapeNumber[(size_t)kind]++);
+	addShape(std::move(shape));
 	markChanged();
-	select(SelectionKind::Sphere, m_spheres.back().id);
+	select(SelectionKind::Shape, m_shapes.back().id);
 }
 
 void RaytraceSceneEditor::createCamera(VulkanEngine* engine)
@@ -330,16 +354,16 @@ void RaytraceSceneEditor::createCamera(VulkanEngine* engine)
 void RaytraceSceneEditor::duplicateSelection()
 {
 	switch (m_selectionKind) {
-	case SelectionKind::Sphere: {
-		const SceneSphere* source = findSphere(m_selectionId);
+	case SelectionKind::Shape: {
+		const SceneShape* source = findShape(m_selectionId);
 		if (source == nullptr) {
 			return;
 		}
-		SceneSphere copy = *source;
+		SceneShape copy = *source;
 		copy.name = fmt::format("{}_copy", source->name);
-		addSphere(std::move(copy));
+		addShape(std::move(copy));
 		markChanged();
-		select(SelectionKind::Sphere, m_spheres.back().id);
+		select(SelectionKind::Shape, m_shapes.back().id);
 		break;
 	}
 	case SelectionKind::MeshObject: {
@@ -375,8 +399,8 @@ void RaytraceSceneEditor::deleteSelection()
 {
 	//a gizmo or first-person edit on this object fails its id lookup next frame and ends itself
 	switch (m_selectionKind) {
-	case SelectionKind::Sphere:
-		std::erase_if(m_spheres, [this](const SceneSphere& s) { return s.id == m_selectionId; });
+	case SelectionKind::Shape:
+		std::erase_if(m_shapes, [this](const SceneShape& s) { return s.id == m_selectionId; });
 		break;
 	case SelectionKind::Camera:
 		std::erase_if(m_cameras, [this](const SceneCamera& c) { return c.id == m_selectionId; });
@@ -419,6 +443,17 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 		}
 	}
 
+	//what a ray that leaves the scene sees in a render. The environment map itself is set from the
+	//File menu and shown by the viewport's "environment" background effect
+	if (ImGui::CollapsingHeader("Background")) {
+		ImGui::Checkbox("solid colour", &engine->m_solidBackground);
+		if (engine->m_solidBackground) {
+			ImGui::ColorEdit3("colour", &engine->m_backgroundColor.x);
+		} else {
+			ImGui::TextDisabled(engine->m_environmentMap.image != VK_NULL_HANDLE ? "environment map" : "sky gradient");
+		}
+	}
+
 	ImGui::Spacing();
 	drawToolbar(engine);
 	drawObjectTree(engine);
@@ -440,8 +475,14 @@ void RaytraceSceneEditor::drawToolbar(VulkanEngine* engine)
 	}
 
 	if (ImGui::BeginPopup("##add")) {
-		if (ImGui::MenuItem("Sphere")) {
-			createSphere();
+		//the same three groups as the tree below
+		if (ImGui::BeginMenu("Geometry")) {
+			for (const ShapeKind kind : SHAPE_KINDS) {
+				if (ImGui::MenuItem(shapeTraits(kind).label)) {
+					createShape(kind);
+				}
+			}
+			ImGui::EndMenu();
 		}
 		if (ImGui::MenuItem("Camera")) {
 			createCamera(engine);
@@ -484,7 +525,7 @@ void RaytraceSceneEditor::drawObjectTree(VulkanEngine* engine)
 	const float height = 12 * ImGui::GetTextLineHeightWithSpacing();
 	if (ImGui::BeginChild("##objects", ImVec2(0, height), ImGuiChildFlags_Borders)) {
 		drawCameraRows();
-		drawSphereRows();
+		drawGeometryRows();
 		drawModelRows(engine);
 	}
 	ImGui::EndChild();
@@ -517,9 +558,9 @@ bool RaytraceSceneEditor::drawObjectRow(SelectionKind kind, uint64_t id, const s
 					target = &camera->name;
 				}
 				break;
-			case SelectionKind::Sphere:
-				if (SceneSphere* sphere = findSphere(id)) {
-					target = &sphere->name;
+			case SelectionKind::Shape:
+				if (SceneShape* shape = findShape(id)) {
+					target = &shape->name;
 				}
 				break;
 			case SelectionKind::MeshObject:
@@ -588,19 +629,34 @@ void RaytraceSceneEditor::drawCameraRows()
 	ImGui::TreePop();
 }
 
-void RaytraceSceneEditor::drawSphereRows()
+void RaytraceSceneEditor::drawGeometryRows()
 {
-	if (!ImGui::TreeNodeEx("Spheres", ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (!ImGui::TreeNodeEx("Geometry", ImGuiTreeNodeFlags_DefaultOpen)) {
 		return;
 	}
-	if (m_spheres.empty()) {
-		ImGui::TextDisabled("none");
+	if (m_shapes.empty()) {
+		ImGui::TextDisabled("none - Add > Geometry");
 	}
-	for (size_t i = 0; i < m_spheres.size(); i++) {
-		if (!drawObjectRow(SelectionKind::Sphere, m_spheres[i].id, m_spheres[i].name)) {
-			break;
+
+	//a folder per kind the scene has any of, in the kinds' own order; within one, creation order
+	bool alive = true;
+	for (const ShapeKind kind : SHAPE_KINDS) {
+		const auto ofKind = [kind](const SceneShape& shape) { return shape.kind == kind; };
+		if (!alive || std::none_of(m_shapes.begin(), m_shapes.end(), ofKind)) {
+			continue;
 		}
+		if (!ImGui::TreeNodeEx(shapeTraits(kind).plural, ImGuiTreeNodeFlags_DefaultOpen)) {
+			continue;
+		}
+		for (size_t i = 0; i < m_shapes.size() && alive; i++) {
+			//a deleting row invalidates the vector, so the walk stops there and picks up next frame
+			if (m_shapes[i].kind == kind) {
+				alive = drawObjectRow(SelectionKind::Shape, m_shapes[i].id, m_shapes[i].name);
+			}
+		}
+		ImGui::TreePop();
 	}
+
 	ImGui::TreePop();
 }
 
@@ -692,9 +748,9 @@ void RaytraceSceneEditor::drawModelRows(VulkanEngine* engine)
 void RaytraceSceneEditor::drawSelection(VulkanEngine* engine)
 {
 	switch (m_selectionKind) {
-	case SelectionKind::Sphere:
-		if (SceneSphere* sphere = findSphere(m_selectionId)) {
-			drawSelectedSphere(engine, *sphere);
+	case SelectionKind::Shape:
+		if (SceneShape* shape = findShape(m_selectionId)) {
+			drawSelectedShape(engine, *shape);
 		}
 		break;
 	case SelectionKind::Camera:
@@ -712,25 +768,25 @@ void RaytraceSceneEditor::drawSelection(VulkanEngine* engine)
 	}
 }
 
-void RaytraceSceneEditor::drawSelectedSphere(VulkanEngine* engine, SceneSphere& sphere)
+void RaytraceSceneEditor::drawSelectedShape(VulkanEngine* engine, SceneShape& shape)
 {
-	ImGui::SeparatorText(sphere.name.c_str());
+	ImGui::SeparatorText(shape.name.c_str());
 
 	//scoping the widget ids to the selected object stops an in-progress drag, or any other
 	//per-widget state imgui keys by id, from carrying across a selection change
-	ImGui::PushID((int)sphere.id);
+	ImGui::PushID((int)shape.id);
 
-	bool changed = drawSphereParams(sphere);
+	bool changed = drawShapeParams(shape);
 
 	//the gizmo sits alongside the sliders, not instead of them: sliders for exact numbers, the
 	//gizmo for direct manipulation. Opt-in per object, and only one object at a time
 	TransformGizmo& gizmo = engine->m_transformGizmo;
-	const bool editing = gizmo.isEditing(gizmoTargetId(sphere.id));
+	const bool editing = gizmo.isEditing(gizmoTargetId(shape.id));
 	if (ImGui::Button(editing ? "Stop Editing Transform" : "Edit Transform")) {
 		if (editing) {
 			gizmo.endEditing();
 		} else {
-			beginSphereGizmo(gizmo, sphere.id);
+			beginShapeGizmo(gizmo, shape.id);
 		}
 	}
 	if (editing) {
@@ -740,7 +796,7 @@ void RaytraceSceneEditor::drawSelectedSphere(VulkanEngine* engine, SceneSphere& 
 
 	ImGui::Spacing();
 
-	changed |= drawMaterialParams(sphere.material);
+	changed |= drawMaterialParams(shape.material);
 
 	if (changed) {
 		markChanged();
@@ -816,7 +872,7 @@ void RaytraceSceneEditor::drawSelectedMeshObject(VulkanEngine* engine, SceneMesh
 
 	bool changed = drawMeshObjectParams(object);
 
-	//the same opt-in gizmo a sphere gets, with the full operation set a mesh object can use
+	//the same opt-in gizmo a shape gets, with the full operation set a mesh object can use
 	TransformGizmo& gizmo = engine->m_transformGizmo;
 	const bool editing = gizmo.isEditing(gizmoTargetId(object.id));
 	if (ImGui::Button(editing ? "Stop Editing Transform" : "Edit Transform")) {
@@ -840,35 +896,76 @@ void RaytraceSceneEditor::drawSelectedMeshObject(VulkanEngine* engine, SceneMesh
 
 //---------------------------------------------------------------- gizmo adapters
 
-void RaytraceSceneEditor::beginSphereGizmo(TransformGizmo& gizmo, uint64_t id)
+void RaytraceSceneEditor::beginShapeGizmo(TransformGizmo& gizmo, uint64_t id)
 {
-	//the closures hold the sphere by id and look it up each frame: the editor keeps sole
-	//ownership, and deleting or reloading the sphere ends the edit rather than leaving the gizmo
-	//pointing at a vector slot that now holds something else
+	const SceneShape* shape = findShape(id);
+	if (shape == nullptr) {
+		return;
+	}
+	const ShapeTraits& traits = shapeTraits(shape->kind);
+
+	//the handles the kind has a use for: always a move; a turn unless turning changes nothing; and
+	//a scale handle for exactly the axes its params drive - a single uniform one for a sphere's
+	//radius, so the handles never offer a stretch the shape would ignore
+	ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
+	if (traits.rotatable) {
+		operation = operation | ImGuizmo::ROTATE;
+	}
+	uint8_t scaledAxes = 0;
+	for (const ShapeParam& param : traits.params) {
+		scaledAxes |= param.axes;
+	}
+	if (traits.params.size() == 1 && scaledAxes == 0b111) {
+		operation = operation | ImGuizmo::SCALEU;
+	} else {
+		const ImGuizmo::OPERATION axisScales[3] = { ImGuizmo::SCALE_X, ImGuizmo::SCALE_Y, ImGuizmo::SCALE_Z };
+		for (int axis = 0; axis < 3; axis++) {
+			if (scaledAxes & (1u << axis)) {
+				operation = operation | axisScales[axis];
+			}
+		}
+	}
+
+	//the closures hold the shape by id and look it up each frame: the editor keeps sole ownership,
+	//and deleting or reloading the shape ends the edit rather than leaving the gizmo pointing at a
+	//vector slot that now holds something else
 	gizmo.beginEditing(
 		gizmoTargetId(id),
-		//sphere -> matrix: translation is the centre, uniform scale is the radius, no rotation
 		[this, id]() -> std::optional<glm::mat4> {
-			const SceneSphere* s = findSphere(id);
+			const SceneShape* s = findShape(id);
 			if (s == nullptr) {
 				return std::nullopt;
 			}
-			return glm::translate(glm::mat4(1.f), s->center) * glm::scale(glm::mat4(1.f), glm::vec3(s->radius));
+			return s->objectToWorld();
 		},
-		//matrix -> sphere. The scale is uniform by construction (SCALEU); the three axes are
-		//averaged anyway so a different operation set could not produce a lopsided radius
+		//matrix -> shape: the translation is the position, the normalised columns the orientation,
+		//and their lengths the size. A param driving several axes (a cylinder's radius) takes
+		//whichever of them the handle moved, so dragging either one resizes it fully
 		[this, id](const glm::mat4& m) {
-			SceneSphere* s = findSphere(id);
+			SceneShape* s = findShape(id);
 			if (s == nullptr) {
 				return;
 			}
-			s->center = glm::vec3(m[3]);
-			const float scale = (glm::length(glm::vec3(m[0])) + glm::length(glm::vec3(m[1])) + glm::length(glm::vec3(m[2]))) / 3.f;
-			s->radius = std::max(scale, 0.001f);
+			const ShapeTraits& traits = shapeTraits(s->kind);
+			s->position = glm::vec3(m[3]);
+			if (traits.rotatable) {
+				s->orientation = orientationOf(m);
+			}
+			const glm::vec3 scale(glm::length(glm::vec3(m[0])), glm::length(glm::vec3(m[1])), glm::length(glm::vec3(m[2])));
+			for (const ShapeParam& param : traits.params) {
+				const float current = shapeParamValue(*s, param);
+				float moved = current;
+				for (int axis = 0; axis < 3; axis++) {
+					if ((param.axes & (1u << axis)) && std::abs(scale[axis] - current) > std::abs(moved - current)) {
+						moved = scale[axis];
+					}
+				}
+				setShapeParam(*s, param, std::max(moved, 0.001f));
+			}
 			markChanged();
 		},
-		//a sphere has no meaningful rotation, so translate plus uniform scale (the radius) only
-		ImGuizmo::TRANSLATE | ImGuizmo::SCALEU);
+		//local, so the rotation rings and scale handles follow the shape's own axes
+		operation, traits.rotatable ? ImGuizmo::LOCAL : ImGuizmo::WORLD);
 }
 
 void RaytraceSceneEditor::beginCameraGizmo(TransformGizmo& gizmo, uint64_t id)

@@ -9,7 +9,9 @@ add_library(rt_bvh STATIC
     bvh_layout.cpp
     bvh_layout.h
     bvh_scene.cpp
-    bvh_scene.h)
+    bvh_scene.h
+    shape.cpp
+    shape.h)
 target_include_directories(rt_bvh PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(rt_bvh PUBLIC glm fmt::fmt)
 # optimised even in a Debug build: BLAS construction runs at model import, and unoptimised glm is
@@ -45,6 +47,8 @@ add_executable(vulkan_guide
     vk_tonemap.cpp
     vk_tonemap.h
     rt_scene_types.h
+    shape_mesh.cpp
+    shape_mesh.h
     rt_scene.cpp
     rt_scene.h
     rt_scene_editor.cpp

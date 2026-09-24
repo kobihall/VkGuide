@@ -2,7 +2,7 @@
 
 // The raytracer's scene model and render settings, as plain data.
 //
-// Everything here is what a scene *is* to the raytracer - spheres with tagged materials, the
+// Everything here is what a scene *is* to the raytracer - analytic shapes with tagged materials, the
 // cameras it can be rendered from, the loaded glTF geometry, how to render it - with no
 // behaviour attached. The GPU path tracer builds its BVHs from it (rt_accel.h); the editor, the gizmo
 // adapters, the scene file and the raster preview all work on these structs directly. Every
@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -18,13 +19,18 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-//---------------------------------------------------------------- materials and spheres
+#include <shape.h>
+
+//---------------------------------------------------------------- materials
 
 enum class MaterialType : uint8_t {
 	Lambertian,
 	Metal,
 	Phong,
-	Dielectric
+	Dielectric,
+	// a light: every path that reaches it ends there, carrying albedo x strength home. From either
+	// side, as RTNW's diffuse_light
+	Emissive
 };
 
 inline constexpr MaterialType MATERIAL_TYPES[] = {
@@ -32,6 +38,7 @@ inline constexpr MaterialType MATERIAL_TYPES[] = {
 	MaterialType::Metal,
 	MaterialType::Phong,
 	MaterialType::Dielectric,
+	MaterialType::Emissive,
 };
 
 inline const char* materialTypeName(MaterialType type)
@@ -45,15 +52,18 @@ inline const char* materialTypeName(MaterialType type)
 		return "phong";
 	case MaterialType::Dielectric:
 		return "dielectric";
+	case MaterialType::Emissive:
+		return "emissive";
 	}
 	return "unknown";
 }
 
-// every type's parameters are stored, whichever type is selected, so switching a sphere's
-// material type and back keeps its values
-struct SphereMaterial {
+// The raytracer's own material, used by every shape and by a mesh object that overrides its glTF
+// material. Every type's parameters are stored, whichever type is selected, so switching an
+// object's material type and back keeps its values
+struct SceneMaterial {
 	MaterialType type { MaterialType::Lambertian };
-	// lambertian, metal, phong
+	// lambertian, metal, phong; emissive: the emitted colour
 	glm::vec3 albedo { 0.7f };
 	// metal: radius of the perturbation ball around the mirror direction, 0..1
 	float fuzz { 0.3f };
@@ -61,42 +71,137 @@ struct SphereMaterial {
 	float smoothness { 0.5f };
 	// dielectric: index of refraction. 1.0 vacuum, 1.33 water, 1.5 glass, 2.42 diamond
 	float ir { 1.5f };
+	// emissive: the radiance is albedo x strength, so a light can be far brighter than white
+	float strength { 1.f };
 
-	bool operator==(const SphereMaterial&) const = default;
+	bool operator==(const SceneMaterial&) const = default;
 };
 
-inline SphereMaterial makeSphereMaterial(MaterialType type, const glm::vec3& albedo = glm::vec3(0.7f))
+inline SceneMaterial makeSceneMaterial(MaterialType type, const glm::vec3& albedo = glm::vec3(0.7f))
 {
-	SphereMaterial material;
+	SceneMaterial material;
 	material.type = type;
 	material.albedo = albedo;
 	return material;
 }
 
 // the single flat colour a material is best shown as outside the raytracer - used by the raster
-// preview spheres, which have no path tracer to resolve a real appearance with. A dielectric has
+// preview shapes, which have no path tracer to resolve a real appearance with. A dielectric has
 // no albedo of its own (it attenuates by white), so a pale tint reads as glass rather than as a
-// plain white diffuse sphere
-inline glm::vec3 materialPreviewColor(const SphereMaterial& material)
+// plain white diffuse surface
+inline glm::vec3 materialPreviewColor(const SceneMaterial& material)
 {
 	return material.type == MaterialType::Dielectric ? glm::vec3(0.75f, 0.85f, 1.f) : material.albedo;
 }
 
-struct SceneSphere {
+//---------------------------------------------------------------- shapes
+
+// One editable dimension of a shape: what the editor and the scene file call it, and which axes of
+// SceneShape::size it drives (bit 0 x, bit 1 y, bit 2 z). A cylinder's radius drives x and z at
+// once, which is what keeps it round
+struct ShapeParam {
+	const char* name;
+	uint8_t axes;
+};
+
+// Everything that differs between the kinds of shape outside the tracer itself, as data, so the
+// editor, the gizmo, the scene file and the preview all treat every kind through the one table.
+// Adding a kind is a row here, a unit primitive in shape.h / crt_shape.glsl and a preview mesh
+struct ShapeTraits {
+	// the scene file's type name, and the prefix of a new object's name
+	const char* name;
+	// the Add menu's entry, and the scene tree's folder
+	const char* label;
+	const char* plural;
+	// the sizes the user edits; empty for a shape with none (the infinite plane)
+	std::span<const ShapeParam> params;
+	// false for a shape rotating would not change (the sphere): its orientation is neither shown,
+	// edited, saved nor applied
+	bool rotatable;
+	// where a new one is placed, and at what size
+	glm::vec3 defaultPosition;
+	glm::vec3 defaultSize;
+};
+
+inline constexpr ShapeParam SPHERE_PARAMS[] = { { "radius", 0b111 } };
+inline constexpr ShapeParam QUAD_PARAMS[] = { { "width", 0b001 }, { "length", 0b100 } };
+inline constexpr ShapeParam BOX_PARAMS[] = { { "width", 0b001 }, { "height", 0b010 }, { "depth", 0b100 } };
+inline constexpr ShapeParam CYLINDER_PARAMS[] = { { "radius", 0b101 }, { "height", 0b010 } };
+
+// by ShapeKind; the sizes are the unit primitives' scale (shape.h), so a radius is a radius and a
+// width a width
+inline constexpr ShapeTraits SHAPE_TRAITS[] = {
+	{ "sphere", "Sphere", "Spheres", SPHERE_PARAMS, false, { 0.f, 0.f, -1.f }, glm::vec3(0.5f) },
+	// a level floor just below the default sphere
+	{ "plane", "Plane", "Planes", {}, true, { 0.f, -0.5f, 0.f }, glm::vec3(1.f) },
+	{ "quad", "Quad", "Quads", QUAD_PARAMS, true, { 0.f, 0.f, -1.f }, glm::vec3(1.f) },
+	{ "box", "Box", "Boxes", BOX_PARAMS, true, { 0.f, 0.f, -1.f }, glm::vec3(1.f) },
+	{ "cylinder", "Cylinder", "Cylinders", CYLINDER_PARAMS, true, { 0.f, 0.f, -1.f }, { 0.5f, 1.f, 0.5f } },
+};
+static_assert(sizeof(SHAPE_TRAITS) / sizeof(SHAPE_TRAITS[0]) == SHAPE_KIND_COUNT);
+
+inline const ShapeTraits& shapeTraits(ShapeKind kind)
+{
+	return SHAPE_TRAITS[(size_t)kind];
+}
+
+// A placed analytic shape: its kind's unit primitive (shape.h) scaled by size, rotated and moved.
+// One struct for every kind, so every list, lookup, gizmo adapter and file record is written once
+struct SceneShape {
 	// stable across edits and reorders, assigned by the editor and never saved. The gizmo targets
-	// a sphere by it, so deleting or reloading the sphere ends the edit rather than dangling
+	// a shape by it, so deleting or reloading the shape ends the edit rather than dangling
 	uint64_t id { 0 };
 	std::string name;
-	glm::vec3 center { 0.f, 0.f, -1.f };
-	float radius { 0.5f };
-	SphereMaterial material;
+	ShapeKind kind { ShapeKind::Sphere };
+	glm::vec3 position { 0.f, 0.f, -1.f };
+	glm::quat orientation { 1.f, 0.f, 0.f, 0.f };
+	// the unit primitive's scale along its own axes. What each axis means is the kind's params; an
+	// axis none of them drives stays 1
+	glm::vec3 size { 1.f };
+	SceneMaterial material;
 
-	bool operator==(const SceneSphere&) const = default;
+	// the unit primitive -> world
+	glm::mat4 objectToWorld() const
+	{
+		const glm::mat4 rotation = shapeTraits(kind).rotatable ? glm::mat4_cast(orientation) : glm::mat4(1.f);
+		return glm::translate(glm::mat4(1.f), position) * rotation * glm::scale(glm::mat4(1.f), size);
+	}
+
+	bool operator==(const SceneShape&) const = default;
 };
+
+// a param's value: every axis it drives holds the same one
+inline float shapeParamValue(const SceneShape& shape, const ShapeParam& param)
+{
+	for (int axis = 0; axis < 3; axis++) {
+		if (param.axes & (1u << axis)) {
+			return shape.size[axis];
+		}
+	}
+	return 1.f;
+}
+
+inline void setShapeParam(SceneShape& shape, const ShapeParam& param, float value)
+{
+	for (int axis = 0; axis < 3; axis++) {
+		if (param.axes & (1u << axis)) {
+			shape.size[axis] = value;
+		}
+	}
+}
+
+inline SceneShape makeShape(ShapeKind kind)
+{
+	SceneShape shape;
+	shape.kind = kind;
+	shape.position = shapeTraits(kind).defaultPosition;
+	shape.size = shapeTraits(kind).defaultSize;
+	return shape;
+}
 
 //---------------------------------------------------------------- cameras
 
-// A camera the scene can be rendered from: a placeable object like a sphere, with the lens
+// A camera the scene can be rendered from: a placeable object like a shape, with the lens
 // and display settings that belong to a camera rather than to a render. The raster viewport's
 // free camera is not one of these - it is a tool for looking at the scene - but "first-person
 // edit" lets it drive one. Orientation is a quaternion so the gizmo can rotate it freely; the
@@ -192,12 +297,12 @@ enum class MeshMaterialMode : uint8_t {
 	// the glTF material each of its surfaces was authored with: the base-colour factor modulated
 	// by the base-colour texture, scattered as a diffuse surface
 	Gltf,
-	// one raytracer material (the same four a sphere offers) for the whole object, replacing the
+	// one raytracer material (the same four a shape offers) for the whole object, replacing the
 	// glTF material and its texture entirely
 	Override
 };
 
-// One mesh-bearing glTF node placed in the scene: a first-class object like a sphere or a
+// One mesh-bearing glTF node placed in the scene: a first-class object like a shape or a
 // camera, with the same stable id, the same gizmo editing and the same delete.
 //
 // The geometry itself stays in the loaded model, named by modelKey + nodeIndex; everything the
@@ -206,7 +311,7 @@ enum class MeshMaterialMode : uint8_t {
 // model loaded, which is what lets one imported file be placed more than once.
 struct SceneMeshObject {
 	// stable across edits and reorders, assigned by the editor; shares one id space with the
-	// spheres and cameras so the gizmo's opaque target id cannot collide
+	// shapes and cameras so the gizmo's opaque target id cannot collide
 	uint64_t id { 0 };
 	std::string name;
 	// into VulkanEngine::m_models, and into that model's forEachMeshNode() walk order
@@ -216,18 +321,18 @@ struct SceneMeshObject {
 	glm::mat4 transform { 1.f };
 	bool visible { true };
 	MeshMaterialMode materialMode { MeshMaterialMode::Gltf };
-	SphereMaterial material;
+	SceneMaterial material;
 
 	bool operator==(const SceneMeshObject&) const = default;
 };
 
 //---------------------------------------------------------------- mesh materials
 
-// A material a triangle is shaded with: the same tagged material a sphere uses, plus the
+// A material a triangle is shaded with: the same tagged material a shape uses, plus the
 // base-colour texture that modulates its albedo (a layer of the raytracer's texture array, -1
 // for untextured)
 struct RaytraceTriMaterial {
-	SphereMaterial material;
+	SceneMaterial material;
 	int albedoLayer { -1 };
 
 	bool operator==(const RaytraceTriMaterial&) const = default;
@@ -265,8 +370,9 @@ inline RTCameraSnapshot cameraSnapshot(const SceneCamera& camera)
 
 //---------------------------------------------------------------- render settings
 
-// the render resolution is picked from this fixed list rather than typed in or dragged: every
-// entry is a sane, recognisable size, and there is no way to land on a degenerate one
+// the render resolution is normally picked from this fixed list rather than dragged: every entry
+// is a sane, recognisable size. A custom size can still be typed in, clamped to
+// [MIN_RENDER_DIMENSION, MAX_RENDER_DIMENSION] so it can never be degenerate or absurd
 struct ResolutionPreset {
 	const char* label;
 	int width;
@@ -284,6 +390,12 @@ inline constexpr ResolutionPreset RESOLUTION_PRESETS[] = {
 };
 
 inline constexpr int DEFAULT_RESOLUTION_PRESET = 1;
+
+// the bounds a typed-in custom resolution is held to. The lower one keeps a render from
+// collapsing to nothing; the upper one is well past any display, and the render guard
+// (WORK_PER_FRAME_BUDGET) is what actually stops a size that is merely too expensive
+inline constexpr int MIN_RENDER_DIMENSION = 2;
+inline constexpr int MAX_RENDER_DIMENSION = 8192;
 
 // How a render is made. Owned by RaytraceRenderer and saved with the scene. The camera's own
 // settings (lens, exposure) live on the SceneCamera, and which camera renders is the
@@ -312,7 +424,7 @@ struct RenderSettings {
 	// reweighted, which is unbiased and makes late bounces cheap
 	bool russianRoulette { true };
 	int minBouncesBeforeRoulette { 3 };
-	// start the render over whenever what it renders changes: the camera moves, a sphere or
+	// start the render over whenever what it renders changes: the camera moves, a shape or
 	// the environment is edited, a setting is changed. With unlimited samples this is a live
 	// view of the scene
 	bool restartOnChange { true };

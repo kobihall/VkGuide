@@ -226,7 +226,7 @@ public:
 	DrawContext m_mainDrawContext;
 	// the scene's glTF models, keyed by a unique name derived from the file stem. Ordered, so
 	// the browser, the mesh data and a saved file list them stably. Each is placed as authored
-	// (identity root transform); the spheres in m_raytraceScene and m_environmentMap are the
+	// (identity root transform); the shapes in m_raytraceScene and m_environmentMap are the
 	// rest of the scene, and openScene()/saveScene() move all three together
 	std::map<std::string, std::shared_ptr<LoadedGLTF>> m_models;
 
@@ -253,6 +253,11 @@ public:
 	// sky is. A scene property, saved with the scene; the picture's brightness is the
 	// renderer's exposure setting
 	float m_environmentIntensity { 1.f };
+	// a solid colour a ray that leaves the scene sees in the path tracer, replacing the environment
+	// map or the sky gradient - the black void of a scene lit only by its own lights. A scene
+	// property, saved with the scene
+	bool m_solidBackground { false };
+	glm::vec3 m_backgroundColor { 0.f };
 
 	// the file the current scene was opened from or last saved to; empty for an unsaved scene
 	std::filesystem::path m_scenePath;
@@ -262,15 +267,16 @@ public:
 	// the one viewport gizmo, shared by every object type that offers "Edit Transform"
 	TransformGizmo m_transformGizmo;
 
-	// a unit sphere at the origin, drawn once per raytracer sphere with a per-object transform
-	std::shared_ptr<MeshAsset> m_sphereMesh;
-	// the preview spheres' material data, one persistent slot per frame in flight, rewritten
+	// by ShapeKind: the unit primitive's preview mesh (shape_mesh.h), drawn once per raytracer
+	// shape of that kind under the shape's own objectToWorld()
+	std::array<std::shared_ptr<MeshAsset>, SHAPE_KIND_COUNT> m_shapeMeshes;
+	// the preview shapes' material data, one persistent slot per frame in flight, rewritten
 	// only when the editor's revision has moved on since the slot was last written. The
 	// buffer and the descriptor sets belong to the slot's frames alone, which are provably
 	// finished when the slot comes round again, so a rewrite never races the GPU
-	struct PreviewSphereSlot {
+	struct PreviewShapeSlot {
 		AllocatedBuffer materialBuffer {};
-		// spheres the buffer has room for
+		// shapes the buffer has room for
 		size_t capacity { 0 };
 		DescriptorAllocatorGrowable descriptors;
 		// RenderObject holds raw pointers into it, so it is never appended to while in use
@@ -278,7 +284,7 @@ public:
 		// the editor revision the slot was written at; 0 = never
 		uint64_t revision { 0 };
 	};
-	PreviewSphereSlot m_previewSphereSlots[FRAME_OVERLAP];
+	PreviewShapeSlot m_previewShapeSlots[FRAME_OVERLAP];
 
 	// textures
 	AllocatedImage m_whiteImage;
@@ -341,7 +347,7 @@ public:
 	AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
 	void destroyImage(const AllocatedImage& img);
 
-	// the scene as a whole: models + environment map + spheres. Failures never abort and leave
+	// the scene as a whole: models + environment map + shapes. Failures never abort and leave
 	// what is loaded untouched; a partially readable scene reports what it could not load
 	void newScene();
 	IoResult openScene(const std::filesystem::path& path);
@@ -418,9 +424,9 @@ private:
 	// Touches no GPU resource, so it runs before the frame's fence wait and overlaps the GPU
 	// finishing the previous frame
 	void updateScene();
-	// appends the editor's spheres to the draw list. Writes this frame slot's material buffer
-	// when the spheres changed, so it must run after the slot's fence wait
-	void drawRaytraceSpheres();
+	// appends the editor's shapes to the draw list. Writes this frame slot's material buffer
+	// when the shapes changed, so it must run after the slot's fence wait
+	void drawRaytraceShapes();
 	void drawBackground(VkCommandBuffer cmd);
 	// the shared shape of gradient_color.comp and sky.comp: the draw image at binding 0 and a
 	// ComputePushConstants block, dispatched over the whole draw image

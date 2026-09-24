@@ -21,6 +21,8 @@ struct CrtParams {
 	glm::vec4 lensU;
 	// b
 	glm::vec4 lensV;
+	// rgb what a missed ray sees when CRT_FLAG_SOLID_BACKGROUND is set
+	glm::vec4 background;
 	uint32_t width;
 	uint32_t height;
 	uint32_t samplesPerFrame;
@@ -28,8 +30,10 @@ struct CrtParams {
 	uint32_t seed;
 	uint32_t bounce;
 	uint32_t rayDepth;
-	uint32_t instanceCount;
-	uint32_t pad2;
+	// instances reached through the TLAS, after the unbounded ones; 0 when there is no TLAS to walk
+	uint32_t tlasInstanceCount;
+	// the unbounded shapes at the front of the instance buffer, tested by every ray
+	uint32_t unboundedCount;
 	uint32_t flags;
 	uint32_t minBouncesBeforeRoulette;
 	uint32_t debugView;
@@ -38,11 +42,12 @@ struct CrtParams {
 	float pad0;
 	float pad1;
 };
-static_assert(sizeof(CrtParams) == 160);
+static_assert(sizeof(CrtParams) == 176);
 
 constexpr uint32_t CRT_FLAG_JITTER = 1u << 0;
 constexpr uint32_t CRT_FLAG_ROULETTE = 1u << 1;
 constexpr uint32_t CRT_FLAG_ENVIRONMENT_MAP = 1u << 2;
+constexpr uint32_t CRT_FLAG_SOLID_BACKGROUND = 1u << 3;
 
 //shaders/crt_common.glsl CRT_WORKGROUP; every stage is 1-D at this size
 constexpr uint32_t CRT_WORKGROUP = 64;
@@ -249,7 +254,7 @@ namespace {
 
 //the tagged-union form the shader scatters with. `albedoLayer` is the caller's, since only a
 //triangle's glTF material has one
-CrtMaterial gpuMaterial(const SphereMaterial& material, int albedoLayer)
+CrtMaterial gpuMaterial(const SceneMaterial& material, int albedoLayer)
 {
 	CrtMaterial out {};
 	out.albedo = material.albedo;
@@ -267,6 +272,9 @@ CrtMaterial gpuMaterial(const SphereMaterial& material, int albedoLayer)
 		break;
 	case MaterialType::Dielectric:
 		out.param = material.ir;
+		break;
+	case MaterialType::Emissive:
+		out.param = material.strength;
 		break;
 	}
 	return out;
@@ -349,9 +357,11 @@ void GpuPathTracer::uploadScene(VulkanEngine* engine)
 	const size_t materials = scene != nullptr ? scene->materials.size() : 0;
 	const size_t instanceMaterials = scene != nullptr ? scene->instanceMaterials.size() : 0;
 	const size_t tlasWords = scene != nullptr ? scene->tlas.bvh.nodes.size() : 0;
-	//nothing is traced through a TLAS that failed to pack; the instance count is what the shader checks
+	//nothing is traced through a TLAS that failed to pack; the instance count is what the shader
+	//checks. The unbounded shapes are outside it and traced regardless
 	const bool traceable = scene != nullptr && scene->tlas.bvh.error.empty() && scene->tlas.bvh.nodeCount > 0;
-	m_instanceCount = traceable ? (uint32_t)instances : 0;
+	m_unboundedCount = scene != nullptr ? scene->unboundedCount : 0;
+	m_tlasInstanceCount = traceable ? (uint32_t)instances - m_unboundedCount : 0;
 
 	const VkDeviceSize alignment = std::max<VkDeviceSize>(engine->m_gpuProperties.limits.minStorageBufferOffsetAlignment, 16);
 	m_instancesBytes = sizeof(GpuInstance) * std::max<size_t>(instances, 1);
@@ -380,8 +390,8 @@ void GpuPathTracer::uploadScene(VulkanEngine* engine)
 	vmaFlushAllocation(engine->m_memAllocator, m_sceneBuffer.allocation, 0, totalBytes); //flush vma on MoltenVK
 
 	m_uploadedScene = scene;
-	fmt::println("GpuPathTracer: scene uploaded - {} instance(s) ({} sphere(s)), {} material(s), {} TLAS node(s), {:.2f} MB",
-		instances, scene != nullptr ? scene->sphereCount : 0, materials, tlasWords / 4, double(totalBytes) / (1024.0 * 1024.0));
+	fmt::println("GpuPathTracer: scene uploaded - {} instance(s) ({} shape(s), {} unbounded), {} material(s), {} TLAS node(s), {:.2f} MB",
+		instances, scene != nullptr ? scene->shapeCount : 0, m_unboundedCount, materials, tlasWords / 4, double(totalBytes) / (1024.0 * 1024.0));
 }
 
 void GpuPathTracer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
@@ -581,10 +591,13 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 		params.seed = m_snapshot.seed;
 		params.bounce = 0;
 		params.rayDepth = (uint32_t)std::clamp(settings.rayDepth, 1, CRT_MAX_DEPTH);
-		params.instanceCount = m_instanceCount;
+		params.tlasInstanceCount = m_tlasInstanceCount;
+		params.unboundedCount = m_unboundedCount;
 		params.flags = (settings.antialiasing ? CRT_FLAG_JITTER : 0u)
 			| (settings.russianRoulette ? CRT_FLAG_ROULETTE : 0u)
-			| ((m_snapshot.useEnvironmentMap && engine->m_environmentMap.image != VK_NULL_HANDLE) ? CRT_FLAG_ENVIRONMENT_MAP : 0u);
+			| ((m_snapshot.useEnvironmentMap && engine->m_environmentMap.image != VK_NULL_HANDLE) ? CRT_FLAG_ENVIRONMENT_MAP : 0u)
+			| (m_snapshot.solidBackground ? CRT_FLAG_SOLID_BACKGROUND : 0u);
+		params.background = glm::vec4(m_snapshot.backgroundColor, 0.f);
 		params.minBouncesBeforeRoulette = (uint32_t)std::max(settings.minBouncesBeforeRoulette, 0);
 		params.debugView = (uint32_t)debugView;
 		params.maxSamples = std::max(m_maxSamples, 1u);

@@ -3,7 +3,7 @@
 // Scene file save/load.
 //
 // One file captures the whole scene: the glTF models it is composed of (by path - the model
-// files themselves are untouched), the environment map (by path), and the raytracer's spheres
+// files themselves are untouched), the environment map (by path), and the raytracer's shapes
 // (inline, materials included). The file is a minimal but valid glTF 2.0 document whose single
 // scene carries all of that in its spec-defined `extras` field, so any glTF tool can open it
 // without erroring - it just sees an empty scene - and the spec requires readers to preserve
@@ -13,13 +13,15 @@
 // assets folder can move as a unit, and made absolute again on load. Reading navigates the
 // extras with simdjson, which fastgltf already links; writing hand-formats the small
 // fixed-shape payload with fmt. The payload carries a "version" so a later schema change has
-// something to branch on; version 1 (spheres only), 2 (no render settings) and 3 (no cameras)
-// files still load.
+// something to branch on; every older version still loads - 1 (spheres only), 2 (no render
+// settings), 3 (no cameras), 4 (no mesh objects), 5 (spheres rather than geometry) and 6 (no
+// emissive material or background colour).
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
 
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 #include <rt_scene_types.h>
@@ -36,7 +38,7 @@ struct SceneMeshObjectRecord {
 	glm::mat4 transform { 1.f };
 	bool visible { true };
 	MeshMaterialMode materialMode { MeshMaterialMode::Gltf };
-	SphereMaterial material;
+	SceneMaterial material;
 };
 
 struct SceneDescription {
@@ -44,7 +46,7 @@ struct SceneDescription {
 	std::vector<std::filesystem::path> modelPaths;
 	// empty when the scene has no environment map
 	std::filesystem::path environmentMapPath;
-	std::vector<SceneSphere> spheres;
+	std::vector<SceneShape> shapes;
 	// the mesh objects placing the models' nodes. `hasMeshObjects` tells an absent list (a
 	// version-4 file, which predates them - the loader then places every node at its authored
 	// transform, as importing does) apart from a scene that genuinely has none because the user
@@ -58,10 +60,12 @@ struct SceneDescription {
 	// how to render it, and how bright the environment lights it
 	RenderSettings render;
 	float environmentIntensity { 1.f };
+	// a solid colour replacing the environment map and the sky for missed rays; none by default
+	std::optional<glm::vec3> backgroundColor;
 };
 
 IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);
 
-// on success out holds the spheres (with unassigned ids - RaytraceSceneEditor::replaceSpheres()
+// on success out holds the shapes (with unassigned ids - RaytraceSceneEditor::replaceShapes()
 // gives them theirs) and absolute paths; on failure it is untouched
 IoResult loadSceneFile(const std::filesystem::path& file, SceneDescription& out);

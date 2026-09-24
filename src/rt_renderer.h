@@ -92,6 +92,8 @@ private:
 		uint64_t accelRevision { 0 };
 		std::filesystem::path environmentMapPath;
 		float environmentIntensity { 1.f };
+		bool solidBackground { false };
+		glm::vec3 backgroundColor { 0.f };
 		uint32_t width { 0 };
 		uint32_t height { 0 };
 
@@ -103,7 +105,7 @@ private:
 	RenderKey currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const SceneCamera& camera) const;
 	void startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	// the TLAS, instances and materials over the current BLAS set, rebuilt only when the objects or
-	// spheres actually differ from what it was built from. A render restarted by a camera drag
+	// shapes actually differ from what it was built from. A render restarted by a camera drag
 	// happens every frame and must not pay for this
 	void ensureSceneAccel(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	// the "Acceleration structure" section: builder and layout, and what they produced
@@ -112,10 +114,18 @@ private:
 	void destroyDisplayImage(VulkanEngine* engine);
 	void drawSettings(VulkanEngine* engine);
 
+	// the Resolution combo's selection: RESOLUTION_VIEWPORT is "Match viewport",
+	// RESOLUTION_CUSTOM the typed-in size, and 0.. index RESOLUTION_PRESETS
+	static constexpr int RESOLUTION_VIEWPORT = -1;
+	static constexpr int RESOLUTION_CUSTOM = -2;
+
 	RenderSettings m_settings;
-	// the Resolution combo's selection: 0 is "Match viewport", 1.. index RESOLUTION_PRESETS,
-	// -1 a size from a file that matches no preset
-	int m_resolutionChoice { DEFAULT_RESOLUTION_PRESET + 1 };
+	int m_resolutionChoice { DEFAULT_RESOLUTION_PRESET };
+	// what the custom width/height fields hold while they are being typed in. Only committed
+	// into m_settings when the field is left or Enter is pressed, so a half-typed number never
+	// becomes a resolution (and, under restart-on-change, never restarts the render)
+	int m_customWidth { RESOLUTION_PRESETS[DEFAULT_RESOLUTION_PRESET].width };
+	int m_customHeight { RESOLUTION_PRESETS[DEFAULT_RESOLUTION_PRESET].height };
 	uint64_t m_renderCameraId { 0 };
 
 	GpuPathTracer m_gpu;
@@ -132,7 +142,7 @@ private:
 	// the scene the next render traces, and exactly what it was built from
 	std::shared_ptr<const RaytraceSceneAccel> m_sceneAccel;
 	std::vector<SceneMeshObject> m_sceneAccelObjects;
-	std::vector<SceneSphere> m_sceneAccelSpheres;
+	std::vector<SceneShape> m_sceneAccelShapes;
 	uint64_t m_sceneAccelModelRevision { 0 };
 	uint64_t m_sceneAccelRevision { 0 };
 	bool m_hasSceneAccel { false };

@@ -3,11 +3,13 @@
 // The two-level acceleration structure, independent of Vulkan and of the engine: one bottom-level
 // BVH (BLAS) per unique mesh, in the mesh's object space and built once for as long as the mesh is
 // loaded, and a top-level BVH (TLAS) over the placed instances of those meshes - plus the
-// analytic spheres - rebuilt whenever an object moves. A ray is intersected with an instance by
+// analytic shapes (shape.h) - rebuilt whenever an object moves. A ray is intersected with an instance by
 // transforming it into the instance's object space, so one BLAS serves every placement of its
 // mesh however it is translated, rotated or scaled (the "instances" of RTNW §8, the TLAS/BLAS of
 // Bikker's articles 5-6, and the structure of VK_KHR_acceleration_structure that GPSnoopy's
-// renderer drives in hardware).
+// renderer drives in hardware). A shape is placed the same way, its unit primitive standing in for
+// the BLAS. An unbounded shape (the infinite plane) has no box to put in the TLAS, so it stays out
+// of it and every ray tests it directly.
 //
 // traceScene() is the CPU mirror of the GPU's two-level traversal (shaders/crt_bvh.glsl).
 
@@ -18,6 +20,7 @@
 
 #include <bvh.h>
 #include <bvh_layout.h>
+#include <shape.h>
 
 // One mesh's bottom-level structure
 struct Blas {
@@ -45,26 +48,30 @@ Blas buildBlas(std::span<const glm::vec3> triangleVertices, const BvhBuildOption
 
 enum class SceneInstanceKind : uint32_t {
 	Mesh,
-	Sphere
+	Shape
 };
 
 struct SceneInstance {
 	SceneInstanceKind kind { SceneInstanceKind::Mesh };
-	// Mesh: which BLAS, and where it is placed
+	// Mesh: which BLAS
 	uint32_t blas { 0 };
+	// Shape: which unit primitive
+	ShapeKind shape { ShapeKind::Sphere };
+	// where the BLAS or the unit primitive is placed
 	glm::mat4 objectToWorld { 1.f };
-	// Sphere: centre xyz and radius w, in world space
-	glm::vec4 sphere { 0.f };
 };
 
 struct Tlas {
 	// binary layout over the instances; its primOrder is the instance in each slot
 	PackedBvh bvh;
 	// per instance, by instance index: the inverse transform the ray is carried into object space
-	// with, and whether the instance is traced at all (a singular transform, a missing BLAS or a
-	// non-positive radius is left out)
+	// with, and whether the instance is traced at all (a singular transform or a missing BLAS is
+	// left out)
 	std::vector<glm::mat4> worldToObject;
 	std::vector<uint8_t> traced;
+	// the traced instances outside the tree, by instance index: the unbounded shapes, which every
+	// ray tests before the TLAS walk
+	std::vector<uint32_t> unbounded;
 	Aabb bounds;
 	BvhStats stats;
 	// the expected cost of one ray through the whole scene - TLAS nodes, plus each instance's BLAS
@@ -81,7 +88,8 @@ struct SceneHit {
 	bool hit { false };
 	float t { 1e30f };
 	uint32_t instance { 0 };
-	// Mesh: the hit triangle's slot in its BLAS (Blas::triangles), and its barycentrics
+	// Mesh: the hit triangle's slot in its BLAS (Blas::triangles), and its barycentrics. Nothing more
+	// for a shape: its normal follows from the hit point
 	uint32_t slot { 0 };
 	glm::vec2 barycentrics { 0.f };
 	uint32_t nodesVisited { 0 };
@@ -91,6 +99,3 @@ struct SceneHit {
 
 // the closest hit of a world-space ray, as the GPU finds it
 SceneHit traceScene(const Tlas& tlas, std::span<const Blas* const> blases, std::span<const SceneInstance> instances, const BvhRay& ray);
-
-// the shader's numerically stable ray-sphere (crt_common.glsl hitSphere); `direction` normalised
-bool intersectSphere(const glm::vec4& sphere, const glm::vec3& origin, const glm::vec3& direction, float tMin, float tMax, float& t);
