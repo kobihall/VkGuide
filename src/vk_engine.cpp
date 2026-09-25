@@ -519,6 +519,7 @@ void VulkanEngine::run()
 				ImGui::MenuItem("Stats", nullptr, &m_showStatsWindow);
 				ImGui::MenuItem("Scene", nullptr, m_raytraceScene.visibilityFlag());
 				ImGui::MenuItem("Raytrace Render", nullptr, m_raytracer.visibilityFlag());
+				ImGui::MenuItem("Raytracer Shaders", nullptr, m_raytracer.kernelPanelVisibilityFlag());
 				ImGui::MenuItem("ImGui Demo", nullptr, &m_showDemoWindow);
 				ImGui::Separator();
 				m_displayRegistry.drawWindowsMenu();
@@ -556,6 +557,7 @@ void VulkanEngine::run()
 
 		m_raytraceScene.drawPanel(this);
 		m_raytracer.drawPanel(this, m_raytraceScene);
+		m_raytracer.drawKernelPanel(this);
 
 		//some imgui UI to test
 		if (m_showDemoWindow) {
@@ -908,6 +910,8 @@ void VulkanEngine::newScene()
 	camera.name = "render_camera";
 	m_raytraceScene.replaceCameras({ camera });
 	m_raytracer.setSettings(RenderSettings {});
+	m_raytracer.setKernels(defaultKernelSelection());
+	m_raytracer.setAccelSettings(this, defaultAccelSettings());
 	m_environmentIntensity = 1.f;
 	m_solidBackground = false;
 	m_backgroundColor = glm::vec3(0.f);
@@ -953,6 +957,9 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 		}
 	}
 	scene.render = m_raytracer.settings();
+	//which wavefront kernel runs in each slot, and how the BVH they read is built
+	scene.kernels = m_raytracer.kernels();
+	scene.accel = m_raytracer.accelSettings();
 	scene.environmentIntensity = m_environmentIntensity;
 	if (m_solidBackground) {
 		scene.backgroundColor = m_backgroundColor;
@@ -1036,6 +1043,13 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	m_raytraceScene.replaceShapes(std::move(scene.shapes));
 	m_raytraceScene.replaceCameras(std::move(scene.cameras));
 	m_raytracer.setSettings(scene.render);
+	//the kernel selection first: it is what decides the BLAS node layout, so setAccelSettings()
+	//below sees the layout the file's traversal kernel actually needs
+	m_raytracer.setKernels(scene.kernels);
+	m_raytracer.setAccelSettings(this, scene.accel);
+	for (const std::string& warning : scene.kernelWarnings) {
+		problems.push_back(warning);
+	}
 	if (scene.renderCamera >= 0 && scene.renderCamera < (int)m_raytraceScene.cameras().size()) {
 		m_raytracer.setRenderCamera(m_raytraceScene.cameras()[scene.renderCamera].id);
 	}

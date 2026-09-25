@@ -49,13 +49,17 @@ file(GLOB_RECURSE GLSL_INCLUDE_FILES "${PROJECT_SOURCE_DIR}/shaders/*.glsl")
 ## iterate each shader
 foreach(GLSL ${GLSL_SOURCE_FILES})
   message(STATUS "BUILDING SHADER")
-  get_filename_component(FILE_NAME ${GLSL} NAME)
-  set(SPIRV "${PROJECT_SOURCE_DIR}/shaders/${FILE_NAME}.spv")
+  ## keep each shader's path relative to shaders/ so the raytracing kernels in shaders/rt/
+  ## compile beside their sources instead of colliding in one flat output directory
+  file(RELATIVE_PATH REL_NAME "${PROJECT_SOURCE_DIR}/shaders" ${GLSL})
+  set(SPIRV "${PROJECT_SOURCE_DIR}/shaders/${REL_NAME}.spv")
+  get_filename_component(SPIRV_DIR ${SPIRV} DIRECTORY)
+  file(MAKE_DIRECTORY ${SPIRV_DIR})
   message(STATUS ${GLSL})
   ##execute glslang command to compile that specific shader
   add_custom_command(
     OUTPUT ${SPIRV}
-    COMMAND ${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV}
+    COMMAND ${GLSL_VALIDATOR} -V -I${PROJECT_SOURCE_DIR}/shaders ${GLSL} -o ${SPIRV}
     DEPENDS ${GLSL} ${GLSL_INCLUDE_FILES})
   list(APPEND SPIRV_BINARY_FILES ${SPIRV})
 endforeach(GLSL)

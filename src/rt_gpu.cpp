@@ -39,8 +39,10 @@ struct CrtParams {
 	uint32_t debugView;
 	uint32_t maxSamples;
 	float environmentIntensity;
+	// every record in instances[], whether or not a TLAS was built over them (shaders/rt/include/
+	// crt_linear.glsl scans exactly this many)
+	uint32_t instanceCount;
 	float pad0;
-	float pad1;
 };
 static_assert(sizeof(CrtParams) == 176);
 
@@ -49,8 +51,19 @@ constexpr uint32_t CRT_FLAG_ROULETTE = 1u << 1;
 constexpr uint32_t CRT_FLAG_ENVIRONMENT_MAP = 1u << 2;
 constexpr uint32_t CRT_FLAG_SOLID_BACKGROUND = 1u << 3;
 
-//shaders/crt_common.glsl CRT_WORKGROUP; every stage is 1-D at this size
+//shaders/rt/include/crt_common.glsl CRT_WORKGROUP; every kernel is 1-D at this size
 constexpr uint32_t CRT_WORKGROUP = 64;
+
+//shaders/rt/include/crt_common.glsl CRT_QUEUE_*: two ping-ponging ray queues, the three
+//classification queues kernel 02 sorts into, and the shadow queue a light-sampling kernel 06
+//would fill. All six are allocated whether or not a selected variant uses them - the pool is
+//sized once per render and a queue is four bytes per path
+constexpr uint32_t CRT_QUEUE_RAY_A = 0;
+constexpr uint32_t CRT_QUEUE_ESCAPED = 2;
+constexpr uint32_t CRT_QUEUE_EMISSIVE = 3;
+constexpr uint32_t CRT_QUEUE_SURFACE = 4;
+constexpr uint32_t CRT_QUEUE_SHADOW = 5;
+constexpr uint32_t CRT_QUEUE_COUNT = 6;
 
 //mirrors of the remaining GLSL structs, for buffer sizing only
 constexpr VkDeviceSize PATH_STATE_SIZE = 48;
@@ -92,44 +105,49 @@ const char* crtDebugViewName(CrtDebugView view)
 	return "unknown";
 }
 
+VkDescriptorType crtBindingType(CrtBinding binding)
+{
+	switch (binding) {
+	case CrtBinding::Accumulation:
+	case CrtBinding::SampleCount:
+		return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	case CrtBinding::EnvironmentMap:
+	case CrtBinding::AlbedoTextures:
+		return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	default:
+		return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	}
+}
+
 void GpuPathTracer::init(VulkanEngine* engine)
 {
 	const std::string shaderDir = engine->m_rootPath + "shaders/";
 
-	//every stage binds the same set: the whole pool, the scene and the images, at fixed bindings
-	//(shaders/crt_common.glsl). A shader that does not use a binding simply does not declare it,
-	//and one set per frame written once serves all four dispatches - descriptor set layouts that
-	//are defined identically are compatible
-	auto buildStage = [&](const char* shaderFile) {
-		return ComputePassBuilder(shaderDir + shaderFile)
-			.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // paths
-			.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // hits
-			.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // queues
-			.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // headers
-			.addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // radiance
-			.addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // sample budget
-			.addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // instances
-			.addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // materials
-			.addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) // accumulation
-			.addBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) // sample count
-			.addBinding(10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) // environment map
-			.addBinding(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // BLAS triangles
-			.addBinding(12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) // base-colour texture array
-			.addBinding(13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // BLAS nodes
-			.addBinding(14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // triangle attributes
-			.addBinding(15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // TLAS nodes
-			.addBinding(16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // per-instance surface materials
-			.addBinding(17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) // traversal counters
-			.setPushConstants<CrtParams>()
-			.setWorkgroupSize(CRT_WORKGROUP)
-			.build(engine->m_device);
-	};
-
-	m_generate = buildStage("crt_generate.comp.spv");
-	m_extend = buildStage("crt_extend.comp.spv");
-	m_extendCwbvh = buildStage("crt_extend_cwbvh.comp.spv");
-	m_shade = buildStage("crt_shade.comp.spv");
-	m_resolve = buildStage("crt_resolve.comp.spv");
+	//Every registered kernel variant becomes one ComputePass, built from the bindings IT declares
+	//and nothing else (src/rt_kernels.h). A kernel that reads three buffers gets a three-binding
+	//layout at the global binding numbers of shaders/rt/include/crt_common.glsl - a set layout
+	//with gaps is legal, and keeping the numbers global is what lets every kernel share one
+	//include file while binding a different subset of it.
+	//
+	//Adding a strategy therefore adds a table entry and nothing here.
+	for (uint32_t slotIndex = 0; slotIndex < (uint32_t)KernelSlot::Count; slotIndex++) {
+		const KernelSlot slot = (KernelSlot)slotIndex;
+		for (const KernelVariant& variant : kernelVariants(slot)) {
+			if (!variant.implemented) {
+				//a stub shader with an empty main(): no pipeline, and the scheduler skips the slot
+				m_passes[slotIndex].emplace_back();
+				continue;
+			}
+			ComputePassBuilder builder(shaderDir + variant.shader + ".spv");
+			for (const CrtBinding binding : variant.bindings) {
+				builder.addBinding((uint32_t)binding, crtBindingType(binding));
+			}
+			m_passes[slotIndex].push_back(builder
+				.setPushConstants<CrtParams>()
+				.setWorkgroupSize(CRT_WORKGROUP)
+				.build(engine->m_device));
+		}
+	}
 
 	//timestamps are optional on the device; the readout is simply absent without them
 	const VkPhysicalDeviceLimits& limits = engine->m_gpuProperties.limits;
@@ -184,11 +202,12 @@ void GpuPathTracer::destroy(VulkanEngine* engine)
 		m_queryPool = VK_NULL_HANDLE;
 	}
 
-	m_generate.destroy(engine->m_device);
-	m_extend.destroy(engine->m_device);
-	m_extendCwbvh.destroy(engine->m_device);
-	m_shade.destroy(engine->m_device);
-	m_resolve.destroy(engine->m_device);
+	for (std::vector<ComputePass>& slotPasses : m_passes) {
+		for (ComputePass& pass : slotPasses) {
+			pass.destroy(engine->m_device);
+		}
+		slotPasses.clear();
+	}
 }
 
 void GpuPathTracer::allocatePool(VulkanEngine* engine, uint32_t width, uint32_t height, uint32_t samplesPerFrame)
@@ -207,11 +226,11 @@ void GpuPathTracer::allocatePool(VulkanEngine* engine, uint32_t width, uint32_t 
 	const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 	m_paths = engine->createBuffer(PATH_STATE_SIZE * m_poolSize, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_hits = engine->createBuffer(HIT_RECORD_SIZE * m_poolSize, storage, VMA_MEMORY_USAGE_GPU_ONLY);
-	m_queues = engine->createBuffer(sizeof(uint32_t) * 2 * (VkDeviceSize)m_poolSize, storage, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_queues = engine->createBuffer(sizeof(uint32_t) * CRT_QUEUE_COUNT * (VkDeviceSize)m_poolSize, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_radiance = engine->createBuffer(sizeof(glm::vec4) * (VkDeviceSize)m_poolSize, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_sampleBudget = engine->createBuffer(sizeof(uint32_t) * (VkDeviceSize)width * height, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 	//the headers are the indirect arguments, reset by the command buffer and read back for the readout
-	m_headers = engine->createBuffer(sizeof(CrtQueueHeader) * 2, storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_headers = engine->createBuffer(sizeof(CrtQueueHeader) * CRT_QUEUE_COUNT, storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 
 	const VkExtent3D extent { width, height, 1 };
 	m_accumulation = engine->createImage(extent, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
@@ -362,6 +381,8 @@ void GpuPathTracer::uploadScene(VulkanEngine* engine)
 	const bool traceable = scene != nullptr && scene->tlas.bvh.error.empty() && scene->tlas.bvh.nodeCount > 0;
 	m_unboundedCount = scene != nullptr ? scene->unboundedCount : 0;
 	m_tlasInstanceCount = traceable ? (uint32_t)instances - m_unboundedCount : 0;
+	//what a traversal-free strategy scans: every record, TLAS or no TLAS
+	m_instanceCount = (uint32_t)instances;
 
 	const VkDeviceSize alignment = std::max<VkDeviceSize>(engine->m_gpuProperties.limits.minStorageBufferOffsetAlignment, 16);
 	m_instancesBytes = sizeof(GpuInstance) * std::max<size_t>(instances, 1);
@@ -490,36 +511,82 @@ void GpuPathTracer::collectReadbacks(VulkanEngine* engine, uint32_t slot)
 	}
 }
 
-VkDescriptorSet GpuPathTracer::writeSet(VulkanEngine* engine, const ComputePass& pass)
+VkDescriptorSet GpuPathTracer::writeSet(VulkanEngine* engine, const KernelVariant& variant, const ComputePass& pass)
 {
 	const VkDescriptorSet set = engine->getCurrentFrame().frameDescriptors.allocate(engine->m_device, pass.setLayout);
 
-	//with no map loaded (or the snapshot not using it) the miss branch never samples the
+	//with no map loaded (or the snapshot not using it) the escaped kernel never samples the
 	//binding, but a combined image sampler still has to name a valid view
 	const bool hasMap = m_snapshot.useEnvironmentMap && engine->m_environmentMap.image != VK_NULL_HANDLE;
 	const AllocatedImage& map = hasMap ? engine->m_environmentMap : engine->m_greyImage;
 
+	//ONE PLACE maps a CrtBinding to the resource behind it. A kernel gets only the bindings it
+	//declared, so this switch runs a handful of times per kernel rather than eighteen; adding a
+	//resource is a case here plus an enumerator, and every variant that lists it picks it up
 	DescriptorWriter writer;
-	writer.writeBuffer(0, m_paths.buffer, PATH_STATE_SIZE * m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(1, m_hits.buffer, HIT_RECORD_SIZE * m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(2, m_queues.buffer, sizeof(uint32_t) * 2 * (VkDeviceSize)m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(3, m_headers.buffer, sizeof(CrtQueueHeader) * 2, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(4, m_radiance.buffer, sizeof(glm::vec4) * (VkDeviceSize)m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(5, m_sampleBudget.buffer, sizeof(uint32_t) * (VkDeviceSize)m_poolWidth * m_poolHeight, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(6, m_sceneBuffer.buffer, m_instancesBytes, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(7, m_sceneBuffer.buffer, m_materialsBytes, m_materialsOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeImage(8, m_accumulation.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-	writer.writeImage(9, m_sampleCount.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-	writer.writeImage(10, map.imageView, engine->m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-	writer.writeBuffer(11, m_geometryBuffer.buffer, m_blasTrianglesBytes, m_blasTrianglesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	//the array always exists, even for a scene with no textures at all, so the binding is never
-	//left naming nothing
-	writer.writeImage(12, engine->m_raytraceTextures.image().imageView, engine->m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-	writer.writeBuffer(13, m_geometryBuffer.buffer, m_blasNodesBytes, m_blasNodesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(14, m_geometryBuffer.buffer, m_attributesBytes, m_attributesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(15, m_sceneBuffer.buffer, m_tlasBytes, m_tlasOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(16, m_sceneBuffer.buffer, m_instanceMaterialsBytes, m_instanceMaterialsOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	writer.writeBuffer(17, m_traversalStats.buffer, TRAVERSAL_STATS_BYTES, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	for (const CrtBinding binding : variant.bindings) {
+		const uint32_t index = (uint32_t)binding;
+		switch (binding) {
+		case CrtBinding::Paths:
+			writer.writeBuffer(index, m_paths.buffer, PATH_STATE_SIZE * m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::Hits:
+			writer.writeBuffer(index, m_hits.buffer, HIT_RECORD_SIZE * m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::Queues:
+			writer.writeBuffer(index, m_queues.buffer, sizeof(uint32_t) * CRT_QUEUE_COUNT * (VkDeviceSize)m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::Headers:
+			writer.writeBuffer(index, m_headers.buffer, sizeof(CrtQueueHeader) * CRT_QUEUE_COUNT, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::Radiance:
+			writer.writeBuffer(index, m_radiance.buffer, sizeof(glm::vec4) * (VkDeviceSize)m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::SampleBudget:
+			writer.writeBuffer(index, m_sampleBudget.buffer, sizeof(uint32_t) * (VkDeviceSize)m_poolWidth * m_poolHeight, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::Instances:
+			writer.writeBuffer(index, m_sceneBuffer.buffer, m_instancesBytes, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::Materials:
+			writer.writeBuffer(index, m_sceneBuffer.buffer, m_materialsBytes, m_materialsOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::Accumulation:
+			writer.writeImage(index, m_accumulation.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+			break;
+		case CrtBinding::SampleCount:
+			writer.writeImage(index, m_sampleCount.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+			break;
+		case CrtBinding::EnvironmentMap:
+			writer.writeImage(index, map.imageView, engine->m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+			break;
+		case CrtBinding::BlasTriangles:
+			writer.writeBuffer(index, m_geometryBuffer.buffer, m_blasTrianglesBytes, m_blasTrianglesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::AlbedoTextures:
+			//the array always exists, even for a scene with no textures at all, so the binding is
+			//never left naming nothing
+			writer.writeImage(index, engine->m_raytraceTextures.image().imageView, engine->m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+			break;
+		case CrtBinding::BlasNodes:
+			writer.writeBuffer(index, m_geometryBuffer.buffer, m_blasNodesBytes, m_blasNodesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::TriangleAttributes:
+			writer.writeBuffer(index, m_geometryBuffer.buffer, m_attributesBytes, m_attributesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::TlasNodes:
+			writer.writeBuffer(index, m_sceneBuffer.buffer, m_tlasBytes, m_tlasOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::InstanceMaterials:
+			writer.writeBuffer(index, m_sceneBuffer.buffer, m_instanceMaterialsBytes, m_instanceMaterialsOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::TraversalStats:
+			writer.writeBuffer(index, m_traversalStats.buffer, TRAVERSAL_STATS_BYTES, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::Count:
+			break;
+		}
+	}
 	writer.updateSet(engine->m_device, set);
 
 	return set;
@@ -592,6 +659,7 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 		params.bounce = 0;
 		params.rayDepth = (uint32_t)std::clamp(settings.rayDepth, 1, CRT_MAX_DEPTH);
 		params.tlasInstanceCount = m_tlasInstanceCount;
+		params.instanceCount = m_instanceCount;
 		params.unboundedCount = m_unboundedCount;
 		params.flags = (settings.antialiasing ? CRT_FLAG_JITTER : 0u)
 			| (settings.russianRoulette ? CRT_FLAG_ROULETTE : 0u)
@@ -603,10 +671,15 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 		params.maxSamples = std::max(m_maxSamples, 1u);
 		params.environmentIntensity = m_snapshot.environmentIntensity;
 
-		const VkDescriptorSet set = writeSet(engine, m_generate);
-		//the extend build that traverses the layout this scene's BLASes were packed in
-		const bool cwbvh = m_snapshot.scene != nullptr && m_snapshot.scene->blases != nullptr && m_snapshot.scene->blases->settings.layout == BvhLayout::Cwbvh8;
-		const ComputePass& extend = cwbvh ? m_extendCwbvh : m_extend;
+		//THE SCHEDULE. Each kernel of the wavefront is looked up in the selection this render was
+		//started with, and dispatched only if that slot has an implemented variant. Nothing below
+		//names a strategy: swapping the BVH traversal for the linear one changes which pipeline
+		//`launch` binds and nothing else about the frame.
+		const KernelSelection& selection = m_snapshot.kernels;
+		auto passFor = [&](KernelSlot kernelSlot) -> const KernelVariant* {
+			const KernelVariant* variant = selection.selected(kernelSlot);
+			return (variant != nullptr && variant->implemented) ? variant : nullptr;
+		};
 
 		const VkDeviceSize readbackBase = (VkDeviceSize)slot * READBACK_HEADERS_PER_SLOT * sizeof(CrtQueueHeader);
 		auto copyHeader = [&](uint32_t queue, uint32_t readbackIndex) {
@@ -624,29 +697,93 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 			vkCmdUpdateBuffer(cmd, m_headers.buffer, queue * sizeof(CrtQueueHeader), sizeof(CrtQueueHeader), &emptyHeader);
 		};
 
-		//generate: every (pixel, k) pair, appending the spawned paths to queue 0
-		resetHeader(0);
+		//one kernel launch: its own descriptor set (written from the bindings it declared), its
+		//own domain. Everything per-bounce goes out indirect, reading the queue header the
+		//previous kernel filled as its VkDispatchIndirectCommand
+		auto launch = [&](const KernelVariant& variant, uint32_t bounce) {
+			const ComputePass& pass = m_passes[(size_t)variant.slot][selection[variant.slot]];
+			const VkDescriptorSet set = writeSet(engine, variant, pass);
+			switch (variant.domain) {
+			case KernelDomain::Pool:
+				dispatchComputePass(cmd, pass, set, &params, { (m_poolSize + CRT_WORKGROUP - 1) / CRT_WORKGROUP, 1, 1 });
+				break;
+			case KernelDomain::Pixels:
+				dispatchComputePass(cmd, pass, set, &params, { (m_poolWidth * m_poolHeight + CRT_WORKGROUP - 1) / CRT_WORKGROUP, 1, 1 });
+				break;
+			case KernelDomain::CurrentRayQueue:
+				dispatchComputePassIndirect(cmd, pass, set, &params, m_headers.buffer, (bounce & 1u) * sizeof(CrtQueueHeader));
+				break;
+			case KernelDomain::FixedQueue:
+				dispatchComputePassIndirect(cmd, pass, set, &params, m_headers.buffer, variant.queue * sizeof(CrtQueueHeader));
+				break;
+			}
+		};
+
+		//---------------------------------------------------------------- 00 generate camera rays
+		resetHeader(CRT_QUEUE_RAY_A);
 		vkCmdFillBuffer(cmd, m_traversalStats.buffer, 0, VK_WHOLE_SIZE, 0);
 		vkutil::memory_barrier(cmd, transferStage, transferAccess, computeStages, computeAccess);
-		dispatchComputePass(cmd, m_generate, set, &params, { (m_poolSize + CRT_WORKGROUP - 1) / CRT_WORKGROUP, 1, 1 });
+		if (const KernelVariant* generate = passFor(KernelSlot::GenerateCameraRays)) {
+			launch(*generate, 0);
+		}
 		vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages | transferStage, computeAccess | transferAccess);
-		copyHeader(0, 0);
+		copyHeader(CRT_QUEUE_RAY_A, 0);
 
 		for (uint32_t bounce = 0; bounce < params.rayDepth; bounce++) {
-			const uint32_t current = bounce & 1u;
-			const uint32_t next = current ^ 1u;
+			const uint32_t next = (bounce + 1u) & 1u;
 			params.bounce = bounce;
 
-			//extend over the current queue: a hit record per queue position
-			dispatchComputePassIndirect(cmd, extend, set, &params, m_headers.buffer, current * sizeof(CrtQueueHeader));
-			//hits visible to shade, and the next header - read as arguments by the previous
-			//bounce - free to be reset
-			vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages | transferStage, computeAccess | transferAccess);
+			//every queue this bounce is about to fill. The ray queue it READS was filled last
+			//bounce and is left alone
 			resetHeader(next);
+			resetHeader(CRT_QUEUE_ESCAPED);
+			resetHeader(CRT_QUEUE_EMISSIVE);
+			resetHeader(CRT_QUEUE_SURFACE);
+			resetHeader(CRT_QUEUE_SHADOW);
 			vkutil::memory_barrier(cmd, transferStage, transferAccess, computeStages, computeAccess);
 
-			//shade over the current queue: terminate or append to the next
-			dispatchComputePassIndirect(cmd, m_shade, set, &params, m_headers.buffer, current * sizeof(CrtQueueHeader));
+			//---- 01 generate samples, over the live ray queue
+			if (const KernelVariant* samples = passFor(KernelSlot::GenerateSamples)) {
+				launch(*samples, bounce);
+				vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
+			}
+
+			//---- 02 intersect closest: a hit record per queue position, and the paths sorted
+			//onto the escaped / emissive / surface queues
+			if (const KernelVariant* intersect = passFor(KernelSlot::IntersectClosest)) {
+				launch(*intersect, bounce);
+			}
+			//the hit records, the three queues' contents, and the three headers that are about to
+			//be read as dispatch arguments
+			vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
+
+			//---- 03, 04 and 06 drain those queues. They need no barriers BETWEEN them: each path
+			//went onto exactly one queue, so their radiance writes are disjoint, and only 06
+			//touches paths[] and the next ray queue
+			if (const KernelVariant* escaped = passFor(KernelSlot::HandleEscaped)) {
+				launch(*escaped, bounce);
+			}
+			if (const KernelVariant* emissive = passFor(KernelSlot::HandleEmissive)) {
+				launch(*emissive, bounce);
+			}
+			if (const KernelVariant* medium = passFor(KernelSlot::SampleMediumInteraction)) {
+				launch(*medium, bounce);
+				vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
+			}
+			if (const KernelVariant* surface = passFor(KernelSlot::SurfaceScattering)) {
+				launch(*surface, bounce);
+			}
+			if (const KernelVariant* mediumScatter = passFor(KernelSlot::SampleMediumScattering)) {
+				vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
+				launch(*mediumScatter, bounce);
+			}
+
+			//---- 08 trace shadow rays, over whatever 06 and 07 emitted
+			if (const KernelVariant* shadow = passFor(KernelSlot::TraceShadowRays)) {
+				vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
+				launch(*shadow, bounce);
+			}
+
 			vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages | transferStage, computeAccess | transferAccess);
 			copyHeader(next, bounce + 1);
 		}
@@ -657,8 +794,10 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 		statsRegion.size = TRAVERSAL_STATS_BYTES;
 		vkCmdCopyBuffer(cmd, m_traversalStats.buffer, m_statsReadback.buffer, 1, &statsRegion);
 
-		//resolve: fold each pixel's K slots into the running mean
-		dispatchComputePass(cmd, m_resolve, set, &params, { (m_poolWidth * m_poolHeight + CRT_WORKGROUP - 1) / CRT_WORKGROUP, 1, 1 });
+		//---------------------------------------------------------------- 09 update film
+		if (const KernelVariant* film = passFor(KernelSlot::UpdateFilm)) {
+			launch(*film, 0);
+		}
 		vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 
 		m_slotRender[slot] = m_renderSerial;

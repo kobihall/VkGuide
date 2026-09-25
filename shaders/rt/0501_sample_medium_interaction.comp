@@ -1,0 +1,28 @@
+#version 460
+
+// 05 SAMPLE MEDIUM INTERACTION - NOT IMPLEMENTED. Stub.
+//
+// This kernel is a placeholder so that every box of the PBR wavefront figure has a file on
+// disk. The renderer has no participating media, so src/rt_kernels.cpp registers this variant
+// with `implemented = false`: the scheduler never dispatches it and the Raytracer Shaders panel
+// shows the slot greyed out. Deleting the body below and filling it in, then flipping that one
+// flag, is what turns it on.
+//
+// WHAT IT WOULD DO. For each path whose ray passes through a medium, sample a distance along
+// the ray against the medium's majorant. If the sampled point is closer than the surface hit
+// that kernel 02 recorded, the path scatters in the volume: push it onto a medium-scatter queue
+// for kernel 07 and cancel its surface interaction. Otherwise it reaches the surface, and the
+// path is passed through to the same classification queues 02 already uses, with its throughput
+// scaled by the transmittance along the way.
+//
+// See docs/plans/participating-media.md for the plan, including which queues and buffers it
+// adds and where they hook into the kernel registry.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+}

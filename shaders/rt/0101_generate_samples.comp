@@ -1,0 +1,42 @@
+#version 460
+
+// 01 GENERATE SAMPLES. Runs at the top of every bounce, over the ray queue that bounce will
+// trace, and prepares each live path's sample state for the dimensions that bounce is about to
+// consume.
+//
+// This variant decorrelates the path's PCG state with the bounce index. That is genuinely all a
+// pure-BSDF path tracer needs: the draws themselves happen lazily inside kernel 06, straight
+// out of PathState.rngState, and a stream that is a pure function of (pixel, sample index,
+// render seed, bounce) reproduces an image exactly from a fixed seed no matter how the queues
+// were ordered or the workgroups scheduled.
+//
+// It exists as its own kernel because THIS is where a low-discrepancy sampler goes. A 0102
+// variant would, instead of hashing, look up a Sobol or Halton point for (sampleIndex, bounce),
+// stratify it with an owen-scrambled hash and store the resulting dimensions for 06 to read -
+// which is why pbrt gives sample generation a kernel of its own rather than drawing inline
+// (PBR 4ed 15.3.5). Swapping this one file is then the whole change.
+//
+// NOTE: the hash below changes which random numbers a given path draws, so the noise pattern
+// differs from the pre-refactor tracer. The estimator is unchanged and the converged image is
+// identical - only the path to it is a different random walk.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+	const uint queue = rayQueueFor(pc.bounce);
+	const uint index = gl_GlobalInvocationID.x;
+	// no queueAppend() here, so the overhang of the last workgroup can simply leave
+	if (index >= headers[queue].rayCount) {
+		return;
+	}
+
+	const uint pathIndex = queues[queueSlot(queue, index)];
+	// one round of the same PCG the rest of the tracer uses, mixing in the bounce so that two
+	// bounces of one path never walk the same stretch of the stream
+	paths[pathIndex].rngState = pcgHash(paths[pathIndex].rngState ^ pcgHash(pc.bounce));
+}

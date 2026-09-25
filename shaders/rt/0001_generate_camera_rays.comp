@@ -1,16 +1,19 @@
 #version 460
 
-// GPU path tracer, stage 1: primary rays. One invocation per (pixel, k) pair of the pool;
-// those under the pixel's budget become paths appended to queue 0. Every slot's radiance is
-// pre-written so a path that dies without writing (roulette, the depth cap, absorption)
-// contributes exactly zero, and a slot that was never spawned is marked as such.
+// 00 GENERATE CAMERA RAYS. One invocation per (pixel, k) pair of the path pool; those under the
+// pixel's budget become paths appended to the first ray queue. Runs once per frame, before the
+// bounce loop - every kernel after this one runs once per bounce.
+//
+// Every slot's radiance is pre-written so that a path which dies without writing (roulette, the
+// depth cap, absorption) contributes exactly zero, and a slot that was never spawned is marked
+// as such for kernel 09.
 //
 // The camera is RTCamera (src/rt_job.cpp) in float: same origin, lower-left corner, horizontal
 // and vertical vectors, same lens basis, so both backends fire the same primary rays.
 
 #extension GL_GOOGLE_include_directive : require
-#include "crt_common.glsl"
-#include "crt_random.glsl"
+#include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
@@ -63,5 +66,5 @@ void main()
 		}
 	}
 
-	queueAppend(0u, spawn, index);
+	queueAppend(CRT_QUEUE_RAY_A, spawn, index);
 }

@@ -1,12 +1,17 @@
 #version 460
 
-// GPU path tracer, stage 4: fold each pixel's K radiance slots into its running mean. Slots
-// that were not spawned (w == 0) and non-finite samples are skipped and not counted - one NaN
-// would poison the mean for good. A running mean rather than a running sum, because a future
-// adaptive budget leaves pixels with different counts, and per-pixel counts are kept for it.
+// 09 UPDATE FILM. Fold each pixel's K radiance slots into its running mean. Runs once per
+// frame, after the bounce loop has finished - this is the only kernel here that is not in the
+// PBR figure's numbering, because pbrt's equivalent (UpdateFilm) sits outside the kernel
+// diagram; it is numbered 09 to keep one scheme for the whole directory.
+//
+// Slots that were not spawned (w == 0) and non-finite samples are skipped and not counted - one
+// NaN would poison the mean for good. A running mean rather than a running sum, because a
+// future adaptive budget leaves pixels with different counts, and per-pixel counts are kept
+// for it (docs/plans/adaptive-sampling.md).
 
 #extension GL_GOOGLE_include_directive : require
-#include "crt_common.glsl"
+#include "include/crt_common.glsl"
 
 layout (local_size_x = CRT_WORKGROUP) in;
 

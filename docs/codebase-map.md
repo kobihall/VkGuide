@@ -1,6 +1,10 @@
 # VkGuide + RayTracingInAWeekend — Codebase Map
 
-Reference document capturing the current state of the code as of 2026-08-22. Facts only, no recommendations. Sources: full reads of `src/`, `shaders/`, and the sibling project `/Users/kobihall/Documents/Code/RayTracingInAWeekend`.
+Reference document for making future changes. Facts only, no recommendations.
+
+**Sections 1-7 describe the state as of 2026-08-22** (full reads of `src/`, `shaders/`, and the sibling project `/Users/kobihall/Documents/Code/RayTracingInAWeekend`) and are kept for the raster path and the CPU backend, both of which are still accurate. They **predate the raytracer entirely** and several of their claims are now false - each such claim carries an inline correction. In particular §2's "there is exactly one compute pattern in the codebase" has not been true since 2026-09-14.
+
+**Section 8 (2026-09-25) is the current reference for the GPU path tracer** and supersedes anything earlier that touches it. For a readable account of the same material, see `docs/raytracing-overview.md`.
 
 ---
 
@@ -56,7 +60,7 @@ Picks `m_backgroundEffects[m_currentBackgroundEffect]`, binds its compute pipeli
 
 *Update 2026-09-14 (`docs/plans/completed/compute-pipeline-general.md`): the pattern below is gone. Every compute pipeline is now a `ComputePass` built by `ComputePassBuilder` (`src/vk_compute.h/.cpp`: arbitrary set-0 bindings, any push-constant size, a `workgroupSize`) and recorded with `dispatchComputePass()`/`dispatchComputePassOver()`. Background effects are `BackgroundEffect{name, pass, record, drawSettings}` closures, allocate their descriptor set per frame from `frameDescriptors`, and there are three: `gradient`, `sky`, and a new `environment` (`shaders/env_background.comp` + `shaders/equirect.glsl`: the draw image as a storage image plus `m_environmentMap` through a sampler). `TonemapPass` is a wrapper over one `ComputePass`. `m_drawImageDescriptors`, `m_drawImageDescriptorLayout`, `m_computePipelineLayout` and `ComputeEffect` no longer exist; `ComputePushConstants` remains as the shape shared by `gradient_color.comp`/`sky.comp`. Root `CMakeLists.txt` now rebuilds every shader when a `shaders/*.glsl` include changes. The rest of this section describes the state before that change.*
 
-There is exactly one compute pattern in the codebase: the "background effects" system. No other compute usage exists.
+~~There is exactly one compute pattern in the codebase: the "background effects" system. No other compute usage exists.~~ **False since 2026-09-15**: the GPU path tracer adds ten more compute pipelines built through the same `ComputePass` abstraction. See §8.
 
 - **Descriptor set layout** (`initDescriptors()`, `vk_engine.cpp:930-934`): single binding 0, `VK_DESCRIPTOR_TYPE_STORAGE_IMAGE`, stage `VK_SHADER_STAGE_COMPUTE_BIT`, built via `DescriptorLayoutBuilder`. Stored as `m_drawImageDescriptorLayout` (`vk_engine.h:176`).
 - **Descriptor set**: allocated once from `m_globalDescriptorAllocator` (937), written once at init pointing at `m_drawImage.imageView` in `VK_IMAGE_LAYOUT_GENERAL` (939-942). Stored as `m_drawImageDescriptors` (`vk_engine.h:175`). Never rewritten per-frame (valid because `m_drawImage` is a single fixed image, never recreated after init).
@@ -73,7 +77,7 @@ There is exactly one compute pattern in the codebase: the "background effects" s
 - `MaterialPass` enum (`vk_types.h:61-65`) has values `MainColor`, `Transparent`, `Other` — `Other` is declared but not routed anywhere in `drawGeometry()`/`writeMaterial()`.
 
 ### Compute shader files (`shaders/`)
-All three declare `layout (local_size_x = 16, local_size_y = 16) in;` and bind a single storage image at set 0, binding 0.
+*As of 2026-09-25 this list covers only the background effects; the raytracing kernels are in `shaders/rt/` and are listed in §8.2.* All three declare `layout (local_size_x = 16, local_size_y = 16) in;` and bind a single storage image at set 0, binding 0.
 - `shaders/gradient_color.comp` (32 lines, loaded/used) — vertical two-color gradient, `layout(rgba16f, ...)`, blends `PushConstants.data1`/`data2` by `texelCoord.y / size.y`. `data3`/`data4` unused.
 - `shaders/sky.comp` (91 lines, loaded/used) — procedural starfield (Shadertoy-derived, CC BY-NC-SA 3.0 license comment), `layout(rgba8, ...)` — **note this differs from `gradient_color.comp`'s `rgba16f` and from the actual draw image format (`VK_FORMAT_R16G16B16A16_SFLOAT`)**. Only `data1` used (`.xyz` = tint, `.w` = star threshold).
 - `shaders/gradient.comp` (28 lines) — UV-gradient with black gridlines at workgroup boundaries. **Not referenced anywhere in `src/`** — compiled by the CMake glob but never loaded by any C++ code.
@@ -262,7 +266,7 @@ Full docking ImGui+Vulkan application shell (vs. writing a `.ppm`); interactive 
 - No `ImGui_ImplVulkan_AddTexture` infrastructure exists in VkGuide today (section 4) — any feature that displays a non-swapchain image in ImGui needs this built.
 - `m_drawImage`/`m_depthImage` in VkGuide are fixed at init-time size and never recreated on resize (section 1) — any new output image with the same requirement (track window/panel size) needs new resize-handling code; none exists to copy today.
 - VkGuide's compute descriptor layout is hardcoded to exactly one `STORAGE_IMAGE` binding (section 2) and push constants are hardcoded to exactly `4×vec4` (`ComputePushConstants`) — reusing this pattern as-is for a pass needing more bindings or richer parameters is not possible without extending it.
-- No `VK_KHR_ray_tracing_pipeline` / `VK_KHR_acceleration_structure` usage anywhere in VkGuide; project targets Vulkan 1.2 core + KHR extension forms loaded through `vkinit::VkFunctionLoader` (confirmed no core-1.3 unsuffixed entry points are called for dynamic rendering/sync2/blit).
+- No `VK_KHR_ray_tracing_pipeline` / `VK_KHR_acceleration_structure` usage anywhere in VkGuide (still true - the BVH is built on the CPU and traversed in plain compute, §8); project targets Vulkan 1.2 core + KHR extension forms loaded through `vkinit::VkFunctionLoader` (confirmed no core-1.3 unsuffixed entry points are called for dynamic rendering/sync2/blit).
 - VkGuide has a single GLFW window and a single Vulkan surface/swapchain; no multi-window code exists.
 - VkGuide's ImGui init pins `PipelineRenderingCreateInfo.pColorAttachmentFormats` to the swapchain format (section 4); the `imguiPool` descriptor pool is a local variable in `initIMGUI()`, not currently exposed as an engine member.
 - The vendored ImGui at `../CPPLibraries/imgui` is confirmed **not** the docking branch (section 4) — any feature wanting real docking/tabbing needs to vendor a docking-branch build first (`docs/plans/completed/imgui-display.md` §2.1 covers this).
@@ -271,3 +275,180 @@ Full docking ImGui+Vulkan application shell (vs. writing a `.ppm`); interactive 
 - `GPUSceneData`/`m_mainCamera` in VkGuide are singular — there is exactly one camera and one scene-data uniform wired into `drawGeometry()`; nothing else reads or writes a second view.
 - The RTIAW project's `hittable`/`material` virtual-dispatch model, `hittable_list`'s O(n) linear scan (no BVH), the global mutable `std::mt19937`, `double`-precision math, and full-image-recompute-per-trigger render loop are all CPU-only constructs with no direct GPU-compute equivalent present anywhere in either codebase — none of this is portable to a compute shader as-is.
 - VkGuide's `checkVkResult`/`vkbErr` error macros (`vk_types.h:115-129`) hard-abort on any failure; there is no exception-based or recoverable error path in the codebase.
+
+---
+
+## 8. The GPU path tracer: wavefront kernels and swappable variants
+
+*2026-09-25. Supersedes §2's claims about compute usage. Readable companion: `docs/raytracing-overview.md`. Design sources: PBR 4ed ch. 15 (figure 15.2's kernel numbering, §15.1.2 megakernel vs wavefront, §15.2.4 work queues, §15.3.6 the `WavefrontAggregate` interface that the traversal contract is modelled on); Laine, Karras & Aila 2013.*
+
+### 8.1 The one-paragraph model
+
+A wavefront path tracer. Each kernel of the path-tracing algorithm is its own compute pipeline running over a compacted queue of live paths. Which shader runs in each kernel slot is chosen **at runtime** from a registry, saved with the scene, and drives the descriptor set layout, the dispatch, the settings UI and the render guard. One frame is `00 → [01 → 02 → {03, 04, 06}] × rayDepth → 09 → tonemap`.
+
+### 8.2 File inventory
+
+```
+shaders/rt/
+  0001_generate_camera_rays.comp        00 Generate camera rays
+  0101_generate_samples.comp            01 Generate samples
+  0201_intersect_closest_bvh.comp       02 (BVH, binary Aila-Laine nodes)
+  0202_intersect_closest_cwbvh.comp     02 (BVH, CWBVH 8-wide nodes)
+  0203_intersect_closest_linear.comp    02 (brute force)
+  0301_handle_escaped.comp              03 Handle escaped
+  0401_handle_emissive.comp             04 Handle emissive geometry
+  0501_sample_medium_interaction.comp   05 STUB, implemented = false
+  0601_surface_scatter_bsdf.comp        06 Sample surface scattering
+  0701_sample_medium_scattering.comp    07 STUB, implemented = false
+  0801_trace_shadow_rays.comp           08 STUB, implemented = false
+  0901_update_film.comp                 09 Update film (not a PBR figure box)
+  include/
+    crt_common.glsl      buffer structs, GLOBAL BINDING NUMBERS, push constants, queue set,
+                         queueAppend(), hitTriangle(), srgbToLinear()
+    crt_random.glsl      PCG hash + sampling; mirrors src/rt_random.cpp
+    crt_traverse.glsl    THE TRAVERSAL CONTRACT + TraceHit, work counters, testTriangles(),
+                         instanceRay(), testShapeInstance(), resetTrace(); includes crt_shape.glsl
+    crt_bvh.glsl         traceScene() via two-level BVH; CRT_BVH_CWBVH picks the wide traversal
+    crt_linear.glsl      traceScene() via brute force
+    crt_shape.glsl       hitShape()/shapeNormal(); mirrors src/shape.cpp
+    crt_intersect.glsl   kernel 02's body: classify + write HitRecord + push the three queues
+    crt_scatter.glsl     the four BSDFs + resolveMaterial()
+    crt_background.glsl  backgroundRadiance() + skyGradient()
+    crt_debug.glsl       bounceHeat(), traversalHeat(), debugTerminalValue()
+```
+
+`shaders/equirect.glsl` stays at `shaders/` (shared with `env_background.comp`) and is reached through the `-I${PROJECT_SOURCE_DIR}/shaders` that the root `CMakeLists.txt` now passes to `glslangValidator`. That same CMake block resolves each shader's path **relative to `shaders/`** so `.spv` output lands beside its source rather than colliding in one flat directory.
+
+C++: `src/rt_kernels.h/.cpp` (registry), `src/rt_gpu.h/.cpp` (pipelines, buffers, schedule), `src/rt_renderer.h/.cpp` (panels, guard, BVH settings), `src/rt_accel.*` + `src/bvh*` (unchanged apart from `GpuInstance`).
+
+### 8.3 The registry (`src/rt_kernels.h/.cpp`) — the file to edit
+
+Four enums and one struct:
+
+- `KernelSlot` — 00..09. **The numeric values are the `NN` in filenames and are part of the scene file format; never renumber.**
+- `CrtBinding` — **the value IS the descriptor binding number** and must match `crt_common.glsl` exactly. Append only.
+- `KernelDomain` — `Pool` / `Pixels` (direct dispatch) or `CurrentRayQueue` / `FixedQueue` (indirect).
+- `KernelSettings`, `TraversalCost` — capability flags the UI and the render guard read.
+- `KernelVariant` — one table row: slot, `id` (scene-file constant), `name`, `description`, `shader`, `domain`, `queue`, `bindings`, `implemented`, `settings`, `cost`, `requiresLayout`/`layout`.
+
+`KernelSelection` is `uint32_t variant[Count]`, `==`-comparable, serialised by id via `kernelSelectionToIds()` / `kernelSelectionFromIds()`. Entry 0 of each slot is its default; `kernelVariants(slot)` returns a contiguous span, which relies on the registry being **grouped by slot** — keep it that way.
+
+**Adding a variant = one `v.push_back(KernelVariant{...})`.** Nothing in `rt_gpu.cpp`, `rt_renderer.cpp` or `scene_io.cpp` names a strategy.
+
+### 8.4 Descriptor strategy: global numbers, per-variant subsets
+
+The problem this solves: different variants want different resources bound.
+
+- Binding numbers are **global and stable**, declared once in `crt_common.glsl`, mirrored by `CrtBinding`. One include file serves every kernel.
+- Each variant declares the **subset** it uses; `GpuPathTracer::init()` builds a set layout containing only those numbers. **A Vulkan set layout with gaps is legal** — that is what makes this work.
+- `GpuPathTracer::writeSet(variant, pass)` switches over `variant.bindings` and writes only those descriptors, one set per variant per frame from `frameDescriptors`.
+
+Consequence: the linear traversal never binds `BlasNodes`/`TlasNodes` at all; kernel 09 binds three descriptors where kernel 02 binds nine.
+
+**To add a resource:** new number at the *end* of `crt_common.glsl`, matching enumerator at the end of `CrtBinding` (same position), a `case` in `writeSet()`, and list it in the variants that want it. Existing numbers never move. Rejected alternatives and why: one fat 18-binding set for everything (what this replaced — junk-drawer growth); buffer device addresses for everything (most flexible, but rewrites every shader).
+
+### 8.5 The queue set
+
+`shaders/rt/include/crt_common.glsl`:
+
+| Index | Name | Holds | Written by | Drained by |
+|---|---|---|---|---|
+| 0, 1 | `CRT_QUEUE_RAY_A` / `_B` | **path indices**, ping-pong per bounce | 00, 06 | 01, 02 |
+| 2 | `CRT_QUEUE_ESCAPED` | **ray-queue positions** | 02 | 03 |
+| 3 | `CRT_QUEUE_EMISSIVE` | ray-queue positions | 02 | 04 |
+| 4 | `CRT_QUEUE_SURFACE` | ray-queue positions | 02 | 06 |
+| 5 | `CRT_QUEUE_SHADOW` | (allocated, unused) | — | 08 when it exists |
+
+`CRT_QUEUE_COUNT = 6`; `m_queues` is `4 × CRT_QUEUE_COUNT × poolSize` bytes and `m_headers` is `CRT_QUEUE_COUNT` headers. The C++ mirrors are `constexpr` in `rt_gpu.cpp`'s anonymous namespace — **change both together**.
+
+**Two indexing conventions coexist.** `paths[]`/`radiance[]` are by pool slot (stable for a path's life); `hits[]` is by ray-queue position (compacted, different every bounce). The classification queues store the ray-queue position *because it is also the hit index*, so a consumer reaches both hit and path from one number. `PathState.radianceSlot` maps back to the pixel.
+
+`QueueHeader` is a `VkDispatchIndirectCommand` plus `rayCount`; `queueAppend()` keeps `groupCountX == ceil(rayCount/64)` by having each workgroup add the number of workgroup boundaries its contiguous range crosses. Headers are reset by `vkCmdUpdateBuffer` from the command buffer, never by a shader.
+
+### 8.6 The schedule (`GpuPathTracer::record()`)
+
+```
+resetHeader(RAY_A); fillBuffer(traversalStats, 0); barrier
+00 Generate camera rays        direct over poolSize
+barrier; copyHeader(RAY_A, 0)
+for bounce in [0, rayDepth):
+    resetHeader(next, ESCAPED, EMISSIVE, SURFACE, SHADOW); barrier
+    01 Generate samples        indirect over rayQueueFor(bounce)   [+ barrier]
+    02 Intersect closest       indirect over rayQueueFor(bounce)
+    barrier                                     <-- hits[], 3 queues, 3 headers
+    03 Handle escaped          indirect over ESCAPED     ┐ NO barriers between these three:
+    04 Handle emissive         indirect over EMISSIVE    │ each path went onto exactly one
+    06 Surface scattering      indirect over SURFACE     ┘ queue, so radiance writes are
+                                                           disjoint, and only 06 touches
+                                                           paths[] and the next ray queue
+    barrier; copyHeader(next, bounce + 1)
+copy traversal stats to readback
+09 Update film                 direct over width × height
+barrier; tonemap
+```
+
+Every `if (const KernelVariant* k = passFor(SLOT))` is skipped when the slot has no implemented variant, so 05/07/08 cost nothing. `launch()` picks the domain from the variant. **Nothing in this function names a strategy.**
+
+### 8.7 The traversal contract
+
+`crt_traverse.glsl` defines what a kernel 02 variant must supply:
+
+```glsl
+bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit);
+```
+
+World-space ray, normalised direction, closest hit in `[tMin, tMax]`. The variant `.comp` is then six lines: `crt_common.glsl` + a strategy header + `crt_intersect.glsl`.
+
+Also in `crt_traverse.glsl`, shared by every strategy: `TraceHit`; `g_nodesVisited`/`g_primitivesTested` (**every strategy must maintain these** — they are the hardware-independent measure, and this laptop throttles ~70% within a minute so timings are not comparable); `safeReciprocal()`; `testTriangles()`; `instanceRay()` (the object-space transform, direction deliberately **not** renormalised so `t` carries across unchanged); `testShapeInstance()`; `resetTrace()`.
+
+Kernel 08 will need a second contract entry point, `bool occluded(...)`, supplied by **both** strategy files — see `docs/plans/shadow-rays-nee.md` §2.1.
+
+### 8.8 Changes to existing structures
+
+- **`GpuInstance` is 80 bytes, not 64** (`rt_accel.h`, `static_assert` updated). Added `uint32_t triangleCount` + 3 pad. Filled from the new `BlasPlacement::triangleCount` in `packGeometry()`. Only `crt_linear.glsl` reads it — a BVH reaches triangles through leaves.
+- **`CrtParams` gained `uint32_t instanceCount`** in place of one pad float; still 176 bytes. Deliberately distinct from `tlasInstanceCount`, which goes to 0 when the TLAS fails to pack — that must not make geometry vanish from a strategy that never walks a TLAS.
+- **`GpuRenderSnapshot` gained `KernelSelection kernels`**, taken at Render like everything else, so changing a strategy mid-render restarts rather than mixes.
+- **`RenderKey` gained `KernelSelection kernels`**, so a swap restarts a running render under restart-on-change.
+- **`RaytraceTextureArray::init()` now transitions the array to `SHADER_READ_ONLY_OPTIMAL`.** Pre-existing bug, not introduced here: `rebuild()` only runs on a model change, so a scene with no models (a Cornell box of analytic shapes) bound an `UNDEFINED` image. It produced validation errors on every stage before the split and on kernel 06 after it.
+
+### 8.9 UI wiring
+
+- **"Raytracer Shaders" window** (`RaytraceRenderer::drawKernelPanel()`, Windows menu). One row per slot, combo over `kernelVariants(slot)`, greyed when `!implemented`. Entirely registry-driven — a new variant appears with no edit to this function.
+- **"Acceleration structure" section** returns early unless the selected 02 variant declares `KernelSettings::AccelerationStructure`. The **node-layout combo was removed**: `requiredLayout()` derives it from the selected variant, because a CWBVH kernel cannot read binary nodes. Selecting a variant calls `setAccelSettings()`, which rebuilds the BLASes only when the layout actually differs.
+- **Render guard**: `sceneCostPerRay()` switches on the selected variant's `TraversalCost`. `Acceleration` → `tlas.sceneSahCost`; `AllPrimitives` → `placedTriangles + instances.size()`. Four orders of magnitude apart on a real model, and the linear scan is precisely the case `WORK_PER_FRAME_BUDGET` exists to catch (a 1M-triangle linear render once took the window server down).
+
+### 8.10 Scene file, payload version 8
+
+```json
+"kernels": {"00":"thin_lens", ..., "02":"linear", ...},
+"accel":   {"builder":"spatial splits (SBVH)","maxLeafSize":4,"binCount":32,
+            "traversalCost":1.0,"intersectionCost":1.0,"spatialAlpha":1e-05,
+            "spatialBudget":0.3,"maxDepth":48}
+```
+
+By **id, not index**. `kernelSelectionFromIds()` collects unknown slots and unknown ids into `SceneDescription::kernelWarnings`, which `openScene()` folds into the `IoResult` problem list; the slot keeps its default. Both blocks are optional, so every file back to version 1 still opens. **The node layout is deliberately not saved** — it follows the kernel 02 selection, so storing it would let a file contradict itself. `newScene()` resets both to their defaults.
+
+### 8.11 Verified behaviour (2026-09-25 smoke run, hooks since stripped)
+
+Cornell box, 200×150, 16 spp, fixed seed 12345, validation layers on:
+
+- `bvh_binary`, `bvh_cwbvh` and `linear` produce **bit-identical** rgba32f accumulation buffers (max abs difference 0.0 across all channels). The traversal swap is transparent, and the 03/04/06 split did not change the estimator.
+- **Zero validation errors** after the texture-array fix in §8.8.
+- Scene round trip: saved with `linear` selected → reopened as `linear`. A version-4 file (`assets/scenes/sphere_scene.gltf`) opens with the default `bvh_binary`.
+- `bin/bvh_bench assets/structure.glb --rays 500`: PASS, 0 mismatches across all 4 builders × 2 layouts.
+
+The bit-identical comparison is the regression test to repeat after any change in this area; it is far more sensitive than looking at an image.
+
+### 8.12 Deliberate behaviour change
+
+Kernel 01 hashes each live path's PCG state with the bounce index, where the pre-refactor tracer drew sequentially from one stream. **The noise pattern differs from before; the estimator and the converged image do not.** Slot 01 exists so a low-discrepancy sampler (Sobol/Halton, owen-scrambled) can replace one file — the reason pbrt gives sample generation its own kernel (PBR 4ed §15.3.5).
+
+### 8.13 Traps
+
+- `CrtBinding` values **are** binding numbers, and `KernelSlot` values **are** filename prefixes and scene-file keys. Neither may be renumbered.
+- `kernelVariants()` assumes the registry is grouped by slot.
+- A new resource must be appended in the **same position** to `CrtBinding` and `crt_common.glsl`, and get a `case` in `writeSet()` — a missing case silently leaves the descriptor unwritten.
+- `queueAppend()` must be reached by **every invocation of the workgroup in uniform control flow**; a dead lane passes `survives = false`. Kernels 00, 02 and 06 therefore have no early return. Kernels 01, 03, 04 and 09 append to nothing and may return early.
+- Kernel 02 calls `queueAppend()` three times (once per classification queue) for exactly this reason.
+- `crt_bvh.glsl`/`crt_shape.glsl`/`crt_random.glsl` and the `crt_common.glsl` structs are mirrored line for line by `bvh_layout.h`, `shape.cpp`, `rt_random.cpp` and `rt_gpu.h` — change both sides together, then run `bvh_bench`.
+- Both `.spv` outputs and `#include` resolution depend on the `-I` and relative-path handling in the root `CMakeLists.txt`; a new shader subdirectory works, a new include root does not without adding another `-I`.

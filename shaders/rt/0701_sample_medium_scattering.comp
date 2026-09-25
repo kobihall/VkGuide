@@ -1,0 +1,24 @@
+#version 460
+
+// 07 SAMPLE MEDIUM SCATTERING - NOT IMPLEMENTED. Stub.
+//
+// A placeholder so that every box of the PBR wavefront figure has a file on disk. Registered in
+// src/rt_kernels.cpp with `implemented = false`, so the scheduler never dispatches it and the
+// Raytracer Shaders panel greys the slot out.
+//
+// WHAT IT WOULD DO. For each path that kernel 05 found scattered inside a medium, sample a new
+// direction from the medium's phase function (Henyey-Greenstein), scale the throughput by the
+// scattering albedo, and append the path to the next bounce's ray queue - the volumetric
+// counterpart of what kernel 06 does at a surface. With next-event estimation it would also
+// emit a shadow ray onto CRT_QUEUE_SHADOW, which is why that queue is allocated for both.
+//
+// See docs/plans/participating-media.md.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+}

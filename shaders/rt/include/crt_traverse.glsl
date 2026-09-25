@@ -1,0 +1,94 @@
+// THE TRAVERSAL CONTRACT.
+//
+// Every variant of kernel 02 Intersect Closest supplies exactly one function:
+//
+//     bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit);
+//
+// taking a world-space ray with a NORMALISED direction and returning its closest hit in
+// [tMin, tMax]. That is the whole interface. crt_intersect.glsl turns whatever it returns into
+// a HitRecord and the classification queues, and no kernel downstream of 02 ever learns which
+// strategy produced the hit.
+//
+// A third strategy is therefore one new file that includes this one, defines traceScene(), and
+// one .comp that includes both it and crt_intersect.glsl. See shaders/rt/include/crt_bvh.glsl
+// (two-level BVH) and crt_linear.glsl (brute force) for the two that exist.
+//
+// This file holds what every strategy needs regardless of how it searches: the hit record, the
+// work counters that make strategies comparable, the primitive tests, and the object-space
+// transform. Requires crt_common.glsl.
+
+struct TraceHit {
+	float t;
+	// the instances[] slot, and for a mesh the global blasTriangles[] index of the triangle
+	uint instance;
+	uint triangle;
+	vec2 bary;
+};
+
+// What the traversal-cost debug view shows and what the readback counts: node visits and
+// primitive tests of this ray. Every strategy must maintain them - they are the
+// hardware-independent measure that makes a brute-force scan and a BVH comparable on a GPU
+// whose clocks move. A strategy with no nodes to visit simply leaves g_nodesVisited at zero.
+uint g_nodesVisited;
+uint g_primitivesTested;
+
+// 1 / d with each zero component replaced by a tiny signed one, so no box test multiplies 0 by
+// infinity: NaN compares false both ways and would admit or reject a box arbitrarily
+vec3 safeReciprocal(vec3 d)
+{
+	const vec3 signs = vec3(greaterThanEqual(d, vec3(0.0))) * 2.0 - 1.0;
+	return 1.0 / mix(d, signs * 1e-12, lessThan(abs(d), vec3(1e-12)));
+}
+
+// the analytic shapes, which need safeReciprocal
+#include "crt_shape.glsl"
+
+// triangles [first, first + count) of blasTriangles, lowering tMax on a hit
+void testTriangles(uint first, uint count, uint instance, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit)
+{
+	for (uint i = first; i < first + count; i++) {
+		g_primitivesTested++;
+		float t;
+		vec2 bary;
+		if (hitTriangle(blasTriangles[i], origin, direction, tMin, tMax, t, bary)) {
+			tMax = t;
+			hit.t = t;
+			hit.instance = instance;
+			hit.triangle = i;
+			hit.bary = bary;
+		}
+	}
+}
+
+// The ray in an instance's object space. The direction is deliberately NOT renormalised there:
+// origin + t * direction is then the same point in both spaces, so t, tMin and the running
+// closest hit carry across the transform unchanged, with no rescaling anywhere.
+void instanceRay(GpuInstance instance, vec3 origin, vec3 direction, out vec3 localOrigin, out vec3 localDirection)
+{
+	const vec4 o = vec4(origin, 1.0);
+	localOrigin = vec3(dot(instance.row0, o), dot(instance.row1, o), dot(instance.row2, o));
+	localDirection = vec3(dot(instance.row0.xyz, direction), dot(instance.row1.xyz, direction), dot(instance.row2.xyz, direction));
+}
+
+// one placed shape, in its own object space
+void testShapeInstance(GpuInstance instance, uint slot, vec3 localOrigin, vec3 localDirection, float tMin, inout float tMax, inout TraceHit hit)
+{
+	g_primitivesTested++;
+	float t;
+	if (hitShape(instance.triangleBase, localOrigin, localDirection, tMin, tMax, t)) {
+		tMax = t;
+		hit.t = t;
+		hit.instance = slot;
+	}
+}
+
+// the state every traceScene() starts from
+void resetTrace(out TraceHit hit)
+{
+	g_nodesVisited = 0u;
+	g_primitivesTested = 0u;
+	hit.t = CRT_INFINITY;
+	hit.instance = 0u;
+	hit.triangle = 0u;
+	hit.bary = vec2(0.0);
+}

@@ -1,15 +1,28 @@
-// GPU path tracer, stage 2: intersect every queued path with the scene and write one HitRecord
-// per queue position. Shade reads that record and never learns which kind of geometry produced
-// it, which is the whole point of the split - shapes and triangles differ only here.
+// Kernel 02 Intersect Closest - the body every variant shares.
 //
-// The scene is a two-level BVH (crt_bvh.glsl): a TLAS over the placed meshes and the bounded
-// shapes, and a BLAS per mesh in its object space; the unbounded shapes are tested outside it. This file is the stage's body; crt_extend.comp and
-// crt_extend_cwbvh.comp include it with the binary and the CWBVH BLAS traversal respectively, and
-// src/rt_gpu.cpp picks the pipeline matching the layout the scene was built with.
-
-// requires GL_GOOGLE_include_directive, enabled by the including .comp
-#include "crt_common.glsl"
-#include "crt_bvh.glsl"
+// The including .comp has already supplied traceScene() (crt_traverse.glsl). This file does
+// everything around it: pull the ray from the current ray queue, trace it, turn whatever came
+// back into a HitRecord, and push the path onto exactly one of the three classification queues
+// that kernel 03, 04 and 06 drain.
+//
+//     miss                         -> CRT_QUEUE_ESCAPED   -> 03 Handle Escaped
+//     hit, material is emissive    -> CRT_QUEUE_EMISSIVE  -> 04 Handle Emissive Geometry
+//     hit, anything else           -> CRT_QUEUE_SURFACE   -> 06 Sample Surface Scattering
+//
+// This is the split that makes each of those kernels start out CONVERGED: 06 runs only over
+// paths that really do need a BSDF sampled, not over a queue where two lanes in three are
+// missing or hitting a light. It is the whole reason the wavefront is worth its bandwidth
+// (PBR 4ed 15.1.2).
+//
+// The queues hold the RAY QUEUE POSITION, not the path index. That one number is also the index
+// of the path's HitRecord, so a consumer reaches both the hit and the path from it, and the
+// hits[] array stays written once and read once with no indirection of its own.
+//
+// The HitRecord is deliberately geometry-agnostic: a shape and a triangle write the same
+// record, and nothing downstream of here can tell which it came from. Adding a primitive kind
+// changes this file and crt_shape.glsl; it changes no kernel after 02.
+//
+// Requires crt_common.glsl and a traceScene() from one of the strategy headers.
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
@@ -17,8 +30,8 @@ layout (local_size_x = CRT_WORKGROUP) in;
 shared uint s_nodesVisited;
 shared uint s_primitivesTested;
 
-// one queued path: trace it and write its HitRecord
-void extendPath(uint queue, uint index)
+// one queued path: trace it, write its HitRecord, and report which queue it belongs on
+uint intersectPath(uint queue, uint index)
 {
 	const uint pathIndex = queues[queueSlot(queue, index)];
 	const PathState path = paths[pathIndex];
@@ -40,7 +53,7 @@ void extendPath(uint queue, uint index)
 		record.normal = vec3(0.0);
 		record.materialAndFace = 0u;
 		hits[index] = record;
-		return;
+		return CRT_QUEUE_ESCAPED;
 	}
 
 	const GpuInstance instance = instances[trace.instance];
@@ -86,11 +99,15 @@ void extendPath(uint queue, uint index)
 	record.normal = frontFace ? normal : -normal;
 	record.materialAndFace = (material << 1u) | (frontFace ? 1u : 0u);
 	hits[index] = record;
+
+	// a light ends the path wherever it is hit, so it goes to its own kernel rather than through
+	// the scattering one's front door
+	return materials[material].type == CRT_MATERIAL_EMISSIVE ? CRT_QUEUE_EMISSIVE : CRT_QUEUE_SURFACE;
 }
 
 void main()
 {
-	const uint queue = pc.bounce & 1u;
+	const uint queue = rayQueueFor(pc.bounce);
 	const uint index = gl_GlobalInvocationID.x;
 
 	if (gl_LocalInvocationID.x == 0u) {
@@ -103,8 +120,9 @@ void main()
 	// the overhang of the last workgroup does no work, but stays for the barriers below
 	g_nodesVisited = 0u;
 	g_primitivesTested = 0u;
+	uint target = CRT_QUEUE_COUNT;
 	if (index < headers[queue].rayCount) {
-		extendPath(queue, index);
+		target = intersectPath(queue, index);
 		atomicAdd(s_nodesVisited, g_nodesVisited);
 		atomicAdd(s_primitivesTested, g_primitivesTested);
 	}
@@ -115,4 +133,11 @@ void main()
 		atomicAdd(traversalStats[2u * pc.bounce], s_nodesVisited);
 		atomicAdd(traversalStats[2u * pc.bounce + 1u], s_primitivesTested);
 	}
+
+	// three appends rather than one, because queueAppend() takes a single queue and must be
+	// reached by every invocation of the workgroup in uniform control flow. A lane pushes to
+	// exactly one of them and passes survives = false to the other two
+	queueAppend(CRT_QUEUE_ESCAPED, target == CRT_QUEUE_ESCAPED, index);
+	queueAppend(CRT_QUEUE_EMISSIVE, target == CRT_QUEUE_EMISSIVE, index);
+	queueAppend(CRT_QUEUE_SURFACE, target == CRT_QUEUE_SURFACE, index);
 }

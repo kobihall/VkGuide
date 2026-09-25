@@ -1,7 +1,11 @@
-// The two-level BVH traversal: a binary TLAS over the instances, and each instance's BLAS in
-// whichever layout the scene was built with - binary (Aila & Laine 2009) by default, or the
-// compressed 8-wide CWBVH (Ylitie et al. 2017) when the including shader defines CRT_BVH_CWBVH.
-// The two builds of the extend stage are crt_extend.comp and crt_extend_cwbvh.comp.
+// Kernel 02 Intersect Closest, strategy: TWO-LEVEL BOUNDING VOLUME HIERARCHY.
+//
+// A binary TLAS over the instances, and each instance's BLAS in whichever layout the scene was
+// built with - binary (Aila & Laine 2009) by default, or the compressed 8-wide CWBVH
+// (Ylitie et al. 2017) when the including shader defines CRT_BVH_CWBVH. The two builds are
+// shaders/rt/0201_intersect_closest_bvh.comp and 0202_intersect_closest_cwbvh.comp.
+//
+// Supplies traceScene() per the contract in crt_traverse.glsl.
 //
 // Mirrored line for line on the CPU by src/bvh_layout.h (traverseBinaryBvh, traceCwbvh) and
 // src/bvh_scene.cpp (traceScene), which tests/bvh_bench.cpp checks against brute force - a
@@ -9,6 +13,8 @@
 // src/bvh_layout.h PackedBvh.
 //
 // Requires crt_common.glsl.
+
+#include "crt_traverse.glsl"
 
 // src/bvh_layout.h BVH_BINARY_STACK_SIZE / BVH_CWBVH_STACK_SIZE: packBvh() refuses deeper trees,
 // and a traversal that would overflow stops pushing rather than write past the array
@@ -20,29 +26,6 @@
 // on this machine takes the window server - and the whole desktop - down with it
 #define CRT_MAX_TRAVERSAL_STEPS 65536u
 
-struct TraceHit {
-	float t;
-	// the instances[] slot, and for a mesh the global blasTriangles[] index of the triangle
-	uint instance;
-	uint triangle;
-	vec2 bary;
-};
-
-// what the traversal-cost debug view shows: node visits and primitive tests of this ray
-uint g_nodesVisited;
-uint g_primitivesTested;
-
-// 1 / d with each zero component replaced by a tiny signed one, so no box test multiplies 0 by
-// infinity: NaN compares false both ways and would admit or reject a box arbitrarily
-vec3 safeReciprocal(vec3 d)
-{
-	const vec3 signs = vec3(greaterThanEqual(d, vec3(0.0))) * 2.0 - 1.0;
-	return 1.0 / mix(d, signs * 1e-12, lessThan(abs(d), vec3(1e-12)));
-}
-
-// the analytic shapes, which need safeReciprocal
-#include "crt_shape.glsl"
-
 // near distance of a hit box, or CRT_INFINITY for a miss (Bikker, "How to build a BVH" part 2)
 float slabNear(vec3 bmin, vec3 bmax, vec3 origin, vec3 reciprocal, float tMin, float tMax)
 {
@@ -53,23 +36,6 @@ float slabNear(vec3 bmin, vec3 bmax, vec3 origin, vec3 reciprocal, float tMin, f
 	const float tNear = max(max(near.x, near.y), max(near.z, tMin));
 	const float tFar = min(min(far.x, far.y), min(far.z, tMax));
 	return tNear <= tFar ? tNear : CRT_INFINITY;
-}
-
-// triangles [first, first + count) of blasTriangles, lowering tMax on a hit
-void testTriangles(uint first, uint count, uint instance, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit)
-{
-	for (uint i = first; i < first + count; i++) {
-		g_primitivesTested++;
-		float t;
-		vec2 bary;
-		if (hitTriangle(blasTriangles[i], origin, direction, tMin, tMax, t, bary)) {
-			tMax = t;
-			hit.t = t;
-			hit.instance = instance;
-			hit.triangle = i;
-			hit.bary = bary;
-		}
-	}
 }
 
 #ifndef CRT_BVH_CWBVH
@@ -235,24 +201,16 @@ void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 di
 
 //---------------------------------------------------------------- TLAS
 
-// one instance, mesh or shape, by carrying the ray into its object space. The direction is
-// deliberately not renormalised there - origin + t * direction is then the same point in both
-// spaces, so t, tMin and the running closest hit carry across unchanged
+// one instance, mesh or shape, by carrying the ray into its object space
 void testInstance(uint slot, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit)
 {
 	const GpuInstance instance = instances[slot];
-	const vec4 o = vec4(origin, 1.0);
-	const vec3 localOrigin = vec3(dot(instance.row0, o), dot(instance.row1, o), dot(instance.row2, o));
-	const vec3 localDirection = vec3(dot(instance.row0.xyz, direction), dot(instance.row1.xyz, direction), dot(instance.row2.xyz, direction));
+	vec3 localOrigin;
+	vec3 localDirection;
+	instanceRay(instance, origin, direction, localOrigin, localDirection);
 
 	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
-		g_primitivesTested++;
-		float t;
-		if (hitShape(instance.triangleBase, localOrigin, localDirection, tMin, tMax, t)) {
-			tMax = t;
-			hit.t = t;
-			hit.instance = slot;
-		}
+		testShapeInstance(instance, slot, localOrigin, localDirection, tMin, tMax, hit);
 		return;
 	}
 
@@ -264,12 +222,7 @@ void testInstance(uint slot, vec3 origin, vec3 direction, float tMin, inout floa
 // than a box test, so there is nothing for a wide node to save
 bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit)
 {
-	g_nodesVisited = 0u;
-	g_primitivesTested = 0u;
-	hit.t = CRT_INFINITY;
-	hit.instance = 0u;
-	hit.triangle = 0u;
-	hit.bary = vec2(0.0);
+	resetTrace(hit);
 	// the unbounded shapes first: a near plane hit then prunes the TLAS walk
 	for (uint i = 0u; i < pc.unboundedCount; i++) {
 		testInstance(i, origin, direction, tMin, tMax, hit);

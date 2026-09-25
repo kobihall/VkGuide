@@ -1,0 +1,10 @@
+#version 460
+
+// 02 Intersect Closest - two-level BVH, compressed 8-wide (CWBVH) BLAS nodes.
+// The same strategy file as 0201, built with its wide traversal instead.
+
+#define CRT_BVH_CWBVH 1
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_bvh.glsl"
+#include "include/crt_intersect.glsl"

@@ -1,5 +1,0 @@
-#version 460
-
-// The extend stage with binary (Aila-Laine) BLASes. The body is crt_extend.glsl
-#extension GL_GOOGLE_include_directive : require
-#include "crt_extend.glsl"

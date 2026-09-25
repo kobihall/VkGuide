@@ -105,8 +105,13 @@ struct GpuInstance {
 	uint32_t attributeBase;
 	// a mesh: into instanceMaterials[], indexed by surface. A shape: its material directly
 	uint32_t materialBase;
+	// a mesh: how many BvhTriangles its BLAS owns. Unused by a BVH traversal, which reaches
+	// triangles through leaves; it is what a brute-force variant of kernel 02 scans instead
+	// (shaders/rt/include/crt_linear.glsl). A shape: 0
+	uint32_t triangleCount;
+	uint32_t pad[3];
 };
-static_assert(sizeof(GpuInstance) == 64);
+static_assert(sizeof(GpuInstance) == 80);
 
 inline constexpr uint32_t GPU_INSTANCE_SHAPE = 0xFFFFFFFFu;
 
@@ -116,6 +121,8 @@ struct BlasPlacement {
 	uint32_t nodeBase { 0 };
 	uint32_t triangleBase { 0 };
 	uint32_t attributeBase { 0 };
+	// how many triangles this BLAS contributed, for the strategies that scan rather than traverse
+	uint32_t triangleCount { 0 };
 };
 
 // The geometry every BLAS contributes, concatenated for upload. Built once per RaytraceBlasSet

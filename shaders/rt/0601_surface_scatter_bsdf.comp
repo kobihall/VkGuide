@@ -1,0 +1,100 @@
+#version 460
+
+// 06 SAMPLE SURFACE SCATTERING - strategy: BSDF SAMPLING.
+//
+// The paths kernel 02 pushed onto CRT_QUEUE_SURFACE: rays that hit a non-emissive surface.
+// Because 02 already sent the misses and the lights elsewhere, this kernel starts out
+// converged - every lane really does have a BSDF to sample.
+//
+//     throughput *= f(wo, wi) ; continue along wi
+//
+// A path either continues, and is appended to the next bounce's ray queue, or ends - absorbed,
+// killed by Russian roulette, or out of depth - and leaves the zero that kernel 00 pre-wrote in
+// its radiance slot. Nothing is written for a path that ends here; that is what makes the
+// pre-write worth its bandwidth.
+//
+// Russian roulette (not in the CPU backend) kills low-throughput paths after a few bounces with
+// probability 1 - max(throughput) and reweights the survivors, which is unbiased and makes late
+// bounces cheap under compaction.
+//
+// SIBLING VARIANTS. This slot is the natural home of the light-sampling question, and a variant
+// changes only this file plus what it leaves in the path state:
+//   0602 light sampling  - sample a light, emit a shadow ray onto CRT_QUEUE_SHADOW for kernel
+//                          08 to trace, and take no BSDF continuation contribution from it.
+//   0603 MIS            - do both, weight each by the balance heuristic, and record the solid
+//                          angle kernel 04 needs to weight a light hit found by chance.
+// See docs/plans/shadow-rays-nee.md for what each needs from the rest of the pipeline.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_scatter.glsl"
+#include "include/crt_debug.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+	const uint nextQueue = rayQueueFor(pc.bounce + 1u);
+	const uint index = gl_GlobalInvocationID.x;
+	// no early return: queueAppend() below has barriers every invocation must reach
+	const bool isActive = index < headers[CRT_QUEUE_SURFACE].rayCount;
+
+	bool survives = false;
+	uint pathIndex = 0u;
+
+	if (isActive) {
+		// the queue holds the RAY QUEUE POSITION, which is also the index of the path's hit record
+		const uint entry = queues[queueSlot(CRT_QUEUE_SURFACE, index)];
+		pathIndex = queues[queueSlot(rayQueueFor(pc.bounce), entry)];
+		PathState path = paths[pathIndex];
+		const HitRecord hit = hits[entry];
+		const vec3 inDir = normalize(path.direction);
+
+		vec3 debugValue;
+		if (debugTerminalValue(hit, inDir, true, debugValue)) {
+			// the debug views replace shading: each writes its value as the path's contribution
+			// and ends the path, so they accumulate (and average under jitter) like radiance
+			radiance[path.radianceSlot] = vec4(debugValue, 1.0);
+		} else {
+			const GpuMaterial material = resolveMaterial(hit.materialAndFace >> 1u, hit.uv);
+			const bool frontFace = (hit.materialAndFace & 1u) != 0u;
+			uint rng = path.rngState;
+
+			vec3 attenuation;
+			vec3 outDir;
+			bool alive = scatterSurface(material, inDir, hit.normal, frontFace, rng, attenuation, outDir);
+			vec3 throughput = path.throughput * attenuation;
+			const uint nextBounce = path.bounce + 1u;
+
+			// nowhere further to go: the CPU's ray_color() returns black at depth 0 without tracing
+			if (nextBounce >= pc.rayDepth) {
+				alive = false;
+			}
+
+			if (alive && (pc.flags & CRT_FLAG_ROULETTE) != 0u && nextBounce > pc.minBouncesBeforeRoulette) {
+				const float survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.05, 1.0);
+				if (randomFloat(rng) >= survival) {
+					alive = false;
+				} else {
+					throughput /= survival;
+				}
+			}
+
+			if (alive) {
+				path.origin = hit.position;
+				path.direction = outDir;
+				path.rngState = rng;
+				path.throughput = throughput;
+				path.bounce = nextBounce;
+				paths[pathIndex] = path;
+				survives = true;
+			} else if (pc.debugView == CRT_DEBUG_BOUNCE_HEAT) {
+				radiance[path.radianceSlot] = vec4(bounceHeat(nextBounce), 1.0);
+			}
+			// otherwise the pre-written zero stands: absorbed, killed, or out of depth
+		}
+	}
+
+	queueAppend(nextQueue, survives, pathIndex);
+}

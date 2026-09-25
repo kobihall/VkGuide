@@ -22,7 +22,11 @@ namespace {
 //   older file's "spheres" still reads, as spheres
 //7: adds the "emissive" material ("color", "strength") and "background", a solid colour for missed
 //   rays; absent means the environment map or the sky, as before
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 7;
+//8: adds "kernels", the wavefront kernel variant selected in each slot as {"NN":"<variant id>"},
+//   and "accel", how the BVH those kernels read is built. Both absent in an older file, which
+//   then opens with the default selection (BVH traversal, BSDF scattering) and the default
+//   builder - exactly what every scene saved before this used
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 8;
 
 //---------------------------------------------------------------- writing
 
@@ -143,6 +147,26 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	const RenderSettings& r = scene.render;
 	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"unlimitedSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"restartOnChange":{}}})",
 		r.width, r.height, r.matchViewport, r.antialiasing, r.maxSamples, r.unlimitedSamples, r.rayDepth, r.useFixedSeed, r.seed, r.samplesPerFrame, r.russianRoulette, r.minBouncesBeforeRoulette, r.restartOnChange);
+
+	//version 8: the wavefront kernel selection, by slot number and variant id. Ids rather than
+	//indices so that registering a new variant, or reordering the table, never silently changes
+	//what an existing scene renders with
+	json += R"(,"kernels":{)";
+	const std::vector<std::pair<std::string, std::string>> kernelIds = kernelSelectionToIds(scene.kernels);
+	for (size_t i = 0; i < kernelIds.size(); i++) {
+		if (i > 0) {
+			json += ',';
+		}
+		json += fmt::format("{}:{}", jsonString(kernelIds[i].first), jsonString(kernelIds[i].second));
+	}
+	json += '}';
+
+	//version 8: how the BVH is built. The node layout is deliberately NOT here - it follows
+	//whichever kernel 02 variant is selected, so saving it would let a file contradict itself
+	const BvhBuildOptions& a = scene.accel.blas;
+	json += fmt::format(R"(,"accel":{{"builder":{},"maxLeafSize":{},"binCount":{},"traversalCost":{},"intersectionCost":{},"spatialAlpha":{},"spatialBudget":{},"maxDepth":{}}})",
+		jsonString(bvhBuilderName(a.builder)), a.maxLeafSize, a.binCount,
+		jsonNumber(a.traversalCost), jsonNumber(a.intersectionCost), jsonNumber(a.spatialAlpha), jsonNumber(a.spatialBudget), a.maxDepth);
 
 	json += fmt::format(R"(,"renderCamera":{},"cameras":[)", scene.renderCamera);
 	for (size_t i = 0; i < scene.cameras.size(); i++) {
@@ -381,6 +405,53 @@ void readOptionalFloat(JsonElement element, float& out)
 	}
 }
 
+//version 8: {"00":"thin_lens","02":"bvh_binary",...}. Unknown slots and unknown variant ids are
+//collected as warnings and left at their default rather than failing the load - a scene saved by
+//a build with a strategy this one does not have must still open
+void readKernelSelection(JsonElement element, SceneDescription& scene)
+{
+	simdjson::dom::object object;
+	if (element.get_object().get(object) != simdjson::SUCCESS) {
+		return;
+	}
+	std::vector<std::pair<std::string, std::string>> ids;
+	for (auto field : object) {
+		std::string_view value;
+		if (field.value.get_string().get(value) != simdjson::SUCCESS) {
+			continue;
+		}
+		ids.emplace_back(std::string(field.key), std::string(value));
+	}
+	scene.kernels = kernelSelectionFromIds(ids, &scene.kernelWarnings);
+}
+
+//version 8. The layout is not read: it follows the selected kernel 02 variant, and
+//RaytraceRenderer::setAccelSettings() puts it right
+void readAccelSettings(JsonElement element, AccelSettings& out)
+{
+	simdjson::dom::object object;
+	if (element.get_object().get(object) != simdjson::SUCCESS) {
+		return;
+	}
+	BvhBuildOptions& blas = out.blas;
+	std::string_view builder;
+	if (object["builder"].get_string().get(builder) == simdjson::SUCCESS) {
+		for (uint32_t i = 0; i < (uint32_t)BvhBuilder::Count; i++) {
+			if (builder == bvhBuilderName((BvhBuilder)i)) {
+				blas.builder = (BvhBuilder)i;
+				break;
+			}
+		}
+	}
+	readOptionalUint(object["maxLeafSize"], blas.maxLeafSize);
+	readOptionalUint(object["binCount"], blas.binCount);
+	readOptionalUint(object["maxDepth"], blas.maxDepth);
+	readOptionalFloat(object["traversalCost"], blas.traversalCost);
+	readOptionalFloat(object["intersectionCost"], blas.intersectionCost);
+	readOptionalFloat(object["spatialAlpha"], blas.spatialAlpha);
+	readOptionalFloat(object["spatialBudget"], blas.spatialBudget);
+}
+
 void readRenderSettings(JsonElement element, RenderSettings& out)
 {
 	simdjson::dom::object object;
@@ -594,6 +665,11 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 	if (readVec3(root["background"], background)) {
 		ctx.scene.backgroundColor = glm::max(background, glm::vec3(0.f));
 	}
+
+	//version 8: the kernel selection and the BVH settings. Both optional; an older file simply
+	//keeps the defaults SceneDescription was constructed with
+	readKernelSelection(root["kernels"], ctx.scene);
+	readAccelSettings(root["accel"], ctx.scene.accel);
 
 	//version 4: cameras. An older file gets one default camera, carrying the lens settings its
 	//"render" block had

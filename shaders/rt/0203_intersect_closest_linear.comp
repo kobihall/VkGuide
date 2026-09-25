@@ -1,0 +1,9 @@
+#version 460
+
+// 02 Intersect Closest - brute force, no acceleration structure.
+// The strategy is crt_linear.glsl; the body around it is crt_intersect.glsl, unchanged.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_linear.glsl"
+#include "include/crt_intersect.glsl"

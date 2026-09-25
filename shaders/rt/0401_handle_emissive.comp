@@ -1,0 +1,50 @@
+#version 460
+
+// 04 HANDLE EMISSIVE GEOMETRY. The paths kernel 02 pushed onto CRT_QUEUE_EMISSIVE: rays that
+// hit a light. Each one collects what the light emits through everything it bounced off and
+// ends there.
+//
+//     L += throughput * albedo * strength
+//
+// Like 03, a terminal kernel: nothing is appended to the next ray queue.
+//
+// This is where the MIS weight goes. Under pure BSDF sampling a light found by chance is
+// counted at full weight, which is what happens here. Once kernel 06 also samples lights
+// directly, the same light would be counted twice, and this kernel has to scale its
+// contribution by the balance-heuristic weight against the probability that 06's light sample
+// would have found the same point (PBR 4ed 15.3.8). That is a change to this one file plus the
+// solid angle that 06 would have to leave in the path state - see docs/plans/shadow-rays-nee.md.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_debug.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= headers[CRT_QUEUE_EMISSIVE].rayCount) {
+		return;
+	}
+
+	// the queue holds the RAY QUEUE POSITION, which is also the index of the path's hit record
+	const uint entry = queues[queueSlot(CRT_QUEUE_EMISSIVE, index)];
+	const uint pathIndex = queues[queueSlot(rayQueueFor(pc.bounce), entry)];
+	const PathState path = paths[pathIndex];
+	const HitRecord hit = hits[entry];
+	const vec3 inDir = normalize(path.direction);
+
+	vec3 value;
+	if (debugTerminalValue(hit, inDir, true, value)) {
+		radiance[path.radianceSlot] = vec4(value, 1.0);
+		return;
+	}
+	if (pc.debugView == CRT_DEBUG_BOUNCE_HEAT) {
+		radiance[path.radianceSlot] = vec4(bounceHeat(path.bounce), 1.0);
+		return;
+	}
+
+	const GpuMaterial light = materials[hit.materialAndFace >> 1u];
+	radiance[path.radianceSlot] = vec4(path.throughput * light.albedo * light.param, 1.0);
+}

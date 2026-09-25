@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 560" width="980" height="560" font-family="Georgia, 'Times New Roman', serif">
+  <title>Wavefront kernels in this renderer</title>
+  <desc>Adapted from figure 15.2 of Physically Based Rendering 4ed. Boxes are compute kernels, arrows are the queues that carry work between them.</desc>
+
+  <style>
+    .box   { fill: #ffffff; stroke: #231f20; stroke-width: 2; }
+    .stub  { fill: #f4f4f4; stroke: #a9a9a9; stroke-width: 2; stroke-dasharray: 6 4; }
+    .lbl   { font-size: 15px; fill: #231f20; text-anchor: middle; }
+    .lbls  { font-size: 15px; fill: #8a8a8a; text-anchor: middle; }
+    .num   { font-size: 13px; fill: #8a8a8a; text-anchor: middle; font-family: ui-monospace, Menlo, monospace; }
+    .var   { font-size: 11.5px; fill: #3b6fb6; text-anchor: middle; font-family: ui-monospace, Menlo, monospace; }
+    .edge  { fill: none; stroke: #231f20; stroke-width: 1.6; marker-end: url(#a); }
+    .edged { fill: none; stroke: #a9a9a9; stroke-width: 1.6; stroke-dasharray: 6 4; marker-end: url(#ad); }
+    .qn    { font-size: 11px; fill: #6b6b6b; font-family: ui-monospace, Menlo, monospace; }
+    .note  { font-size: 12px; fill: #6b6b6b; }
+    .loop  { fill: none; stroke: #231f20; stroke-width: 1.6; marker-end: url(#a); }
+  </style>
+
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#231f20"/>
+    </marker>
+    <marker id="ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a9a9a9"/>
+    </marker>
+  </defs>
+
+  <!-- ============ per-frame prologue ============ -->
+  <rect class="box" x="16"  y="196" width="118" height="62" rx="2"/>
+  <text class="num" x="75"  y="214">00</text>
+  <text class="lbl" x="75"  y="233">Generate</text>
+  <text class="lbl" x="75"  y="250">Camera Rays</text>
+
+  <!-- ============ the bounce loop ============ -->
+  <rect x="158" y="24" width="700" height="428" rx="6" fill="none" stroke="#c9c9c9" stroke-width="1.4" stroke-dasharray="3 5"/>
+  <text class="note" x="168" y="44">once per bounce, up to Ray depth</text>
+
+  <rect class="box" x="176" y="196" width="112" height="62" rx="2"/>
+  <text class="num" x="232" y="214">01</text>
+  <text class="lbl" x="232" y="233">Generate</text>
+  <text class="lbl" x="232" y="250">Samples</text>
+
+  <rect class="box" x="322" y="190" width="132" height="74" rx="2"/>
+  <text class="num" x="388" y="208">02</text>
+  <text class="lbl" x="388" y="227">Intersect</text>
+  <text class="lbl" x="388" y="244">Closest</text>
+  <text class="var" x="388" y="259">3 variants</text>
+
+  <rect class="box" x="672" y="60"  width="132" height="58" rx="2"/>
+  <text class="num" x="738" y="80">03</text>
+  <text class="lbl" x="738" y="100">Handle Escaped</text>
+
+  <rect class="box" x="672" y="140" width="132" height="70" rx="2"/>
+  <text class="num" x="738" y="160">04</text>
+  <text class="lbl" x="738" y="179">Handle Emissive</text>
+  <text class="lbl" x="738" y="196">Geometry</text>
+
+  <rect class="stub" x="472" y="330" width="130" height="70" rx="2"/>
+  <text class="num" x="537" y="350">05</text>
+  <text class="lbls" x="537" y="369">Sample Medium</text>
+  <text class="lbls" x="537" y="386">Interaction</text>
+
+  <rect class="box" x="672" y="238" width="132" height="70" rx="2"/>
+  <text class="num" x="738" y="258">06</text>
+  <text class="lbl" x="738" y="277">Sample Surface</text>
+  <text class="lbl" x="738" y="294">Scattering</text>
+
+  <rect class="stub" x="672" y="334" width="132" height="70" rx="2"/>
+  <text class="num" x="738" y="354">07</text>
+  <text class="lbls" x="738" y="373">Sample Medium</text>
+  <text class="lbls" x="738" y="390">Scattering</text>
+
+  <rect class="stub" x="836" y="150" width="120" height="70" rx="2"/>
+  <text class="num" x="896" y="170">08</text>
+  <text class="lbls" x="896" y="189">Trace Shadow</text>
+  <text class="lbls" x="896" y="206">Rays</text>
+
+  <!-- ============ per-frame epilogue ============ -->
+  <rect class="box" x="836" y="440" width="120" height="62" rx="2"/>
+  <text class="num" x="896" y="459">09</text>
+  <text class="lbl" x="896" y="478">Update</text>
+  <text class="lbl" x="896" y="495">Film</text>
+
+  <!-- ============ edges ============ -->
+  <path class="edge" d="M 134 227 L 172 227"/>
+  <path class="edge" d="M 288 227 L 318 227"/>
+
+  <!-- 02 -> 03 -->
+  <path class="edge" d="M 454 210 C 540 200 580 110 668 92"/>
+  <text class="qn" x="500" y="150">Q_escaped</text>
+  <!-- 02 -> 04 -->
+  <path class="edge" d="M 454 220 C 545 216 580 184 668 176"/>
+  <text class="qn" x="506" y="207">Q_emissive</text>
+  <!-- 02 -> 06 -->
+  <path class="edge" d="M 454 240 C 560 244 580 268 668 270"/>
+  <text class="qn" x="520" y="268">Q_surface</text>
+
+  <!-- 02 -> 05 (dashed, planned) -->
+  <path class="edged" d="M 388 264 C 388 320 420 362 468 364"/>
+  <!-- 05 -> 06, 05 -> 07 (dashed) -->
+  <path class="edged" d="M 602 350 C 640 344 648 300 668 288"/>
+  <path class="edged" d="M 602 376 C 632 378 644 370 668 369"/>
+  <!-- 06 -> 08, 07 -> 08 (dashed) -->
+  <path class="edged" d="M 804 258 C 824 240 828 220 832 208"/>
+  <path class="edged" d="M 804 352 C 838 330 852 256 862 224"/>
+
+  <!-- 06 -> next bounce: back to 01 -->
+  <path class="loop" d="M 804 294 C 832 300 834 436 700 436 L 246 436 L 232 436 L 232 264"/>
+  <text class="qn" x="300" y="432">Q_ray (ping-pong)</text>
+  <!-- 07 -> next bounce (dashed) -->
+  <path class="edged" d="M 738 404 C 738 412 700 410 690 410 L 246 410"/>
+
+  <!-- 03 / 04 -> film (terminal) -->
+  <path class="edge" d="M 804 90 C 930 90 946 380 906 436"/>
+  <path class="edge" d="M 804 168 C 900 168 936 372 902 436"/>
+  <text class="qn" x="900" y="300">radiance[]</text>
+
+  <!-- ============ legend ============ -->
+  <rect class="box" x="16" y="468" width="22" height="14" rx="2"/>
+  <text class="note" x="46" y="480">implemented</text>
+  <rect class="stub" x="150" y="468" width="22" height="14" rx="2"/>
+  <text class="note" x="180" y="480">stub — registered, never dispatched</text>
+
+  <text class="note" x="16" y="506">Boxes are compute kernels (one shaders/rt/NNVV_*.comp per variant); arrows are the index queues that carry work between them.</text>
+  <text class="note" x="16" y="524">Every per-bounce kernel is dispatched indirectly, from the queue header that the kernel before it filled.</text>
+  <text class="note" x="16" y="542">Adapted from figure 15.2 of Physically Based Rendering, 4th ed. (Pharr, Jakob &amp; Humphreys).</text>
+</svg>

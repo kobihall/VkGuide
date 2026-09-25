@@ -19,7 +19,10 @@
 
 #include <vector>
 
+#include <array>
+
 #include <rt_accel.h>
+#include <rt_kernels.h>
 #include <rt_scene_types.h>
 #include <vk_compute.h>
 #include <vk_types.h>
@@ -96,6 +99,9 @@ struct GpuRenderSnapshot {
 	RenderSettings settings;
 	// the seed actually used (settings.seed if fixed, otherwise drawn at Render)
 	uint32_t seed { 0 };
+	// which kernel variant runs in each slot of the wavefront. Taken at the click like
+	// everything else here, so changing a strategy mid-render restarts rather than mixes
+	KernelSelection kernels;
 	// sample the engine's environment map on a miss; false falls back to the sky gradient
 	bool useEnvironmentMap { false };
 	float environmentIntensity { 1.f };
@@ -161,14 +167,13 @@ private:
 	// hands a buffer the frame in flight may still read to the deletion queue of that frame's slot
 	void retireBuffer(VulkanEngine* engine, AllocatedBuffer& buffer);
 	void collectReadbacks(VulkanEngine* engine, uint32_t slot);
-	VkDescriptorSet writeSet(VulkanEngine* engine, const ComputePass& pass);
+	// a set holding exactly the bindings `variant` declared, allocated from this frame's pool
+	VkDescriptorSet writeSet(VulkanEngine* engine, const KernelVariant& variant, const ComputePass& pass);
 
-	ComputePass m_generate;
-	// one extend pipeline per BLAS layout; the scene's layout picks which one runs
-	ComputePass m_extend;
-	ComputePass m_extendCwbvh;
-	ComputePass m_shade;
-	ComputePass m_resolve;
+	// one ComputePass per registered kernel variant, [slot][variant], built in init() from the
+	// registry. A variant with implemented = false gets a default-constructed entry that is never
+	// bound. Which of them actually runs is m_selection, set per render by the snapshot
+	std::array<std::vector<ComputePass>, (size_t)KernelSlot::Count> m_passes;
 
 	// the pool, sized for m_poolWidth x m_poolHeight x m_samplesPerFrame paths
 	uint32_t m_poolWidth { 0 };
@@ -210,6 +215,8 @@ private:
 	VkDeviceSize m_tlasBytes { 0 };
 	uint32_t m_tlasInstanceCount { 0 };
 	uint32_t m_unboundedCount { 0 };
+	// every instance, TLAS or not: what a traversal-free kernel 02 variant scans
+	uint32_t m_instanceCount { 0 };
 	std::shared_ptr<const RaytraceSceneAccel> m_uploadedScene;
 
 	// per frame slot: timestamps (two queries) and the queue headers after each producer

@@ -21,6 +21,7 @@
 
 #include <rt_accel.h>
 #include <rt_gpu.h>
+#include <rt_kernels.h>
 #include <rt_scene_types.h>
 #include <vk_types.h>
 
@@ -64,6 +65,10 @@ public:
 	// down with it. The BVH brings the cost per ray to tens, but the guard stays: it is the one
 	// thing between a pathological scene (thousands of overlapping instances) and a dead machine.
 	static double estimatedWorkPerFrame(const RenderSettings& settings, double costPerRay);
+	// what one ray of the CURRENTLY SELECTED kernel 02 variant costs in this scene, in the units
+	// above. A BVH ray and a brute-force ray differ by orders of magnitude, so the guard has to
+	// ask the strategy rather than assume one
+	double sceneCostPerRay() const;
 	// roughly a second of the extend stage on the development GPU, which leaves the watchdog a wide
 	// margin. Deliberately not a setting: the override below is per-render and never saved
 	static constexpr double WORK_PER_FRAME_BUDGET = 5.0e8;
@@ -76,6 +81,25 @@ public:
 	// which scene camera renders. An id the scene no longer has falls back to its first camera
 	uint64_t renderCameraId() const { return m_renderCameraId; }
 	void setRenderCamera(uint64_t id) { m_renderCameraId = id; }
+
+	// which kernel variant runs in each slot of the wavefront (src/rt_kernels.h). Saved with the
+	// scene; changing one restarts a running render, exactly like a setting
+	const KernelSelection& kernels() const { return m_kernels; }
+	void setKernels(const KernelSelection& selection);
+
+	// the BVH builder and layout, saved with the scene alongside the kernel selection because
+	// the two are chosen together: the selected kernel 02 variant is what fixes the layout
+	const AccelSettings& accelSettings() const { return m_accelSettings; }
+	void setAccelSettings(VulkanEngine* engine, const AccelSettings& settings);
+	// the BLAS node layout the selected kernel 02 variant can read. Selecting the traversal is
+	// what chooses the layout - there is no separate control for it, because a mismatch between
+	// the two is not a preference, it is an unreadable buffer
+	BvhLayout requiredLayout() const;
+
+	// the "Raytracer Shaders" window: one row per kernel slot of the PBR wavefront figure, each
+	// a combo over that slot's registered variants
+	void drawKernelPanel(VulkanEngine* engine);
+	bool* kernelPanelVisibilityFlag() { return &m_showKernelPanel; }
 
 private:
 	// everything a render depends on, compared every frame against what the running render
@@ -90,6 +114,7 @@ private:
 		uint64_t modelRevision { 0 };
 		// which BLAS set, so rebuilding with other BVH settings restarts a running render
 		uint64_t accelRevision { 0 };
+		KernelSelection kernels;
 		std::filesystem::path environmentMapPath;
 		float environmentIntensity { 1.f };
 		bool solidBackground { false };
@@ -120,6 +145,8 @@ private:
 	static constexpr int RESOLUTION_CUSTOM = -2;
 
 	RenderSettings m_settings;
+	KernelSelection m_kernels { defaultKernelSelection() };
+	bool m_showKernelPanel { false };
 	int m_resolutionChoice { DEFAULT_RESOLUTION_PRESET };
 	// what the custom width/height fields hold while they are being typed in. Only committed
 	// into m_settings when the field is left or Enter is pressed, so a half-typed number never

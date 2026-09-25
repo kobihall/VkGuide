@@ -64,6 +64,8 @@ add_executable(vulkan_guide
     rt_gpu.h
     rt_accel.cpp
     rt_accel.h
+    rt_kernels.cpp
+    rt_kernels.h
     camera.cpp
     camera.h)
 

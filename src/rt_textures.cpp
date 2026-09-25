@@ -9,6 +9,13 @@
 void RaytraceTextureArray::init(VulkanEngine* engine)
 {
 	createArray(engine, 1);
+	//rebuild() runs only when the models change, so a scene with none - a cornell box of analytic
+	//shapes, say - would bind this array while it is still UNDEFINED. The layer is never sampled
+	//there (an untextured material's albedoLayer is -1), but a descriptor still has to name an
+	//image in the layout it was written with
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		vkutil::transition_image(cmd, m_array.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	});
 }
 
 void RaytraceTextureArray::createArray(VulkanEngine* engine, uint32_t layers)

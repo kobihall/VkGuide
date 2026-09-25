@@ -1,0 +1,50 @@
+#version 460
+
+// 03 HANDLE ESCAPED. The paths kernel 02 pushed onto CRT_QUEUE_ESCAPED: rays that left the
+// scene without hitting anything. Each one collects the background through everything it
+// bounced off and ends there.
+//
+//     L += throughput * background(direction)
+//
+// A path only ever reaches this kernel once, and never continues afterwards, so nothing is
+// appended to the next ray queue and the last workgroup's overhang can simply return.
+//
+// A future variant would be where an importance-sampled environment map earns its keep: with
+// next-event estimation the miss contribution has to be MIS-weighted against the light sample
+// that kernel 06 already took towards the same environment, which is a different formula here
+// but no change anywhere else.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "equirect.glsl"
+#include "include/crt_background.glsl"
+#include "include/crt_debug.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= headers[CRT_QUEUE_ESCAPED].rayCount) {
+		return;
+	}
+
+	// the queue holds the RAY QUEUE POSITION, which is also the index of the path's hit record
+	const uint entry = queues[queueSlot(CRT_QUEUE_ESCAPED, index)];
+	const uint pathIndex = queues[queueSlot(rayQueueFor(pc.bounce), entry)];
+	const PathState path = paths[pathIndex];
+	const HitRecord hit = hits[entry];
+	const vec3 inDir = normalize(path.direction);
+
+	vec3 value;
+	if (debugTerminalValue(hit, inDir, false, value)) {
+		radiance[path.radianceSlot] = vec4(value, 1.0);
+		return;
+	}
+	if (pc.debugView == CRT_DEBUG_BOUNCE_HEAT) {
+		radiance[path.radianceSlot] = vec4(bounceHeat(path.bounce), 1.0);
+		return;
+	}
+
+	radiance[path.radianceSlot] = vec4(path.throughput * backgroundRadiance(inDir), 1.0);
+}

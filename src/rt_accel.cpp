@@ -155,6 +155,7 @@ RaytraceGeometry packGeometry(const RaytraceBlasSet& blases)
 		placement.nodeBase = (uint32_t)(geometry.nodes.size() / wordsPerNode);
 		placement.triangleBase = (uint32_t)geometry.triangles.size();
 		placement.attributeBase = (uint32_t)geometry.attributes.size();
+		placement.triangleCount = (entry != nullptr && entry->blas.usable()) ? (uint32_t)entry->blas.triangles.size() : 0;
 		geometry.placements.push_back(placement);
 		if (entry == nullptr || !entry->blas.usable()) {
 			continue;
@@ -270,6 +271,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 			gpu.nodeBase = placement.nodeBase;
 			gpu.triangleBase = placement.triangleBase;
 			gpu.attributeBase = placement.attributeBase;
+			gpu.triangleCount = placement.triangleCount;
 		}
 		return gpu;
 	};

@@ -1,8 +1,14 @@
-// Shared by every stage of the GPU path tracer (crt_*.comp): the buffer contracts, the one
-// descriptor set every stage binds, the push-constant block, the queue allocator and the
-// triangle test (the shapes' are crt_shape.glsl). The C++ side is src/rt_gpu.h/.cpp, which mirrors the structs with
-// static_asserts - std430 pads every vec3 to 16 bytes, so each struct carries an explicit
-// fourth component.
+// Shared by every kernel of the GPU path tracer (shaders/rt/NNVV_*.comp): the buffer contracts,
+// the BINDING NUMBERS every kernel agrees on, the push-constant block, the queue set and the
+// workgroup-aggregated queue allocator. The C++ side is src/rt_gpu.h and src/rt_kernels.h, which
+// mirror the structs with static_asserts - std430 pads every vec3 to 16 bytes, so each struct
+// carries an explicit fourth component.
+//
+// BINDING NUMBERS ARE GLOBAL AND STABLE. Every kernel declares only the bindings it actually
+// uses, at the number given here, and src/rt_kernels.cpp builds that kernel's descriptor set
+// layout from the same subset (CrtBinding). A layout with gaps is legal; what is NOT legal is
+// two kernels using the same number for different resources. Adding a resource means adding a
+// number at the end here and a CrtBinding enumerator in the same position - never renumbering.
 //
 // Requires GL_GOOGLE_include_directive to be enabled by the including shader.
 
@@ -91,6 +97,12 @@ struct GpuInstance {
 	uint attributeBase;
 	// a mesh: into instanceMaterials[], by surface. A shape: its material index
 	uint materialBase;
+	// a mesh: how many BvhTriangles its BLAS owns, which is what a traversal-free variant of
+	// kernel 02 scans. A shape: 0
+	uint triangleCount;
+	uint pad0;
+	uint pad1;
+	uint pad2;
 };
 
 #define CRT_INSTANCE_SHAPE 0xFFFFFFFFu
@@ -116,11 +128,36 @@ struct QueueHeader {
 	uint rayCount;
 };
 
+//---------------------------------------------------------------- the queue set
+//
+// One flat allocation holds CRT_QUEUE_COUNT queues of poolSize entries each, addressed by
+// queueSlot(); headers[] carries one QueueHeader per queue. Two of them are the ping-ponging
+// RAY queues, which hold PATH INDICES; the rest are the classification queues written by
+// kernel 02, which hold the RAY QUEUE POSITION of the path - that is also the index of its
+// HitRecord, so a consumer finds both the hit and the path from one number.
+
+#define CRT_QUEUE_RAY_A 0u
+#define CRT_QUEUE_RAY_B 1u
+// written by 02 Intersect Closest, drained by 03 / 04 / 06 respectively
+#define CRT_QUEUE_ESCAPED 2u
+#define CRT_QUEUE_EMISSIVE 3u
+#define CRT_QUEUE_SURFACE 4u
+// written by 06 (and later 07), drained by 08 Trace Shadow Rays. Allocated but unused until a
+// next-event-estimation variant of 06 exists - see docs/plans/shadow-rays-nee.md
+#define CRT_QUEUE_SHADOW 5u
+#define CRT_QUEUE_COUNT 6u
+
+// the ray queue this bounce reads; the next bounce writes the other one
+uint rayQueueFor(uint bounce)
+{
+	return bounce & 1u;
+}
+
 layout (std430, set = 0, binding = 0) buffer PathBuffer { PathState paths[]; };
 layout (std430, set = 0, binding = 1) buffer HitBuffer { HitRecord hits[]; };
 // two queues back to back, each poolSize long
 layout (std430, set = 0, binding = 2) buffer QueueBuffer { uint queues[]; };
-layout (std430, set = 0, binding = 3) buffer HeaderBuffer { QueueHeader headers[2]; };
+layout (std430, set = 0, binding = 3) buffer HeaderBuffer { QueueHeader headers[]; };
 // one vec4 per pool slot: rgb the path's final contribution, w = 1 for a spawned slot
 layout (std430, set = 0, binding = 4) buffer RadianceBuffer { vec4 radiance[]; };
 // per pixel: how many of this frame's K slots to spawn (the adaptive-sampling hook)
@@ -182,8 +219,10 @@ layout (push_constant) uniform Params {
 	uint debugView;
 	uint maxSamples;
 	float environmentIntensity;
+	// every record in instances[], unbounded and bounded alike, regardless of whether a TLAS was
+	// built over them. A traversal-free variant of kernel 02 scans exactly this many
+	uint instanceCount;
 	float pad0;
-	float pad1;
 } pc;
 
 uint queueSlot(uint queue, uint index)
@@ -280,11 +319,4 @@ bool hitTriangle(BvhTriangle tri, vec3 origin, vec3 direction, float tMin, float
 vec3 srgbToLinear(vec3 c)
 {
 	return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), greaterThan(c, vec3(0.04045)));
-}
-
-// the CPU backend's sky: white at the horizon blending to light blue overhead
-vec3 skyGradient(vec3 direction)
-{
-	float t = 0.5 * (direction.y + 1.0);
-	return mix(vec3(1.0), vec3(0.5, 0.7, 1.0), t);
 }

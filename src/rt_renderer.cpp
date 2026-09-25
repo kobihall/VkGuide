@@ -40,6 +40,8 @@ RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, c
 	key.settings = m_settings;
 	//toggling the watch itself is not a reason to start over
 	key.settings.restartOnChange = false;
+	//swapping a kernel changes the image (or at least the noise), so it restarts like a setting
+	key.kernels = m_kernels;
 	key.sceneRevision = editor.revision();
 	key.modelRevision = engine->m_sceneRevision;
 	key.accelRevision = m_accelRevision;
@@ -76,6 +78,36 @@ void RaytraceRenderer::update(VulkanEngine* engine, const RaytraceSceneEditor& e
 void RaytraceRenderer::cancelRender()
 {
 	m_gpu.stop();
+}
+
+void RaytraceRenderer::setKernels(const KernelSelection& selection)
+{
+	m_kernels = selection;
+	//a kernel 02 variant that names a node layout is what decides how the BLASes are packed, so a
+	//selection that disagrees with the built set is reconciled by the caller through
+	//requiredLayout() - see drawKernelPanel() and openScene()
+}
+
+BvhLayout RaytraceRenderer::requiredLayout() const
+{
+	const KernelVariant* intersect = m_kernels.selected(KernelSlot::IntersectClosest);
+	return (intersect != nullptr && intersect->requiresLayout) ? intersect->layout : m_accelSettings.layout;
+}
+
+void RaytraceRenderer::setAccelSettings(VulkanEngine* engine, const AccelSettings& settings)
+{
+	AccelSettings applied = settings;
+	//the selected traversal has the final say on the layout: a CWBVH kernel cannot read binary
+	//nodes, so a scene file that disagrees is corrected rather than allowed to render garbage
+	applied.layout = requiredLayout();
+	if (applied == m_accelSettings && m_blasSet != nullptr) {
+		return;
+	}
+	m_accelSettings = applied;
+	m_pendingAccelSettings = applied;
+	if (engine != nullptr) {
+		prepareGeometry(engine);
+	}
 }
 
 void RaytraceRenderer::setSettings(const RenderSettings& settings)
@@ -147,7 +179,7 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		prospective.width = (int)engine->m_drawExtent.width;
 		prospective.height = (int)engine->m_drawExtent.height;
 	}
-	const double costPerRay = m_sceneAccel != nullptr ? std::max((double)m_sceneAccel->tlas.sceneSahCost, 1.0) : 1.0;
+	const double costPerRay = sceneCostPerRay();
 	const double work = estimatedWorkPerFrame(prospective, costPerRay);
 	const bool overBudget = work > WORK_PER_FRAME_BUDGET;
 
@@ -344,6 +376,30 @@ void RaytraceRenderer::drawSettings(VulkanEngine* engine)
 	}
 }
 
+double RaytraceRenderer::sceneCostPerRay() const
+{
+	if (m_sceneAccel == nullptr) {
+		return 1.0;
+	}
+	//WHICH strategy kernel 02 is running decides what a ray costs, and the difference is four
+	//orders of magnitude on a real model. A BVH ray costs the scene's SAH (tens of steps); a
+	//brute-force ray costs every primitive in the scene. Reading this off the selected variant
+	//rather than assuming a BVH is what keeps the guard honest when the traversal is swapped -
+	//the linear scan is exactly the case the guard exists for
+	const KernelVariant* intersect = m_kernels.selected(KernelSlot::IntersectClosest);
+	const TraversalCost cost = intersect != nullptr ? intersect->cost : TraversalCost::Acceleration;
+	switch (cost) {
+	case TraversalCost::AllPrimitives:
+		//every triangle of every placed mesh, plus one test per shape instance
+		return std::max((double)m_sceneAccel->placedTriangles + (double)m_sceneAccel->instances.size(), 1.0);
+	case TraversalCost::None:
+		return 1.0;
+	case TraversalCost::Acceleration:
+		break;
+	}
+	return std::max((double)m_sceneAccel->tlas.sceneSahCost, 1.0);
+}
+
 double RaytraceRenderer::estimatedWorkPerFrame(const RenderSettings& settings, double costPerRay)
 {
 	const double pixels = (double)std::max(settings.width, 2) * (double)std::max(settings.height, 2);
@@ -376,7 +432,7 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 
 	//the scene first: the budget check below needs its cost per ray
 	ensureSceneAccel(engine, editor);
-	const double costPerRay = m_sceneAccel != nullptr ? std::max((double)m_sceneAccel->tlas.sceneSahCost, 1.0) : 1.0;
+	const double costPerRay = sceneCostPerRay();
 
 	//the one thing that must never be started by accident. Over the budget the frame runs long
 	//enough to trip the GPU watchdog, and the failure mode is not a dropped frame - it is the
@@ -384,7 +440,7 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	//reach it another way, and acknowledged only for the exact cost that was shown
 	const double work = estimatedWorkPerFrame(settings, costPerRay);
 	if (work > WORK_PER_FRAME_BUDGET && !(m_acceptedHeavyRender && work <= m_acceptedWork)) {
-		m_blockedReason = fmt::format("~{:.0f} BVH steps per ray at {}x{}x{} is {:.1e} per frame, over the {:.0e} budget. Lower the resolution or samples per frame, hide some objects, or accept it below",
+		m_blockedReason = fmt::format("~{:.0f} steps per ray at {}x{}x{} is {:.1e} per frame, over the {:.0e} budget. Lower the resolution or samples per frame, hide some objects, switch kernel 02 back to a BVH, or accept it below",
 			costPerRay, settings.width, settings.height, settings.samplesPerFrame, work, WORK_PER_FRAME_BUDGET);
 		fmt::println("RaytraceRenderer: render refused - {}", m_blockedReason);
 		m_gpu.stop();
@@ -401,6 +457,7 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	//shared, not copied: the tracer compares it by pointer to decide whether it needs re-uploading
 	snapshot.scene = m_sceneAccel;
 	snapshot.settings = settings;
+	snapshot.kernels = m_kernels;
 	snapshot.seed = settings.useFixedSeed ? settings.seed : (uint32_t)std::random_device {}();
 	snapshot.useEnvironmentMap = engine->m_environmentMap.image != VK_NULL_HANDLE;
 	snapshot.environmentIntensity = engine->m_environmentIntensity;
@@ -473,10 +530,98 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	m_hasSceneAccel = true;
 }
 
+void RaytraceRenderer::drawKernelPanel(VulkanEngine* engine)
+{
+	if (!m_showKernelPanel) {
+		return;
+	}
+	if (!ImGui::Begin("Raytracer Shaders", &m_showKernelPanel)) {
+		ImGui::End();
+		return;
+	}
+
+	ImGui::TextWrapped("The wavefront, one kernel per row, in dispatch order. The numbering follows figure 15.2 of "
+		"Physically Based Rendering 4ed; shaders/rt/NNVV_*.comp holds kernel NN variant VV.");
+	ImGui::Separator();
+
+	//ONE LOOP FOR EVERY SLOT. Nothing here names a kernel or a strategy: the rows, the combos and
+	//the greying-out all come from the registry, so a new variant appears in this window as soon
+	//as it is registered, with no edit to this function
+	const KernelSelection before = m_kernels;
+	for (uint32_t i = 0; i < (uint32_t)KernelSlot::Count; i++) {
+		const KernelSlot slot = (KernelSlot)i;
+		const std::span<const KernelVariant> variants = kernelVariants(slot);
+		if (variants.empty()) {
+			continue;
+		}
+		const KernelVariant* selected = m_kernels.selected(slot);
+		const bool implemented = selected != nullptr && selected->implemented;
+
+		ImGui::PushID((int)i);
+		ImGui::BeginDisabled(!implemented && variants.size() <= 1);
+
+		const std::string label = fmt::format("{}  {}", kernelSlotNumber(slot), kernelSlotName(slot));
+		if (ImGui::BeginCombo(label.c_str(), selected != nullptr ? selected->name : "none")) {
+			for (uint32_t v = 0; v < (uint32_t)variants.size(); v++) {
+				const bool isSelected = m_kernels[slot] == v;
+				if (ImGui::Selectable(variants[v].name, isSelected)) {
+					m_kernels[slot] = v;
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s\n\nshaders/%s", variants[v].description, variants[v].shader);
+				}
+			}
+			ImGui::EndCombo();
+		}
+		ImGui::EndDisabled();
+
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", kernelSlotDescription(slot));
+		}
+		ImGui::Indent();
+		if (!implemented) {
+			ImGui::TextDisabled("not implemented - the kernel is skipped");
+		} else {
+			ImGui::TextDisabled("%s", selected->description);
+		}
+		ImGui::Unindent();
+		ImGui::PopID();
+	}
+
+	if (m_kernels != before) {
+		//a traversal variant fixes the BLAS node layout, so selecting one may mean rebuilding
+		//every BLAS. setAccelSettings() does nothing when the layout already matches, which is
+		//the common case of swapping something other than kernel 02
+		setAccelSettings(engine, m_accelSettings);
+	}
+
+	ImGui::Separator();
+	if (ImGui::Button("Defaults")) {
+		m_kernels = defaultKernelSelection();
+		setAccelSettings(engine, m_accelSettings);
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("saved with the scene");
+
+	ImGui::End();
+}
+
 void RaytraceRenderer::drawAccelSettings(VulkanEngine* engine)
 {
+	//THE SECTION ONLY EXISTS WHILE A KERNEL THAT USES IT IS SELECTED. Switching kernel 02 to the
+	//linear scan makes every control below meaningless, so rather than grey them out the whole
+	//section goes away - the variant declares KernelSettings::AccelerationStructure and the panel
+	//reacts, without the panel knowing which variants those are
+	const KernelVariant* intersect = m_kernels.selected(KernelSlot::IntersectClosest);
+	if (intersect == nullptr || intersect->settings != KernelSettings::AccelerationStructure) {
+		return;
+	}
 	if (!ImGui::CollapsingHeader("Acceleration structure")) {
 		return;
+	}
+	ImGui::TextDisabled("Kernel 02: %s", intersect->name);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("The node layout follows the kernel 02 variant selected in the Raytracer Shaders\nwindow, so there is no separate control for it here.");
 	}
 
 	AccelSettings& pending = m_pendingAccelSettings;
@@ -490,14 +635,9 @@ void RaytraceRenderer::drawAccelSettings(VulkanEngine* engine)
 		}
 		ImGui::EndCombo();
 	}
-	if (ImGui::BeginCombo("Node layout", bvhLayoutName(pending.layout))) {
-		for (uint32_t i = 0; i < (uint32_t)BvhLayout::Count; i++) {
-			if (ImGui::Selectable(bvhLayoutName((BvhLayout)i), pending.layout == (BvhLayout)i)) {
-				pending.layout = (BvhLayout)i;
-			}
-		}
-		ImGui::EndCombo();
-	}
+	//the layout is not editable here: it is whatever the selected kernel 02 variant can read
+	pending.layout = requiredLayout();
+	ImGui::LabelText("Node layout", "%s", bvhLayoutName(pending.layout));
 
 	int maxLeafSize = (int)options.maxLeafSize;
 	if (ImGui::SliderInt("Max leaf size", &maxLeafSize, 1, 16)) {
