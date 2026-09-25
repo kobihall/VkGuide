@@ -376,11 +376,11 @@ for bounce in [0, rayDepth):
     01 Generate samples        indirect over rayQueueFor(bounce)   [+ barrier]
     02 Intersect closest       indirect over rayQueueFor(bounce)
     barrier                                     <-- hits[], 3 queues, 3 headers
-    03 Handle escaped          indirect over ESCAPED     ┐ NO barriers between these three:
-    04 Handle emissive         indirect over EMISSIVE    │ each path went onto exactly one
-    06 Surface scattering      indirect over SURFACE     ┘ queue, so radiance writes are
-                                                           disjoint, and only 06 touches
-                                                           paths[] and the next ray queue
+    03 Handle escaped          indirect over ESCAPED     no barrier: a miss is on no other queue
+    04 Handle emissive         indirect over EMISSIVE
+    barrier                                     <-- a glowing pbr hit is on EMISSIVE and SURFACE;
+                                                    04 reads the throughput 06 overwrites
+    06 Surface scattering      indirect over SURFACE     only 06 writes paths[] and the next ray queue
     barrier; copyHeader(next, bounce + 1)
 copy traversal stats to readback
 09 Update film                 direct over width × height
@@ -399,7 +399,7 @@ bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHi
 
 World-space ray, normalised direction, closest hit in `[tMin, tMax]`. The variant `.comp` is then six lines: `crt_common.glsl` + a strategy header + `crt_intersect.glsl`.
 
-Also in `crt_traverse.glsl`, shared by every strategy: `TraceHit`; `g_nodesVisited`/`g_primitivesTested` (**every strategy must maintain these** — they are the hardware-independent measure, and this laptop throttles ~70% within a minute so timings are not comparable); `safeReciprocal()`; `testTriangles()`; `instanceRay()` (the object-space transform, direction deliberately **not** renormalised so `t` carries across unchanged); `testShapeInstance()`; `resetTrace()`.
+Also in `crt_traverse.glsl`, shared by every strategy: the alpha test (`cutAway()`, called from `testTriangles()` for a triangle flagged `CRT_TRIANGLE_CUTOUT`, so no strategy can forget it); `TraceHit`; `g_nodesVisited`/`g_primitivesTested` (**every strategy must maintain these** — they are the hardware-independent measure, and this laptop throttles ~70% within a minute so timings are not comparable); `safeReciprocal()`; `testTriangles()`; `instanceRay()` (the object-space transform, direction deliberately **not** renormalised so `t` carries across unchanged); `testShapeInstance()`; `resetTrace()`.
 
 Kernel 08 will need a second contract entry point, `bool occluded(...)`, supplied by **both** strategy files — see `docs/plans/shadow-rays-nee.md` §2.1.
 
@@ -418,6 +418,8 @@ Kernel 08 will need a second contract entry point, `bool occluded(...)`, supplie
 - **Render guard**: `sceneCostPerRay()` switches on the selected variant's `TraversalCost`. `Acceleration` → `tlas.sceneSahCost`; `AllPrimitives` → `placedTriangles + instances.size()`. Four orders of magnitude apart on a real model, and the linear scan is precisely the case `WORK_PER_FRAME_BUDGET` exists to catch (a 1M-triangle linear render once took the window server down).
 
 ### 8.10 Scene file, payload version 8
+
+Version 9 adds one material type, `"pbr"` (`"albedo"`, `"metallic"`, `"roughness"`, `"emission"`, `"strength"`). Nothing else changed, so a version 8 file reads unchanged.
 
 ```json
 "kernels": {"00":"thin_lens", ..., "02":"linear", ...},
@@ -438,6 +440,20 @@ Cornell box, 200×150, 16 spp, fixed seed 12345, validation layers on:
 - `bin/bvh_bench assets/structure.glb --rays 500`: PASS, 0 mismatches across all 4 builders × 2 layouts.
 
 The bit-identical comparison is the regression test to repeat after any change in this area; it is far more sensitive than looking at an image.
+
+### 8.12 glTF materials (2026-09-25)
+
+Every glTF material now becomes the `pbr` `SceneMaterial` type (`gltfTriMaterial()` in `rt_accel.cpp`) with its textures as layers of `RaytraceTextureArray`, which holds base colour, normal, metal/rough and emissive textures alike (up to 256 layers of 512 x 512).
+
+- **`CrtMaterial` / `GpuMaterial` is 64 bytes**: adds the alpha cutoff, metallic, roughness, emission and the normal, metal/rough and emissive layers.
+- **`GpuTriangleAttributes` is 80 bytes**: adds `uvec4 tangents`, three octahedral-packed vertex tangents plus handedness and missing-tangent bits. `MeshAsset::cpuTangents` holds the source, from the file's `TANGENT` or generated from the uvs. It never reaches the raster vertex buffer.
+- **`BvhTriangle::v0.w`'s top bit** (`BVH_TRIANGLE_CUTOUT`) marks a triangle whose glTF material is `alphaMode` `MASK`. Mask the index with `BVH_TRIANGLE_INDEX_MASK` / `CRT_TRIANGLE_INDEX_MASK` before using it. The CPU traversals ignore the bit.
+- **Binding 12 is `materialTextures`** (`CrtBinding::MaterialTextures`). Kernels 02 (alpha test, normal maps), 04 (emissive texture) and 06 (base colour, metal/rough) declare it.
+- **Normal maps are applied in kernel 02**, the only kernel that reads the attribute record, so `HitRecord.normal` arrives at 06 already perturbed. The front face is still decided by the unmapped normal, and a mapped normal that faces away from the ray is dropped.
+- **Radiance slots accumulate.** Kernels 03 and 04 add to the slot rather than write it, because a hit on a `pbr` surface with emission goes onto both the emissive and the surface queue.
+- **Punctual lights** (`KHR_lights_punctual`) load into `LoadedGLTF::lights` and nothing reads them yet. `docs/plans/shadow-rays-nee.md` §2.8 covers what rendering them needs.
+
+The Cornell box and sphere scenes render bit-identical to the previous commit with a fixed seed.
 
 ### 8.12 Deliberate behaviour change
 

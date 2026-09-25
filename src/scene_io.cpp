@@ -26,7 +26,9 @@ namespace {
 //   and "accel", how the BVH those kernels read is built. Both absent in an older file, which
 //   then opens with the default selection (BVH traversal, BSDF scattering) and the default
 //   builder - exactly what every scene saved before this used
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 8;
+//9: adds the "pbr" material ("albedo", "metallic", "roughness", "emission", "strength"), glTF's
+//   metallic-roughness model. An older file has none, so it reads unchanged
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 9;
 
 //---------------------------------------------------------------- writing
 
@@ -96,6 +98,9 @@ std::string materialJson(const SceneMaterial& mat)
 		return fmt::format(R"({{"type":"{}","ir":{}}})", typeName, jsonNumber(mat.ir));
 	case MaterialType::Emissive:
 		return fmt::format(R"({{"type":"{}","color":{},"strength":{}}})", typeName, jsonVec3(mat.albedo), jsonNumber(mat.strength));
+	case MaterialType::Pbr:
+		return fmt::format(R"({{"type":"{}","albedo":{},"metallic":{},"roughness":{},"emission":{},"strength":{}}})", typeName, jsonVec3(mat.albedo),
+			jsonNumber(mat.metallic), jsonNumber(mat.roughness), jsonVec3(mat.emission), jsonNumber(mat.strength));
 	}
 
 	return fmt::format(R"({{"type":"{}"}})", typeName);
@@ -361,6 +366,27 @@ bool readMaterial(JsonElement element, SceneMaterial& out, std::string& error)
 	case MaterialType::Emissive:
 		if (!readDouble(object["strength"], value) || value < 0.0) {
 			error = "emissive material has no valid \"strength\"";
+			return false;
+		}
+		out.strength = (float)value;
+		break;
+	case MaterialType::Pbr:
+		if (!readDouble(object["metallic"], value)) {
+			error = "pbr material has no valid \"metallic\"";
+			return false;
+		}
+		out.metallic = std::clamp((float)value, 0.f, 1.f);
+		if (!readDouble(object["roughness"], value)) {
+			error = "pbr material has no valid \"roughness\"";
+			return false;
+		}
+		out.roughness = std::clamp((float)value, 0.f, 1.f);
+		if (!readVec3(object["emission"], out.emission)) {
+			error = "pbr material has no valid \"emission\"";
+			return false;
+		}
+		if (!readDouble(object["strength"], value) || value < 0.0) {
+			error = "pbr material has no valid \"strength\"";
 			return false;
 		}
 		out.strength = (float)value;

@@ -30,7 +30,10 @@ enum class MaterialType : uint8_t {
 	Dielectric,
 	// a light: every path that reaches it ends there, carrying albedo x strength home. From either
 	// side, as RTNW's diffuse_light
-	Emissive
+	Emissive,
+	// glTF 2.0's metallic-roughness model: a GGX specular lobe over a Lambertian base, blended by
+	// metallic, plus an emission that does not end the path. What every glTF material becomes
+	Pbr
 };
 
 inline constexpr MaterialType MATERIAL_TYPES[] = {
@@ -39,6 +42,7 @@ inline constexpr MaterialType MATERIAL_TYPES[] = {
 	MaterialType::Phong,
 	MaterialType::Dielectric,
 	MaterialType::Emissive,
+	MaterialType::Pbr,
 };
 
 inline const char* materialTypeName(MaterialType type)
@@ -54,6 +58,8 @@ inline const char* materialTypeName(MaterialType type)
 		return "dielectric";
 	case MaterialType::Emissive:
 		return "emissive";
+	case MaterialType::Pbr:
+		return "pbr";
 	}
 	return "unknown";
 }
@@ -63,7 +69,7 @@ inline const char* materialTypeName(MaterialType type)
 // object's material type and back keeps its values
 struct SceneMaterial {
 	MaterialType type { MaterialType::Lambertian };
-	// lambertian, metal, phong; emissive: the emitted colour
+	// lambertian, metal, phong; pbr: the base colour; emissive: the emitted colour
 	glm::vec3 albedo { 0.7f };
 	// metal: radius of the perturbation ball around the mirror direction, 0..1
 	float fuzz { 0.3f };
@@ -71,8 +77,15 @@ struct SceneMaterial {
 	float smoothness { 0.5f };
 	// dielectric: index of refraction. 1.0 vacuum, 1.33 water, 1.5 glass, 2.42 diamond
 	float ir { 1.5f };
-	// emissive: the radiance is albedo x strength, so a light can be far brighter than white
+	// emissive: the radiance is albedo x strength, so a light can be far brighter than white.
+	// pbr: the radiance is emission x strength
 	float strength { 1.f };
+	// pbr: 0 dielectric, 1 metal
+	float metallic { 0.f };
+	// pbr: perceptual roughness, 0 mirror to 1 fully rough (GGX alpha is its square)
+	float roughness { 0.5f };
+	// pbr: the emitted colour, black for a surface that does not glow
+	glm::vec3 emission { 0.f };
 
 	bool operator==(const SceneMaterial&) const = default;
 };
@@ -328,12 +341,23 @@ struct SceneMeshObject {
 
 //---------------------------------------------------------------- mesh materials
 
-// A material a triangle is shaded with: the same tagged material a shape uses, plus the
-// base-colour texture that modulates its albedo (a layer of the raytracer's texture array, -1
-// for untextured)
+// A material a triangle is shaded with: the same tagged material a shape uses, plus the glTF
+// textures that modulate it, each a layer of the raytracer's texture array or -1 for none. A
+// shape's and an override's are all -1 with no cutout
 struct RaytraceTriMaterial {
 	SceneMaterial material;
+	// base colour (rgb, sRGB) and coverage (a)
 	int albedoLayer { -1 };
+	// tangent-space normal, linear
+	int normalLayer { -1 };
+	// g roughness, b metallic, linear
+	int metalRoughLayer { -1 };
+	// emitted colour, sRGB
+	int emissiveLayer { -1 };
+	// glTF alphaCutoff divided by the base colour factor's alpha, so the traversal compares the
+	// texel's alpha alone. 0 for a surface that is never cut out
+	float alphaCutoff { 0.f };
+	float normalScale { 1.f };
 
 	bool operator==(const RaytraceTriMaterial&) const = default;
 };

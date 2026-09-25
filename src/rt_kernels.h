@@ -68,7 +68,7 @@ enum class CrtBinding : uint32_t {
 	SampleCount = 9,
 	EnvironmentMap = 10,
 	BlasTriangles = 11,
-	AlbedoTextures = 12,
+	MaterialTextures = 12,
 	BlasNodes = 13,
 	TriangleAttributes = 14,
 	TlasNodes = 15,

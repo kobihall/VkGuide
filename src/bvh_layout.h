@@ -52,6 +52,13 @@ struct BvhTriangle {
 };
 static_assert(sizeof(BvhTriangle) == 48);
 
+// v0.w's bits: the triangle's index in the low 31, and in the top one a flag the engine sets for a
+// triangle whose material can cut holes in it (glTF alphaMode MASK). The GPU traversal alpha-tests
+// a flagged candidate against its texture before accepting it (shaders/rt/include/crt_traverse.glsl);
+// the CPU traversals here have no textures and treat every triangle as opaque
+inline constexpr uint32_t BVH_TRIANGLE_INDEX_MASK = 0x7FFFFFFFu;
+inline constexpr uint32_t BVH_TRIANGLE_CUTOUT = 0x80000000u;
+
 BvhTriangle makeBvhTriangle(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c, uint32_t index);
 
 // A tree in one layout, as the words the GPU reads.

@@ -66,30 +66,47 @@ int RaytraceTextureArray::layerOf(VkImage image) const
 
 void RaytraceTextureArray::rebuild(VulkanEngine* engine)
 {
-	//every distinct base-colour image across every model, in the models' own key order so a
-	//rebuild is reproducible. Two materials sharing one texture share one layer
-	//kept as whole AllocatedImages, since the blit needs each source's own extent to scale from
+	//every distinct texture image across every model's materials: base colour, normal, metal/rough
+	//and emissive alike, since the layer is only a number and the shader knows what it samples it
+	//for. Two materials sharing one texture share one layer. Kept as whole AllocatedImages, since
+	//the blit needs each source's own extent to scale from
 	std::vector<AllocatedImage> sources;
 	std::unordered_map<VkImage, int> layers;
+	size_t dropped = 0;
 
+	auto add = [&](const AllocatedImage& image) {
+		if (image.image == VK_NULL_HANDLE || layers.count(image.image) != 0) {
+			return;
+		}
+		if (sources.size() >= MAX_LAYERS) {
+			dropped++;
+			return;
+		}
+		layers[image.image] = (int)sources.size();
+		sources.push_back(image);
+	};
 	for (const auto& [name, model] : engine->m_models) {
 		if (model == nullptr) {
 			continue;
 		}
 		for (const auto& [materialName, material] : model->materials) {
-			if (material == nullptr || material->baseColorImage.image == VK_NULL_HANDLE) {
+			if (material == nullptr) {
 				continue;
 			}
-			if (layers.count(material->baseColorImage.image) != 0) {
-				continue;
-			}
-			if (sources.size() >= MAX_LAYERS) {
-				fmt::println("RaytraceTextureArray: more than {} distinct textures in the scene; the rest fall back to their colour factor", MAX_LAYERS);
-				break;
-			}
-			layers[material->baseColorImage.image] = (int)sources.size();
-			sources.push_back(material->baseColorImage);
+			//base colour first, so a scene over the cap loses the finer maps before the colours
+			add(material->baseColorImage);
 		}
+		for (const auto& [materialName, material] : model->materials) {
+			if (material == nullptr) {
+				continue;
+			}
+			add(material->normalImage);
+			add(material->metalRoughImage);
+			add(material->emissiveImage);
+		}
+	}
+	if (dropped > 0) {
+		fmt::println("RaytraceTextureArray: {} texture(s) over the {}-layer cap; those maps are ignored and the materials fall back to their factors", dropped, MAX_LAYERS);
 	}
 
 	//frames in flight may still sample the old array through a descriptor set written this frame

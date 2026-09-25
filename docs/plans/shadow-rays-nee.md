@@ -10,6 +10,8 @@ Next-event estimation adds the other half: at every scattering event, also sampl
 
 This is the feature the kernel-variant machinery was built around, so most of this document is about **what already exists to plug into** rather than about the rendering maths, which is standard.
 
+Since 2026-09-25 there are two more kinds of light than this plan first assumed: glTF surfaces that glow and also scatter (the `pbr` material with emission), and `KHR_lights_punctual` point, spot and directional lights, which the loader imports but nothing renders. Section 2.8 lists what each needs.
+
 ## 1. What the infrastructure already provides
 
 Everything below is in place and needs no change:
@@ -61,7 +63,7 @@ struct GpuLight {
 };
 ```
 
-built by walking `accel->instances` and keeping those whose material type is `CRT_MATERIAL_EMISSIVE`. Uploaded into the existing per-edit `m_sceneBuffer` alongside the instances, since lights change with every scene edit exactly as instances do.
+built by walking `accel->instances` and keeping those whose material type is `CRT_MATERIAL_EMISSIVE`, or `CRT_MATERIAL_PBR` with non-zero emission. Section 2.8 covers the mesh triangles and punctual lights that this per-instance record cannot describe. Uploaded into the existing per-edit `m_sceneBuffer` alongside the instances, since lights change with every scene edit exactly as instances do.
 
 New bindings, appended (never renumbered) to **both** `CrtBinding` in `src/rt_kernels.h` and the binding list in `crt_common.glsl`:
 
@@ -127,6 +129,27 @@ std::vector<std::pair<KernelSlot, const char*>> requires;
 
 A shadow ray is a second traversal per scattering event, so a frame's work roughly doubles. `TraversalCost` is currently a property of kernel 02 only; `RaytraceRenderer::sceneCostPerRay()` should multiply by the number of traversals per bounce that the selected 06 variant implies (1 for `bsdf`, 2 for `light`/`mis`). Add a `raysPerScatter` field to `KernelVariant` and read it there.
 
+### 2.8 Emissive meshes and punctual lights
+
+The loader now brings in two kinds of light that the light list in section 2.2 does not cover.
+
+**Emissive glTF triangles.** A glTF material with an `emissiveFactor` becomes a `pbr` material with `emission` set, and optionally an `emissiveLayer` in the texture array. Kernel 02 queues a hit on one for both kernel 04 (which adds `throughput x emission x texel`) and kernel 06 (which scatters). What light sampling needs:
+
+- **Per-triangle light records.** A mesh instance is one `GpuInstance` covering thousands of triangles, and usually only a few surfaces glow. Enumerate the emissive surfaces' triangles at `buildSceneAccel()` time into a separate emissive-triangle list: instance slot, triangle index, world-space area and power.
+- **Power that accounts for the texture.** Sampling triangles by `area x luminance(emission)` ignores the texture, which is often mostly black (a lamp's bulb on a dark fixture). Use the texture's mean luminance over the triangle's uv footprint, or fall back to the mean over the whole layer.
+- **Two-sided emission.** Kernel 04 counts emission from both sides, as the `emissive` type does. Light sampling must then sample and weight both sides, or the two strategies disagree and MIS goes wrong.
+- **Kernel 04 MIS applies to `pbr` hits too.** The variant `0402 handle_emissive_mis` must weight a `pbr` surface's emission exactly like an `emissive` one's. With `0602 light`, it must drop the emission of a non-primary `pbr` hit and still let 06 scatter the path.
+
+**Punctual lights.** `LoadedGLTF::lights` holds each `KHR_lights_punctual` light with its type, linear colour, intensity, range, cone angles and the owning node's world transform. Rendering them needs:
+
+- **A scene representation.** The records live on the model today. Decide whether a light follows the model's placement (the `SceneMeshObject` transforms apply to mesh nodes, not to light nodes) or becomes its own editable `SceneLight` saved in the scene file, with a new payload version.
+- **Units.** glTF gives point and spot intensity in candela and directional intensity in lux. The tracer's radiance is unitless. Pick one scale factor, for example radiant intensity = candela / 683 with the environment map taken as W/(sr·m²), and document it, or a model's lights will be orders of magnitude off against the sky.
+- **Delta distributions.** A point, spot or directional light has zero area, so a BSDF sample never hits it. It contributes only through kernel 06's light sample, with MIS weight 1. The traversal needs no change, and kernel 04 never sees one.
+- **Spot falloff and range.** Use glTF's smooth cone falloff between `innerConeAngle` and `outerConeAngle`, and its recommended windowed inverse-square falloff when `range` is set.
+- **Light selection.** Put punctual lights in the same sampling distribution as area lights, weighted by power (`4π x intensity` for a point light), so a scene of many lights stays one sampling step per scatter.
+
+**Alpha cutouts on shadow rays.** `occluded()` must reject cut-out candidates exactly as `traceScene()` does, or foliage casts solid shadows. If it calls the shared `testTriangles()` path in `crt_traverse.glsl`, it gets `cutAway()` automatically. Kernel 08 then has to declare `MaterialTextures`, `TriangleAttributes`, `InstanceMaterials` and `Materials`, which the alpha test reads.
+
 ## 3. Order of work
 
 1. `occluded()` on both strategy files, checked by extending `tests/bvh_bench.cpp` with an occlusion comparison against brute force.
@@ -134,6 +157,8 @@ A shadow ray is a second traversal per scattering event, so a frame's work rough
 3. `0602 light` + `0402 handle_emissive_mis` + `0801` — the first end-to-end result, and already a large variance win on the Cornell box.
 4. `0603 mis` and the `bsdfPdf` in `PathState`.
 5. The `requires` mechanism and the guard's `raysPerScatter`.
+6. Emissive glTF triangles in the light list (section 2.8).
+7. Punctual lights: the scene representation, units and falloff (section 2.8).
 
 Each step is independently checkable: with a fixed seed and enough samples, every combination must converge to the **same image** as `0601 bsdf`. That equality is the test — the same one that showed the BVH and linear traversals agreeing bit for bit.
 

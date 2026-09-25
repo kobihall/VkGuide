@@ -3,6 +3,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 #include <iostream>
+#include <span>
 
 #include "vk_engine.h"
 #include "vk_initializers.h"
@@ -11,6 +12,25 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 
+
+// A LoadedGLTF map key for a glTF object: its name, or "<kind><index>" when it has none, made
+// unique if another object already took it. Names are optional in glTF and need not be unique;
+// keying by the bare name collapsed Sponza's 25 unnamed materials and 69 images to one entry each,
+// so the path tracer saw one texture and clearAll() destroyed one image
+template <typename T>
+static std::string uniqueKey(const std::unordered_map<std::string, T>& map, std::string_view name, std::string_view kind, size_t index)
+{
+	std::string key = name.empty() ? fmt::format("{}{}", kind, index) : std::string(name);
+	if (map.count(key) == 0) {
+		return key;
+	}
+	for (size_t suffix = 1;; suffix++) {
+		std::string candidate = fmt::format("{}#{}", key, suffix);
+		if (map.count(candidate) == 0) {
+			return candidate;
+		}
+	}
+}
 
 VkFilter extract_filter(fastgltf::Filter filter)
 {
@@ -44,8 +64,51 @@ VkSamplerMipmapMode extract_mipmap_mode(fastgltf::Filter filter)
 	}
 }
 
+// Per-vertex tangents from the uv gradients of the triangles around each vertex (Lengyel,
+// "Computing Tangent Space Basis Vectors for an Arbitrary Mesh"), Gram-Schmidt'ed against the
+// normal, for a primitive whose file carries no TANGENT. Not MikkTSpace, so a normal map baked
+// against MikkTSpace tangents can show faint seams here that it would not with the file's own
+static void generateTangents(std::span<const uint32_t> indices, std::span<const Vertex> vertices, std::span<glm::vec4> tangents, size_t firstVertex)
+{
+	std::vector<glm::vec3> tan(tangents.size(), glm::vec3(0.f));
+	std::vector<glm::vec3> bitan(tangents.size(), glm::vec3(0.f));
+	for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+		const size_t a = indices[i] - firstVertex;
+		const size_t b = indices[i + 1] - firstVertex;
+		const size_t c = indices[i + 2] - firstVertex;
+		if (a >= tangents.size() || b >= tangents.size() || c >= tangents.size()) {
+			continue;
+		}
+		const glm::vec3 e1 = vertices[b].position - vertices[a].position;
+		const glm::vec3 e2 = vertices[c].position - vertices[a].position;
+		const glm::vec2 d1 = glm::vec2(vertices[b].uv_x, vertices[b].uv_y) - glm::vec2(vertices[a].uv_x, vertices[a].uv_y);
+		const glm::vec2 d2 = glm::vec2(vertices[c].uv_x, vertices[c].uv_y) - glm::vec2(vertices[a].uv_x, vertices[a].uv_y);
+		const float det = d1.x * d2.y - d2.x * d1.y;
+		//a triangle with degenerate uvs has no tangent direction to contribute
+		if (std::abs(det) < 1e-12f) {
+			continue;
+		}
+		const glm::vec3 t = (e1 * d2.y - e2 * d1.y) / det;
+		const glm::vec3 bt = (e2 * d1.x - e1 * d2.x) / det;
+		for (const size_t v : { a, b, c }) {
+			tan[v] += t;
+			bitan[v] += bt;
+		}
+	}
+	for (size_t v = 0; v < tangents.size(); v++) {
+		const glm::vec3 n = vertices[v].normal;
+		const glm::vec3 t = tan[v] - n * glm::dot(n, tan[v]);
+		if (glm::dot(t, t) < 1e-20f) {
+			tangents[v] = glm::vec4(0.f, 0.f, 0.f, 1.f);
+			continue;
+		}
+		const float handedness = glm::dot(glm::cross(n, t), bitan[v]) < 0.f ? -1.f : 1.f;
+		tangents[v] = glm::vec4(glm::normalize(t), handedness);
+	}
+}
+
 static GeoSurface loadPrimitiveGeometry(fastgltf::Asset& gltf, fastgltf::Primitive& p,
-	std::vector<uint32_t>& indices, std::vector<Vertex>& vertices, size_t& outInitialVertex)
+	std::vector<uint32_t>& indices, std::vector<Vertex>& vertices, std::vector<glm::vec4>& tangents, size_t& outInitialVertex)
 {
 	GeoSurface newSurface;
 	newSurface.startIndex = (uint32_t)indices.size();
@@ -113,6 +176,19 @@ static GeoSurface loadPrimitiveGeometry(fastgltf::Asset& gltf, fastgltf::Primiti
 			});
 	}
 
+	// load tangents, for the path tracer's normal maps: the file's own, else generated from the uvs
+	tangents.resize(vertices.size(), glm::vec4(0.f, 0.f, 0.f, 1.f));
+	auto tangentAttribute = p.findAttribute("TANGENT");
+	if (tangentAttribute != p.attributes.end()) {
+		fastgltf::iterateAccessorWithIndex<glm::vec4>(gltf, gltf.accessors[(*tangentAttribute).accessorIndex],
+			[&](glm::vec4 v, size_t index) {
+				tangents[initial_vtx + index] = v;
+			});
+	} else if (uv != p.attributes.end()) {
+		generateTangents(std::span(indices).subspan(newSurface.startIndex), std::span(vertices).subspan(initial_vtx),
+			std::span(tangents).subspan(initial_vtx), initial_vtx);
+	}
+
 	return newSurface;
 }
 
@@ -144,6 +220,7 @@ std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngi
 	// often
 	std::vector<uint32_t> indices;
 	std::vector<Vertex> vertices;
+	std::vector<glm::vec4> tangents;
 	for (fastgltf::Mesh& mesh : gltf.meshes) {
 		MeshAsset newmesh;
 
@@ -152,10 +229,11 @@ std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngi
 		// clear the mesh arrays each mesh, we dont want to merge them by error
 		indices.clear();
 		vertices.clear();
+		tangents.clear();
 
 		for (auto&& p : mesh.primitives) {
 			size_t initialVertex;
-			GeoSurface newSurface = loadPrimitiveGeometry(gltf, p, indices, vertices, initialVertex);
+			GeoSurface newSurface = loadPrimitiveGeometry(gltf, p, indices, vertices, tangents, initialVertex);
 			newmesh.surfaces.push_back(newSurface);
 		}
 
@@ -186,7 +264,9 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 	scene->creator = engine;
 	LoadedGLTF& file = *scene.get();
 
-	fastgltf::Parser parser {};
+	//extensions fastgltf is not told about are skipped silently, and a file that *requires* one of
+	//them fails to load. KHR_lights_punctual is imported as data only (LoadedGLTF::lights)
+	fastgltf::Parser parser { fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_materials_emissive_strength };
 
 	constexpr auto gltfOptions = fastgltf::Options::DontRequireValidAssetMember | fastgltf::Options::AllowDouble | fastgltf::Options::LoadExternalBuffers;
 
@@ -262,7 +342,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 
 		if (img.has_value()) {
 			images.push_back(*img);
-			file.images[image.name.c_str()] = *img;
+			file.images[uniqueKey(file.images, image.name, "image", images.size() - 1)] = *img;
 		}
 		else {
 			// we failed to load, so lets give the slot a default white texture to not
@@ -282,7 +362,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 	for (fastgltf::Material& mat : gltf.materials) {
 		std::shared_ptr<GLTFMaterial> newMat = std::make_shared<GLTFMaterial>();
 		materials.push_back(newMat);
-		file.materials[mat.name.c_str()] = newMat;
+		file.materials[uniqueKey(file.materials, mat.name, "material", materials.size() - 1)] = newMat;
 
 		GLTFMetallic_Roughness::MaterialConstants constants;
 		constants.colorFactors.x = mat.pbrData.baseColorFactor[0];
@@ -298,6 +378,19 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 		// keep the same factors cpu-side (see GLTFMaterial::colorFactors)
 		newMat->colorFactors = constants.colorFactors;
 		newMat->metalRoughFactors = glm::vec2(constants.metalRoughFactors);
+		newMat->emissiveFactor = glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]) * float(mat.emissiveStrength);
+		newMat->alphaCutoff = mat.alphaCutoff;
+		switch (mat.alphaMode) {
+		case fastgltf::AlphaMode::Opaque:
+			newMat->alphaMode = GltfAlphaMode::Opaque;
+			break;
+		case fastgltf::AlphaMode::Mask:
+			newMat->alphaMode = GltfAlphaMode::Mask;
+			break;
+		case fastgltf::AlphaMode::Blend:
+			newMat->alphaMode = GltfAlphaMode::Blend;
+			break;
+		}
 
 		MaterialPass passType = MaterialPass::MainColor;
 		if (mat.alphaMode == fastgltf::AlphaMode::Blend) {
@@ -314,15 +407,41 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 		// set the uniform buffer for the material data
 		materialResources.dataBuffer = file.materialDataBuffer.buffer;
 		materialResources.dataBufferOffset = data_index * sizeof(GLTFMetallic_Roughness::MaterialConstants);
-		// grab textures from gltf file
+		// grab textures from gltf file. A texture may name no image (one only an extension such as
+		// KHR_texture_basisu provides) or no sampler (the spec's default: repeat, auto filtering);
+		// either used to throw bad_optional_access and take the whole load down
+		auto textureImage = [&](size_t textureIndex) -> std::optional<AllocatedImage> {
+			if (textureIndex >= gltf.textures.size() || !gltf.textures[textureIndex].imageIndex.has_value()) {
+				return std::nullopt;
+			}
+			const size_t image = gltf.textures[textureIndex].imageIndex.value();
+			return image < images.size() ? std::optional(images[image]) : std::nullopt;
+		};
 		if (mat.pbrData.baseColorTexture.has_value()) {
-			size_t img = gltf.textures[mat.pbrData.baseColorTexture.value().textureIndex].imageIndex.value();
-			size_t sampler = gltf.textures[mat.pbrData.baseColorTexture.value().textureIndex].samplerIndex.value();
-
-			materialResources.colorImage = images[img];
-			materialResources.colorSampler = file.samplers[sampler];
-			//kept for the path tracer's texture array (see GLTFMaterial::baseColorImage)
-			newMat->baseColorImage = images[img];
+			const size_t texture = mat.pbrData.baseColorTexture->textureIndex;
+			if (auto image = textureImage(texture)) {
+				materialResources.colorImage = *image;
+				const auto sampler = gltf.textures[texture].samplerIndex;
+				if (sampler.has_value() && *sampler < file.samplers.size()) {
+					materialResources.colorSampler = file.samplers[*sampler];
+				}
+				//kept for the path tracer's texture array (see GLTFMaterial::baseColorImage)
+				newMat->baseColorImage = *image;
+			}
+		}
+		// the raster shader has a metal/rough binding it never samples; only the path tracer reads these
+		if (mat.pbrData.metallicRoughnessTexture.has_value()) {
+			newMat->metalRoughImage = textureImage(mat.pbrData.metallicRoughnessTexture->textureIndex).value_or(AllocatedImage {});
+		}
+		if (mat.normalTexture.has_value()) {
+			newMat->normalImage = textureImage(mat.normalTexture->textureIndex).value_or(AllocatedImage {});
+			newMat->normalScale = mat.normalTexture->scale;
+		}
+		if (mat.emissiveTexture.has_value()) {
+			newMat->emissiveImage = textureImage(mat.emissiveTexture->textureIndex).value_or(AllocatedImage {});
+		}
+		if (newMat->alphaMode == GltfAlphaMode::Blend) {
+			fmt::println("loadGltf: material '{}' is alpha-blended; the path tracer draws it opaque", std::string_view(mat.name));
 		}
 		// build material
 		newMat->data = engine->m_metalRoughMaterial.writeMaterial(engine->m_device, passType, materialResources, file.descriptorPool);
@@ -339,20 +458,22 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 	// often
 	std::vector<uint32_t> indices;
 	std::vector<Vertex> vertices;
+	std::vector<glm::vec4> tangents;
 
 	for (fastgltf::Mesh& mesh : gltf.meshes) {
 		std::shared_ptr<MeshAsset> newmesh = std::make_shared<MeshAsset>();
 		meshes.push_back(newmesh);
-		file.meshes[mesh.name.c_str()] = newmesh;
+		file.meshes[uniqueKey(file.meshes, mesh.name, "mesh", meshes.size() - 1)] = newmesh;
 		newmesh->name = mesh.name;
 
 		// clear the mesh arrays each mesh, we dont want to merge them by error
 		indices.clear();
 		vertices.clear();
+		tangents.clear();
 
 		for (auto&& p : mesh.primitives) {
 			size_t initialVertex;
-			GeoSurface newSurface = loadPrimitiveGeometry(gltf, p, indices, vertices, initialVertex);
+			GeoSurface newSurface = loadPrimitiveGeometry(gltf, p, indices, vertices, tangents, initialVertex);
 
 			if (p.materialIndex.has_value()) {
 				newSurface.material = materials[p.materialIndex.value()];
@@ -378,6 +499,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 		//retained cpu-side copy of exactly what goes to the gpu (see MeshAsset::cpuVertices)
 		newmesh->cpuIndices = indices;
 		newmesh->cpuVertices = vertices;
+		newmesh->cpuTangents = tangents;
 
 		newmesh->meshBuffers = engine->uploadMesh(indices, vertices);
 	}
@@ -397,7 +519,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 		newNode->name = node.name;
 
 		nodes.push_back(newNode);
-		file.nodes[node.name.c_str()] = newNode;
+		file.nodes[uniqueKey(file.nodes, node.name, "node", nodes.size() - 1)] = newNode;
 
 		std::visit(fastgltf::visitor { [&](fastgltf::math::fmat4x4 matrix) {
 										  memcpy(&newNode->localTransform, matrix.data(), sizeof(glm::mat4));
@@ -435,6 +557,39 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 			file.topNodes.push_back(node);
 			node->refreshTransform(glm::mat4 { 1.f });
 		}
+	}
+
+	// the punctual lights, placed by the nodes that reference them. Read after the transforms above
+	// are resolved, since a light's pose is its node's world transform
+	for (size_t i = 0; i < gltf.nodes.size(); i++) {
+		const auto& lightIndex = gltf.nodes[i].lightIndex;
+		if (!lightIndex.has_value() || *lightIndex >= gltf.lights.size()) {
+			continue;
+		}
+		const fastgltf::Light& source = gltf.lights[*lightIndex];
+		GltfPunctualLight light;
+		light.name = source.name.empty() ? std::string(gltf.nodes[i].name) : std::string(source.name);
+		switch (source.type) {
+		case fastgltf::LightType::Directional:
+			light.type = GltfPunctualLight::Type::Directional;
+			break;
+		case fastgltf::LightType::Point:
+			light.type = GltfPunctualLight::Type::Point;
+			break;
+		case fastgltf::LightType::Spot:
+			light.type = GltfPunctualLight::Type::Spot;
+			break;
+		}
+		light.color = glm::vec3(source.color[0], source.color[1], source.color[2]);
+		light.intensity = source.intensity;
+		light.range = source.range.value_or(0.f);
+		light.innerConeAngle = source.innerConeAngle.value_or(0.f);
+		light.outerConeAngle = source.outerConeAngle.value_or(0.7853982f);
+		light.worldTransform = nodes[i]->worldTransform;
+		file.lights.push_back(std::move(light));
+	}
+	if (!file.lights.empty()) {
+		fmt::println("loadGltf: {} punctual light(s) imported; the path tracer does not render them yet", file.lights.size());
 	}
 	return scene;
 }

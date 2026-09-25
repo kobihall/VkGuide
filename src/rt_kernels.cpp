@@ -30,7 +30,8 @@ std::vector<CrtBinding> withCore(std::initializer_list<CrtBinding> extra)
 
 // The bindings a traversal variant of kernel 02 shares whatever its strategy: the ray queue it
 // reads, the hit records and classification queues it writes, the instances and their geometry,
-// the materials it classifies emissive hits with, and the work counters
+// the materials it classifies emissive hits with, the textures its alpha test and normal maps
+// sample, and the work counters
 std::vector<CrtBinding> intersectBindings(bool usesAcceleration)
 {
 	std::vector<CrtBinding> bindings = withCore({
@@ -38,6 +39,7 @@ std::vector<CrtBinding> intersectBindings(bool usesAcceleration)
 		CrtBinding::Instances,
 		CrtBinding::Materials,
 		CrtBinding::BlasTriangles,
+		CrtBinding::MaterialTextures,
 		CrtBinding::TriangleAttributes,
 		CrtBinding::InstanceMaterials,
 		CrtBinding::TraversalStats,
@@ -139,7 +141,7 @@ const std::vector<KernelVariant>& registry()
 			.shader = "rt/0401_handle_emissive.comp",
 			.domain = KernelDomain::FixedQueue,
 			.queue = QUEUE_EMISSIVE,
-			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Radiance, CrtBinding::Materials }),
+			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::MaterialTextures }),
 		});
 
 		//---------------------------------------------------------------- 05 sample medium interaction
@@ -164,7 +166,7 @@ const std::vector<KernelVariant>& registry()
 			.shader = "rt/0601_surface_scatter_bsdf.comp",
 			.domain = KernelDomain::FixedQueue,
 			.queue = QUEUE_SURFACE,
-			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::AlbedoTextures }),
+			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::MaterialTextures }),
 		});
 
 		//---------------------------------------------------------------- 07 sample medium scattering

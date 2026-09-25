@@ -110,6 +110,13 @@ bool drawMaterialParams(SceneMaterial& material)
 		changed |= ImGui::ColorEdit3("colour", &material.albedo.x);
 		changed |= ImGui::SliderFloat("strength", &material.strength, 0.f, 1000.f, "%.2f", ImGuiSliderFlags_Logarithmic);
 		break;
+	case MaterialType::Pbr:
+		changed |= ImGui::ColorEdit3("base colour", &material.albedo.x);
+		changed |= ImGui::SliderFloat("metallic", &material.metallic, 0.f, 1.f, "%.3f");
+		changed |= ImGui::SliderFloat("roughness", &material.roughness, 0.f, 1.f, "%.3f");
+		changed |= ImGui::ColorEdit3("emission", &material.emission.x);
+		changed |= ImGui::SliderFloat("emission strength", &material.strength, 0.f, 1000.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+		break;
 	}
 
 	return changed;

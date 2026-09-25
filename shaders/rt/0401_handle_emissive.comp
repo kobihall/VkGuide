@@ -1,12 +1,14 @@
 #version 460
 
 // 04 HANDLE EMISSIVE GEOMETRY. The paths kernel 02 pushed onto CRT_QUEUE_EMISSIVE: rays that
-// hit a light. Each one collects what the light emits through everything it bounced off and
-// ends there.
+// hit something that glows. Each one collects what the surface emits through everything it
+// bounced off.
 //
-//     L += throughput * albedo * strength
+//     L += throughput * Le
 //
-// Like 03, a terminal kernel: nothing is appended to the next ray queue.
+// Nothing is appended to the next ray queue. For an emissive material the path ends here. A pbr
+// surface with emission was also queued for 06, which carries the path on; src/rt_gpu.cpp runs
+// this kernel to completion first, since 06 overwrites the throughput read here.
 //
 // This is where the MIS weight goes. Under pure BSDF sampling a light found by chance is
 // counted at full weight, which is what happens here. Once kernel 06 also samples lights
@@ -34,6 +36,13 @@ void main()
 	const PathState path = paths[pathIndex];
 	const HitRecord hit = hits[entry];
 	const vec3 inDir = normalize(path.direction);
+	const GpuMaterial light = materials[hit.materialAndFace >> 1u];
+
+	// a surface that also scatters is not where its path ends, so the debug views, which write a
+	// path's final value, are left to 06
+	if (light.type == CRT_MATERIAL_PBR && pc.debugView != CRT_DEBUG_NONE) {
+		return;
+	}
 
 	vec3 value;
 	if (debugTerminalValue(hit, inDir, true, value)) {
@@ -45,6 +54,13 @@ void main()
 		return;
 	}
 
-	const GpuMaterial light = materials[hit.materialAndFace >> 1u];
-	radiance[path.radianceSlot] = vec4(path.throughput * light.albedo * light.param, 1.0);
+	vec3 emitted = light.albedo * light.param;
+	if (light.type == CRT_MATERIAL_PBR) {
+		emitted = light.emission;
+		if (light.emissiveLayer >= 0) {
+			emitted *= srgbToLinear(textureLod(materialTextures, vec3(hit.uv, float(light.emissiveLayer)), 0.0).rgb);
+		}
+	}
+	// added, not written: the path may have passed other glowing surfaces on earlier bounces
+	radiance[path.radianceSlot].rgb += path.throughput * emitted;
 }

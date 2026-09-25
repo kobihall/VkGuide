@@ -1,7 +1,7 @@
 #pragma once
 
-// Every loaded model's base-colour texture in one 2D array image, so the path tracer can pick a
-// triangle's texture with a plain layer index.
+// Every loaded model's material textures (base colour, normal, metal/rough, emissive) in one 2D
+// array image, so the path tracer can pick a triangle's texture with a plain layer index.
 //
 // Why an array rather than an array *of descriptors*: indexing a descriptor array by a value
 // that varies per invocation needs VK_EXT_descriptor_indexing and non-uniform indexing, which
@@ -23,9 +23,10 @@ public:
 	// the square size every source texture is blitted to. Big enough for the base-colour detail
 	// a path trace resolves, small enough that a scene's worth of them is a few tens of MB
 	static constexpr uint32_t LAYER_SIZE = 512;
-	// a hard cap on layers, so a pathological scene cannot try to allocate gigabytes. Textures
-	// past it are dropped and the surfaces using them fall back to their colour factor alone
-	static constexpr uint32_t MAX_LAYERS = 64;
+	// a hard cap on layers, so a pathological scene cannot try to allocate gigabytes: 1 MB a layer,
+	// so 256 MB at most, and only the layers a scene uses are allocated. Sponza needs 69. Textures
+	// past it are dropped, base colours last, and the surfaces using them fall back to their factors
+	static constexpr uint32_t MAX_LAYERS = 256;
 
 	// allocates the one-layer fallback, which is what the array is whenever no model has a
 	// texture. The binding must always name a valid view, so the array is never absent
@@ -55,6 +56,6 @@ private:
 	AllocatedImage m_array {};
 	uint32_t m_layerCount { 1 };
 	// source glTF image -> its layer. Keyed by VkImage because that is what a GLTFMaterial holds
-	// and what makes two materials sharing one texture share one layer
+	// and what makes two materials sharing one texture share one layer, whatever each uses it for
 	std::unordered_map<VkImage, int> m_layers;
 };

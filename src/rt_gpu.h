@@ -33,16 +33,26 @@ class VulkanEngine;
 // every struct is laid out with an explicit fourth component. The acceleration structure's own
 // (GpuInstance, GpuTriangleAttributes, BvhTriangle) are in rt_accel.h and bvh_layout.h
 struct CrtMaterial {
+	// the base colour or emitted colour, by type
 	glm::vec3 albedo;
-	// fuzz | smoothness | ir | strength, by type
+	// fuzz | smoothness | ir | strength, by type; unused by pbr
 	float param;
 	uint32_t type;
-	// layer of the raytracer's texture array modulating the albedo, -1 for untextured. Always -1
-	// for a shape, which has no uvs to sample with
+	// the texture layers (RaytraceTriMaterial), -1 for none. Always -1 for a shape, which has no
+	// uvs to sample with
 	int32_t albedoLayer;
-	uint32_t pad[2];
+	// the traversal's alpha test threshold on the base colour texel, 0 for never cut out
+	float alphaCutoff;
+	float metallic;
+	// pbr: emission x strength, linear
+	glm::vec3 emission;
+	float roughness;
+	int32_t normalLayer;
+	int32_t metalRoughLayer;
+	int32_t emissiveLayer;
+	float normalScale;
 };
-static_assert(sizeof(CrtMaterial) == 32);
+static_assert(sizeof(CrtMaterial) == 64);
 
 struct CrtQueueHeader {
 	// == VkDispatchIndirectCommand, maintained by the allocator as ceil(rayCount / workgroup)

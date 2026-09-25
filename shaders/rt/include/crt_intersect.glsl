@@ -7,7 +7,15 @@
 //
 //     miss                         -> CRT_QUEUE_ESCAPED   -> 03 Handle Escaped
 //     hit, material is emissive    -> CRT_QUEUE_EMISSIVE  -> 04 Handle Emissive Geometry
+//     hit, pbr with emission       -> CRT_QUEUE_EMISSIVE and CRT_QUEUE_SURFACE
 //     hit, anything else           -> CRT_QUEUE_SURFACE   -> 06 Sample Surface Scattering
+//
+// A glowing pbr surface is the one case on two queues, as in pbrt-v4's wavefront integrator: 04
+// adds what it emits and 06 carries the path on. src/rt_gpu.cpp puts a barrier between the two,
+// because 04 reads the throughput that 06 then overwrites.
+//
+// This is also where a normal map is applied: the tangent frame lives in the triangle's attribute
+// record, which only this kernel reads, so HitRecord.normal leaves here already perturbed.
 //
 // This is the split that makes each of those kernels start out CONVERGED: 06 runs only over
 // paths that really do need a BSDF sampled, not over a queue where two lanes in three are
@@ -30,7 +38,56 @@ layout (local_size_x = CRT_WORKGROUP) in;
 shared uint s_nodesVisited;
 shared uint s_primitivesTested;
 
-// one queued path: trace it, write its HitRecord, and report which queue it belongs on
+// crt_common.glsl GpuTriangleAttributes.tangents: one octahedral-encoded unit vector.
+// src/rt_accel.cpp packUnitVector
+vec3 unpackTangent(uint word)
+{
+	const vec2 e = unpackSnorm2x16(word);
+	vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+	if (v.z < 0.0) {
+		v.xy = (1.0 - abs(v.yx)) * vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0);
+	}
+	return normalize(v);
+}
+
+// The object-space normal a material's normal map gives at this point, or false where there is
+// none to apply: no map, or a vertex without a tangent (a mesh with no uvs, or degenerate ones)
+bool normalMapped(GpuMaterial material, GpuTriangleAttributes attributes, vec2 bary, vec2 uv, vec3 objectNormal, out vec3 mapped)
+{
+	mapped = objectNormal;
+	if (material.normalLayer < 0 || (attributes.tangents.w & CRT_TANGENT_MISSING) != 0u) {
+		return false;
+	}
+	const float w = 1.0 - bary.x - bary.y;
+	const vec3 n = normalize(objectNormal);
+	vec3 t = w * unpackTangent(attributes.tangents.x) + bary.x * unpackTangent(attributes.tangents.y) + bary.y * unpackTangent(attributes.tangents.z);
+	t -= n * dot(n, t);
+	if (dot(t, t) < 1e-12) {
+		return false;
+	}
+	t = normalize(t);
+	// glTF: bitangent = cross(normal, tangent.xyz) * tangent.w. The first vertex's sign stands for
+	// the triangle's, since a mirrored uv seam never runs through a triangle's interior
+	const vec3 b = cross(n, t) * ((attributes.tangents.w & 1u) != 0u ? -1.0 : 1.0);
+	vec3 texel = textureLod(materialTextures, vec3(uv, float(material.normalLayer)), 0.0).xyz * 2.0 - 1.0;
+	texel.xy *= material.normalScale;
+	// built in object space and carried to world space like any normal below. Under a non-uniform
+	// scale that skews the tangent components slightly; every model in use is scaled uniformly
+	mapped = t * texel.x + b * texel.y + n * texel.z;
+	return dot(mapped, mapped) > 1e-12;
+}
+
+// a normal from an instance's object space to world space, by the inverse transpose of
+// object-to-world - which is the transpose of the world-to-object rows the instance stores. It
+// keeps the normal perpendicular to the surface under a non-uniform scale, a stretched sphere's as
+// much as a mesh's
+vec3 worldNormal(GpuInstance instance, vec3 objectNormal)
+{
+	return normalize(objectNormal.x * instance.row0.xyz + objectNormal.y * instance.row1.xyz + objectNormal.z * instance.row2.xyz);
+}
+
+// one queued path: trace it, write its HitRecord, and report which queues it belongs on, as a
+// mask of (1 << CRT_QUEUE_*) bits
 uint intersectPath(uint queue, uint index)
 {
 	const uint pathIndex = queues[queueSlot(queue, index)];
@@ -53,7 +110,7 @@ uint intersectPath(uint queue, uint index)
 		record.normal = vec3(0.0);
 		record.materialAndFace = 0u;
 		hits[index] = record;
-		return CRT_QUEUE_ESCAPED;
+		return 1u << CRT_QUEUE_ESCAPED;
 	}
 
 	const GpuInstance instance = instances[trace.instance];
@@ -62,6 +119,8 @@ uint intersectPath(uint queue, uint index)
 
 	vec3 objectNormal;
 	uint material;
+	bool hasMapped = false;
+	vec3 mappedObjectNormal;
 	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
 		// the hit point back in the unit primitive's space, where its normal is defined
 		const vec4 p = vec4(record.position, 1.0);
@@ -70,12 +129,12 @@ uint intersectPath(uint queue, uint index)
 	} else {
 		// only the closest hit fetches its shading data: the traversal touched positions alone
 		const BvhTriangle tri = blasTriangles[trace.triangle];
-		const GpuTriangleAttributes attributes = triangleAttributes[instance.attributeBase + floatBitsToUint(tri.v0.w)];
+		const GpuTriangleAttributes attributes = triangleAttributes[instance.attributeBase + (floatBitsToUint(tri.v0.w) & CRT_TRIANGLE_INDEX_MASK)];
 		const float u = trace.bary.x;
 		const float v = trace.bary.y;
 		const float w = 1.0 - u - v;
 
-		record.uv = w * vec2(attributes.n0.w, attributes.vAndSurface.x) + u * vec2(attributes.n1.w, attributes.vAndSurface.y) + v * vec2(attributes.n2.w, attributes.vAndSurface.z);
+		record.uv = triangleUv(attributes, trace.bary);
 
 		// the interpolated shading normal, which is what makes a low-poly mesh shade smoothly. A
 		// mesh with no NORMAL attribute loaded as (1,0,0) everywhere, so a degenerate result falls
@@ -86,23 +145,33 @@ uint intersectPath(uint queue, uint index)
 		}
 
 		material = instanceMaterials[instance.materialBase + floatBitsToUint(attributes.vAndSurface.w)];
+		hasMapped = normalMapped(materials[material], attributes, trace.bary, record.uv, objectNormal, mappedObjectNormal);
 	}
-	// to world space by the inverse transpose of object-to-world, which is the transpose of the
-	// world-to-object rows the instance stores: it keeps the normal perpendicular to the surface
-	// under a non-uniform scale - a stretched sphere's as much as a mesh's
-	vec3 normal = objectNormal.x * instance.row0.xyz + objectNormal.y * instance.row1.xyz + objectNormal.z * instance.row2.xyz;
-	normal = normalize(normal);
+	const vec3 normal = worldNormal(instance, objectNormal);
 
 	// the stored normal always faces the incoming ray, and the bit records which side was hit, so a
-	// two-sided triangle - and the inside of a glass shape - shades correctly
+	// two-sided triangle - and the inside of a glass shape - shades correctly. The side is decided
+	// by the unmapped normal: a normal map changes how a surface shades, not which side it is
 	const bool frontFace = dot(direction, normal) < 0.0;
 	record.normal = frontFace ? normal : -normal;
+	if (hasMapped) {
+		// flipped with the side, and kept only while it still faces the ray: a mapped normal tilted
+		// past the viewer would send the BSDF's continuation into the surface
+		vec3 mapped = worldNormal(instance, mappedObjectNormal);
+		mapped = frontFace ? mapped : -mapped;
+		if (dot(mapped, direction) < 0.0) {
+			record.normal = mapped;
+		}
+	}
 	record.materialAndFace = (material << 1u) | (frontFace ? 1u : 0u);
 	hits[index] = record;
 
-	// a light ends the path wherever it is hit, so it goes to its own kernel rather than through
-	// the scattering one's front door
-	return materials[material].type == CRT_MATERIAL_EMISSIVE ? CRT_QUEUE_EMISSIVE : CRT_QUEUE_SURFACE;
+	// a light ends the path wherever it is hit, so it goes to its own kernel only. A glowing pbr
+	// surface goes to both: 04 collects the glow, 06 scatters
+	const GpuMaterial hitMaterial = materials[material];
+	const bool emits = hitMaterial.type == CRT_MATERIAL_EMISSIVE || (hitMaterial.type == CRT_MATERIAL_PBR && any(greaterThan(hitMaterial.emission, vec3(0.0))));
+	const bool scatters = hitMaterial.type != CRT_MATERIAL_EMISSIVE;
+	return (emits ? 1u << CRT_QUEUE_EMISSIVE : 0u) | (scatters ? 1u << CRT_QUEUE_SURFACE : 0u);
 }
 
 void main()
@@ -120,9 +189,9 @@ void main()
 	// the overhang of the last workgroup does no work, but stays for the barriers below
 	g_nodesVisited = 0u;
 	g_primitivesTested = 0u;
-	uint target = CRT_QUEUE_COUNT;
+	uint targets = 0u;
 	if (index < headers[queue].rayCount) {
-		target = intersectPath(queue, index);
+		targets = intersectPath(queue, index);
 		atomicAdd(s_nodesVisited, g_nodesVisited);
 		atomicAdd(s_primitivesTested, g_primitivesTested);
 	}
@@ -135,9 +204,9 @@ void main()
 	}
 
 	// three appends rather than one, because queueAppend() takes a single queue and must be
-	// reached by every invocation of the workgroup in uniform control flow. A lane pushes to
-	// exactly one of them and passes survives = false to the other two
-	queueAppend(CRT_QUEUE_ESCAPED, target == CRT_QUEUE_ESCAPED, index);
-	queueAppend(CRT_QUEUE_EMISSIVE, target == CRT_QUEUE_EMISSIVE, index);
-	queueAppend(CRT_QUEUE_SURFACE, target == CRT_QUEUE_SURFACE, index);
+	// reached by every invocation of the workgroup in uniform control flow. A lane pushes to one
+	// of them, or to emissive and surface both, and passes survives = false to the rest
+	queueAppend(CRT_QUEUE_ESCAPED, (targets & (1u << CRT_QUEUE_ESCAPED)) != 0u, index);
+	queueAppend(CRT_QUEUE_EMISSIVE, (targets & (1u << CRT_QUEUE_EMISSIVE)) != 0u, index);
+	queueAppend(CRT_QUEUE_SURFACE, (targets & (1u << CRT_QUEUE_SURFACE)) != 0u, index);
 }

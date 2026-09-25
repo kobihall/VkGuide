@@ -14,8 +14,14 @@
 // (two-level BVH) and crt_linear.glsl (brute force) for the two that exist.
 //
 // This file holds what every strategy needs regardless of how it searches: the hit record, the
-// work counters that make strategies comparable, the primitive tests, and the object-space
-// transform. Requires crt_common.glsl.
+// work counters that make strategies comparable, the primitive tests (alpha test included), and
+// the object-space transform. Requires crt_common.glsl.
+//
+// THE ALPHA TEST is part of the primitive test, so every strategy gets it by calling
+// testTriangles(): a candidate hit on a CRT_TRIANGLE_CUTOUT triangle whose base colour texel is
+// below the material's alphaCutoff is not a hit, and the search carries on past it. The CPU
+// mirror (src/bvh_scene.cpp) has no textures and treats every triangle as opaque, so it agrees
+// with this only on scenes without cutouts - which is all bvh_bench checks.
 
 struct TraceHit {
 	float t;
@@ -43,6 +49,30 @@ vec3 safeReciprocal(vec3 d)
 // the analytic shapes, which need safeReciprocal
 #include "crt_shape.glsl"
 
+// a point's uv from its triangle's attribute record and barycentrics
+vec2 triangleUv(GpuTriangleAttributes attributes, vec2 bary)
+{
+	const float w = 1.0 - bary.x - bary.y;
+	return w * vec2(attributes.n0.w, attributes.vAndSurface.x) + bary.x * vec2(attributes.n1.w, attributes.vAndSurface.y) + bary.y * vec2(attributes.n2.w, attributes.vAndSurface.z);
+}
+
+// Whether a candidate hit on a CRT_TRIANGLE_CUTOUT triangle lands in one of its material's holes.
+// Only flagged triangles pay for this - an instance, an attribute record, a material and a texel -
+// and the flag is set only where the glTF material is alphaMode MASK. The material still decides:
+// an object that overrides its glTF material has alphaCutoff 0 and is never cut
+bool cutAway(uint instanceSlot, uint triangleBits, vec2 bary)
+{
+	const GpuInstance instance = instances[instanceSlot];
+	const GpuTriangleAttributes attributes = triangleAttributes[instance.attributeBase + (triangleBits & CRT_TRIANGLE_INDEX_MASK)];
+	const GpuMaterial material = materials[instanceMaterials[instance.materialBase + floatBitsToUint(attributes.vAndSurface.w)]];
+	if (material.alphaCutoff <= 0.0) {
+		return false;
+	}
+	// textureLod: compute has no derivatives, and the array has no mips
+	const float alpha = material.albedoLayer >= 0 ? textureLod(materialTextures, vec3(triangleUv(attributes, bary), float(material.albedoLayer)), 0.0).a : 1.0;
+	return alpha < material.alphaCutoff;
+}
+
 // triangles [first, first + count) of blasTriangles, lowering tMax on a hit
 void testTriangles(uint first, uint count, uint instance, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit)
 {
@@ -50,7 +80,12 @@ void testTriangles(uint first, uint count, uint instance, vec3 origin, vec3 dire
 		g_primitivesTested++;
 		float t;
 		vec2 bary;
-		if (hitTriangle(blasTriangles[i], origin, direction, tMin, tMax, t, bary)) {
+		const BvhTriangle triangle = blasTriangles[i];
+		if (hitTriangle(triangle, origin, direction, tMin, tMax, t, bary)) {
+			const uint bits = floatBitsToUint(triangle.v0.w);
+			if ((bits & CRT_TRIANGLE_CUTOUT) != 0u && cutAway(instance, bits, bary)) {
+				continue;
+			}
 			tMax = t;
 			hit.t = t;
 			hit.instance = instance;

@@ -7,6 +7,7 @@
 #include <thread>
 
 #include <fmt/format.h>
+#include <glm/gtc/packing.hpp>
 
 #include <rt_textures.h>
 #include <vk_loader.h>
@@ -35,32 +36,63 @@ BvhBuildOptions effectiveBlasOptions(const AccelSettings& settings)
 
 namespace {
 
+// a unit vector as the octahedral map's two snorm16s in one word (Cigolle et al. 2014, "A Survey of
+// Efficient Representations for Independent Unit Vectors"). crt_intersect.glsl unpackTangent()
+uint32_t packUnitVector(glm::vec3 v)
+{
+	v /= std::max(std::abs(v.x) + std::abs(v.y) + std::abs(v.z), 1e-20f);
+	glm::vec2 e(v.x, v.y);
+	if (v.z < 0.f) {
+		const glm::vec2 signs(e.x >= 0.f ? 1.f : -1.f, e.y >= 0.f ? 1.f : -1.f);
+		e = (1.f - glm::abs(glm::vec2(e.y, e.x))) * signs;
+	}
+	return glm::packSnorm2x16(e);
+}
+
 // one mesh's triangles in object space and their shading attributes, in GeoSurface order
 std::shared_ptr<const RaytraceBlas> buildMeshBlas(const MeshAsset& mesh, const AccelSettings& settings)
 {
 	auto out = std::make_shared<RaytraceBlas>();
 	out->surfaceCount = (uint32_t)mesh.surfaces.size();
 
+	const bool hasTangents = mesh.cpuTangents.size() == mesh.cpuVertices.size();
+	auto tangentOf = [&](uint32_t vertex) { return hasTangents ? mesh.cpuTangents[vertex] : glm::vec4(0.f, 0.f, 0.f, 1.f); };
+
 	std::vector<glm::vec3> vertices;
+	//per triangle, whether its material can cut it out: marked on the BLAS's triangles below
+	std::vector<uint8_t> cutout;
 	for (uint32_t surfaceIndex = 0; surfaceIndex < mesh.surfaces.size(); surfaceIndex++) {
 		const GeoSurface& surface = mesh.surfaces[surfaceIndex];
 		const size_t end = (size_t)surface.startIndex + surface.count;
 		if (end > mesh.cpuIndices.size()) {
 			continue;
 		}
+		const bool masked = surface.material != nullptr && surface.material->alphaMode == GltfAlphaMode::Mask;
 		for (size_t i = surface.startIndex; i + 2 < end; i += 3) {
-			const Vertex& a = mesh.cpuVertices[mesh.cpuIndices[i]];
-			const Vertex& b = mesh.cpuVertices[mesh.cpuIndices[i + 1]];
-			const Vertex& c = mesh.cpuVertices[mesh.cpuIndices[i + 2]];
+			const uint32_t ia = mesh.cpuIndices[i];
+			const uint32_t ib = mesh.cpuIndices[i + 1];
+			const uint32_t ic = mesh.cpuIndices[i + 2];
+			const Vertex& a = mesh.cpuVertices[ia];
+			const Vertex& b = mesh.cpuVertices[ib];
+			const Vertex& c = mesh.cpuVertices[ic];
 			vertices.push_back(a.position);
 			vertices.push_back(b.position);
 			vertices.push_back(c.position);
+			cutout.push_back(masked ? 1 : 0);
+
+			const glm::vec4 ta = tangentOf(ia);
+			const glm::vec4 tb = tangentOf(ib);
+			const glm::vec4 tc = tangentOf(ic);
 
 			GpuTriangleAttributes attributes;
 			attributes.n0 = glm::vec4(a.normal, a.uv_x);
 			attributes.n1 = glm::vec4(b.normal, b.uv_x);
 			attributes.n2 = glm::vec4(c.normal, c.uv_x);
 			attributes.vAndSurface = glm::vec4(a.uv_y, b.uv_y, c.uv_y, std::bit_cast<float>(surfaceIndex));
+			auto missing = [](const glm::vec4& t) { return glm::dot(glm::vec3(t), glm::vec3(t)) < 1e-12f; };
+			attributes.tangents = glm::uvec4(packUnitVector(ta), packUnitVector(tb), packUnitVector(tc),
+				(ta.w < 0.f ? 1u : 0u) | (tb.w < 0.f ? 2u : 0u) | (tc.w < 0.f ? 4u : 0u)
+					| (missing(ta) ? 8u : 0u) | (missing(tb) ? 16u : 0u) | (missing(tc) ? 32u : 0u));
 			out->attributes.push_back(attributes);
 		}
 	}
@@ -68,6 +100,12 @@ std::shared_ptr<const RaytraceBlas> buildMeshBlas(const MeshAsset& mesh, const A
 	out->blas = buildBlas(vertices, effectiveBlasOptions(settings), settings.layout);
 	if (!out->blas.error.empty()) {
 		fmt::println("RaytraceBlasCache: mesh '{}' is not traced - {}", mesh.name, out->blas.error);
+	}
+	for (BvhTriangle& triangle : out->blas.triangles) {
+		const uint32_t index = std::bit_cast<uint32_t>(triangle.v0.w);
+		if (index < cutout.size() && cutout[index] != 0) {
+			triangle.v0.w = std::bit_cast<float>(index | BVH_TRIANGLE_CUTOUT);
+		}
 	}
 	return out;
 }
@@ -167,6 +205,29 @@ RaytraceGeometry packGeometry(const RaytraceBlasSet& blases)
 	return geometry;
 }
 
+RaytraceTriMaterial gltfTriMaterial(const GLTFMaterial& material, const RaytraceTextureArray& textures)
+{
+	RaytraceTriMaterial entry;
+	entry.material.type = MaterialType::Pbr;
+	entry.material.albedo = glm::vec3(material.colorFactors);
+	entry.material.metallic = material.metalRoughFactors.x;
+	entry.material.roughness = material.metalRoughFactors.y;
+	entry.material.emission = material.emissiveFactor;
+	entry.material.strength = 1.f;
+	entry.albedoLayer = textures.layerOf(material.baseColorImage.image);
+	entry.normalLayer = textures.layerOf(material.normalImage.image);
+	entry.metalRoughLayer = textures.layerOf(material.metalRoughImage.image);
+	entry.emissiveLayer = textures.layerOf(material.emissiveImage.image);
+	entry.normalScale = material.normalScale;
+	if (material.alphaMode == GltfAlphaMode::Mask) {
+		//coverage is texel alpha x factor alpha; folding the factor into the threshold leaves the
+		//traversal one compare. A zero factor cuts the whole surface away, which is what glTF says
+		const float factor = material.colorFactors.a;
+		entry.alphaCutoff = factor > 0.f ? material.alphaCutoff / factor : 2.f;
+	}
+	return entry;
+}
+
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const RaytraceTextureArray& textures)
 {
@@ -224,14 +285,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 			const GLTFMaterial* material = surface.material.get();
 			auto [it, inserted] = gltfMaterials.try_emplace(material, (uint32_t)accel->materials.size());
 			if (inserted) {
-				//glTF pbr is not one of the four materials the tracer scatters with, so the base
-				//colour becomes a diffuse albedo: the honest reading of a base-colour factor and
-				//texture, and the metal/rough factors are deliberately unused
-				RaytraceTriMaterial entry;
-				entry.material.type = MaterialType::Lambertian;
-				entry.material.albedo = material != nullptr ? glm::vec3(material->colorFactors) : glm::vec3(1.f);
-				entry.albedoLayer = material != nullptr ? textures.layerOf(material->baseColorImage.image) : -1;
-				accel->materials.push_back(entry);
+				accel->materials.push_back(material != nullptr ? gltfTriMaterial(*material, textures) : RaytraceTriMaterial { makeSceneMaterial(MaterialType::Lambertian, glm::vec3(1.f)) });
 			}
 			accel->instanceMaterials.push_back(it->second);
 		}

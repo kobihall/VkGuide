@@ -112,7 +112,7 @@ VkDescriptorType crtBindingType(CrtBinding binding)
 	case CrtBinding::SampleCount:
 		return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	case CrtBinding::EnvironmentMap:
-	case CrtBinding::AlbedoTextures:
+	case CrtBinding::MaterialTextures:
 		return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	default:
 		return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -271,14 +271,21 @@ void GpuPathTracer::freePool(VulkanEngine* engine)
 
 namespace {
 
-//the tagged-union form the shader scatters with. `albedoLayer` is the caller's, since only a
-//triangle's glTF material has one
-CrtMaterial gpuMaterial(const SceneMaterial& material, int albedoLayer)
+//the tagged-union form the shader scatters with. The texture layers are the triangle material's,
+//since only a glTF material has any
+CrtMaterial gpuMaterial(const RaytraceTriMaterial& entry)
 {
+	const SceneMaterial& material = entry.material;
 	CrtMaterial out {};
 	out.albedo = material.albedo;
 	out.type = (uint32_t)material.type;
-	out.albedoLayer = albedoLayer;
+	out.albedoLayer = entry.albedoLayer;
+	out.normalLayer = entry.normalLayer;
+	out.metalRoughLayer = entry.metalRoughLayer;
+	out.emissiveLayer = entry.emissiveLayer;
+	out.alphaCutoff = entry.alphaCutoff;
+	out.normalScale = entry.normalScale;
+	out.emission = glm::vec3(0.f);
 	switch (material.type) {
 	case MaterialType::Lambertian:
 		out.param = 0.f;
@@ -294,6 +301,11 @@ CrtMaterial gpuMaterial(const SceneMaterial& material, int albedoLayer)
 		break;
 	case MaterialType::Emissive:
 		out.param = material.strength;
+		break;
+	case MaterialType::Pbr:
+		out.metallic = std::clamp(material.metallic, 0.f, 1.f);
+		out.roughness = std::clamp(material.roughness, 0.f, 1.f);
+		out.emission = glm::max(material.emission, glm::vec3(0.f)) * std::max(material.strength, 0.f);
 		break;
 	}
 	return out;
@@ -403,7 +415,7 @@ void GpuPathTracer::uploadScene(VulkanEngine* engine)
 		memcpy(mapped, scene->instances.data(), sizeof(GpuInstance) * instances);
 		CrtMaterial* gpuMaterials = (CrtMaterial*)(mapped + m_materialsOffset);
 		for (size_t i = 0; i < materials; i++) {
-			gpuMaterials[i] = gpuMaterial(scene->materials[i].material, scene->materials[i].albedoLayer);
+			gpuMaterials[i] = gpuMaterial(scene->materials[i]);
 		}
 		memcpy(mapped + m_instanceMaterialsOffset, scene->instanceMaterials.data(), sizeof(uint32_t) * instanceMaterials);
 		memcpy(mapped + m_tlasOffset, scene->tlas.bvh.nodes.data(), sizeof(glm::uvec4) * tlasWords);
@@ -563,7 +575,7 @@ VkDescriptorSet GpuPathTracer::writeSet(VulkanEngine* engine, const KernelVarian
 		case CrtBinding::BlasTriangles:
 			writer.writeBuffer(index, m_geometryBuffer.buffer, m_blasTrianglesBytes, m_blasTrianglesOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 			break;
-		case CrtBinding::AlbedoTextures:
+		case CrtBinding::MaterialTextures:
 			//the array always exists, even for a scene with no textures at all, so the binding is
 			//never left naming nothing
 			writer.writeImage(index, engine->m_raytraceTextures.image().imageView, engine->m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
@@ -757,14 +769,16 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 			//be read as dispatch arguments
 			vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
 
-			//---- 03, 04 and 06 drain those queues. They need no barriers BETWEEN them: each path
-			//went onto exactly one queue, so their radiance writes are disjoint, and only 06
-			//touches paths[] and the next ray queue
+			//---- 03, 04 and 06 drain those queues. A miss is on the escaped queue alone, so 03
+			//needs no barrier. A hit on a surface that both glows and scatters (a pbr material with
+			//emission) is on the emissive AND the surface queue: 04 reads its throughput, which 06
+			//then overwrites, so 04 finishes first
 			if (const KernelVariant* escaped = passFor(KernelSlot::HandleEscaped)) {
 				launch(*escaped, bounce);
 			}
 			if (const KernelVariant* emissive = passFor(KernelSlot::HandleEmissive)) {
 				launch(*emissive, bounce);
+				vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
 			}
 			if (const KernelVariant* medium = passFor(KernelSlot::SampleMediumInteraction)) {
 				launch(*medium, bounce);

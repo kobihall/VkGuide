@@ -9,6 +9,15 @@
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
 
+// how a glTF material's base-colour alpha is read (glTF 2.0 alphaMode)
+enum class GltfAlphaMode : uint8_t {
+	Opaque,
+	// cut out wherever alpha falls below alphaCutoff
+	Mask,
+	// blended. The path tracer has no partial coverage and treats it as opaque
+	Blend
+};
+
 struct GLTFMaterial {
 	MaterialInstance data;
 
@@ -16,12 +25,21 @@ struct GLTFMaterial {
 	// gpu uniform they are also written into, so anything shading this geometry outside the
 	// raster pipeline (the path tracer) does not have to re-parse the source file for them
 	glm::vec4 colorFactors { 1.f };
+	// x metallic, y roughness
 	glm::vec2 metalRoughFactors { 0.f };
+	// linear rgb, already multiplied by KHR_materials_emissive_strength
+	glm::vec3 emissiveFactor { 0.f };
+	float normalScale { 1.f };
+	GltfAlphaMode alphaMode { GltfAlphaMode::Opaque };
+	float alphaCutoff { 0.5f };
 
-	// the base-colour texture, or a null image when the material has none. The raster path
-	// reaches it through `data`'s descriptor set; the path tracer needs the image itself, to find
-	// which layer of RaytraceTextureArray holds it
+	// the textures, or null images for the ones the material has none of. The raster path reaches
+	// the base colour and metal/rough through `data`'s descriptor set; the path tracer needs the
+	// images themselves, to find which layers of RaytraceTextureArray hold them
 	AllocatedImage baseColorImage {};
+	AllocatedImage normalImage {};
+	AllocatedImage metalRoughImage {};
+	AllocatedImage emissiveImage {};
 };
 
 struct Bounds {
@@ -49,6 +67,35 @@ struct MeshAsset {
 	// plane/mesh intersection). Nothing reads it today
 	std::vector<Vertex> cpuVertices;
 	std::vector<uint32_t> cpuIndices;
+	// per cpuVertices entry: xyz the tangent, w the bitangent's sign (glTF TANGENT). Generated from
+	// the uvs when the file has none; zero where there are no uvs either. Kept off the gpu vertex,
+	// which the raster shaders read by buffer address, because only the path tracer's normal maps
+	// use it. May be empty for a mesh built outside the loader
+	std::vector<glm::vec4> cpuTangents;
+};
+
+// A KHR_lights_punctual light as the file places it. Imported as data only: the path tracer does
+// not sample or hit these yet (docs/plans/shadow-rays-nee.md)
+struct GltfPunctualLight {
+	enum class Type : uint8_t {
+		Directional,
+		Point,
+		Spot
+	};
+
+	std::string name;
+	Type type { Type::Point };
+	// linear rgb
+	glm::vec3 color { 1.f };
+	// candela for point and spot, lux for directional
+	float intensity { 1.f };
+	// 0 for infinite
+	float range { 0.f };
+	// spot only, radians
+	float innerConeAngle { 0.f };
+	float outerConeAngle { 0.7853982f };
+	// the owning node's world transform: the light sits at its origin and shines down its -z
+	glm::mat4 worldTransform { 1.f };
 };
 
 //forward declaration
@@ -66,6 +113,9 @@ struct LoadedGLTF : public IRenderable {
 	std::vector<std::shared_ptr<Node>> topNodes;
 
 	std::vector<VkSampler> samplers;
+
+	// the file's KHR_lights_punctual lights, one per node that references one
+	std::vector<GltfPunctualLight> lights;
 
 	DescriptorAllocatorGrowable descriptorPool;
 

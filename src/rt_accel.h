@@ -40,7 +40,8 @@ AccelSettings defaultAccelSettings();
 BvhBuildOptions effectiveBlasOptions(const AccelSettings& settings);
 
 // per original triangle, what shading needs once it is hit (crt_common.glsl GpuTriangleAttributes):
-// object-space vertex normals with the uvs in the spare components, and the surface it belongs to
+// object-space vertex normals with the uvs in the spare components, the surface it belongs to, and
+// the vertex tangents a normal map is applied in
 struct GpuTriangleAttributes {
 	// xyz normal, w that vertex's u
 	glm::vec4 n0;
@@ -48,8 +49,12 @@ struct GpuTriangleAttributes {
 	glm::vec4 n2;
 	// the three v's, and the surface index (uint bits) within the mesh
 	glm::vec4 vAndSurface;
+	// xyz: each vertex's tangent, octahedral-encoded as two snorm16 (packUnitVector()). w: bit i
+	// set when vertex i's bitangent is flipped (glTF TANGENT.w = -1), bit 3 + i when the vertex has
+	// no tangent (no uvs, or degenerate ones), which turns the triangle's normal map off
+	glm::uvec4 tangents;
 };
-static_assert(sizeof(GpuTriangleAttributes) == 64);
+static_assert(sizeof(GpuTriangleAttributes) == 80);
 
 // One mesh's BLAS plus its shading attributes
 struct RaytraceBlas {
@@ -154,6 +159,11 @@ struct RaytraceSceneAccel {
 	// triangles the placed instances add up to, counting every placement
 	size_t placedTriangles { 0 };
 };
+
+struct GLTFMaterial;
+
+// a glTF material as the tracer shades it: the pbr type with the file's factors and texture layers
+RaytraceTriMaterial gltfTriMaterial(const GLTFMaterial& material, const RaytraceTextureArray& textures);
 
 // Builds the top level over the visible mesh objects and the shapes. `geometry` must be
 // packGeometry(*blases); it is passed in so it is packed once per BLAS set, not per edit

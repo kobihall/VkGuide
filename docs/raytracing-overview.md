@@ -49,9 +49,9 @@ shaders/rt/
 |---|---|---|---|
 | 00 | Generate camera rays | the whole path pool, once per frame | One primary ray per (pixel, sample) slot, jittered in the pixel and across the aperture |
 | 01 | Generate samples | the live ray queue, per bounce | Prepares each path's randomness for this bounce. Where a Sobol sampler would go |
-| 02 | Intersect closest | the live ray queue, per bounce | Finds the nearest hit and **sorts** the paths into three queues |
+| 02 | Intersect closest | the live ray queue, per bounce | Finds the nearest hit, applies alpha cutouts and normal maps, and **sorts** the paths into three queues |
 | 03 | Handle escaped | the escaped queue | A ray that left the scene collects the background and ends |
-| 04 | Handle emissive geometry | the emissive queue | A ray that hit a light collects its emission and ends |
+| 04 | Handle emissive geometry | the emissive queue | A ray that hit a light collects its emission and ends. A ray that hit a glowing `pbr` surface collects its emission and carries on through 06 |
 | 06 | Sample surface scattering | the surface queue | Scatters the path off the surface, or ends it |
 | 09 | Update film | the pixels, once per frame | Folds the frame's samples into the running mean |
 
@@ -172,6 +172,8 @@ Saved **by id, never by index**, so adding or reordering variants later can't si
 
 The node layout is deliberately *not* saved — it follows the kernel 02 selection, so storing it would let a file contradict itself.
 
+Payload version 9 adds the `pbr` material type (`"albedo"`, `"metallic"`, `"roughness"`, `"emission"`, `"strength"`), which shapes and mesh overrides can use as well as glTF models.
+
 ---
 
 ## 4. The maths, kernel by kernel
@@ -205,7 +207,12 @@ Two details in the two-level structure are worth knowing:
 - The object-space ray direction is **deliberately not renormalised**. Since $M(O + t\vec d) = MO + t\,M\vec d$, the parameter $t$ is identical in both spaces, so `tMin`, `tMax` and the running closest hit carry across the transform untouched.
 - Normals go back to world space as $\vec n' = n_x\,\text{row}_0 + n_y\,\text{row}_1 + n_z\,\text{row}_2$ using the stored world-to-object *rows* — which is exactly $(M^{-1})^T \vec n$, correct under non-uniform scale, with no matrix inverse computed anywhere.
 
-Only the closest hit pays for its shading data: the traversal touches positions alone, and uvs and shading normals are fetched and barycentrically interpolated once, at the end.
+Only the closest hit pays for its shading data: the traversal touches positions alone, and uvs and shading normals are fetched and barycentrically interpolated once, at the end. Two exceptions:
+
+- **Alpha cutouts.** A triangle whose glTF material is `alphaMode` `MASK` carries a flag in the top bit of its index word. When the traversal hits one, it fetches the uv and the base colour texel's alpha, and rejects the hit if the alpha is below the material's cutoff. Unflagged triangles pay nothing.
+- **Normal maps.** Once the closest hit is known, kernel 02 perturbs the interpolated normal by the material's normal map in the tangent frame $(T, B, N)$ with $B = (N \times T)\,w$, glTF's convention. The front face is still decided by the unmapped normal.
+
+A hit on a `pbr` material with emission goes onto the emissive **and** the surface queue, as in pbrt-v4. A barrier between 04 and 06 keeps 04's read of the throughput ahead of 06's write.
 
 ### 03 — Handle escaped
 
@@ -217,18 +224,21 @@ Background in priority order: a solid colour, the equirectangular environment ma
 
 $$L \mathrel{+}= \beta \cdot \text{albedo} \cdot \text{strength}$$
 
+For a `pbr` surface, the emitted radiance is the emission colour times its strength, times the sRGB-decoded emissive texel if there is one. The path does not end there.
+
 At full weight, which is correct *because* there is no light sampling. The moment a kernel 06 variant starts sampling lights directly, this kernel has to start MIS-weighting or every light is counted twice — which is why it is its own kernel rather than a branch.
 
 ### 06 — Sample surface scattering
 
 $$\beta_{n+1} = \beta_n \cdot f(\omega_o, \omega_i)$$
 
-Four materials, ported from the CPU backend:
+Five materials ported from the CPU backend, and glTF's metallic-roughness model:
 
 - **Lambertian** — `normal + randomUnitVector()`. Adding a uniform-sphere point to the normal gives a *true* cosine-weighted distribution, which is why no explicit $\cos\theta$/pdf factor ever appears.
 - **Metal** — `reflect(d, n) + fuzz · randomInBall()`, absorbed if it goes below the surface.
 - **Phong** — a $\cos^\alpha$ lobe around the reflection direction with $\alpha = 1000^{s^2}$, sampled as $\cos\theta = \xi^{1/(\alpha+1)}$ in a tangent frame.
 - **Dielectric** — Snell with Schlick's approximation $R(\theta) = R_0 + (1-R_0)(1-\cos\theta)^5$, total internal reflection when $\eta\sin\theta > 1$.
+- **PBR** — glTF 2.0 metallic-roughness. A GGX specular lobe with $F_0 = \text{mix}(0.04, c, m)$ over a Lambertian lobe of $c\,(1-m)$, for base colour $c$ and metallic $m$. One lobe is sampled per bounce, with probability proportional to the luminance of what it reflects towards $\omega_o$. The specular lobe samples visible normals (Heitz 2018), so its weight is $F(\omega_o \cdot h)\,G_1(\omega_i)$. The metal/rough texture scales roughness by its green channel and metallic by its blue. Every glTF material renders as this type.
 
 Then **Russian roulette**: past a few bounces, a path survives with probability $p = \text{clamp}(\max\beta, 0.05, 1)$ and its throughput is divided by $p$. Unbiased, and it is what makes late bounces cheap — by bounce six the queue is a fraction of its original size, and the indirect dispatch shrinks with it.
 

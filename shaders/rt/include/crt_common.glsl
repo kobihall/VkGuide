@@ -35,6 +35,7 @@
 #define CRT_MATERIAL_PHONG 2u
 #define CRT_MATERIAL_DIELECTRIC 3u
 #define CRT_MATERIAL_EMISSIVE 4u
+#define CRT_MATERIAL_PBR 5u
 
 // 48 bytes, by path index (== the pool slot the path was spawned in)
 struct PathState {
@@ -62,16 +63,22 @@ struct HitRecord {
 };
 
 // 48 bytes: one triangle of one BLAS, in its mesh's object space, as the traversal intersects it -
-// the first vertex and the two edges from it. v0.w is the triangle's index within its mesh (uint
-// bits), which finds its GpuTriangleAttributes after leaves re-ordered it and spatial splits
-// duplicated it. src/bvh_layout.h BvhTriangle
+// the first vertex and the two edges from it. v0.w's bits: the triangle's index within its mesh
+// (CRT_TRIANGLE_INDEX_MASK), which finds its GpuTriangleAttributes after leaves re-ordered it and
+// spatial splits duplicated it, and CRT_TRIANGLE_CUTOUT for a triangle the traversal alpha-tests.
+// src/bvh_layout.h BvhTriangle
 struct BvhTriangle {
 	vec4 v0;
 	vec4 e1;
 	vec4 e2;
 };
 
-// 64 bytes, per triangle of a mesh in its original order: what shading needs once the triangle is
+#define CRT_TRIANGLE_INDEX_MASK 0x7FFFFFFFu
+#define CRT_TRIANGLE_CUTOUT 0x80000000u
+// GpuTriangleAttributes.tangents.w: bits 3-5, one per vertex, set where the vertex has no tangent
+#define CRT_TANGENT_MISSING 0x38u
+
+// 80 bytes, per triangle of a mesh in its original order: what shading needs once the triangle is
 // the closest hit. Object space. src/rt_accel.h GpuTriangleAttributes
 struct GpuTriangleAttributes {
 	// xyz normal (un-normalised), w that vertex's u
@@ -80,6 +87,9 @@ struct GpuTriangleAttributes {
 	vec4 n2;
 	// xyz the three v's, w the surface index within the mesh (uint bits)
 	vec4 vAndSurface;
+	// xyz each vertex's tangent, octahedral snorm16x2 (unpackTangent()); w bit i set when vertex i's
+	// bitangent is flipped, bit 3 + i when it has no tangent at all (CRT_TANGENT_MISSING)
+	uvec4 tangents;
 };
 
 // 64 bytes: a placed mesh (its BLAS, its per-surface material table) or a placed shape, either
@@ -107,16 +117,29 @@ struct GpuInstance {
 
 #define CRT_INSTANCE_SHAPE 0xFFFFFFFFu
 
+// 64 bytes. src/rt_gpu.h CrtMaterial
 struct GpuMaterial {
+	// the base colour or the emitted colour, by type
 	vec3 albedo;
-	// fuzz | smoothness | ir | strength, by type
+	// fuzz | smoothness | ir | strength, by type; unused by pbr
 	float param;
 	uint type;
-	// layer of albedoTextures modulating the albedo, or -1 for an untextured material. Shapes'
-	// are always -1
+	// layers of materialTextures, or -1 for none. Shapes' are always -1. albedo: rgb base colour
+	// (sRGB), a coverage
 	int albedoLayer;
-	uint pad0;
-	uint pad1;
+	// the base colour texel's alpha below which the traversal cuts the surface away; 0 for never
+	float alphaCutoff;
+	float metallic;
+	// pbr: emitted radiance (colour x strength), linear. Zero for a surface that does not glow
+	vec3 emission;
+	float roughness;
+	// tangent-space normal, linear
+	int normalLayer;
+	// g roughness, b metallic, linear
+	int metalRoughLayer;
+	// emitted colour, sRGB
+	int emissiveLayer;
+	float normalScale;
 };
 
 // == VkDispatchIndirectCommand followed by the count. The allocator keeps groupCountX equal to
@@ -158,7 +181,9 @@ layout (std430, set = 0, binding = 1) buffer HitBuffer { HitRecord hits[]; };
 // two queues back to back, each poolSize long
 layout (std430, set = 0, binding = 2) buffer QueueBuffer { uint queues[]; };
 layout (std430, set = 0, binding = 3) buffer HeaderBuffer { QueueHeader headers[]; };
-// one vec4 per pool slot: rgb the path's final contribution, w = 1 for a spawned slot
+// one vec4 per pool slot: rgb what the path has carried home so far, w = 1 for a spawned slot.
+// Kernel 00 zeroes it; 03 and 04 ADD to it, since a path that passes through a glowing pbr surface
+// collects its emission and carries on. The debug views overwrite it
 layout (std430, set = 0, binding = 4) buffer RadianceBuffer { vec4 radiance[]; };
 // per pixel: how many of this frame's K slots to spawn (the adaptive-sampling hook)
 layout (std430, set = 0, binding = 5) readonly buffer BudgetBuffer { uint sampleBudget[]; };
@@ -173,9 +198,10 @@ layout (r32ui, set = 0, binding = 9) uniform uimage2D sampleCount;
 layout (set = 0, binding = 10) uniform sampler2D environmentMap;
 // every BLAS's triangles, concatenated; an instance's triangleBase finds its own
 layout (std430, set = 0, binding = 11) readonly buffer BlasTriangleBuffer { BvhTriangle blasTriangles[]; };
-// every model's base-colour texture, one per layer. An array image rather than an array of
-// descriptors so no descriptor indexing is needed - see src/rt_textures.h
-layout (set = 0, binding = 12) uniform sampler2DArray albedoTextures;
+// every model's material textures (base colour, normal, metal/rough, emissive), one per layer. An
+// array image rather than an array of descriptors so no descriptor indexing is needed - see
+// src/rt_textures.h
+layout (set = 0, binding = 12) uniform sampler2DArray materialTextures;
 // every BLAS's nodes, concatenated (4 words per node binary, 5 CWBVH); an instance's nodeBase
 // finds its own. src/bvh_layout.h PackedBvh
 layout (std430, set = 0, binding = 13) readonly buffer BlasNodeBuffer { uvec4 blasNodes[]; };
@@ -313,7 +339,7 @@ bool hitTriangle(BvhTriangle tri, vec3 origin, vec3 direction, float tMin, float
 	return true;
 }
 
-// sRGB -> linear, for the base-colour textures. glTF stores them encoded, and the tracer works
+// sRGB -> linear, for the base-colour and emissive textures. glTF stores them encoded, and the tracer works
 // in linear light throughout: skipping this leaves every texture looking washed out and makes
 // its energy wrong at every bounce
 vec3 srgbToLinear(vec3 c)
