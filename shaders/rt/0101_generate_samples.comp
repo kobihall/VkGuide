@@ -4,9 +4,9 @@
 // trace, and prepares each live path's sample state for the dimensions that bounce is about to
 // consume.
 //
-// This variant decorrelates the path's PCG state with the bounce index. That is genuinely all a
-// pure-BSDF path tracer needs: the draws themselves happen lazily inside kernel 06, straight
-// out of PathState.rngState, and a stream that is a pure function of (pixel, sample index,
+// This variant decorrelates the path's PCG state with the bounce index. That is all this tracer
+// needs: the draws themselves - the BSDF sample, the light sample - happen lazily inside kernel 06,
+// straight out of PathState.rngState, and a stream that is a pure function of (pixel, sample index,
 // render seed, bounce) reproduces an image exactly from a fixed seed no matter how the queues
 // were ordered or the workgroups scheduled.
 //

@@ -1,13 +1,14 @@
-// What a ray that leaves the scene sees. Used by kernel 03 Handle Escaped, and by nothing else -
-// once a path misses it is finished, so this is the only place the background is evaluated.
+// What a ray that leaves the scene sees. Used by kernel 03 Handle Escaped - once a path misses it is
+// finished. Kernel 06's light samples read the environment map too, through crt_light.glsl, but only
+// when the map is the background: a solid colour and the sky gradient are not in the light list.
 //
 // Three sources in priority order, chosen by the push-constant flags: a solid colour, the
-// scene's equirectangular environment map, or the procedural sky gradient that the CPU backend
-// and Ray Tracing in One Weekend use.
+// scene's equirectangular environment map, or the procedural sky gradient of Ray Tracing in One
+// Weekend.
 //
 // Requires crt_common.glsl and equirect.glsl.
 
-// the CPU backend's sky: white at the horizon blending to light blue overhead
+// Ray Tracing in One Weekend's sky: white at the horizon blending to light blue overhead
 vec3 skyGradient(vec3 direction)
 {
 	float t = 0.5 * (direction.y + 1.0);

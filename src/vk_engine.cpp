@@ -567,6 +567,7 @@ void VulkanEngine::run()
 		m_displayRegistry.drawWindows();
 
 		drawCameraOverlays();
+		drawLightOverlays();
 
 		//after the panels, so an "Edit Transform" click shows the gizmo this frame. ImGuizmo
 		//maps clip space to the screen itself, y up, so it gets the un-flipped projection
@@ -806,9 +807,107 @@ void VulkanEngine::drawCameraOverlays()
 	}
 }
 
+void VulkanEngine::drawLightOverlays()
+{
+	const std::vector<SceneLight>& lights = m_raytraceScene.lights();
+	if (lights.empty()) {
+		return;
+	}
+
+	const ImGuiViewport* viewport = ImGui::GetMainViewport();
+	ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+	const glm::mat4 viewProj = rasterProjection() * m_mainCamera.getViewMatrix();
+	auto project = [&](const glm::vec3& world, ImVec2& out) {
+		const glm::vec4 clip = viewProj * glm::vec4(world, 1.f);
+		if (clip.w <= 0.001f) {
+			return false;
+		}
+		const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+		out = ImVec2(viewport->Pos.x + (ndc.x * 0.5f + 0.5f) * viewport->Size.x, viewport->Pos.y + (0.5f - ndc.y * 0.5f) * viewport->Size.y);
+		return true;
+	};
+	auto line = [&](const glm::vec3& a, const glm::vec3& b, ImU32 color) {
+		ImVec2 pa, pb;
+		if (project(a, pa) && project(b, pb)) {
+			drawList->AddLine(pa, pb, color, 1.5f);
+		}
+	};
+
+	for (const SceneLight& light : lights) {
+		//the light's own colour, brightened so a dim or dark one still shows
+		const glm::vec3 tint = light.color / std::max({ light.color.r, light.color.g, light.color.b, 1e-3f });
+		const ImU32 color = IM_COL32((int)(155 + 100 * tint.r), (int)(155 + 100 * tint.g), (int)(155 + 100 * tint.b), 230);
+		const glm::mat4 transform = light.transform();
+		auto at = [&](float x, float y, float z) { return glm::vec3(transform * glm::vec4(x, y, z, 1.f)); };
+
+		//a small star at the position, which every kind has
+		const float star = 0.12f;
+		line(at(-star, 0.f, 0.f), at(star, 0.f, 0.f), color);
+		line(at(0.f, -star, 0.f), at(0.f, star, 0.f), color);
+		line(at(0.f, 0.f, -star), at(0.f, 0.f, star), color);
+
+		if (light.kind == LightKind::Spot) {
+			//the outer cone, cut off a short way down its axis
+			const float depth = 0.6f;
+			const float radius = depth * std::tan(glm::radians(std::clamp(light.outerConeDegrees, 0.f, 89.f)));
+			glm::vec3 previous = at(radius, 0.f, -depth);
+			for (int i = 1; i <= 16; i++) {
+				const float angle = (float)i / 16.f * 2.f * glm::pi<float>();
+				const glm::vec3 point = at(radius * std::cos(angle), radius * std::sin(angle), -depth);
+				line(previous, point, color);
+				if (i % 4 == 0) {
+					line(light.position, point, color);
+				}
+				previous = point;
+			}
+		} else if (light.kind == LightKind::Directional) {
+			//an arrow the way the light travels
+			const float length = 0.8f;
+			line(light.position, at(0.f, 0.f, -length), color);
+			line(at(0.f, 0.f, -length), at(0.08f, 0.f, -length + 0.15f), color);
+			line(at(0.f, 0.f, -length), at(-0.08f, 0.f, -length + 0.15f), color);
+			line(at(0.f, 0.f, -length), at(0.f, 0.08f, -length + 0.15f), color);
+			line(at(0.f, 0.f, -length), at(0.f, -0.08f, -length + 0.15f), color);
+		}
+	}
+}
+
 namespace {
 
 constexpr const char* ENVIRONMENT_MAP_DISPLAY_NAME = "Environment Map";
+
+// A glTF file's KHR_lights_punctual light as a scene light: placed and aimed by its node, its
+// photometric intensity converted to the tracer's radiometric units, and tagged with the model so
+// that removing the model removes it
+SceneLight sceneLightOf(const GltfPunctualLight& source, const std::string& modelKey)
+{
+	SceneLight light;
+	light.name = source.name;
+	light.modelKey = modelKey;
+	switch (source.type) {
+	case GltfPunctualLight::Type::Point:
+		light.kind = LightKind::Point;
+		break;
+	case GltfPunctualLight::Type::Spot:
+		light.kind = LightKind::Spot;
+		break;
+	case GltfPunctualLight::Type::Directional:
+		light.kind = LightKind::Directional;
+		break;
+	}
+	light.position = glm::vec3(source.worldTransform[3]);
+	//the node's rotation, with any scale it carries normalised away: a glTF light shines down its
+	//node's -z, which is SceneLight's convention too
+	const glm::mat3 basis(glm::normalize(glm::vec3(source.worldTransform[0])), glm::normalize(glm::vec3(source.worldTransform[1])), glm::normalize(glm::vec3(source.worldTransform[2])));
+	light.orientation = glm::normalize(glm::quat_cast(basis));
+	light.color = glm::max(source.color, glm::vec3(0.f));
+	//candela (point, spot) or lux (directional) over 683 lm/W
+	light.intensity = std::max(source.intensity, 0.f) * PHOTOMETRIC_TO_RADIOMETRIC;
+	light.range = std::max(source.range, 0.f);
+	light.outerConeDegrees = std::clamp(glm::degrees(source.outerConeAngle), 0.f, 90.f);
+	light.innerConeDegrees = std::clamp(glm::degrees(source.innerConeAngle), 0.f, light.outerConeDegrees);
+	return light;
+}
 constexpr const char* SCENE_FILE_EXTENSION = "gltf";
 
 std::filesystem::path absoluteNormalized(const std::filesystem::path& path)
@@ -867,8 +966,17 @@ IoResult VulkanEngine::importGltf(const std::filesystem::path& path)
 	//of those nodes movable and deletable afterwards
 	m_raytraceScene.addMeshObjects(defaultMeshObjects(*m_raytraceMeshData, key));
 
-	return IoResult::success(fmt::format("Imported '{}' as '{}'. Scene now has {} model(s), {} mesh object(s), {} triangles",
-		path.filename().string(), key, m_models.size(), m_raytraceScene.meshObjects().size(), m_raytraceMeshData->triangleCount));
+	//and one scene light per KHR_lights_punctual light, where its node puts it
+	std::vector<SceneLight> lights;
+	for (const GltfPunctualLight& light : m_models[key]->lights) {
+		lights.push_back(sceneLightOf(light, key));
+	}
+	const size_t lightCount = lights.size();
+	m_raytraceScene.addLights(std::move(lights));
+
+	return IoResult::success(fmt::format("Imported '{}' as '{}'. Scene now has {} model(s), {} mesh object(s), {} triangles{}",
+		path.filename().string(), key, m_models.size(), m_raytraceScene.meshObjects().size(), m_raytraceMeshData->triangleCount,
+		lightCount > 0 ? fmt::format(", and the file's {} light(s)", lightCount) : ""));
 }
 
 void VulkanEngine::removeGltf(const std::string& name)
@@ -883,8 +991,10 @@ void VulkanEngine::removeGltf(const std::string& name)
 	//simple, obviously-correct way to retire them for a menu-driven action
 	vkDeviceWaitIdle(m_device);
 	m_models.erase(it);
-	//the objects placing this model's nodes go with it: their geometry has just stopped existing
+	//the objects placing this model's nodes go with it: their geometry has just stopped existing.
+	//So do the lights it brought, which belong to it the same way
 	m_raytraceScene.removeMeshObjectsOf(name);
+	m_raytraceScene.removeLightsOf(name);
 	rebuildSceneDerivedData();
 }
 
@@ -894,6 +1004,9 @@ void VulkanEngine::clearModels()
 		return;
 	}
 	vkDeviceWaitIdle(m_device);
+	for (const auto& [name, model] : m_models) {
+		m_raytraceScene.removeLightsOf(name);
+	}
 	m_models.clear();
 	m_raytraceScene.replaceMeshObjects({});
 	rebuildSceneDerivedData();
@@ -905,6 +1018,7 @@ void VulkanEngine::newScene()
 	clearEnvironmentMap();
 	m_firstPersonCameraId = 0;
 	m_raytraceScene.replaceShapes({});
+	m_raytraceScene.replaceLights({});
 	//an empty scene still has somewhere to render from
 	SceneCamera camera;
 	camera.name = "render_camera";
@@ -951,6 +1065,18 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 	scene.environmentMapPath = m_environmentMapPath;
 	scene.shapes = m_raytraceScene.shapes();
 	scene.cameras = m_raytraceScene.cameras();
+	scene.hasLights = true;
+	for (const SceneLight& light : m_raytraceScene.lights()) {
+		SceneLightRecord record;
+		record.light = light;
+		//a light of a model that is not in the file becomes the user's own
+		const auto found = modelIndices.find(light.modelKey);
+		record.model = light.modelKey.empty() || found == modelIndices.end() ? -1 : found->second;
+		if (record.model < 0) {
+			record.light.modelKey.clear();
+		}
+		scene.lights.push_back(std::move(record));
+	}
 	for (size_t i = 0; i < scene.cameras.size(); i++) {
 		if (scene.cameras[i].id == m_raytracer.renderCameraId()) {
 			scene.renderCamera = (int)i;
@@ -986,6 +1112,8 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	//problems are reported together
 	clearModels();
 	clearEnvironmentMap();
+	//the previous scene's lights go too: a file older than lights has only what its models bring
+	m_raytraceScene.replaceLights({});
 	std::vector<std::string> problems;
 	//the key each model actually got, by its position in the file's list: importGltf() derives a
 	//key from the file stem and uniquifies it, so the same file twice is two different keys
@@ -1039,6 +1167,17 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 			problems.push_back(mapLoaded.message);
 		}
 	}
+	//the file's lights replace what the imports just recreated from the models, exactly as its mesh
+	//objects do. An older file has none, and keeps those
+	if (scene.hasLights) {
+		std::vector<SceneLight> lights;
+		for (SceneLightRecord& record : scene.lights) {
+			SceneLight light = std::move(record.light);
+			light.modelKey = record.model >= 0 && record.model < (int)modelKeys.size() ? modelKeys[record.model] : std::string();
+			lights.push_back(std::move(light));
+		}
+		m_raytraceScene.replaceLights(std::move(lights));
+	}
 	m_firstPersonCameraId = 0;
 	m_raytraceScene.replaceShapes(std::move(scene.shapes));
 	m_raytraceScene.replaceCameras(std::move(scene.cameras));
@@ -1086,15 +1225,19 @@ IoResult VulkanEngine::loadEnvironmentMap(const std::filesystem::path& path)
 		return IoResult::failure(fmt::format("Failed to decode '{}': {}", pathString, stbi_failure_reason()));
 	}
 
+	//the path tracer's sampling tables, from the full-precision pixels before they are halved: a
+	//piecewise-constant distribution over the texels, at most 2048 cells wide, and its MIS-compensated
+	//copy (light_sampling.h). A 4k map's tables are ~33 MB and take a fraction of a second
+	auto distribution = std::make_shared<EnvironmentDistribution>(buildEnvironmentDistribution(pixels, (uint32_t)width, (uint32_t)height, 2048));
+
 	//half float: the usual precision for environment lighting, half the memory of rgba32f (an 8k
 	//map is 256 MB rather than 512), and linearly filterable everywhere - 32-bit float filtering
-	//is optional in vulkan
+	//is optional in vulkan. A map brighter than half float's 65504 is stored divided by a power of
+	//two, which the shaders multiply back in with the intensity (packEnvironmentTexels())
 	const size_t pixelCount = (size_t)width * (size_t)height;
-	std::vector<uint32_t> halves(pixelCount * 2);
-	for (size_t i = 0; i < pixelCount; i++) {
-		halves[i * 2 + 0] = glm::packHalf2x16(glm::vec2(pixels[i * 4 + 0], pixels[i * 4 + 1]));
-		halves[i * 2 + 1] = glm::packHalf2x16(glm::vec2(pixels[i * 4 + 2], pixels[i * 4 + 3]));
-	}
+	const float peak = environmentPeak(pixels, pixelCount);
+	const float storageScale = environmentStorageScale(peak);
+	std::vector<uint32_t> halves = packEnvironmentTexels(pixels, pixelCount, storageScale);
 	stbi_image_free(pixels);
 
 	//only now that the new data is known good does the old resource go
@@ -1103,13 +1246,19 @@ IoResult VulkanEngine::loadEnvironmentMap(const std::filesystem::path& path)
 	const VkExtent3D extent { (uint32_t)width, (uint32_t)height, 1 };
 	m_environmentMap = createImage(halves.data(), extent, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT);
 	m_environmentMapExtent = { extent.width, extent.height };
+	m_environmentMapScale = storageScale;
 	m_environmentMapPath = absoluteNormalized(path);
+	m_environmentDistribution = std::move(distribution);
 
 	//a preview window, so a loaded map can be seen even though nothing renders with it yet.
 	//Values above 1 show clipped
 	m_displayRegistry.registerImage(ENVIRONMENT_MAP_DISPLAY_NAME, m_environmentMap.imageView, m_environmentMapExtent);
 
-	return IoResult::success(fmt::format("Loaded '{}': {} x {}, rgba16f", path.filename().string(), width, height));
+	std::string message = fmt::format("Loaded '{}': {} x {}, rgba16f", path.filename().string(), width, height);
+	if (storageScale > 1.f) {
+		message += fmt::format(", stored at 1/{:g} so its peak of {:g} fits in half float", storageScale, peak);
+	}
+	return IoResult::success(message);
 }
 
 void VulkanEngine::clearEnvironmentMap()
@@ -1134,6 +1283,8 @@ void VulkanEngine::destroyEnvironmentMap()
 	destroyImage(m_environmentMap);
 	m_environmentMap = {};
 	m_environmentMapExtent = { 0, 0 };
+	m_environmentMapScale = 1.f;
+	m_environmentDistribution.reset();
 }
 
 void VulkanEngine::drawFileMenu()
@@ -1831,7 +1982,8 @@ void VulkanEngine::initComputePipelines()
 			EnvironmentBackgroundPushConstants pushConstants {};
 			pushConstants.inverseViewProj = glm::inverse(m_sceneData.viewproj);
 			pushConstants.drawExtent = glm::vec2(m_drawExtent.width, m_drawExtent.height);
-			pushConstants.exposure = m_environmentIntensity;
+			//the map is stored divided by its scale, which comes back in here with the intensity
+			pushConstants.exposure = m_environmentIntensity * m_environmentMapScale;
 
 			dispatchComputePassOver(cmd, pass, set, &pushConstants, m_drawImage.imageExtent);
 		};

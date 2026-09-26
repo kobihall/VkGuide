@@ -82,7 +82,8 @@ void RaytraceRenderer::cancelRender()
 
 void RaytraceRenderer::setKernels(const KernelSelection& selection)
 {
-	m_kernels = selection;
+	//kernel 08 follows kernel 02, whatever the caller handed over
+	m_kernels = reconcileKernelSelection(selection);
 	//a kernel 02 variant that names a node layout is what decides how the BLASes are packed, so a
 	//selection that disagrees with the built set is reconciled by the caller through
 	//requiredLayout() - see drawKernelPanel() and openScene()
@@ -180,13 +181,13 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		prospective.height = (int)engine->m_drawExtent.height;
 	}
 	const double costPerRay = sceneCostPerRay();
-	const double work = estimatedWorkPerFrame(prospective, costPerRay);
+	const double work = estimatedWorkPerFrame(prospective, costPerRay * tracesPerBounce());
 	const bool overBudget = work > WORK_PER_FRAME_BUDGET;
 
 	if (m_sceneAccel != nullptr && m_sceneAccel->meshInstanceCount > 0) {
 		ImGui::Text("%zu triangle(s) placed, ~%.0f steps/ray, %.1e steps/frame", m_sceneAccel->placedTriangles, costPerRay, work);
 		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("The BVH's expected cost of one ray (SAH: node visits + primitive tests),\ntimes pixels x samples/frame. What the render guard below is judged on.");
+			ImGui::SetTooltip("The BVH's expected cost of one ray (SAH: node visits + primitive tests),\ntimes pixels x samples/frame, doubled when kernel 06 also sends shadow rays.\nWhat the render guard below is judged on.");
 		}
 	}
 
@@ -240,6 +241,19 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		}
 	}
 
+	//kernel 09 leaves a NaN or infinite sample out of the mean rather than poison the pixel, which
+	//hides the bug that made it: say so, running or finished
+	if (m_gpu.hasImage() && m_gpu.droppedSamples() > 0) {
+		const double taken = (double)m_gpu.samplesAccumulated() * (double)m_gpu.width() * (double)m_gpu.height();
+		const double percent = taken > 0.0 ? 100.0 * (double)m_gpu.droppedSamples() / taken : 0.0;
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
+		ImGui::TextWrapped("%llu samples dropped as non-finite (%.3g%% of those taken)", (unsigned long long)m_gpu.droppedSamples(), percent);
+		ImGui::PopStyleColor();
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Kernel 09 leaves a sample out of the mean when any channel is NaN or infinite.\nSomething produced such a value, and the image is biased by the samples it lost.");
+		}
+	}
+
 	if (running) {
 		if (m_settings.restartOnChange) {
 			ImGui::TextDisabled("Restarts when the camera, scene or settings change");
@@ -256,6 +270,12 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 			ImGui::SetTooltip("Counted by the extend stage over every bounce of the last frame. Unlike a\ntiming it does not move with the GPU's clocks, so it compares builders fairly\neven on a thermally throttling laptop. A wide node tests 8 boxes and a binary\nnode 2, so compare node counts within a layout, and time across layouts.");
 		}
 	}
+	if (traversal.shadowRays > 0) {
+		ImGui::Text("Shadow ray work: %.1f nodes + %.1f primitives each", traversal.shadowNodesPerRay(), traversal.shadowPrimitivesPerRay());
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Kernel 08's any-hit walks, which stop at the first thing in the way:\nusually cheaper than the closest-hit rays above.");
+		}
+	}
 
 	//the compaction readout: the counts must fall monotonically
 	const std::vector<uint32_t>& alive = m_gpu.pathsAlivePerBounce();
@@ -266,6 +286,19 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		}
 		ImGui::TextWrapped("%s", line.c_str());
 	}
+	const std::vector<uint32_t>& shadows = m_gpu.shadowRaysPerBounce();
+	if (traversal.shadowRays > 0) {
+		std::string line = "Shadow rays per bounce:";
+		for (uint32_t count : shadows) {
+			line += fmt::format(" {}", count);
+		}
+		ImGui::TextWrapped("%s", line.c_str());
+	}
+
+	drawReference(engine);
+
+	ImGui::SeparatorText("Direct lighting");
+	drawLightingSettings(engine);
 
 	ImGui::SeparatorText("Settings");
 	drawSettings(engine);
@@ -400,6 +433,26 @@ double RaytraceRenderer::sceneCostPerRay() const
 	return std::max((double)m_sceneAccel->tlas.sceneSahCost, 1.0);
 }
 
+double RaytraceRenderer::tracesPerBounce() const
+{
+	//a shadow ray is a second walk through the scene, priced like the first: the any-hit early out
+	//makes it cheaper, which leaves the guard erring on the safe side
+	const KernelVariant* scatter = m_kernels.selected(KernelSlot::SurfaceScattering);
+	if (scatter == nullptr || m_sceneAccel == nullptr) {
+		return 1.0;
+	}
+	const GpuLightHeader& lights = m_sceneAccel->lights.header;
+	switch (scatter->nextEvent) {
+	case NextEvent::AllLights:
+		return lights.count > 0 ? 2.0 : 1.0;
+	case NextEvent::DeltaLights:
+		return lights.deltaCount > 0 ? 2.0 : 1.0;
+	case NextEvent::None:
+		break;
+	}
+	return 1.0;
+}
+
 double RaytraceRenderer::estimatedWorkPerFrame(const RenderSettings& settings, double costPerRay)
 {
 	const double pixels = (double)std::max(settings.width, 2) * (double)std::max(settings.height, 2);
@@ -438,7 +491,7 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	//enough to trip the GPU watchdog, and the failure mode is not a dropped frame - it is the
 	//display driver being killed. Refused here rather than in the panel so that no caller can
 	//reach it another way, and acknowledged only for the exact cost that was shown
-	const double work = estimatedWorkPerFrame(settings, costPerRay);
+	const double work = estimatedWorkPerFrame(settings, costPerRay * tracesPerBounce());
 	if (work > WORK_PER_FRAME_BUDGET && !(m_acceptedHeavyRender && work <= m_acceptedWork)) {
 		m_blockedReason = fmt::format("~{:.0f} steps per ray at {}x{}x{} is {:.1e} per frame, over the {:.0e} budget. Lower the resolution or samples per frame, hide some objects, switch kernel 02 back to a BVH, or accept it below",
 			costPerRay, settings.width, settings.height, settings.samplesPerFrame, work, WORK_PER_FRAME_BUDGET);
@@ -459,8 +512,12 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	snapshot.settings = settings;
 	snapshot.kernels = m_kernels;
 	snapshot.seed = settings.useFixedSeed ? settings.seed : (uint32_t)std::random_device {}();
+	//the tables go with the light list that names the environment: both only when the map is the
+	//background, which is what environmentLight() decides for both
+	snapshot.environment = m_sceneAccelEnvironment.distribution;
 	snapshot.useEnvironmentMap = engine->m_environmentMap.image != VK_NULL_HANDLE;
 	snapshot.environmentIntensity = engine->m_environmentIntensity;
+	snapshot.environmentMapScale = engine->m_environmentMapScale;
 	snapshot.solidBackground = engine->m_solidBackground;
 	snapshot.backgroundColor = engine->m_backgroundColor;
 
@@ -513,21 +570,131 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	}
 
 	//compared by value rather than by the editor's revision, which also moves for every camera
-	//change: a camera drag restarts the render each frame, and must not rebuild the TLAS each time
+	//change: a camera drag restarts the render each frame, and must not rebuild the TLAS each time.
+	//The lights and the background are part of it: the light list is built with the TLAS
+	const EnvironmentLight environment = environmentLight(engine);
 	if (m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
-		&& m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelShapes == editor.shapes()) {
+		&& m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelShapes == editor.shapes() && m_sceneAccelLights == editor.lights()
+		&& m_sceneAccelEnvironment == environment) {
 		return;
 	}
 
 	static const RaytraceMeshData noMeshes;
 	const RaytraceMeshData& meshData = engine->m_raytraceMeshData != nullptr ? *engine->m_raytraceMeshData : noMeshes;
-	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), engine->m_raytraceTextures);
+	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), editor.lights(), environment, engine->m_raytraceTextures);
 
 	m_sceneAccelObjects = editor.meshObjects();
 	m_sceneAccelShapes = editor.shapes();
+	m_sceneAccelLights = editor.lights();
+	m_sceneAccelEnvironment = environment;
 	m_sceneAccelModelRevision = engine->m_sceneRevision;
 	m_sceneAccelRevision = m_accelRevision;
 	m_hasSceneAccel = true;
+}
+
+EnvironmentLight RaytraceRenderer::environmentLight(VulkanEngine* engine) const
+{
+	//a missed ray sees the map only when one is loaded and no solid colour replaces it; the sky
+	//gradient is not a light the list can sample, and is left to BSDF samples at full weight
+	EnvironmentLight light;
+	if (engine->m_environmentMap.image != VK_NULL_HANDLE && !engine->m_solidBackground) {
+		light.distribution = engine->m_environmentDistribution;
+		light.intensity = engine->m_environmentIntensity;
+	}
+	return light;
+}
+
+void RaytraceRenderer::drawLightingSettings(VulkanEngine* engine)
+{
+	//kernel 06's variants ARE the strategies, so the combo is the registry's list for that slot,
+	//exactly as the Raytracer Shaders window shows it
+	const std::span<const KernelVariant> strategies = kernelVariants(KernelSlot::SurfaceScattering);
+	const KernelVariant* selected = m_kernels.selected(KernelSlot::SurfaceScattering);
+	if (ImGui::BeginCombo("Strategy", selected != nullptr ? selected->name : "none")) {
+		for (uint32_t v = 0; v < (uint32_t)strategies.size(); v++) {
+			if (ImGui::Selectable(strategies[v].name, m_kernels[KernelSlot::SurfaceScattering] == v)) {
+				KernelSelection changed = m_kernels;
+				changed[KernelSlot::SurfaceScattering] = v;
+				setKernels(changed);
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("%s", strategies[v].description);
+			}
+		}
+		ImGui::EndCombo();
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("How direct light is found at each bounce: kernel 06 of the Raytracer Shaders window.\nEvery strategy converges to the same image; they differ in noise. Saved with the scene.");
+	}
+
+	//what there is to sample
+	if (m_sceneAccel == nullptr) {
+		return;
+	}
+	const RaytraceLightList& lights = m_sceneAccel->lights;
+	if (lights.header.count == 0) {
+		ImGui::TextDisabled("No light to sample: every light is found by BSDF samples");
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Emissive shapes and triangles, punctual lights and an environment map are sampled.\nThe sky gradient, a solid background colour and the infinite plane are not.");
+		}
+		return;
+	}
+	std::string line = fmt::format("Light list: {} light(s) -", lights.header.count);
+	if (lights.punctualLights > 0) {
+		line += fmt::format(" {} punctual", lights.punctualLights);
+	}
+	if (lights.shapeLights > 0) {
+		line += fmt::format(" {} shape surface(s)", lights.shapeLights);
+	}
+	if (lights.triangleLightCount > 0) {
+		line += fmt::format(" {} triangle(s)", lights.triangleLightCount);
+	}
+	if (lights.environment) {
+		line += " environment map";
+	}
+	ImGui::TextWrapped("%s", line.c_str());
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("One light is picked per shadow ray, in proportion to its power (pbrt-v4's power light sampler).");
+	}
+	(void)engine;
+}
+
+void RaytraceRenderer::drawReference(VulkanEngine* engine)
+{
+	if (!m_gpu.hasImage()) {
+		return;
+	}
+	if (!ImGui::CollapsingHeader("Compare to reference")) {
+		return;
+	}
+	if (ImGui::Button("Use this render as reference")) {
+		m_gpu.captureReference();
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Copies the render as it stands. Converge one strategy far (thousands of samples),\ncapture it, then render the others: each shows its error against it as it goes.");
+	}
+	if (!m_gpu.hasReference()) {
+		ImGui::TextDisabled("No reference yet");
+		return;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Clear")) {
+		m_gpu.clearReference(engine);
+		return;
+	}
+	const VkExtent2D extent = m_gpu.referenceExtent();
+	ImGui::Text("Reference: %u x %u, %u sample(s)/pixel", extent.width, extent.height, m_gpu.referenceSamples());
+	if (extent.width != m_gpu.width() || extent.height != m_gpu.height()) {
+		ImGui::TextDisabled("The render is %u x %u: not compared", m_gpu.width(), m_gpu.height());
+		return;
+	}
+	const ReferenceError& error = m_gpu.referenceError();
+	if (error.valid) {
+		ImGui::Text("At %u sample(s): RMSE %.4g, relative MSE %.4g", error.samples, error.rmse, error.relativeMse);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Against the reference, over every pixel and channel. Relative MSE divides each\npixel's squared error by its reference value squared (+0.01), so dark regions count.\nMeaningful only for the same scene and camera the reference was rendered from.");
+		}
+	}
 }
 
 void RaytraceRenderer::drawKernelPanel(VulkanEngine* engine)
@@ -556,9 +723,11 @@ void RaytraceRenderer::drawKernelPanel(VulkanEngine* engine)
 		}
 		const KernelVariant* selected = m_kernels.selected(slot);
 		const bool implemented = selected != nullptr && selected->implemented;
+		//a following slot's variant is decided by its leader's: shown, never chosen
+		const bool follows = kernelSlotFollows(slot);
 
 		ImGui::PushID((int)i);
-		ImGui::BeginDisabled(!implemented && variants.size() <= 1);
+		ImGui::BeginDisabled((!implemented && variants.size() <= 1) || follows);
 
 		const std::string label = fmt::format("{}  {}", kernelSlotNumber(slot), kernelSlotName(slot));
 		if (ImGui::BeginCombo(label.c_str(), selected != nullptr ? selected->name : "none")) {
@@ -581,6 +750,8 @@ void RaytraceRenderer::drawKernelPanel(VulkanEngine* engine)
 		ImGui::Indent();
 		if (!implemented) {
 			ImGui::TextDisabled("not implemented - the kernel is skipped");
+		} else if (follows) {
+			ImGui::TextDisabled("follows kernel %s: %s", kernelSlotNumber(variants.front().followsSlot), selected->description);
 		} else {
 			ImGui::TextDisabled("%s", selected->description);
 		}
@@ -589,6 +760,8 @@ void RaytraceRenderer::drawKernelPanel(VulkanEngine* engine)
 	}
 
 	if (m_kernels != before) {
+		//a new kernel 02 brings its kernel 08 partner with it
+		m_kernels = reconcileKernelSelection(m_kernels);
 		//a traversal variant fixes the BLAS node layout, so selecting one may mean rebuilding
 		//every BLAS. setAccelSettings() does nothing when the layout already matches, which is
 		//the common case of swapping something other than kernel 02

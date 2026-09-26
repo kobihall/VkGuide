@@ -5,7 +5,10 @@
 //  - validates every BLAS (buildBlas refuses a malformed tree) and reports its quality: nodes,
 //    duplication, depth, SAH cost, build time;
 //  - traces the same random rays through traceScene() - the line-for-line mirror of the GPU
-//    traversal - and compares every result with brute force over the world-space triangles.
+//    traversal - and compares every result with brute force over the world-space triangles;
+//  - asks occludedScene() - the mirror of the shadow-ray query - whether anything lies on each ray
+//    within half, and within one and a half times, brute force's closest distance, which must
+//    answer no and yes (and no, for a ray brute force says misses).
 //
 // Run from anywhere:  ./bin/bvh_bench assets/structure.glb [--rays N] [--perturb] [--builders mbws] [--layouts bc]
 // --perturb additionally rotates and non-uniformly scales every instance, to exercise transforms.
@@ -273,8 +276,8 @@ int main(int argc, char* argv[])
 	}
 	fmt::println("brute force: {} rays, {} hit, {:.0f} ms ({:.2f} Mrays/s)\n", rayCount, referenceHits, bruteMs, rayCount / bruteMs / 1e3);
 
-	fmt::println("{:<24} {:<26} {:>9} {:>8} {:>6} {:>7} {:>8} {:>9} {:>9} {:>8} {:>8} {:>9} {:>9}",
-		"builder", "layout", "build ms", "nodes", "dup %", "depth", "BLAS SAH", "scene SAH", "MB", "nodes/r", "tris/r", "Mrays/s", "mismatch");
+	fmt::println("{:<24} {:<26} {:>9} {:>8} {:>6} {:>7} {:>8} {:>9} {:>9} {:>8} {:>8} {:>9} {:>9} {:>9}",
+		"builder", "layout", "build ms", "nodes", "dup %", "depth", "BLAS SAH", "scene SAH", "MB", "nodes/r", "tris/r", "Mrays/s", "mismatch", "shadow");
 
 	const std::pair<char, BvhBuilder> builderChoices[] = { { 'm', BvhBuilder::Midpoint }, { 'b', BvhBuilder::BinnedSah }, { 'w', BvhBuilder::SweepSah }, { 's', BvhBuilder::SpatialSah } };
 	const std::pair<char, BvhLayout> layoutChoices[] = { { 'b', BvhLayout::Binary }, { 'c', BvhLayout::Cwbvh8 } };
@@ -350,12 +353,32 @@ int main(int argc, char* argv[])
 				}
 			}
 
-			fmt::println("{:<24} {:<26} {:>9.0f} {:>8} {:>6.1f} {:>7} {:>8.1f} {:>9.1f} {:>9.1f} {:>8.1f} {:>8.1f} {:>9.2f} {:>9}",
+			//the shadow-ray query: short of the closest hit nothing is in the way, past it something is
+			std::vector<uint8_t> shortOccluded(rayCount);
+			std::vector<uint8_t> longOccluded(rayCount);
+			parallelFor(rayCount, [&](size_t r) {
+				BvhRay shadow = rays[r];
+				shadow.tMax = reference[r].hit ? reference[r].t * 0.5f : 1e30f;
+				shortOccluded[r] = occludedScene(tlas, blases, instances, shadow) ? 1 : 0;
+				shadow.tMax = reference[r].hit ? reference[r].t * 1.5f : 1e30f;
+				longOccluded[r] = occludedScene(tlas, blases, instances, shadow) ? 1 : 0;
+			});
+			size_t shadowMismatches = 0;
+			for (size_t r = 0; r < rayCount; r++) {
+				if (shortOccluded[r] != 0 || (longOccluded[r] != 0) != reference[r].hit) {
+					if (shadowMismatches < 3) {
+						fmt::println("    ray {}: occluded {} / {} within 0.5 / 1.5 x brute force's t={} (hit {})", r, shortOccluded[r], longOccluded[r], reference[r].t, reference[r].hit);
+					}
+					shadowMismatches++;
+				}
+			}
+
+			fmt::println("{:<24} {:<26} {:>9.0f} {:>8} {:>6.1f} {:>7} {:>8.1f} {:>9.1f} {:>9.1f} {:>8.1f} {:>8.1f} {:>9.2f} {:>9} {:>9}",
 				bvhBuilderName(builder), bvhLayoutName(layout), buildMs, nodes, 100.0 * ((double)refs / uniqueTriangles - 1.0), depth,
 				sahWeighted / uniqueTriangles, tlas.sceneSahCost, bytes / (1024.0 * 1024.0), nodesVisited / rayCount, trianglesTested / rayCount,
-				rayCount / traceMs / 1e3, mismatches);
+				rayCount / traceMs / 1e3, mismatches, shadowMismatches);
 			//a handful of edge grazes in tens of thousands is rounding; more is a bug
-			if (mismatches > rayCount / 1000) {
+			if (mismatches > rayCount / 1000 || shadowMismatches > rayCount / 1000) {
 				failures++;
 			}
 		}

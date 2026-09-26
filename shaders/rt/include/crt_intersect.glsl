@@ -28,7 +28,9 @@
 //
 // The HitRecord is deliberately geometry-agnostic: a shape and a triangle write the same
 // record, and nothing downstream of here can tell which it came from. Adding a primitive kind
-// changes this file and crt_shape.glsl; it changes no kernel after 02.
+// changes this file and crt_shape.glsl; it changes no kernel after 02. What 02 does record for an
+// emitter is which light list entry it is (HitRecord.lightIndex), since that is what kernel 04
+// needs to weigh a BSDF sample that found it against light sampling (src/rt_lights.h).
 //
 // Requires crt_common.glsl and a traceScene() from one of the strategy headers.
 
@@ -102,7 +104,8 @@ uint intersectPath(uint queue, uint index)
 	HitRecord record;
 	record.uv = vec2(0.0);
 	// the traversal-cost debug view's input: this ray's node visits and primitive tests
-	record.pad = vec2(float(g_nodesVisited), float(g_primitivesTested));
+	record.traversalCost = float(g_nodesVisited) + float(g_primitivesTested);
+	record.lightIndex = CRT_NO_LIGHT;
 
 	if (!found) {
 		record.position = vec3(0.0);
@@ -124,8 +127,13 @@ uint intersectPath(uint queue, uint index)
 	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
 		// the hit point back in the unit primitive's space, where its normal is defined
 		const vec4 p = vec4(record.position, 1.0);
-		objectNormal = shapeNormal(instance.triangleBase, vec3(dot(instance.row0, p), dot(instance.row1, p), dot(instance.row2, p)));
+		const vec3 objectPoint = vec3(dot(instance.row0, p), dot(instance.row1, p), dot(instance.row2, p));
+		objectNormal = shapeNormal(instance.triangleBase, objectPoint);
 		material = instance.materialBase;
+		// an emitting shape's light record; a box has one per face, in boxFace() order
+		if (instance.lightBase != CRT_NO_LIGHT) {
+			record.lightIndex = instance.lightBase + (instance.triangleBase == CRT_SHAPE_BOX ? boxFace(objectPoint) : 0u);
+		}
 	} else {
 		// only the closest hit fetches its shading data: the traversal touched positions alone
 		const BvhTriangle tri = blasTriangles[trace.triangle];
@@ -146,6 +154,10 @@ uint intersectPath(uint queue, uint index)
 
 		material = instanceMaterials[instance.materialBase + floatBitsToUint(attributes.vAndSurface.w)];
 		hasMapped = normalMapped(materials[material], attributes, trace.bary, record.uv, objectNormal, mappedObjectNormal);
+		// an emitting triangle's light record, found through its mesh-local index
+		if (instance.lightBase != CRT_NO_LIGHT) {
+			record.lightIndex = triangleLights[instance.lightBase + (floatBitsToUint(tri.v0.w) & CRT_TRIANGLE_INDEX_MASK)];
+		}
 	}
 	const vec3 normal = worldNormal(instance, objectNormal);
 

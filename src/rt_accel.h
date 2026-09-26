@@ -19,6 +19,8 @@
 #include <vector>
 
 #include <bvh_scene.h>
+#include <light_sampling.h>
+#include <rt_lights.h>
 #include <rt_scene_types.h>
 
 struct MeshAsset;
@@ -114,7 +116,11 @@ struct GpuInstance {
 	// triangles through leaves; it is what a brute-force variant of kernel 02 scans instead
 	// (shaders/rt/include/crt_linear.glsl). A shape: 0
 	uint32_t triangleCount;
-	uint32_t pad[3];
+	// a shape: its first record in the light list (a box's six faces follow), or GPU_NO_LIGHT. A
+	// mesh: where its run starts in RaytraceLightList::triangleLights, or GPU_NO_LIGHT for a mesh
+	// with no emitting triangle. What kernel 02 names the light it hit by
+	uint32_t lightBase;
+	uint32_t pad[2];
 };
 static_assert(sizeof(GpuInstance) == 80);
 
@@ -158,6 +164,23 @@ struct RaytraceSceneAccel {
 	uint32_t meshInstanceCount { 0 };
 	// triangles the placed instances add up to, counting every placement
 	size_t placedTriangles { 0 };
+	// every light next-event estimation can sample: the punctual lights, the emitting shapes and
+	// triangles, and the environment map when it is the background
+	RaytraceLightList lights;
+};
+
+// the radiance a material emits before any texture, as the emissive kernel computes it: an emissive
+// material's colour times its strength, a pbr material's emission times its strength, and black
+// for everything else
+glm::vec3 materialEmission(const SceneMaterial& material);
+
+// What the light list needs of the background: the environment map's tables when the map is what a
+// missed ray sees (not a solid colour, not the sky gradient), and its intensity
+struct EnvironmentLight {
+	std::shared_ptr<const EnvironmentDistribution> distribution;
+	float intensity { 1.f };
+
+	bool operator==(const EnvironmentLight&) const = default;
 };
 
 struct GLTFMaterial;
@@ -165,7 +188,9 @@ struct GLTFMaterial;
 // a glTF material as the tracer shades it: the pbr type with the file's factors and texture layers
 RaytraceTriMaterial gltfTriMaterial(const GLTFMaterial& material, const RaytraceTextureArray& textures);
 
-// Builds the top level over the visible mesh objects and the shapes. `geometry` must be
-// packGeometry(*blases); it is passed in so it is packed once per BLAS set, not per edit
+// Builds the top level over the visible mesh objects and the shapes, and the light list over them,
+// the punctual lights and the environment. `geometry` must be packGeometry(*blases); it is passed in
+// so it is packed once per BLAS set, not per edit
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
-	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const RaytraceTextureArray& textures);
+	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
+	const EnvironmentLight& environment, const RaytraceTextureArray& textures);

@@ -15,7 +15,8 @@
 // fixed-shape payload with fmt. The payload carries a "version" so a later schema change has
 // something to branch on; every older version still loads - 1 (spheres only), 2 (no render
 // settings), 3 (no cameras), 4 (no mesh objects), 5 (spheres rather than geometry) and 6 (no
-// emissive material or background colour), 7 (no kernel selection or BVH settings).
+// emissive material or background colour), 7 (no kernel selection or BVH settings), 8 (no pbr
+// material), 9 (no punctual lights).
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -43,6 +44,14 @@ struct SceneMeshObjectRecord {
 	SceneMaterial material;
 };
 
+// One punctual light as a file records it: the light, and - for one a glTF import brought in - its
+// model as an index into SceneDescription::modelPaths, for the same reason a mesh object records
+// one. -1 for a light made in the editor
+struct SceneLightRecord {
+	SceneLight light;
+	int model { -1 };
+};
+
 struct SceneDescription {
 	// absolute paths
 	std::vector<std::filesystem::path> modelPaths;
@@ -59,6 +68,10 @@ struct SceneDescription {
 	// into cameras; -1 for none). Ids are not saved - the editor assigns them on load
 	std::vector<SceneCamera> cameras;
 	int renderCamera { -1 };
+	// version 10: the punctual lights. `hasLights` tells an older file, whose models' own lights the
+	// imports recreate, from a scene whose lights were all deleted
+	std::vector<SceneLightRecord> lights;
+	bool hasLights { false };
 	// how to render it, and how bright the environment lights it
 	RenderSettings render;
 	float environmentIntensity { 1.f };

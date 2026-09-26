@@ -10,9 +10,14 @@
 // of that: the layer is an ordinary integer the shader computes.
 //
 // The cost is that every texture is resampled to one common size. That is done on the GPU with
-// vkCmdBlitImage, so a rebuild is one immediate submit and no CPU image work at all.
+// vkCmdBlitImage, so a rebuild is one immediate submit and no CPU image work at all - except for the
+// emissive textures, whose layers are read back once so the light list can price each emitting
+// triangle by how bright its texture is over it (meanLuminance()).
 
 #include <unordered_map>
+#include <vector>
+
+#include <glm/glm.hpp>
 
 #include <vk_types.h>
 
@@ -47,6 +52,11 @@ public:
 	const AllocatedImage& image() const { return m_array; }
 	uint32_t layerCount() const { return m_layerCount; }
 
+	// The mean linear luminance of an emissive layer over one triangle's uv footprint, from 16
+	// stratified points: its share of the triangle's power in the light list. 1 for a layer that is
+	// not an emissive texture. Only prices the light selection - the GPU applies the texel itself
+	float meanLuminance(int layer, const glm::vec2& uv0, const glm::vec2& uv1, const glm::vec2& uv2) const;
+
 private:
 	void destroyArray(VulkanEngine* engine);
 	// the array image plus its VK_IMAGE_VIEW_TYPE_2D_ARRAY view. VulkanEngine::createImage()
@@ -58,4 +68,6 @@ private:
 	// source glTF image -> its layer. Keyed by VkImage because that is what a GLTFMaterial holds
 	// and what makes two materials sharing one texture share one layer, whatever each uses it for
 	std::unordered_map<VkImage, int> m_layers;
+	// the layers some material uses as its emissive texture, read back as rgba8 (sRGB)
+	std::unordered_map<int, std::vector<uint8_t>> m_emissiveTexels;
 };

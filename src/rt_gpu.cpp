@@ -1,6 +1,7 @@
 #include <rt_gpu.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include <vk_engine.h>
@@ -66,14 +67,24 @@ constexpr uint32_t CRT_QUEUE_SHADOW = 5;
 constexpr uint32_t CRT_QUEUE_COUNT = 6;
 
 //mirrors of the remaining GLSL structs, for buffer sizing only
-constexpr VkDeviceSize PATH_STATE_SIZE = 48;
+constexpr VkDeviceSize PATH_STATE_SIZE = 64;
 constexpr VkDeviceSize HIT_RECORD_SIZE = 48;
+constexpr VkDeviceSize SHADOW_RAY_SIZE = 32;
 
-//header slots per frame slot in the readback buffer: one after generate, one after every shade
-constexpr uint32_t READBACK_HEADERS_PER_SLOT = CRT_MAX_DEPTH + 1;
+//header slots per frame slot in the readback buffer: the ray queue after generate and after every
+//shade, then the shadow queue after every bounce
+constexpr uint32_t READBACK_HEADERS_PER_SLOT = 2 * CRT_MAX_DEPTH + 1;
+constexpr uint32_t READBACK_SHADOW_HEADERS = CRT_MAX_DEPTH + 1;
 
-//shaders/crt_common.glsl traversalStats: nodes visited and primitives tested, per bounce
-constexpr VkDeviceSize TRAVERSAL_STATS_BYTES = sizeof(uint32_t) * 2 * CRT_MAX_DEPTH;
+//shaders/crt_common.glsl traversalStats: nodes visited and primitives tested, per bounce, for the
+//extend stage and then for the shadow rays; then CRT_STAT_DROPPED_SAMPLES, kernel 09's count of
+//the samples it left out of the mean
+constexpr uint32_t SHADOW_STATS_BASE = 2 * CRT_MAX_DEPTH;
+constexpr uint32_t DROPPED_SAMPLES_STAT = 4 * CRT_MAX_DEPTH;
+constexpr VkDeviceSize TRAVERSAL_STATS_BYTES = sizeof(uint32_t) * (DROPPED_SAMPLES_STAT + 1);
+
+//shaders/image_error.comp's workgroup, each of which leaves one vec2 of partial sums
+constexpr uint32_t ERROR_WORKGROUP = 16;
 
 VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment)
 {
@@ -99,6 +110,8 @@ const char* crtDebugViewName(CrtDebugView view)
 		return "sample-count heat";
 	case CrtDebugView::TraversalCost:
 		return "BVH traversal cost";
+	case CrtDebugView::MisWeights:
+		return "MIS weights (red BSDF, green light)";
 	case CrtDebugView::Count:
 		break;
 	}
@@ -171,6 +184,19 @@ void GpuPathTracer::init(VulkanEngine* engine)
 	m_statsReadback = engine->createBuffer((VkDeviceSize)FRAME_OVERLAP * TRAVERSAL_STATS_BYTES, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_TO_CPU);
 	m_slotRender.assign(FRAME_OVERLAP, 0);
 	m_slotHeaderCount.assign(FRAME_OVERLAP, 0);
+	m_slotErrorGroups.assign(FRAME_OVERLAP, 0);
+	m_slotErrorSamples.assign(FRAME_OVERLAP, 0);
+
+	//the reference measurement: not a wavefront kernel, a plain image pass over two images
+	m_errorPass = ComputePassBuilder(shaderDir + "image_error.comp.spv")
+		.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+		.setWorkgroupSize(ERROR_WORKGROUP, ERROR_WORKGROUP)
+		.build(engine->m_device);
+
+	//the environment tables' binding must always name a buffer, a map or no map
+	uploadEnvironment(engine, nullptr);
 }
 
 void GpuPathTracer::destroy(VulkanEngine* engine)
@@ -187,6 +213,21 @@ void GpuPathTracer::destroy(VulkanEngine* engine)
 	}
 	m_uploadedScene.reset();
 	m_uploadedGeometry.reset();
+	if (m_environmentBuffer.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_environmentBuffer);
+		m_environmentBuffer = {};
+	}
+	m_uploadedEnvironment.reset();
+	m_hasEnvironmentBuffer = false;
+	clearReference(engine);
+	if (m_errorPartials.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_errorPartials);
+		engine->destroyBuffer(m_errorReadback);
+		m_errorPartials = {};
+		m_errorReadback = {};
+		m_errorPartialsBytes = 0;
+	}
+	m_errorPass.destroy(engine->m_device);
 	if (m_headerReadback.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_headerReadback);
 		m_headerReadback = {};
@@ -228,6 +269,7 @@ void GpuPathTracer::allocatePool(VulkanEngine* engine, uint32_t width, uint32_t 
 	m_hits = engine->createBuffer(HIT_RECORD_SIZE * m_poolSize, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_queues = engine->createBuffer(sizeof(uint32_t) * CRT_QUEUE_COUNT * (VkDeviceSize)m_poolSize, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_radiance = engine->createBuffer(sizeof(glm::vec4) * (VkDeviceSize)m_poolSize, storage, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_shadowRayBuffer = engine->createBuffer(SHADOW_RAY_SIZE * m_poolSize, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_sampleBudget = engine->createBuffer(sizeof(uint32_t) * (VkDeviceSize)width * height, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 	//the headers are the indirect arguments, reset by the command buffer and read back for the readout
 	m_headers = engine->createBuffer(sizeof(CrtQueueHeader) * CRT_QUEUE_COUNT, storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
@@ -245,7 +287,7 @@ void GpuPathTracer::allocatePool(VulkanEngine* engine, uint32_t width, uint32_t 
 
 	m_hasPool = true;
 
-	const double megabytes = double((PATH_STATE_SIZE + HIT_RECORD_SIZE + 8 + 16) * m_poolSize + 4 * (VkDeviceSize)width * height + 20 * (VkDeviceSize)width * height) / (1024.0 * 1024.0);
+	const double megabytes = double((PATH_STATE_SIZE + HIT_RECORD_SIZE + SHADOW_RAY_SIZE + 4 * CRT_QUEUE_COUNT + 16) * m_poolSize + 4 * (VkDeviceSize)width * height + 20 * (VkDeviceSize)width * height) / (1024.0 * 1024.0);
 	fmt::println("GpuPathTracer: pool {} x {} x {} = {} paths, {:.0f} MB", width, height, samplesPerFrame, m_poolSize, megabytes);
 }
 
@@ -260,10 +302,11 @@ void GpuPathTracer::freePool(VulkanEngine* engine)
 	engine->destroyBuffer(m_queues);
 	engine->destroyBuffer(m_radiance);
 	engine->destroyBuffer(m_sampleBudget);
+	engine->destroyBuffer(m_shadowRayBuffer);
 	engine->destroyBuffer(m_headers);
 	engine->destroyImage(m_accumulation);
 	engine->destroyImage(m_sampleCount);
-	m_paths = m_hits = m_queues = m_radiance = m_sampleBudget = m_headers = {};
+	m_paths = m_hits = m_queues = m_radiance = m_sampleBudget = m_shadowRayBuffer = m_headers = {};
 	m_accumulation = m_sampleCount = {};
 	m_hasPool = false;
 	m_hasImage = false;
@@ -396,6 +439,9 @@ void GpuPathTracer::uploadScene(VulkanEngine* engine)
 	//what a traversal-free strategy scans: every record, TLAS or no TLAS
 	m_instanceCount = (uint32_t)instances;
 
+	const size_t lights = scene != nullptr ? scene->lights.lights.size() : 0;
+	const size_t triangleLights = scene != nullptr ? scene->lights.triangleLights.size() : 0;
+
 	const VkDeviceSize alignment = std::max<VkDeviceSize>(engine->m_gpuProperties.limits.minStorageBufferOffsetAlignment, 16);
 	m_instancesBytes = sizeof(GpuInstance) * std::max<size_t>(instances, 1);
 	m_materialsOffset = alignUp(m_instancesBytes, alignment);
@@ -404,7 +450,12 @@ void GpuPathTracer::uploadScene(VulkanEngine* engine)
 	m_instanceMaterialsBytes = sizeof(uint32_t) * std::max<size_t>(instanceMaterials, 1);
 	m_tlasOffset = alignUp(m_instanceMaterialsOffset + m_instanceMaterialsBytes, alignment);
 	m_tlasBytes = sizeof(glm::uvec4) * std::max<size_t>(tlasWords, 4);
-	const VkDeviceSize totalBytes = m_tlasOffset + m_tlasBytes;
+	//the light list's header, then its records - one record at least, so the array is never empty
+	m_lightsOffset = alignUp(m_tlasOffset + m_tlasBytes, alignment);
+	m_lightsBytes = sizeof(GpuLightHeader) + sizeof(GpuLight) * std::max<size_t>(lights, 1);
+	m_triangleLightsOffset = alignUp(m_lightsOffset + m_lightsBytes, alignment);
+	m_triangleLightsBytes = sizeof(uint32_t) * std::max<size_t>(triangleLights, 1);
+	const VkDeviceSize totalBytes = m_triangleLightsOffset + m_triangleLightsBytes;
 
 	retireBuffer(engine, m_sceneBuffer);
 	m_sceneBuffer = engine->createBuffer(totalBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
@@ -419,12 +470,71 @@ void GpuPathTracer::uploadScene(VulkanEngine* engine)
 		}
 		memcpy(mapped + m_instanceMaterialsOffset, scene->instanceMaterials.data(), sizeof(uint32_t) * instanceMaterials);
 		memcpy(mapped + m_tlasOffset, scene->tlas.bvh.nodes.data(), sizeof(glm::uvec4) * tlasWords);
+		memcpy(mapped + m_lightsOffset, &scene->lights.header, sizeof(GpuLightHeader));
+		memcpy(mapped + m_lightsOffset + sizeof(GpuLightHeader), scene->lights.lights.data(), sizeof(GpuLight) * lights);
+		memcpy(mapped + m_triangleLightsOffset, scene->lights.triangleLights.data(), sizeof(uint32_t) * triangleLights);
+	} else {
+		//no scene at all still has a light list: an empty one
+		const GpuLightHeader empty {};
+		memcpy(mapped + m_lightsOffset, &empty, sizeof(GpuLightHeader));
 	}
 	vmaFlushAllocation(engine->m_memAllocator, m_sceneBuffer.allocation, 0, totalBytes); //flush vma on MoltenVK
 
 	m_uploadedScene = scene;
-	fmt::println("GpuPathTracer: scene uploaded - {} instance(s) ({} shape(s), {} unbounded), {} material(s), {} TLAS node(s), {:.2f} MB",
-		instances, scene != nullptr ? scene->shapeCount : 0, m_unboundedCount, materials, tlasWords / 4, double(totalBytes) / (1024.0 * 1024.0));
+	fmt::println("GpuPathTracer: scene uploaded - {} instance(s) ({} shape(s), {} unbounded), {} material(s), {} TLAS node(s), {} light(s), {:.2f} MB",
+		instances, scene != nullptr ? scene->shapeCount : 0, m_unboundedCount, materials, tlasWords / 4, scene != nullptr ? scene->lights.header.count : 0, double(totalBytes) / (1024.0 * 1024.0));
+}
+
+void GpuPathTracer::uploadEnvironment(VulkanEngine* engine, const std::shared_ptr<const EnvironmentDistribution>& environment)
+{
+	if (m_hasEnvironmentBuffer && m_uploadedEnvironment == environment) {
+		return;
+	}
+
+	//crt_common.glsl EnvironmentSamplingBuffer: a four-word header, then each table as its marginal
+	//cdf, its row cdfs and its function. Without a map it is the header alone, all zero, which the
+	//shaders read as "nothing to sample" - and nothing is in the light list to make them try
+	struct Header {
+		uint32_t width;
+		uint32_t height;
+		float integral;
+		float compensatedIntegral;
+	};
+	std::vector<float> data;
+	Header header {};
+	if (environment != nullptr) {
+		const PiecewiseConstant2D& full = environment->full;
+		const PiecewiseConstant2D& compensated = environment->compensated;
+		header = { full.width, full.height, full.integral, compensated.integral };
+		for (const PiecewiseConstant2D* table : { &full, &compensated }) {
+			data.insert(data.end(), table->marginalCdf.begin(), table->marginalCdf.end());
+			data.insert(data.end(), table->rowCdf.begin(), table->rowCdf.end());
+			data.insert(data.end(), table->func.begin(), table->func.end());
+		}
+	}
+	data.resize(std::max<size_t>(data.size(), 1), 0.f);
+	m_environmentBytes = sizeof(Header) + sizeof(float) * data.size();
+
+	AllocatedBuffer staging = engine->createBuffer(m_environmentBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+	uint8_t* mapped = (uint8_t*)staging.info.pMappedData;
+	memcpy(mapped, &header, sizeof(Header));
+	memcpy(mapped + sizeof(Header), data.data(), sizeof(float) * data.size());
+	vmaFlushAllocation(engine->m_memAllocator, staging.allocation, 0, m_environmentBytes); //flush vma on MoltenVK
+
+	retireBuffer(engine, m_environmentBuffer);
+	m_environmentBuffer = engine->createBuffer(m_environmentBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		VkBufferCopy copy {};
+		copy.size = m_environmentBytes;
+		vkCmdCopyBuffer(cmd, staging.buffer, m_environmentBuffer.buffer, 1, &copy);
+	});
+	engine->destroyBuffer(staging);
+
+	m_uploadedEnvironment = environment;
+	m_hasEnvironmentBuffer = true;
+	if (environment != nullptr) {
+		fmt::println("GpuPathTracer: environment sampling tables uploaded - {} x {}, {:.1f} MB", header.width, header.height, double(m_environmentBytes) / (1024.0 * 1024.0));
+	}
 }
 
 void GpuPathTracer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
@@ -452,6 +562,7 @@ void GpuPathTracer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 		allocatePool(engine, m_snapshot.width, m_snapshot.height, samplesPerFrame);
 	}
 	uploadScene(engine);
+	uploadEnvironment(engine, m_snapshot.environment);
 
 	m_renderSerial++;
 	m_running = true;
@@ -461,7 +572,10 @@ void GpuPathTracer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 	m_lastFrameGpuMs = 0.f;
 	m_totalGpuMs = 0.f;
 	m_traversalWork = {};
+	m_droppedSamples = 0;
 	m_pathsAlive.clear();
+	m_shadowRays.clear();
+	m_referenceError = {};
 }
 
 void GpuPathTracer::stop()
@@ -475,8 +589,113 @@ void GpuPathTracer::beginFrame(VulkanEngine* engine)
 	collectReadbacks(engine, (uint32_t)(engine->m_frameNumber % FRAME_OVERLAP));
 }
 
+void GpuPathTracer::captureReference()
+{
+	m_capturePending = true;
+}
+
+void GpuPathTracer::clearReference(VulkanEngine* engine)
+{
+	m_capturePending = false;
+	if (!m_hasReference) {
+		return;
+	}
+	//a frame in flight may still read it, so it goes the way the scene buffers do
+	const AllocatedImage old = m_reference;
+	engine->m_frames[(engine->m_frameNumber + 1) % FRAME_OVERLAP].deletionQueue.push_function([engine, old]() {
+		engine->destroyImage(old);
+	});
+	m_reference = {};
+	m_hasReference = false;
+	m_referenceSamples = 0;
+	m_referenceError = {};
+}
+
+void GpuPathTracer::recordReference(VkCommandBuffer cmd, VulkanEngine* engine, uint32_t slot)
+{
+	m_slotErrorGroups[slot] = 0;
+	const VkExtent3D extent = m_accumulation.imageExtent;
+
+	if (m_capturePending) {
+		m_capturePending = false;
+		if (m_hasReference) {
+			clearReference(engine);
+		}
+		m_reference = engine->createImage(extent, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+		vkutil::transition_image(cmd, m_reference.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+		//the mean as it stands after this frame's update-film, both images in GENERAL for good
+		VkImageCopy region {};
+		region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		region.extent = extent;
+		vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+		vkCmdCopyImage(cmd, m_accumulation.image, VK_IMAGE_LAYOUT_GENERAL, m_reference.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+		vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+		m_hasReference = true;
+		m_referenceSamples = m_samplesAccumulated;
+	}
+
+	//measured only against a reference of the same size: another size is another picture
+	if (!m_hasReference || m_reference.imageExtent.width != extent.width || m_reference.imageExtent.height != extent.height) {
+		return;
+	}
+
+	const uint32_t groupsX = (extent.width + ERROR_WORKGROUP - 1) / ERROR_WORKGROUP;
+	const uint32_t groupsY = (extent.height + ERROR_WORKGROUP - 1) / ERROR_WORKGROUP;
+	const VkDeviceSize partialBytes = sizeof(glm::vec2) * (VkDeviceSize)groupsX * groupsY;
+	if (partialBytes > m_errorPartialsBytes) {
+		//grown in place: the old buffers may be in flight, so they retire like the scene buffers
+		retireBuffer(engine, m_errorPartials);
+		retireBuffer(engine, m_errorReadback);
+		m_errorPartialsBytes = partialBytes;
+		m_errorPartials = engine->createBuffer(partialBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+		m_errorReadback = engine->createBuffer(partialBytes * FRAME_OVERLAP, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_TO_CPU);
+		//a slot recorded before the growth would read the old layout
+		std::fill(m_slotErrorGroups.begin(), m_slotErrorGroups.end(), 0u);
+	}
+
+	const VkDescriptorSet set = engine->getCurrentFrame().frameDescriptors.allocate(engine->m_device, m_errorPass.setLayout);
+	DescriptorWriter writer;
+	writer.writeImage(0, m_accumulation.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.writeImage(1, m_reference.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.writeBuffer(2, m_errorPartials.buffer, partialBytes, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	writer.updateSet(engine->m_device, set);
+
+	vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+	dispatchComputePass(cmd, m_errorPass, set, nullptr, { groupsX, groupsY, 1 });
+	vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+	VkBufferCopy copy {};
+	copy.dstOffset = m_errorPartialsBytes * slot;
+	copy.size = partialBytes;
+	vkCmdCopyBuffer(cmd, m_errorPartials.buffer, m_errorReadback.buffer, 1, &copy);
+
+	m_slotErrorGroups[slot] = groupsX * groupsY;
+	m_slotErrorSamples[slot] = m_samplesAccumulated;
+}
+
 void GpuPathTracer::collectReadbacks(VulkanEngine* engine, uint32_t slot)
 {
+	//the reference measurement is read whether or not a render ran in the slot: a finished render
+	//is still measured against a reference captured after it
+	if (m_slotErrorGroups[slot] > 0) {
+		const uint32_t groups = m_slotErrorGroups[slot];
+		m_slotErrorGroups[slot] = 0;
+		const VkDeviceSize offset = m_errorPartialsBytes * slot;
+		vmaInvalidateAllocation(engine->m_memAllocator, m_errorReadback.allocation, offset, sizeof(glm::vec2) * groups);
+		const glm::vec2* partials = (const glm::vec2*)((const uint8_t*)m_errorReadback.info.pMappedData + offset);
+		double squared = 0.0;
+		double relative = 0.0;
+		for (uint32_t i = 0; i < groups; i++) {
+			squared += partials[i].x;
+			relative += partials[i].y;
+		}
+		const double pixels = (double)std::max(m_accumulation.imageExtent.width * m_accumulation.imageExtent.height, 1u);
+		m_referenceError.rmse = std::sqrt(squared / (3.0 * pixels));
+		m_referenceError.relativeMse = relative / pixels;
+		m_referenceError.samples = m_slotErrorSamples[slot];
+		m_referenceError.valid = true;
+	}
+
 	if (m_slotRender[slot] == 0) {
 		return;
 	}
@@ -498,7 +717,7 @@ void GpuPathTracer::collectReadbacks(VulkanEngine* engine, uint32_t slot)
 
 	if (headerCount > 0 && currentRender) {
 		const VkDeviceSize offset = (VkDeviceSize)slot * READBACK_HEADERS_PER_SLOT * sizeof(CrtQueueHeader);
-		const VkDeviceSize bytes = (VkDeviceSize)headerCount * sizeof(CrtQueueHeader);
+		const VkDeviceSize bytes = (VkDeviceSize)READBACK_HEADERS_PER_SLOT * sizeof(CrtQueueHeader);
 		vmaInvalidateAllocation(engine->m_memAllocator, m_headerReadback.allocation, offset, bytes);
 		const CrtQueueHeader* headers = (const CrtQueueHeader*)((const uint8_t*)m_headerReadback.info.pMappedData + offset);
 		m_pathsAlive.resize(headerCount);
@@ -519,7 +738,19 @@ void GpuPathTracer::collectReadbacks(VulkanEngine* engine, uint32_t slot)
 		work.primaryRays = headers[0].rayCount;
 		work.primaryNodes = stats[0];
 		work.primaryPrimitives = stats[1];
+
+		//the shadow queue after every bounce, and what tracing it cost
+		m_shadowRays.resize(headerCount - 1);
+		for (uint32_t bounce = 0; bounce + 1 < headerCount; bounce++) {
+			m_shadowRays[bounce] = headers[READBACK_SHADOW_HEADERS + bounce].rayCount;
+			work.shadowRays += m_shadowRays[bounce];
+			work.shadowNodes += stats[SHADOW_STATS_BASE + 2 * bounce];
+			work.shadowPrimitives += stats[SHADOW_STATS_BASE + 2 * bounce + 1];
+		}
 		m_traversalWork = work;
+
+		//a running total over the render: a single dropped sample biases its pixel
+		m_droppedSamples += stats[DROPPED_SAMPLES_STAT];
 	}
 }
 
@@ -594,6 +825,18 @@ VkDescriptorSet GpuPathTracer::writeSet(VulkanEngine* engine, const KernelVarian
 			break;
 		case CrtBinding::TraversalStats:
 			writer.writeBuffer(index, m_traversalStats.buffer, TRAVERSAL_STATS_BYTES, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::Lights:
+			writer.writeBuffer(index, m_sceneBuffer.buffer, m_lightsBytes, m_lightsOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::ShadowRays:
+			writer.writeBuffer(index, m_shadowRayBuffer.buffer, SHADOW_RAY_SIZE * m_poolSize, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::TriangleLights:
+			writer.writeBuffer(index, m_sceneBuffer.buffer, m_triangleLightsBytes, m_triangleLightsOffset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			break;
+		case CrtBinding::EnvironmentSampling:
+			writer.writeBuffer(index, m_environmentBuffer.buffer, m_environmentBytes, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 			break;
 		case CrtBinding::Count:
 			break;
@@ -681,7 +924,9 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 		params.minBouncesBeforeRoulette = (uint32_t)std::max(settings.minBouncesBeforeRoulette, 0);
 		params.debugView = (uint32_t)debugView;
 		params.maxSamples = std::max(m_maxSamples, 1u);
-		params.environmentIntensity = m_snapshot.environmentIntensity;
+		//the map is stored divided by its scale (environmentStorageScale()); the texture reads get
+		//it back here. The light list prices the environment from the file's own values instead
+		params.environmentIntensity = m_snapshot.environmentIntensity * m_snapshot.environmentMapScale;
 
 		//THE SCHEDULE. Each kernel of the wavefront is looked up in the selection this render was
 		//started with, and dispatched only if that slot has an implemented variant. Nothing below
@@ -800,19 +1045,21 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 
 			vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages | transferStage, computeAccess | transferAccess);
 			copyHeader(next, bounce + 1);
+			copyHeader(CRT_QUEUE_SHADOW, READBACK_SHADOW_HEADERS + bounce);
 		}
-
-		//the frame's traversal counters, read back with the headers FRAME_OVERLAP frames later
-		VkBufferCopy statsRegion {};
-		statsRegion.dstOffset = (VkDeviceSize)slot * TRAVERSAL_STATS_BYTES;
-		statsRegion.size = TRAVERSAL_STATS_BYTES;
-		vkCmdCopyBuffer(cmd, m_traversalStats.buffer, m_statsReadback.buffer, 1, &statsRegion);
 
 		//---------------------------------------------------------------- 09 update film
 		if (const KernelVariant* film = passFor(KernelSlot::UpdateFilm)) {
 			launch(*film, 0);
 		}
-		vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+		vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+
+		//the frame's counters, read back with the headers FRAME_OVERLAP frames later. After kernel
+		//09, whose dropped-sample count is the last of them
+		VkBufferCopy statsRegion {};
+		statsRegion.dstOffset = (VkDeviceSize)slot * TRAVERSAL_STATS_BYTES;
+		statsRegion.size = TRAVERSAL_STATS_BYTES;
+		vkCmdCopyBuffer(cmd, m_traversalStats.buffer, m_statsReadback.buffer, 1, &statsRegion);
 
 		m_slotRender[slot] = m_renderSerial;
 		m_slotHeaderCount[slot] = params.rayDepth + 1;
@@ -824,6 +1071,7 @@ void GpuPathTracer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Allo
 	}
 
 	if (m_hasImage) {
+		recordReference(cmd, engine, slot);
 		engine->m_tonemapPass.dispatch(cmd, engine->m_device, engine->getCurrentFrame().frameDescriptors, m_accumulation, displayImage, exposure);
 	}
 

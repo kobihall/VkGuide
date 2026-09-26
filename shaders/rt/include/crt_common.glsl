@@ -29,6 +29,10 @@
 #define CRT_DEBUG_BOUNCE_HEAT 4u
 #define CRT_DEBUG_SAMPLE_COUNT_HEAT 5u
 #define CRT_DEBUG_TRAVERSAL_COST 6u
+// Veach's figure 9.8(d): the first vertex's direct light from area lights and the environment, red
+// where BSDF samples found it and green where light samples did, each weighted as the strategy
+// weighs it. Delta lights, which only light samples can reach, are left out
+#define CRT_DEBUG_MIS_WEIGHTS 7u
 
 #define CRT_MATERIAL_LAMBERTIAN 0u
 #define CRT_MATERIAL_METAL 1u
@@ -37,7 +41,12 @@
 #define CRT_MATERIAL_EMISSIVE 4u
 #define CRT_MATERIAL_PBR 5u
 
-// 48 bytes, by path index (== the pool slot the path was spawned in)
+// PathState.misPdf's sentinel: whatever emission this path's next ray finds counts at full weight,
+// because no light was sampled towards it - a camera ray, a ray leaving a specular surface, or a
+// strategy that samples no area lights
+#define CRT_MIS_FULL -1.0
+
+// 64 bytes, by path index (== the pool slot the path was spawned in)
 struct PathState {
 	vec3 origin;
 	uint radianceSlot;
@@ -45,7 +54,21 @@ struct PathState {
 	uint rngState;
 	vec3 throughput;
 	uint bounce;
+	// THE MIS RECORD: how kernels 03 and 04 weigh emission the ray from `origin` finds, left by the
+	// kernel 06 variant that chose `direction`. CRT_MIS_FULL: full weight. 0: light sampling at
+	// `origin` already accounted for every light it could sample. > 0: the BSDF sampling's
+	// solid-angle density for `direction`, weighed against the light sampling's density there by
+	// the heuristic of exponent misExponent (1 balance, 2 power). Kernel 06 alone decides the
+	// strategy; 03 and 04 only follow the record (pbrt-v4's wavefront keeps r_u and r_l the same way)
+	float misPdf;
+	float misExponent;
+	uint pad0;
+	uint pad1;
 };
+
+// a light list index for "not a light": a hit on geometry the light list does not hold, which any
+// strategy then counts at full weight
+#define CRT_NO_LIGHT 0xFFFFFFFFu
 
 // 48 bytes, by QUEUE POSITION, not path index - extend writes hits[i] for queue entry i and
 // shade reads the same. t < 0 is a miss. Geometry-agnostic: a shape and a triangle write the
@@ -58,8 +81,11 @@ struct HitRecord {
 	// material index << 1 | front face
 	uint materialAndFace;
 	vec2 uv;
-	// x = BVH nodes visited, y = primitives tested finding this hit (the traversal-cost debug view)
-	vec2 pad;
+	// BVH nodes visited + primitives tested finding this hit (the traversal-cost debug view)
+	float traversalCost;
+	// the light list record of the surface hit, or CRT_NO_LIGHT: what kernel 04 prices the MIS
+	// weight of an emitter found by a BSDF sample against
+	uint lightIndex;
 };
 
 // 48 bytes: one triangle of one BLAS, in its mesh's object space, as the traversal intersects it -
@@ -110,7 +136,10 @@ struct GpuInstance {
 	// a mesh: how many BvhTriangles its BLAS owns, which is what a traversal-free variant of
 	// kernel 02 scans. A shape: 0
 	uint triangleCount;
-	uint pad0;
+	// a shape: its first record in lights[] (a box's six faces follow in face order), or
+	// CRT_NO_LIGHT. A mesh: where its triangles' entries start in triangleLights[], or CRT_NO_LIGHT
+	// for a mesh with no emitting triangle
+	uint lightBase;
 	uint pad1;
 	uint pad2;
 };
@@ -142,6 +171,72 @@ struct GpuMaterial {
 	float normalScale;
 };
 
+// the kinds of light (GpuLight.kind); src/light_sampling.h AreaLightKind for the first four
+#define CRT_LIGHT_SPHERE 0u
+#define CRT_LIGHT_RECTANGLE 1u
+#define CRT_LIGHT_CYLINDER 2u
+#define CRT_LIGHT_TRIANGLE 3u
+#define CRT_LIGHT_POINT 4u
+#define CRT_LIGHT_SPOT 5u
+#define CRT_LIGHT_DIRECTIONAL 6u
+#define CRT_LIGHT_ENVIRONMENT 7u
+
+// 96 bytes: one light the next-event estimation of kernel 06 can sample, in world space.
+// src/rt_lights.h GpuLight
+//   sphere       a = centre, radius          b, c unused
+//   rectangle    a.xyz = a corner            b.xyz, c.xyz = the edges from it
+//   cylinder     a = centre, radius          b.xyz = unit x axis, b.w = height; c.xyz = unit y axis
+//   triangle     a.xyz, b.xyz, c.xyz = the vertices; a.w = its global attribute record (uint bits),
+//                b.w = its emissive texture layer (int bits, -1 for none), c.w = its material (uint bits)
+//   point        a = position, range (0: none)
+//   spot         a = position, range; b = the direction it shines, cos(outer cone); c.x = cos(inner)
+//   directional  a.xyz = the direction the light travels
+//   environment  nothing: the map's tables are environmentSampling
+struct GpuLight {
+	vec4 a;
+	vec4 b;
+	vec4 c;
+	// area: the emitted radiance (a triangle's before its texture). Point and spot: the radiant
+	// intensity. Directional: the irradiance. Environment: unused (the map times its intensity)
+	vec3 radiance;
+	uint kind;
+	// what the light is picked in proportion to; pmf = power x the header's inverse total
+	float power;
+	// Vose's alias table over every light (src/light_sampling.h buildAliasTable)
+	float aliasQ;
+	uint aliasIndex;
+	// and over the delta lights alone, which are lights[0, deltaCount): what the BSDF strategy samples
+	float deltaAliasQ;
+	uint deltaAliasIndex;
+	uint pad0;
+	uint pad1;
+	uint pad2;
+};
+
+// 32 bytes, in front of lights[]
+struct LightHeader {
+	uint count;
+	// the punctual lights, first in the list
+	uint deltaCount;
+	// the environment map's record, or CRT_NO_LIGHT when the background is not a map
+	uint environment;
+	uint pad0;
+	float invTotalPower;
+	float invDeltaPower;
+	float pad1;
+	float pad2;
+};
+
+// 32 bytes, by RAY QUEUE POSITION like hits[]: a shadow ray kernel 06 emitted. Its origin is that
+// position's hit point. The contribution is complete - throughput, BSDF, cosine, emitted radiance,
+// MIS weight and pdf all applied - so kernel 08 only decides whether to add it
+struct ShadowRay {
+	vec3 direction;
+	float tMax;
+	vec3 contribution;
+	uint radianceSlot;
+};
+
 // == VkDispatchIndirectCommand followed by the count. The allocator keeps groupCountX equal to
 // ceil(rayCount / CRT_WORKGROUP); nothing derives one from the other later
 struct QueueHeader {
@@ -165,10 +260,16 @@ struct QueueHeader {
 #define CRT_QUEUE_ESCAPED 2u
 #define CRT_QUEUE_EMISSIVE 3u
 #define CRT_QUEUE_SURFACE 4u
-// written by 06 (and later 07), drained by 08 Trace Shadow Rays. Allocated but unused until a
-// next-event-estimation variant of 06 exists - see docs/plans/shadow-rays-nee.md
+// written by 06 (and later 07) with the RAY QUEUE POSITION of each path that emitted a shadow
+// ray, drained by 08 Trace Shadow Rays
 #define CRT_QUEUE_SHADOW 5u
 #define CRT_QUEUE_COUNT 6u
+
+// src/rt_gpu.h CRT_MAX_DEPTH: traversalStats holds the extend counters for this many bounces, then
+// the shadow-ray counters for as many again
+#define CRT_MAX_DEPTH 16u
+// the traversalStats entry after both: how many samples kernel 09 dropped as non-finite this frame
+#define CRT_STAT_DROPPED_SAMPLES (4u * CRT_MAX_DEPTH)
 
 // the ray queue this bounce reads; the next bounce writes the other one
 uint rayQueueFor(uint bounce)
@@ -212,9 +313,32 @@ layout (std430, set = 0, binding = 15) readonly buffer TlasNodeBuffer { uvec4 tl
 // per mesh instance, per surface: the index into materials[]
 layout (std430, set = 0, binding = 16) readonly buffer InstanceMaterialBuffer { uint instanceMaterials[]; };
 // the extend stage's work, per bounce: [2 * bounce] BVH nodes visited, [2 * bounce + 1] primitives
-// tested, summed over every ray of the frame. Zeroed each frame and read back like the queue
-// headers: the hardware-independent measure of a BVH (src/rt_gpu.h traversalWork)
+// tested, summed over every ray of the frame; then from [2 * CRT_MAX_DEPTH] the same for the
+// shadow rays. Zeroed each frame and read back like the queue headers: the hardware-independent
+// measure of a BVH (src/rt_gpu.h traversalWork). Last, [CRT_STAT_DROPPED_SAMPLES], kernel 09's
+// count of the samples it left out of the mean
 layout (std430, set = 0, binding = 17) buffer TraversalStatsBuffer { uint traversalStats[]; };
+// every light kernel 06 can sample: the punctual lights, then the area lights and the environment
+// map. src/rt_lights.h
+layout (std430, set = 0, binding = 18) readonly buffer LightBuffer {
+	LightHeader lightHeader;
+	GpuLight lights[];
+};
+// one shadow ray per ray queue position, written by 06 and traced by 08
+layout (std430, set = 0, binding = 19) buffer ShadowRayBuffer { ShadowRay shadowRays[]; };
+// per emitting mesh instance, per triangle (by its index within its mesh): its record in lights[],
+// or CRT_NO_LIGHT. What kernel 02 fills HitRecord.lightIndex from
+layout (std430, set = 0, binding = 20) readonly buffer TriangleLightBuffer { uint triangleLights[]; };
+// the environment map's two sampling tables, full and MIS-compensated, one after the other; each
+// is a marginal cdf (height + 1), the row cdfs (height x (width + 1)) and the function (height x
+// width). src/light_sampling.h PiecewiseConstant2D
+layout (std430, set = 0, binding = 21) readonly buffer EnvironmentSamplingBuffer {
+	uint envWidth;
+	uint envHeight;
+	float envIntegral;
+	float envCompensatedIntegral;
+	float envData[];
+};
 
 // src/rt_gpu.cpp CrtParams
 layout (push_constant) uniform Params {
@@ -244,6 +368,8 @@ layout (push_constant) uniform Params {
 	uint minBouncesBeforeRoulette;
 	uint debugView;
 	uint maxSamples;
+	// what a texel of environmentMap is multiplied by: the scene's intensity times the power of two
+	// the map is stored divided by, so a peak brighter than half float's 65504 stays finite
 	float environmentIntensity;
 	// every record in instances[], unbounded and bounded alike, regardless of whether a TLAS was
 	// built over them. A traversal-free variant of kernel 02 scans exactly this many

@@ -74,8 +74,8 @@ struct MeshAsset {
 	std::vector<glm::vec4> cpuTangents;
 };
 
-// A KHR_lights_punctual light as the file places it. Imported as data only: the path tracer does
-// not sample or hit these yet (docs/plans/shadow-rays-nee.md)
+// A KHR_lights_punctual light as the file places it. VulkanEngine::importGltf() turns each into a
+// SceneLight, which is what the editor, the scene file and the path tracer work with
 struct GltfPunctualLight {
 	enum class Type : uint8_t {
 		Directional,

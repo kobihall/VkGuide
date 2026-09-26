@@ -62,6 +62,11 @@ void main()
 			path.rngState = rng;
 			path.throughput = vec3(1.0);
 			path.bounce = 0u;
+			// the camera sampled no light, so whatever a camera ray finds counts in full
+			path.misPdf = CRT_MIS_FULL;
+			path.misExponent = 1.0;
+			path.pad0 = 0u;
+			path.pad1 = 0u;
 			paths[index] = path;
 		}
 	}

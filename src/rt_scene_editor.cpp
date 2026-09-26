@@ -137,6 +137,39 @@ bool drawCameraParams(SceneCamera& camera, bool& displayChanged)
 	return changed;
 }
 
+bool drawLightParams(SceneLight& light)
+{
+	ImGui::TextDisabled("%s", lightKindLabel(light.kind));
+
+	//a directional light has no position that matters to the render: it only places the viewport's
+	//arrow. Its direction is all there is
+	bool changed = ImGui::DragFloat3("position", &light.position.x, 0.01f, 0.f, 0.f, "%.3f");
+	if (light.kind != LightKind::Point) {
+		changed |= drawOrientation(light.orientation);
+	}
+
+	changed |= ImGui::ColorEdit3("colour", &light.color.x);
+	//the tracer's radiometric units, on the scale an environment map's radiance is read in
+	const char* intensityLabel = light.kind == LightKind::Directional ? "irradiance (W/m^2)" : "intensity (W/sr)";
+	changed |= ImGui::SliderFloat(intensityLabel, &light.intensity, 0.f, 100000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("A glTF light's candela (lux, for a directional one) divided by 683 on import");
+	}
+
+	if (light.kind != LightKind::Directional) {
+		changed |= ImGui::SliderFloat("range", &light.range, 0.f, 1000.f, light.range > 0.f ? "%.2f" : "none", ImGuiSliderFlags_Logarithmic);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("glTF's window: the light fades smoothly to nothing at this distance. 0 for a plain inverse square");
+		}
+	}
+	if (light.kind == LightKind::Spot) {
+		changed |= ImGui::SliderFloat("outer cone", &light.outerConeDegrees, 0.f, 90.f, "%.1f deg");
+		changed |= ImGui::SliderFloat("inner cone", &light.innerConeDegrees, 0.f, light.outerConeDegrees, "%.1f deg");
+		light.innerConeDegrees = std::min(light.innerConeDegrees, light.outerConeDegrees);
+	}
+	return changed;
+}
+
 bool drawMeshObjectParams(SceneMeshObject& object)
 {
 	//a mesh object owns a full transform, so the widgets show it the way every editor does -
@@ -223,6 +256,36 @@ uint64_t RaytraceSceneEditor::addCamera(SceneCamera camera)
 	return id;
 }
 
+void RaytraceSceneEditor::addLight(SceneLight light)
+{
+	light.id = m_nextId++;
+	if (light.name.empty()) {
+		light.name = fmt::format("{}_{}", lightKindName(light.kind), m_nextLightNumber);
+	}
+	m_nextLightNumber++;
+	m_lights.push_back(std::move(light));
+}
+
+void RaytraceSceneEditor::addLights(std::vector<SceneLight>&& lights)
+{
+	if (lights.empty()) {
+		return;
+	}
+	for (SceneLight& light : lights) {
+		addLight(std::move(light));
+	}
+	markChanged();
+}
+
+void RaytraceSceneEditor::removeLightsOf(const std::string& modelKey)
+{
+	const size_t before = m_lights.size();
+	std::erase_if(m_lights, [&modelKey](const SceneLight& light) { return !light.modelKey.empty() && light.modelKey == modelKey; });
+	if (m_lights.size() != before) {
+		markChanged();
+	}
+}
+
 void RaytraceSceneEditor::addMeshObjects(std::vector<SceneMeshObject>&& objects)
 {
 	if (objects.empty()) {
@@ -270,6 +333,18 @@ const SceneCamera* RaytraceSceneEditor::findCamera(uint64_t id) const
 	return found == m_cameras.end() ? nullptr : &(*found);
 }
 
+SceneLight* RaytraceSceneEditor::findLight(uint64_t id)
+{
+	auto found = std::find_if(m_lights.begin(), m_lights.end(), [id](const SceneLight& l) { return l.id == id; });
+	return found == m_lights.end() ? nullptr : &(*found);
+}
+
+const SceneLight* RaytraceSceneEditor::findLight(uint64_t id) const
+{
+	auto found = std::find_if(m_lights.begin(), m_lights.end(), [id](const SceneLight& l) { return l.id == id; });
+	return found == m_lights.end() ? nullptr : &(*found);
+}
+
 SceneMeshObject* RaytraceSceneEditor::findMeshObject(uint64_t id)
 {
 	auto found = std::find_if(m_meshObjects.begin(), m_meshObjects.end(), [id](const SceneMeshObject& o) { return o.id == id; });
@@ -302,6 +377,17 @@ void RaytraceSceneEditor::replaceCameras(std::vector<SceneCamera>&& cameras)
 	m_nextCameraNumber = 1;
 	for (SceneCamera& camera : cameras) {
 		addCamera(std::move(camera));
+	}
+	m_selectionKind = SelectionKind::None;
+	markChanged();
+}
+
+void RaytraceSceneEditor::replaceLights(std::vector<SceneLight>&& lights)
+{
+	m_lights.clear();
+	m_nextLightNumber = 1;
+	for (SceneLight& light : lights) {
+		addLight(std::move(light));
 	}
 	m_selectionKind = SelectionKind::None;
 	markChanged();
@@ -358,6 +444,21 @@ void RaytraceSceneEditor::createCamera(VulkanEngine* engine)
 	select(SelectionKind::Camera, id);
 }
 
+void RaytraceSceneEditor::createLight(VulkanEngine* engine, LightKind kind)
+{
+	//at the viewport's pose, like a new camera: a spot light then shines where the user is looking,
+	//and a directional one travels that way
+	const SceneCamera view = engine->cameraFromViewport();
+	SceneLight light;
+	light.kind = kind;
+	light.position = view.position;
+	light.orientation = view.orientation;
+	light.intensity = kind == LightKind::Directional ? 3.f : 10.f;
+	addLight(std::move(light));
+	markChanged();
+	select(SelectionKind::Light, m_lights.back().id);
+}
+
 void RaytraceSceneEditor::duplicateSelection()
 {
 	switch (m_selectionKind) {
@@ -397,6 +498,20 @@ void RaytraceSceneEditor::duplicateSelection()
 		select(SelectionKind::Camera, addCamera(std::move(copy)));
 		break;
 	}
+	case SelectionKind::Light: {
+		const SceneLight* source = findLight(m_selectionId);
+		if (source == nullptr) {
+			return;
+		}
+		SceneLight copy = *source;
+		copy.name = fmt::format("{}_copy", source->name);
+		//a copy is the user's own light, not the model's: removing the model leaves it
+		copy.modelKey.clear();
+		addLight(std::move(copy));
+		markChanged();
+		select(SelectionKind::Light, m_lights.back().id);
+		break;
+	}
 	case SelectionKind::None:
 		break;
 	}
@@ -411,6 +526,9 @@ void RaytraceSceneEditor::deleteSelection()
 		break;
 	case SelectionKind::Camera:
 		std::erase_if(m_cameras, [this](const SceneCamera& c) { return c.id == m_selectionId; });
+		break;
+	case SelectionKind::Light:
+		std::erase_if(m_lights, [this](const SceneLight& l) { return l.id == m_selectionId; });
 		break;
 	case SelectionKind::MeshObject:
 		//the model stays loaded: another object may place the same node, and the model row's
@@ -497,6 +615,17 @@ void RaytraceSceneEditor::drawToolbar(VulkanEngine* engine)
 		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
 			ImGui::SetTooltip("Placed at the viewport's current pose");
 		}
+		if (ImGui::BeginMenu("Light")) {
+			for (const LightKind kind : LIGHT_KINDS) {
+				if (ImGui::MenuItem(lightKindLabel(kind))) {
+					createLight(engine, kind);
+				}
+			}
+			ImGui::EndMenu();
+		}
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+			ImGui::SetTooltip("Placed at the viewport's current pose, shining the way it looks.\nFor a light with a surface, give a shape an emissive material");
+		}
 		ImGui::Separator();
 		if (ImGui::MenuItem("Mesh from glTF file...")) {
 			//the native dialog runs a modal loop, so it cannot open from inside the imgui frame;
@@ -532,6 +661,7 @@ void RaytraceSceneEditor::drawObjectTree(VulkanEngine* engine)
 	const float height = 12 * ImGui::GetTextLineHeightWithSpacing();
 	if (ImGui::BeginChild("##objects", ImVec2(0, height), ImGuiChildFlags_Borders)) {
 		drawCameraRows();
+		drawLightRows();
 		drawGeometryRows();
 		drawModelRows(engine);
 	}
@@ -568,6 +698,11 @@ bool RaytraceSceneEditor::drawObjectRow(SelectionKind kind, uint64_t id, const s
 			case SelectionKind::Shape:
 				if (SceneShape* shape = findShape(id)) {
 					target = &shape->name;
+				}
+				break;
+			case SelectionKind::Light:
+				if (SceneLight* light = findLight(id)) {
+					target = &light->name;
 				}
 				break;
 			case SelectionKind::MeshObject:
@@ -630,6 +765,25 @@ void RaytraceSceneEditor::drawCameraRows()
 	for (size_t i = 0; i < m_cameras.size(); i++) {
 		//a deleting row invalidates the vector, so the walk stops there and picks up next frame
 		if (!drawObjectRow(SelectionKind::Camera, m_cameras[i].id, m_cameras[i].name)) {
+			break;
+		}
+	}
+	ImGui::TreePop();
+}
+
+void RaytraceSceneEditor::drawLightRows()
+{
+	//only shown once there is a light: most scenes are lit by emissive shapes and the background,
+	//and an empty folder would suggest those are missing
+	if (m_lights.empty()) {
+		return;
+	}
+	if (!ImGui::TreeNodeEx("Lights", ImGuiTreeNodeFlags_DefaultOpen)) {
+		return;
+	}
+	for (size_t i = 0; i < m_lights.size(); i++) {
+		//a deleting row invalidates the vector, so the walk stops there and picks up next frame
+		if (!drawObjectRow(SelectionKind::Light, m_lights[i].id, m_lights[i].name)) {
 			break;
 		}
 	}
@@ -765,6 +919,11 @@ void RaytraceSceneEditor::drawSelection(VulkanEngine* engine)
 			drawSelectedCamera(engine, *camera);
 		}
 		break;
+	case SelectionKind::Light:
+		if (SceneLight* light = findLight(m_selectionId)) {
+			drawSelectedLight(engine, *light);
+		}
+		break;
 	case SelectionKind::MeshObject:
 		if (SceneMeshObject* object = findMeshObject(m_selectionId)) {
 			drawSelectedMeshObject(engine, *object);
@@ -854,6 +1013,37 @@ void RaytraceSceneEditor::drawSelectedCamera(VulkanEngine* engine, SceneCamera& 
 	} else if (firstPerson) {
 		ImGui::SameLine();
 		ImGui::TextDisabled("(fly the viewport: RMB look, WASD)");
+	}
+
+	if (changed) {
+		markChanged();
+	}
+
+	ImGui::PopID();
+}
+
+void RaytraceSceneEditor::drawSelectedLight(VulkanEngine* engine, SceneLight& light)
+{
+	ImGui::SeparatorText(light.name.c_str());
+	ImGui::PushID((int)light.id);
+
+	if (!light.modelKey.empty()) {
+		ImGui::TextDisabled("imported with %s", light.modelKey.c_str());
+	}
+	bool changed = drawLightParams(light);
+
+	TransformGizmo& gizmo = engine->m_transformGizmo;
+	const bool editing = gizmo.isEditing(gizmoTargetId(light.id));
+	if (ImGui::Button(editing ? "Stop Editing Transform" : "Edit Transform")) {
+		if (editing) {
+			gizmo.endEditing();
+		} else {
+			beginLightGizmo(gizmo, light.id);
+		}
+	}
+	if (editing) {
+		ImGui::SameLine();
+		ImGui::TextDisabled("(drag the gizmo in the viewport)");
 	}
 
 	if (changed) {
@@ -998,6 +1188,38 @@ void RaytraceSceneEditor::beginCameraGizmo(TransformGizmo& gizmo, uint64_t id)
 		//a camera is placed and aimed; its size is its fov. Local mode so the rotation rings
 		//follow the camera's own axes
 		ImGuizmo::TRANSLATE | ImGuizmo::ROTATE, ImGuizmo::LOCAL);
+}
+
+void RaytraceSceneEditor::beginLightGizmo(TransformGizmo& gizmo, uint64_t id)
+{
+	const SceneLight* light = findLight(id);
+	if (light == nullptr) {
+		return;
+	}
+	//a point light only moves; a spot light and a directional one also aim, and neither has a size
+	//a handle could drag
+	const ImGuizmo::OPERATION operation = light->kind == LightKind::Point ? ImGuizmo::TRANSLATE : (ImGuizmo::TRANSLATE | ImGuizmo::ROTATE);
+	gizmo.beginEditing(
+		gizmoTargetId(id),
+		[this, id]() -> std::optional<glm::mat4> {
+			const SceneLight* l = findLight(id);
+			if (l == nullptr) {
+				return std::nullopt;
+			}
+			return l->transform();
+		},
+		[this, id](const glm::mat4& m) {
+			SceneLight* l = findLight(id);
+			if (l == nullptr) {
+				return;
+			}
+			l->position = glm::vec3(m[3]);
+			if (l->kind != LightKind::Point) {
+				l->orientation = orientationOf(m);
+			}
+			markChanged();
+		},
+		operation, ImGuizmo::LOCAL);
 }
 
 void RaytraceSceneEditor::beginMeshGizmo(TransformGizmo& gizmo, uint64_t id)

@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 560" width="980" height="560" font-family="Georgia, 'Times New Roman', serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 580" width="1040" height="580" font-family="Georgia, 'Times New Roman', serif">
   <title>Wavefront kernels in this renderer</title>
-  <desc>Adapted from figure 15.2 of Physically Based Rendering 4ed. Boxes are compute kernels, arrows are the queues that carry work between them.</desc>
+  <desc>Adapted from figure 15.2 of Physically Based Rendering 4ed. Boxes are compute kernels, arrows are the queues that carry work between them. Kernel 06 fills the shadow queue that kernel 08 drains; kernels 03, 04 and 08 add radiance that kernel 09 averages.</desc>
 
   <style>
     .box   { fill: #ffffff; stroke: #231f20; stroke-width: 2; }
@@ -32,8 +32,8 @@
   <text class="lbl" x="75"  y="250">Camera Rays</text>
 
   <!-- ============ the bounce loop ============ -->
-  <rect x="158" y="24" width="700" height="428" rx="6" fill="none" stroke="#c9c9c9" stroke-width="1.4" stroke-dasharray="3 5"/>
-  <text class="note" x="168" y="44">once per bounce, up to Ray depth</text>
+  <rect x="158" y="24" width="846" height="428" rx="6" fill="none" stroke="#c9c9c9" stroke-width="1.4" stroke-dasharray="3 5"/>
+  <text class="note" x="168" y="44">once per bounce, up to the ray depth</text>
 
   <rect class="box" x="176" y="196" width="112" height="62" rx="2"/>
   <text class="num" x="232" y="214">01</text>
@@ -60,26 +60,28 @@
   <text class="lbls" x="537" y="369">Sample Medium</text>
   <text class="lbls" x="537" y="386">Interaction</text>
 
-  <rect class="box" x="672" y="238" width="132" height="70" rx="2"/>
-  <text class="num" x="738" y="258">06</text>
-  <text class="lbl" x="738" y="277">Sample Surface</text>
-  <text class="lbl" x="738" y="294">Scattering</text>
+  <rect class="box" x="672" y="232" width="132" height="84" rx="2"/>
+  <text class="num" x="738" y="251">06</text>
+  <text class="lbl" x="738" y="270">Sample Surface</text>
+  <text class="lbl" x="738" y="287">Scattering</text>
+  <text class="var" x="738" y="305">4 variants</text>
 
   <rect class="stub" x="672" y="334" width="132" height="70" rx="2"/>
   <text class="num" x="738" y="354">07</text>
   <text class="lbls" x="738" y="373">Sample Medium</text>
   <text class="lbls" x="738" y="390">Scattering</text>
 
-  <rect class="stub" x="836" y="150" width="120" height="70" rx="2"/>
-  <text class="num" x="896" y="170">08</text>
-  <text class="lbls" x="896" y="189">Trace Shadow</text>
-  <text class="lbls" x="896" y="206">Rays</text>
+  <rect class="box" x="868" y="226" width="120" height="84" rx="2"/>
+  <text class="num" x="928" y="245">08</text>
+  <text class="lbl" x="928" y="264">Trace Shadow</text>
+  <text class="lbl" x="928" y="281">Rays</text>
+  <text class="var" x="928" y="299">follows 02</text>
 
   <!-- ============ per-frame epilogue ============ -->
-  <rect class="box" x="836" y="440" width="120" height="62" rx="2"/>
-  <text class="num" x="896" y="459">09</text>
-  <text class="lbl" x="896" y="478">Update</text>
-  <text class="lbl" x="896" y="495">Film</text>
+  <rect class="box" x="868" y="480" width="120" height="62" rx="2"/>
+  <text class="num" x="928" y="499">09</text>
+  <text class="lbl" x="928" y="518">Update</text>
+  <text class="lbl" x="928" y="535">Film</text>
 
   <!-- ============ edges ============ -->
   <path class="edge" d="M 134 227 L 172 227"/>
@@ -90,7 +92,7 @@
   <text class="qn" x="500" y="150">Q_escaped</text>
   <!-- 02 -> 04 -->
   <path class="edge" d="M 454 220 C 545 216 580 184 668 176"/>
-  <text class="qn" x="506" y="207">Q_emissive</text>
+  <text class="qn" x="598" y="168">Q_emissive</text>
   <!-- 02 -> 06 -->
   <path class="edge" d="M 454 240 C 560 244 580 268 668 270"/>
   <text class="qn" x="520" y="268">Q_surface</text>
@@ -98,30 +100,35 @@
   <!-- 02 -> 05 (dashed, planned) -->
   <path class="edged" d="M 388 264 C 388 320 420 362 468 364"/>
   <!-- 05 -> 06, 05 -> 07 (dashed) -->
-  <path class="edged" d="M 602 350 C 640 344 648 300 668 288"/>
+  <path class="edged" d="M 602 350 C 640 344 648 306 668 298"/>
   <path class="edged" d="M 602 376 C 632 378 644 370 668 369"/>
-  <!-- 06 -> 08, 07 -> 08 (dashed) -->
-  <path class="edged" d="M 804 258 C 824 240 828 220 832 208"/>
-  <path class="edged" d="M 804 352 C 838 330 852 256 862 224"/>
+
+  <!-- 06 -> 08: the shadow rays -->
+  <path class="edge" d="M 804 262 L 864 262"/>
+  <text class="qn" x="809" y="254">Q_shadow</text>
+  <!-- 07 -> 08 (dashed, planned) -->
+  <path class="edged" d="M 804 356 C 850 356 890 350 896 314"/>
 
   <!-- 06 -> next bounce: back to 01 -->
-  <path class="loop" d="M 804 294 C 832 300 834 436 700 436 L 246 436 L 232 436 L 232 264"/>
+  <path class="loop" d="M 804 300 C 838 306 838 436 700 436 L 232 436 L 232 262"/>
   <text class="qn" x="300" y="432">Q_ray (ping-pong)</text>
   <!-- 07 -> next bounce (dashed) -->
   <path class="edged" d="M 738 404 C 738 412 700 410 690 410 L 246 410"/>
 
-  <!-- 03 / 04 -> film (terminal) -->
-  <path class="edge" d="M 804 90 C 930 90 946 380 906 436"/>
-  <path class="edge" d="M 804 168 C 900 168 936 372 902 436"/>
-  <text class="qn" x="900" y="300">radiance[]</text>
+  <!-- 03 / 04 / 08 -> film: what they add to the sample slots -->
+  <path class="edge" d="M 804 89 L 1008 89 Q 1018 89 1018 99 L 1018 501 Q 1018 511 1008 511 L 992 511"/>
+  <path class="edge" d="M 804 175 L 1008 175 Q 1018 175 1018 185 L 1018 501 Q 1018 511 1008 511 L 992 511"/>
+  <path class="edge" d="M 948 310 L 948 476"/>
+  <text class="qn" x="872" y="470">radiance[]</text>
 
   <!-- ============ legend ============ -->
   <rect class="box" x="16" y="468" width="22" height="14" rx="2"/>
   <text class="note" x="46" y="480">implemented</text>
   <rect class="stub" x="150" y="468" width="22" height="14" rx="2"/>
-  <text class="note" x="180" y="480">stub — registered, never dispatched</text>
+  <text class="note" x="180" y="480">stub: registered, never dispatched</text>
 
-  <text class="note" x="16" y="506">Boxes are compute kernels (one shaders/rt/NNVV_*.comp per variant); arrows are the index queues that carry work between them.</text>
-  <text class="note" x="16" y="524">Every per-bounce kernel is dispatched indirectly, from the queue header that the kernel before it filled.</text>
-  <text class="note" x="16" y="542">Adapted from figure 15.2 of Physically Based Rendering, 4th ed. (Pharr, Jakob &amp; Humphreys).</text>
+  <text class="note" x="16" y="506">Boxes are compute kernels, one shaders/rt/NNVV_*.comp per variant. Arrows are the index queues that carry work between them,</text>
+  <text class="note" x="16" y="524">except radiance[]: the per-sample slots that kernels 03, 04 and 08 add to and kernel 09 averages.</text>
+  <text class="note" x="16" y="542">Every per-bounce kernel is dispatched indirectly, from the queue header the kernel before it filled.</text>
+  <text class="note" x="16" y="560">Adapted from figure 15.2 of Physically Based Rendering, 4th ed. (Pharr, Jakob &amp; Humphreys).</text>
 </svg>

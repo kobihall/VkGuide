@@ -33,6 +33,13 @@ if (NOT MSVC)
     target_compile_options(bvh_bench PRIVATE -O2)
 endif()
 
+# CPU-only verification of the light sampling behind next-event estimation and MIS: ./bin/light_test
+add_executable(light_test tests/light_test.cpp)
+target_link_libraries(light_test PRIVATE rt_light fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(light_test PRIVATE -O2)
+endif()
+
 
 find_program(GLSL_VALIDATOR glslangValidator HINTS /usr/bin /usr/local/bin $ENV{VULKAN_SDK}/Bin/ $ENV{VULKAN_SDK}/Bin32/)
 

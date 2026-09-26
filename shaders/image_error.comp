@@ -1,0 +1,53 @@
+#version 460
+
+// How far a render is from a reference image: the GPU path tracer's accumulation against a copy of
+// an earlier one (src/rt_gpu.h GpuPathTracer::captureReference), for comparing sampling strategies
+// at equal samples or equal time. Each workgroup reduces its 16 x 16 pixels to two sums in shared
+// memory and writes them to its own slot; the CPU adds the slots up once they are read back, so no
+// float atomics are needed.
+//
+//     x = sum over pixels and channels of (render - reference)^2
+//     y = sum over pixels of the mean over channels of (render - reference)^2 / (reference^2 + 0.01)
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (rgba32f, set = 0, binding = 0) uniform readonly image2D render;
+layout (rgba32f, set = 0, binding = 1) uniform readonly image2D reference;
+layout (std430, set = 0, binding = 2) writeonly buffer PartialBuffer { vec2 partials[]; };
+
+shared vec2 s_sums[256];
+
+void main()
+{
+	const ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+	const ivec2 size = imageSize(render);
+	const uint local = gl_LocalInvocationIndex;
+
+	vec2 sums = vec2(0.0);
+	if (coord.x < size.x && coord.y < size.y) {
+		const vec3 value = imageLoad(render, coord).rgb;
+		const vec3 truth = imageLoad(reference, coord).rgb;
+		const vec3 difference = value - truth;
+		const vec3 squared = difference * difference;
+		// a NaN in either image is left out rather than poisoning the whole sum
+		if (all(equal(squared, squared))) {
+			sums.x = squared.r + squared.g + squared.b;
+			sums.y = dot(squared / (truth * truth + 0.01), vec3(1.0 / 3.0));
+		}
+	}
+	s_sums[local] = sums;
+	memoryBarrierShared();
+	barrier();
+
+	for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+		if (local < stride) {
+			s_sums[local] += s_sums[local + stride];
+		}
+		memoryBarrierShared();
+		barrier();
+	}
+
+	if (local == 0u) {
+		partials[gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x] = s_sums[0];
+	}
+}

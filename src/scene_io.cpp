@@ -24,11 +24,16 @@ namespace {
 //   rays; absent means the environment map or the sky, as before
 //8: adds "kernels", the wavefront kernel variant selected in each slot as {"NN":"<variant id>"},
 //   and "accel", how the BVH those kernels read is built. Both absent in an older file, which
-//   then opens with the default selection (BVH traversal, BSDF scattering) and the default
-//   builder - exactly what every scene saved before this used
+//   then opens with the default selection and the default builder: BVH traversal as before, and
+//   MIS (power) direct lighting where the tracer of the time had only BSDF sampling. A following
+//   slot's entry (kernel 08's) is written but never read
 //9: adds the "pbr" material ("albedo", "metallic", "roughness", "emission", "strength"), glTF's
 //   metallic-roughness model. An older file has none, so it reads unchanged
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 9;
+//10: adds "lights", the punctual lights: each a "type" (point, spot, directional), "name",
+//   "position", "color", "intensity" in the tracer's radiometric units, and by type an
+//   "orientation", a "range", an "innerCone" and "outerCone" in degrees, and the "model" it was
+//   imported with. Absent in an older file, whose models' own lights their imports recreate
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 10;
 
 //---------------------------------------------------------------- writing
 
@@ -182,6 +187,31 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		json += fmt::format(R"({{"name":{},"position":{},"orientation":{},"fov":{},"aperture":{},"focusDistance":{},"exposure":{}}})",
 			jsonString(c.name), jsonVec3(c.position), jsonQuat(c.orientation),
 			jsonNumber(c.vfovDegrees), jsonNumber(c.aperture), jsonNumber(c.focusDistance), jsonNumber(c.exposure));
+	}
+	json += ']';
+
+	//version 10: the punctual lights, each with only what its kind uses
+	json += R"(,"lights":[)";
+	for (size_t i = 0; i < scene.lights.size(); i++) {
+		const SceneLight& light = scene.lights[i].light;
+		if (i > 0) {
+			json += ',';
+		}
+		json += fmt::format(R"({{"type":"{}","name":{},"position":{})", lightKindName(light.kind), jsonString(light.name), jsonVec3(light.position));
+		if (light.kind != LightKind::Point) {
+			json += fmt::format(R"(,"orientation":{})", jsonQuat(light.orientation));
+		}
+		json += fmt::format(R"(,"color":{},"intensity":{})", jsonVec3(light.color), jsonNumber(light.intensity));
+		if (light.kind != LightKind::Directional) {
+			json += fmt::format(R"(,"range":{})", jsonNumber(light.range));
+		}
+		if (light.kind == LightKind::Spot) {
+			json += fmt::format(R"(,"innerCone":{},"outerCone":{})", jsonNumber(light.innerConeDegrees), jsonNumber(light.outerConeDegrees));
+		}
+		if (scene.lights[i].model >= 0) {
+			json += fmt::format(R"(,"model":{})", scene.lights[i].model);
+		}
+		json += '}';
 	}
 	json += ']';
 
@@ -548,6 +578,61 @@ bool readCamera(simdjson::dom::object object, SceneCamera& out, std::string& err
 	return true;
 }
 
+//One "lights" record. The type, the position and a non-negative intensity must be there; the rest
+//keeps SceneLight's defaults when missing
+bool readLight(simdjson::dom::object object, size_t index, size_t modelCount, SceneLightRecord& out, std::string& error)
+{
+	std::string_view typeName;
+	if (object["type"].get_string().get(typeName) != simdjson::SUCCESS) {
+		error = fmt::format("light {} has no \"type\"", index);
+		return false;
+	}
+	std::optional<LightKind> kind;
+	for (const LightKind candidate : LIGHT_KINDS) {
+		if (typeName == lightKindName(candidate)) {
+			kind = candidate;
+		}
+	}
+	if (!kind.has_value()) {
+		error = fmt::format("light {} has unknown type \"{}\"", index, typeName);
+		return false;
+	}
+	SceneLight& light = out.light;
+	light.kind = *kind;
+
+	std::string_view name;
+	if (object["name"].get_string().get(name) == simdjson::SUCCESS) {
+		light.name = std::string(name);
+	} else {
+		light.name = fmt::format("{}_{}", lightKindName(light.kind), index + 1);
+	}
+	if (!readVec3(object["position"], light.position)) {
+		error = fmt::format("light \"{}\" has no valid \"position\"", light.name);
+		return false;
+	}
+	readQuat(object["orientation"], light.orientation);
+	readVec3(object["color"], light.color);
+	light.color = glm::max(light.color, glm::vec3(0.f));
+	double intensity = 0.0;
+	if (!readDouble(object["intensity"], intensity) || intensity < 0.0) {
+		error = fmt::format("light \"{}\" has no valid \"intensity\"", light.name);
+		return false;
+	}
+	light.intensity = (float)intensity;
+	readOptionalFloat(object["range"], light.range);
+	readOptionalFloat(object["innerCone"], light.innerConeDegrees);
+	readOptionalFloat(object["outerCone"], light.outerConeDegrees);
+	light.range = std::max(light.range, 0.f);
+	light.outerConeDegrees = std::clamp(light.outerConeDegrees, 0.f, 90.f);
+	light.innerConeDegrees = std::clamp(light.innerConeDegrees, 0.f, light.outerConeDegrees);
+
+	int64_t model = -1;
+	if (object["model"].get_int64().get(model) == simdjson::SUCCESS && model >= 0 && model < (int64_t)modelCount) {
+		out.model = (int)model;
+	}
+	return true;
+}
+
 //One "geometry" record, or - `legacySphere` - one record of an older file's "spheres" list, which
 //had no "type" and called the position "center". Every size the kind has must be present and
 //positive; a missing orientation is the identity
@@ -729,6 +814,27 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 		ctx.scene.renderCamera = 0;
 	}
 
+	//version 10: the punctual lights. Absent in an older file, which then keeps the lights its
+	//models' imports recreate
+	simdjson::dom::array lights;
+	if (root["lights"].get_array().get(lights) == simdjson::SUCCESS) {
+		ctx.scene.hasLights = true;
+		size_t lightIndex = 0;
+		for (simdjson::dom::element entry : lights) {
+			simdjson::dom::object lightObject;
+			if (entry.get_object().get(lightObject) != simdjson::SUCCESS) {
+				ctx.error = fmt::format("light {} is not an object", lightIndex);
+				return;
+			}
+			SceneLightRecord record;
+			if (!readLight(lightObject, lightIndex, ctx.scene.modelPaths.size(), record, ctx.error)) {
+				return;
+			}
+			ctx.scene.lights.push_back(std::move(record));
+			lightIndex++;
+		}
+	}
+
 	size_t index = 0;
 	for (simdjson::dom::element entry : geometry) {
 		simdjson::dom::object shapeObject;
@@ -869,7 +975,7 @@ IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::pat
 		return IoResult::failure(fmt::format("Failed to write '{}': {}", file.string(), fastgltf::getErrorMessage(error)));
 	}
 
-	return IoResult::success(fmt::format("Saved '{}': {} model(s), {} shape(s), {} camera(s){}", file.filename().string(), scene.modelPaths.size(), scene.shapes.size(), scene.cameras.size(), scene.environmentMapPath.empty() ? "" : ", environment map"));
+	return IoResult::success(fmt::format("Saved '{}': {} model(s), {} shape(s), {} light(s), {} camera(s){}", file.filename().string(), scene.modelPaths.size(), scene.shapes.size(), scene.lights.size(), scene.cameras.size(), scene.environmentMapPath.empty() ? "" : ", environment map"));
 }
 
 IoResult loadSceneFile(const std::filesystem::path& file, SceneDescription& out)

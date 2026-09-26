@@ -6,7 +6,8 @@
 // because it is the ground truth every other strategy is checked against, and because the
 // contrast in the traversal counters is the clearest demonstration of what a BVH buys.
 //
-// Supplies traceScene() per the contract in crt_traverse.glsl.
+// Supplies traceScene() and occluded() per the contract in crt_traverse.glsl: one scan, which an
+// any-hit query leaves at its first hit.
 //
 // It reads NO acceleration-structure bindings: no TLAS nodes, no BLAS nodes. It needs only the
 // instances, their triangles and - unlike the BVH - GpuInstance::triangleCount, which is what
@@ -23,7 +24,7 @@
 #include "crt_traverse.glsl"
 
 // one instance, mesh or shape, by carrying the ray into its object space
-void scanInstance(uint slot, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit)
+void scanInstance(uint slot, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit, bool anyHit)
 {
 	const GpuInstance instance = instances[slot];
 	vec3 localOrigin;
@@ -37,10 +38,11 @@ void scanInstance(uint slot, vec3 origin, vec3 direction, float tMin, inout floa
 
 	// every triangle of the BLAS, in the order it was packed. testTriangles() lowers tMax as it
 	// goes, so a later triangle behind an earlier hit still costs its test but cannot win
-	testTriangles(instance.triangleBase, instance.triangleCount, slot, localOrigin, localDirection, tMin, tMax, hit);
+	testTriangles(instance.triangleBase, instance.triangleCount, slot, localOrigin, localDirection, tMin, tMax, hit, anyHit);
 }
 
-bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit)
+// the scan both contract functions share: every instance, or with `anyHit` until the first hit
+void scanScene(vec3 origin, vec3 direction, float tMin, float tMax, bool anyHit, out TraceHit hit)
 {
 	resetTrace(hit);
 
@@ -48,8 +50,22 @@ bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHi
 	// unboundedCount + tlasInstanceCount: the latter goes to zero when the TLAS fails to pack,
 	// which must not make bounded geometry vanish from a strategy that never walks a TLAS
 	for (uint i = 0u; i < pc.instanceCount; i++) {
-		scanInstance(i, origin, direction, tMin, tMax, hit);
+		scanInstance(i, origin, direction, tMin, tMax, hit, anyHit);
+		if (traceDone(anyHit, hit)) {
+			return;
+		}
 	}
+}
 
+bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit)
+{
+	scanScene(origin, direction, tMin, tMax, false, hit);
+	return hit.t < CRT_INFINITY;
+}
+
+bool occluded(vec3 origin, vec3 direction, float tMin, float tMax)
+{
+	TraceHit hit;
+	scanScene(origin, direction, tMin, tMax, true, hit);
 	return hit.t < CRT_INFINITY;
 }

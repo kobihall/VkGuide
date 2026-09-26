@@ -1,9 +1,9 @@
 #pragma once
 
-// The live, persistent list of scene objects the raytracer owns - analytic shapes, cameras and the
-// placed glTF mesh objects - and the "Scene" panel that browses and edits them.
+// The live, persistent list of scene objects the raytracer owns - analytic shapes, cameras, punctual
+// lights and the placed glTF mesh objects - and the "Scene" panel that browses and edits them.
 //
-// All three kinds are plain data (rt_scene_types.h) owned outright here; a render copies what it
+// All four kinds are plain data (rt_scene_types.h) owned outright here; a render copies what it
 // needs when it starts, and compares later to know when to start over. A mesh object does not own
 // its geometry: it names a node of one of VulkanEngine::m_models, which the engine loads and
 // unloads, and carries only what the user can edit about the placed instance. Deleting the
@@ -24,6 +24,7 @@ class TransformGizmo;
 bool drawShapeParams(SceneShape& shape);
 bool drawMaterialParams(SceneMaterial& material);
 bool drawCameraParams(SceneCamera& camera, bool& displayChanged);
+bool drawLightParams(SceneLight& light);
 bool drawMeshObjectParams(SceneMeshObject& object);
 
 class RaytraceSceneEditor {
@@ -36,6 +37,7 @@ public:
 
 	const std::vector<SceneShape>& shapes() const { return m_shapes; }
 	const std::vector<SceneCamera>& cameras() const { return m_cameras; }
+	const std::vector<SceneLight>& lights() const { return m_lights; }
 	const std::vector<SceneMeshObject>& meshObjects() const { return m_meshObjects; }
 
 	// by stable id; null once the object has been deleted or the list replaced. The pointer
@@ -44,6 +46,8 @@ public:
 	const SceneShape* findShape(uint64_t id) const;
 	SceneCamera* findCamera(uint64_t id);
 	const SceneCamera* findCamera(uint64_t id) const;
+	SceneLight* findLight(uint64_t id);
+	const SceneLight* findLight(uint64_t id) const;
 	SceneMeshObject* findMeshObject(uint64_t id);
 	const SceneMeshObject* findMeshObject(uint64_t id) const;
 
@@ -51,6 +55,7 @@ public:
 	// through the same change tracking every manual edit uses, so consumers cannot miss it
 	void replaceShapes(std::vector<SceneShape>&& shapes);
 	void replaceCameras(std::vector<SceneCamera>&& cameras);
+	void replaceLights(std::vector<SceneLight>&& lights);
 	void replaceMeshObjects(std::vector<SceneMeshObject>&& objects);
 
 	// appends and returns the new id
@@ -60,6 +65,10 @@ public:
 	// the model-removal path: drops every object placing a node of that model, since the geometry
 	// they name is about to stop existing
 	void removeMeshObjectsOf(const std::string& modelKey);
+	// the import path's lights: the KHR_lights_punctual lights a freshly loaded model carries
+	void addLights(std::vector<SceneLight>&& lights);
+	// and the removal path's: the lights imported with that model go with it
+	void removeLightsOf(const std::string& modelKey);
 
 	// the first-person edit path: the raster camera writes its pose into a scene camera every
 	// frame. Marks a change only when the pose actually moved, so a resting camera does not
@@ -83,12 +92,15 @@ private:
 		None,
 		Camera,
 		Shape,
+		Light,
 		MeshObject
 	};
 
 	void drawToolbar(VulkanEngine* engine);
 	void drawObjectTree(VulkanEngine* engine);
 	void drawCameraRows();
+	// the Lights folder: every punctual light, whatever its kind
+	void drawLightRows();
 	// the Geometry folder: every shape, in one sub-folder per kind
 	void drawGeometryRows();
 	void drawModelRows(VulkanEngine* engine);
@@ -98,14 +110,18 @@ private:
 	void drawSelection(VulkanEngine* engine);
 	void drawSelectedShape(VulkanEngine* engine, SceneShape& shape);
 	void drawSelectedCamera(VulkanEngine* engine, SceneCamera& camera);
+	void drawSelectedLight(VulkanEngine* engine, SceneLight& light);
 	void drawSelectedMeshObject(VulkanEngine* engine, SceneMeshObject& object);
 	void beginShapeGizmo(TransformGizmo& gizmo, uint64_t id);
 	void beginCameraGizmo(TransformGizmo& gizmo, uint64_t id);
+	void beginLightGizmo(TransformGizmo& gizmo, uint64_t id);
 	void beginMeshGizmo(TransformGizmo& gizmo, uint64_t id);
 	void addShape(SceneShape shape);
 	// the Add menu's creating entries
 	void createShape(ShapeKind kind);
 	void createCamera(VulkanEngine* engine);
+	void createLight(VulkanEngine* engine, LightKind kind);
+	void addLight(SceneLight light);
 	void duplicateSelection();
 	// removes whatever is selected, whichever kind it is, and clears the selection
 	void deleteSelection();
@@ -115,6 +131,7 @@ private:
 
 	std::vector<SceneShape> m_shapes;
 	std::vector<SceneCamera> m_cameras;
+	std::vector<SceneLight> m_lights;
 	std::vector<SceneMeshObject> m_meshObjects;
 
 	SelectionKind m_selectionKind { SelectionKind::None };
@@ -126,7 +143,8 @@ private:
 	// by ShapeKind: the number the next new shape of that kind is named with
 	std::array<int, SHAPE_KIND_COUNT> m_nextShapeNumber {};
 	int m_nextCameraNumber { 1 };
-	// shapes, cameras and mesh objects share one id space, so the gizmo's opaque target id
+	int m_nextLightNumber { 1 };
+	// shapes, cameras, lights and mesh objects share one id space, so the gizmo's opaque target id
 	// cannot collide
 	uint64_t m_nextId { 1 };
 	uint64_t m_revision { 1 };

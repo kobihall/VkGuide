@@ -249,6 +249,14 @@ public:
 	AllocatedImage m_environmentMap {};
 	VkExtent2D m_environmentMapExtent { 0, 0 };
 	std::filesystem::path m_environmentMapPath;
+	// the power of two m_environmentMap's texels are divided by, so that a peak brighter than half
+	// float's 65504 stays finite (environmentStorageScale()); 1 for most maps. Every shader that
+	// reads the map multiplies it back in with the intensity. The "Environment Map" window shows
+	// the stored values, darker by this factor
+	float m_environmentMapScale { 1.f };
+	// the map's sampling tables for the path tracer's light sampling (light_sampling.h), built from
+	// the decoded pixels when the map loads and shared immutably with every render that samples it
+	std::shared_ptr<const EnvironmentDistribution> m_environmentDistribution;
 	// scales the map as a light source, so the viewport and the render agree on how bright the
 	// sky is. A scene property, saved with the scene; the picture's brightness is the
 	// renderer's exposure setting
@@ -419,6 +427,9 @@ private:
 	// wireframe frustums for the scene's cameras, drawn over the viewport through imgui's
 	// background draw list; the render camera brighter, the flown one not at all
 	void drawCameraOverlays();
+	// markers for the punctual lights over the viewport, the same way: a point light's star, a spot
+	// light's cone, a directional light's arrow
+	void drawLightOverlays();
 
 	// CPU-only scene preparation: camera, the models' draw list, the scene uniform's values.
 	// Touches no GPU resource, so it runs before the frame's fence wait and overlaps the GPU

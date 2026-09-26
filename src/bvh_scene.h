@@ -11,7 +11,8 @@
 // the BLAS. An unbounded shape (the infinite plane) has no box to put in the TLAS, so it stays out
 // of it and every ray tests it directly.
 //
-// traceScene() is the CPU mirror of the GPU's two-level traversal (shaders/crt_bvh.glsl).
+// traceScene() and occludedScene() are the CPU mirrors of the GPU's two-level traversal and its
+// shadow-ray query (shaders/rt/include/crt_bvh.glsl traceScene() and occluded()).
 
 #include <memory>
 #include <span>
@@ -97,5 +98,10 @@ struct SceneHit {
 	bool stackOverflow { false };
 };
 
-// the closest hit of a world-space ray, as the GPU finds it
+// the closest hit of a world-space ray, as the GPU finds it - or, for a ray with anyHit set, the
+// first hit found
 SceneHit traceScene(const Tlas& tlas, std::span<const Blas* const> blases, std::span<const SceneInstance> instances, const BvhRay& ray);
+
+// whether anything lies on the ray within [tMin, tMax]: a shadow ray, answered by the first hit found
+// (shaders/rt/include/crt_bvh.glsl occluded())
+bool occludedScene(const Tlas& tlas, std::span<const Blas* const> blases, std::span<const SceneInstance> instances, const BvhRay& ray);

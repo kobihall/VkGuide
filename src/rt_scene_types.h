@@ -241,6 +241,90 @@ struct SceneCamera {
 	bool operator==(const SceneCamera&) const = default;
 };
 
+//---------------------------------------------------------------- punctual lights
+
+// glTF's KHR_lights_punctual three, the values saved in the scene file by name (lightKindName())
+enum class LightKind : uint8_t {
+	Point,
+	Spot,
+	Directional
+};
+
+inline constexpr LightKind LIGHT_KINDS[] = {
+	LightKind::Point,
+	LightKind::Spot,
+	LightKind::Directional,
+};
+
+// the scene file's type name, and the prefix of a new light's name
+inline const char* lightKindName(LightKind kind)
+{
+	switch (kind) {
+	case LightKind::Point:
+		return "point";
+	case LightKind::Spot:
+		return "spot";
+	case LightKind::Directional:
+		return "directional";
+	}
+	return "unknown";
+}
+
+// the Add menu's entry
+inline const char* lightKindLabel(LightKind kind)
+{
+	switch (kind) {
+	case LightKind::Point:
+		return "Point light";
+	case LightKind::Spot:
+		return "Spot light";
+	case LightKind::Directional:
+		return "Directional light";
+	}
+	return "Light";
+}
+
+// glTF gives point and spot intensity in candela and directional intensity in lux; the tracer
+// works in radiometric units, with an environment map's texels taken as radiance in W/(sr m^2).
+// 683 lm/W is the luminous efficacy of 555 nm light, the factor Blender's glTF exporter uses
+inline constexpr float PHOTOMETRIC_TO_RADIOMETRIC = 1.f / 683.f;
+
+// A punctual light: a point, a spot or a directional light, a scene object like a camera or a
+// shape. It has no surface, so no ray can ever hit one - a BSDF sample never finds it, and the path
+// tracer reaches it only through shadow rays, whichever direct-lighting strategy is selected. A
+// light a glTF file carries becomes one of these on import, at its node's transform
+struct SceneLight {
+	// stable across edits and reorders, assigned by the editor and never saved; shares one id space
+	// with the shapes, cameras and mesh objects
+	uint64_t id { 0 };
+	std::string name;
+	LightKind kind { LightKind::Point };
+	glm::vec3 position { 0.f, 2.f, 0.f };
+	// a spot or directional light shines down its local -z, as glTF's do. The identity points it
+	// down -z, the way the free camera looks at yaw 0
+	glm::quat orientation { 1.f, 0.f, 0.f, 0.f };
+	// linear rgb
+	glm::vec3 color { 1.f };
+	// point and spot: radiant intensity in W/sr. Directional: irradiance in W/m^2
+	float intensity { 10.f };
+	// point and spot: the distance glTF's recommended window brings the light to zero at; 0 for an
+	// unwindowed inverse-square falloff
+	float range { 0.f };
+	// spot: full intensity inside the inner cone, none outside the outer, in degrees from the axis
+	float innerConeDegrees { 20.f };
+	float outerConeDegrees { 30.f };
+	// the model this light was imported with, which removing the model removes it with; empty for a
+	// light made in the editor
+	std::string modelKey;
+
+	// the direction the light shines (spot) or travels (directional)
+	glm::vec3 direction() const { return orientation * glm::vec3(0.f, 0.f, -1.f); }
+	// light space -> world
+	glm::mat4 transform() const { return glm::translate(glm::mat4(1.f), position) * glm::mat4_cast(orientation); }
+
+	bool operator==(const SceneLight&) const = default;
+};
+
 //---------------------------------------------------------------- glTF geometry
 
 struct MeshAsset;

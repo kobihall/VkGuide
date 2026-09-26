@@ -1,17 +1,21 @@
 // THE TRAVERSAL CONTRACT.
 //
-// Every variant of kernel 02 Intersect Closest supplies exactly one function:
+// Every traversal strategy supplies exactly two functions:
 //
 //     bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit);
+//     bool occluded(vec3 origin, vec3 direction, float tMin, float tMax);
 //
-// taking a world-space ray with a NORMALISED direction and returning its closest hit in
-// [tMin, tMax]. That is the whole interface. crt_intersect.glsl turns whatever it returns into
-// a HitRecord and the classification queues, and no kernel downstream of 02 ever learns which
-// strategy produced the hit.
+// Both take a world-space ray with a NORMALISED direction. traceScene() returns the closest hit
+// in [tMin, tMax]; crt_intersect.glsl turns it into a HitRecord and the classification queues, and
+// no kernel downstream of 02 ever learns which strategy produced the hit. occluded() answers a
+// shadow ray's question - is anything at all in [tMin, tMax] - and may stop at the first hit it
+// finds; crt_shadow.glsl, the body of kernel 08, is its one caller. Both sit on the one search, so
+// swapping the strategy swaps them together and shadow rays keep working whichever is selected.
 //
-// A third strategy is therefore one new file that includes this one, defines traceScene(), and
-// one .comp that includes both it and crt_intersect.glsl. See shaders/rt/include/crt_bvh.glsl
-// (two-level BVH) and crt_linear.glsl (brute force) for the two that exist.
+// A third strategy is therefore one new file that includes this one and defines both functions,
+// plus two .comp files: one that includes it and crt_intersect.glsl (kernel 02) and one that
+// includes it and crt_shadow.glsl (kernel 08). See shaders/rt/include/crt_bvh.glsl (two-level
+// BVH) and crt_linear.glsl (brute force) for the two that exist.
 //
 // This file holds what every strategy needs regardless of how it searches: the hit record, the
 // work counters that make strategies comparable, the primitive tests (alpha test included), and
@@ -73,8 +77,9 @@ bool cutAway(uint instanceSlot, uint triangleBits, vec2 bary)
 	return alpha < material.alphaCutoff;
 }
 
-// triangles [first, first + count) of blasTriangles, lowering tMax on a hit
-void testTriangles(uint first, uint count, uint instance, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit)
+// triangles [first, first + count) of blasTriangles, lowering tMax on a hit. With `anyHit` the first
+// accepted hit ends the loop: a shadow ray needs to know that something is there, not what is nearest
+void testTriangles(uint first, uint count, uint instance, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit, bool anyHit)
 {
 	for (uint i = first; i < first + count; i++) {
 		g_primitivesTested++;
@@ -91,6 +96,9 @@ void testTriangles(uint first, uint count, uint instance, vec3 origin, vec3 dire
 			hit.instance = instance;
 			hit.triangle = i;
 			hit.bary = bary;
+			if (anyHit) {
+				return;
+			}
 		}
 	}
 }
@@ -117,7 +125,13 @@ void testShapeInstance(GpuInstance instance, uint slot, vec3 localOrigin, vec3 l
 	}
 }
 
-// the state every traceScene() starts from
+// whether a query has its answer: an any-hit query stops at its first hit
+bool traceDone(bool anyHit, TraceHit hit)
+{
+	return anyHit && hit.t < CRT_INFINITY;
+}
+
+// the state every traceScene() and occluded() starts from
 void resetTrace(out TraceHit hit)
 {
 	g_nodesVisited = 0u;

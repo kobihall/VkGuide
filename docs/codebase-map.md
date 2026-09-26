@@ -2,7 +2,7 @@
 
 Reference document for making future changes. Facts only, no recommendations.
 
-**Sections 1-7 describe the state as of 2026-08-22** (full reads of `src/`, `shaders/`, and the sibling project `/Users/kobihall/Documents/Code/RayTracingInAWeekend`) and are kept for the raster path and the CPU backend, both of which are still accurate. They **predate the raytracer entirely** and several of their claims are now false - each such claim carries an inline correction. In particular §2's "there is exactly one compute pattern in the codebase" has not been true since 2026-09-14.
+**Sections 1-7 describe the state as of 2026-08-22** (full reads of `src/`, `shaders/`, and the sibling project `/Users/kobihall/Documents/Code/RayTracingInAWeekend`) and are kept for the raster path, which they still describe accurately. The CPU backend they also describe was deleted on 2026-09-15 (commit `a7b70fd`). They **predate the raytracer entirely** and several of their claims are now false - each such claim carries an inline correction. In particular §2's "there is exactly one compute pattern in the codebase" has not been true since 2026-09-14.
 
 **Section 8 (2026-09-25) is the current reference for the GPU path tracer** and supersedes anything earlier that touches it. For a readable account of the same material, see `docs/raytracing-overview.md`.
 
@@ -284,7 +284,7 @@ Full docking ImGui+Vulkan application shell (vs. writing a `.ppm`); interactive 
 
 ### 8.1 The one-paragraph model
 
-A wavefront path tracer. Each kernel of the path-tracing algorithm is its own compute pipeline running over a compacted queue of live paths. Which shader runs in each kernel slot is chosen **at runtime** from a registry, saved with the scene, and drives the descriptor set layout, the dispatch, the settings UI and the render guard. One frame is `00 → [01 → 02 → {03, 04, 06}] × rayDepth → 09 → tonemap`.
+A wavefront path tracer. Each kernel of the path-tracing algorithm is its own compute pipeline running over a compacted queue of live paths. Which shader runs in each kernel slot is chosen **at runtime** from a registry, saved with the scene, and drives the descriptor set layout, the dispatch, the settings UI and the render guard. One frame is `00 → [01 → 02 → {03, 04, 06} → 08] × rayDepth → 09 → tonemap`.
 
 ### 8.2 File inventory
 
@@ -298,28 +298,39 @@ shaders/rt/
   0301_handle_escaped.comp              03 Handle escaped
   0401_handle_emissive.comp             04 Handle emissive geometry
   0501_sample_medium_interaction.comp   05 STUB, implemented = false
-  0601_surface_scatter_bsdf.comp        06 Sample surface scattering
+  0601_surface_scatter_bsdf.comp        06 BSDF sampling; shadow rays to delta lights only
+  0602_surface_scatter_light.comp       06 Light sampling
+  0603_surface_scatter_mis_balance.comp 06 MIS, balance heuristic
+  0604_surface_scatter_mis_power.comp   06 MIS, power heuristic (the default)
   0701_sample_medium_scattering.comp    07 STUB, implemented = false
-  0801_trace_shadow_rays.comp           08 STUB, implemented = false
+  0801_trace_shadow_rays_bvh.comp       08 follows 0201
+  0802_trace_shadow_rays_cwbvh.comp     08 follows 0202
+  0803_trace_shadow_rays_linear.comp    08 follows 0203
   0901_update_film.comp                 09 Update film (not a PBR figure box)
   include/
     crt_common.glsl      buffer structs, GLOBAL BINDING NUMBERS, push constants, queue set,
                          queueAppend(), hitTriangle(), srgbToLinear()
-    crt_random.glsl      PCG hash + sampling; mirrors src/rt_random.cpp
+    crt_random.glsl      PCG hash + sampling
     crt_traverse.glsl    THE TRAVERSAL CONTRACT + TraceHit, work counters, testTriangles(),
                          instanceRay(), testShapeInstance(), resetTrace(); includes crt_shape.glsl
-    crt_bvh.glsl         traceScene() via two-level BVH; CRT_BVH_CWBVH picks the wide traversal
-    crt_linear.glsl      traceScene() via brute force
-    crt_shape.glsl       hitShape()/shapeNormal(); mirrors src/shape.cpp
-    crt_intersect.glsl   kernel 02's body: classify + write HitRecord + push the three queues
-    crt_scatter.glsl     the four BSDFs + resolveMaterial()
+    crt_bvh.glsl         traceScene()/occluded() via two-level BVH; CRT_BVH_CWBVH picks the wide traversal
+    crt_linear.glsl      traceScene()/occluded() via brute force
+    crt_shape.glsl       hitShape()/shapeNormal()/boxFace(); mirrors src/shape.cpp
+    crt_intersect.glsl   kernel 02's body: classify + write HitRecord (lightIndex too) + push the three queues
+    crt_scatter.glsl     the four BSDFs + resolveMaterial() + evalSurface()/pdfSurface()
+    crt_surface.glsl     kernel 06's body: next-event estimation, continuation, the MIS record;
+                         CRT_DIRECT_LIGHTING (and CRT_MIS_EXPONENT) pick the strategy
+    crt_shadow.glsl      kernel 08's body: occluded(), then add the ShadowRay's contribution
+    crt_light.glsl       light selection by power, per-kind sampling and pdfs, the environment
+                         tables, misWeight(); mirrors src/light_sampling.cpp
     crt_background.glsl  backgroundRadiance() + skyGradient()
     crt_debug.glsl       bounceHeat(), traversalHeat(), debugTerminalValue()
+shaders/image_error.comp  the Compare to reference error, 16×16 pixels per workgroup (not a kernel)
 ```
 
 `shaders/equirect.glsl` stays at `shaders/` (shared with `env_background.comp`) and is reached through the `-I${PROJECT_SOURCE_DIR}/shaders` that the root `CMakeLists.txt` now passes to `glslangValidator`. That same CMake block resolves each shader's path **relative to `shaders/`** so `.spv` output lands beside its source rather than colliding in one flat directory.
 
-C++: `src/rt_kernels.h/.cpp` (registry), `src/rt_gpu.h/.cpp` (pipelines, buffers, schedule), `src/rt_renderer.h/.cpp` (panels, guard, BVH settings), `src/rt_accel.*` + `src/bvh*` (unchanged apart from `GpuInstance`).
+C++: `src/rt_kernels.h/.cpp` (registry), `src/rt_gpu.h/.cpp` (pipelines, buffers, schedule, reference error), `src/rt_renderer.h/.cpp` (panels, guard, BVH settings, direct-lighting settings), `src/rt_accel.*` (the TLAS, and the light list built with it) + `src/bvh*` (`occludedScene()` mirrors `occluded()`), `src/rt_lights.h/.cpp` (the light list), `src/light_sampling.h/.cpp` (static lib `rt_light`, no Vulkan: the CPU mirror of `crt_light.glsl` and the environment tables), `tests/light_test.cpp` (`bin/light_test`).
 
 ### 8.3 The registry (`src/rt_kernels.h/.cpp`) — the file to edit
 
@@ -329,11 +340,13 @@ Four enums and one struct:
 - `CrtBinding` — **the value IS the descriptor binding number** and must match `crt_common.glsl` exactly. Append only.
 - `KernelDomain` — `Pool` / `Pixels` (direct dispatch) or `CurrentRayQueue` / `FixedQueue` (indirect).
 - `KernelSettings`, `TraversalCost` — capability flags the UI and the render guard read.
-- `KernelVariant` — one table row: slot, `id` (scene-file constant), `name`, `description`, `shader`, `domain`, `queue`, `bindings`, `implemented`, `settings`, `cost`, `requiresLayout`/`layout`.
+- `KernelVariant` — one table row: slot, `id` (scene-file constant), `name`, `description`, `shader`, `domain`, `queue`, `bindings`, `implemented`, `isDefault`, `settings`, `cost`, `requiresLayout`/`layout`, `nextEvent` (which lights a kernel 06 variant sends shadow rays to: `None`, `DeltaLights` or `AllLights`), `followsSlot`/`followsVariant`.
 
-`KernelSelection` is `uint32_t variant[Count]`, `==`-comparable, serialised by id via `kernelSelectionToIds()` / `kernelSelectionFromIds()`. Entry 0 of each slot is its default; `kernelVariants(slot)` returns a contiguous span, which relies on the registry being **grouped by slot** — keep it that way.
+`KernelSelection` is `uint32_t variant[Count]`, `==`-comparable, serialised by id via `kernelSelectionToIds()` / `kernelSelectionFromIds()`. The variant flagged `isDefault`, or else entry 0, is a slot's default; `kernelVariants(slot)` returns a contiguous span, which relies on the registry being **grouped by slot** — keep it that way.
 
 **Adding a variant = one `v.push_back(KernelVariant{...})`.** Nothing in `rt_gpu.cpp`, `rt_renderer.cpp` or `scene_io.cpp` names a strategy.
+
+A slot whose variants set `followsSlot` is never chosen. `reconcileKernelSelection()` sets it to the variant whose `followsVariant` is the leader's `id`, and every place that makes a selection calls it: `defaultKernelSelection()`, `kernelSelectionFromIds()`, `RaytraceRenderer::setKernels()` and the kernel panel. `kernelSlotFollows()` greys the slot's row. Kernel 08 follows kernel 02, because a shadow ray walks the node layout kernel 02's variant built, and a CWBVH walk cannot read binary nodes.
 
 ### 8.4 Descriptor strategy: global numbers, per-variant subsets
 
@@ -343,7 +356,7 @@ The problem this solves: different variants want different resources bound.
 - Each variant declares the **subset** it uses; `GpuPathTracer::init()` builds a set layout containing only those numbers. **A Vulkan set layout with gaps is legal** — that is what makes this work.
 - `GpuPathTracer::writeSet(variant, pass)` switches over `variant.bindings` and writes only those descriptors, one set per variant per frame from `frameDescriptors`.
 
-Consequence: the linear traversal never binds `BlasNodes`/`TlasNodes` at all; kernel 09 binds three descriptors where kernel 02 binds nine.
+Consequence: the linear traversal never binds `BlasNodes`/`TlasNodes` at all; kernel 09 binds three descriptors where a BVH kernel 02 binds fourteen.
 
 **To add a resource:** new number at the *end* of `crt_common.glsl`, matching enumerator at the end of `CrtBinding` (same position), a `case` in `writeSet()`, and list it in the variants that want it. Existing numbers never move. Rejected alternatives and why: one fat 18-binding set for everything (what this replaced — junk-drawer growth); buffer device addresses for everything (most flexible, but rewrites every shader).
 
@@ -357,11 +370,11 @@ Consequence: the linear traversal never binds `BlasNodes`/`TlasNodes` at all; ke
 | 2 | `CRT_QUEUE_ESCAPED` | **ray-queue positions** | 02 | 03 |
 | 3 | `CRT_QUEUE_EMISSIVE` | ray-queue positions | 02 | 04 |
 | 4 | `CRT_QUEUE_SURFACE` | ray-queue positions | 02 | 06 |
-| 5 | `CRT_QUEUE_SHADOW` | (allocated, unused) | — | 08 when it exists |
+| 5 | `CRT_QUEUE_SHADOW` | ray-queue positions, which also index `shadowRays[]` | 06 | 08 |
 
 `CRT_QUEUE_COUNT = 6`; `m_queues` is `4 × CRT_QUEUE_COUNT × poolSize` bytes and `m_headers` is `CRT_QUEUE_COUNT` headers. The C++ mirrors are `constexpr` in `rt_gpu.cpp`'s anonymous namespace — **change both together**.
 
-**Two indexing conventions coexist.** `paths[]`/`radiance[]` are by pool slot (stable for a path's life); `hits[]` is by ray-queue position (compacted, different every bounce). The classification queues store the ray-queue position *because it is also the hit index*, so a consumer reaches both hit and path from one number. `PathState.radianceSlot` maps back to the pixel.
+**Two indexing conventions coexist.** `paths[]`/`radiance[]` are by pool slot (stable for a path's life); `hits[]` and `shadowRays[]` are by ray-queue position (compacted, different every bounce). The classification queues store the ray-queue position *because it is also the hit index*, so a consumer reaches both hit and path from one number. `PathState.radianceSlot` maps back to the pixel.
 
 `QueueHeader` is a `VkDispatchIndirectCommand` plus `rayCount`; `queueAppend()` keeps `groupCountX == ceil(rayCount/64)` by having each workgroup add the number of workgroup boundaries its contiguous range crosses. Headers are reset by `vkCmdUpdateBuffer` from the command buffer, never by a shader.
 
@@ -381,13 +394,17 @@ for bounce in [0, rayDepth):
     barrier                                     <-- a glowing pbr hit is on EMISSIVE and SURFACE;
                                                     04 reads the throughput 06 overwrites
     06 Surface scattering      indirect over SURFACE     only 06 writes paths[] and the next ray queue
-    barrier; copyHeader(next, bounce + 1)
-copy traversal stats to readback
+    barrier
+    08 Trace shadow rays       indirect over SHADOW      a shadow ray's origin is hits[] at its
+                                                         queue position, so 08 runs before the
+                                                         next 02 overwrites it
+    barrier; copyHeader(next, bounce + 1); copyHeader(SHADOW, CRT_MAX_DEPTH + 1 + bounce)
 09 Update film                 direct over width × height
-barrier; tonemap
+barrier; copy the frame's counters to readback, 09's dropped-sample count last
+image_error.comp against the reference, when one is captured; tonemap
 ```
 
-Every `if (const KernelVariant* k = passFor(SLOT))` is skipped when the slot has no implemented variant, so 05/07/08 cost nothing. `launch()` picks the domain from the variant. **Nothing in this function names a strategy.**
+Every `if (const KernelVariant* k = passFor(SLOT))` is skipped when the slot has no implemented variant, so 05 and 07 cost nothing. Kernel 08 always runs; a bounce with no shadow rays leaves its header at zero groups. `launch()` picks the domain from the variant. **Nothing in this function names a strategy.**
 
 ### 8.7 The traversal contract
 
@@ -395,17 +412,18 @@ Every `if (const KernelVariant* k = passFor(SLOT))` is skipped when the slot has
 
 ```glsl
 bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit);
+bool occluded(vec3 origin, vec3 direction, float tMin, float tMax);
 ```
 
-World-space ray, normalised direction, closest hit in `[tMin, tMax]`. The variant `.comp` is then six lines: `crt_common.glsl` + a strategy header + `crt_intersect.glsl`.
+World-space ray, normalised direction. `traceScene()` returns the closest hit in `[tMin, tMax]`; `occluded()` returns true as soon as anything, alpha test included, blocks the segment. A kernel 02 variant `.comp` is then six lines: `crt_common.glsl` + a strategy header + `crt_intersect.glsl`. Its kernel 08 partner is the same with `crt_shadow.glsl` last.
 
 Also in `crt_traverse.glsl`, shared by every strategy: the alpha test (`cutAway()`, called from `testTriangles()` for a triangle flagged `CRT_TRIANGLE_CUTOUT`, so no strategy can forget it); `TraceHit`; `g_nodesVisited`/`g_primitivesTested` (**every strategy must maintain these** — they are the hardware-independent measure, and this laptop throttles ~70% within a minute so timings are not comparable); `safeReciprocal()`; `testTriangles()`; `instanceRay()` (the object-space transform, direction deliberately **not** renormalised so `t` carries across unchanged); `testShapeInstance()`; `resetTrace()`.
 
-Kernel 08 will need a second contract entry point, `bool occluded(...)`, supplied by **both** strategy files — see `docs/plans/shadow-rays-nee.md` §2.1.
+Both strategy files implement `occluded()` with the same walk as `traceScene()` (`walkScene()` in `crt_bvh.glsl`, `scanScene()` in `crt_linear.glsl`) and an `anyHit` flag: `testTriangles()` takes it too, and `traceDone()` ends the walk at the first hit. `occludedScene()` in `bvh_scene.cpp` mirrors it, and `bvh_bench` checks it against brute force.
 
 ### 8.8 Changes to existing structures
 
-- **`GpuInstance` is 80 bytes, not 64** (`rt_accel.h`, `static_assert` updated). Added `uint32_t triangleCount` + 3 pad. Filled from the new `BlasPlacement::triangleCount` in `packGeometry()`. Only `crt_linear.glsl` reads it — a BVH reaches triangles through leaves.
+- **`GpuInstance` is 80 bytes, not 64** (`rt_accel.h`, `static_assert` updated). Added `uint32_t triangleCount` + 3 pad, the first of which is now `lightBase` (§8.14). Filled from the new `BlasPlacement::triangleCount` in `packGeometry()`. Only `crt_linear.glsl` reads it — a BVH reaches triangles through leaves.
 - **`CrtParams` gained `uint32_t instanceCount`** in place of one pad float; still 176 bytes. Deliberately distinct from `tlasInstanceCount`, which goes to 0 when the TLAS fails to pack — that must not make geometry vanish from a strategy that never walks a TLAS.
 - **`GpuRenderSnapshot` gained `KernelSelection kernels`**, taken at Render like everything else, so changing a strategy mid-render restarts rather than mixes.
 - **`RenderKey` gained `KernelSelection kernels`**, so a swap restarts a running render under restart-on-change.
@@ -413,13 +431,15 @@ Kernel 08 will need a second contract entry point, `bool occluded(...)`, supplie
 
 ### 8.9 UI wiring
 
-- **"Raytracer Shaders" window** (`RaytraceRenderer::drawKernelPanel()`, Windows menu). One row per slot, combo over `kernelVariants(slot)`, greyed when `!implemented`. Entirely registry-driven — a new variant appears with no edit to this function.
+- **"Raytracer Shaders" window** (`RaytraceRenderer::drawKernelPanel()`, Windows menu). One row per slot, combo over `kernelVariants(slot)`, greyed when `!implemented` or when the slot follows another (08 reads "follows kernel 02"). Entirely registry-driven — a new variant appears with no edit to this function.
 - **"Acceleration structure" section** returns early unless the selected 02 variant declares `KernelSettings::AccelerationStructure`. The **node-layout combo was removed**: `requiredLayout()` derives it from the selected variant, because a CWBVH kernel cannot read binary nodes. Selecting a variant calls `setAccelSettings()`, which rebuilds the BLASes only when the layout actually differs.
-- **Render guard**: `sceneCostPerRay()` switches on the selected variant's `TraversalCost`. `Acceleration` → `tlas.sceneSahCost`; `AllPrimitives` → `placedTriangles + instances.size()`. Four orders of magnitude apart on a real model, and the linear scan is precisely the case `WORK_PER_FRAME_BUDGET` exists to catch (a 1M-triangle linear render once took the window server down).
+- **Render guard**: `sceneCostPerRay()` switches on the selected variant's `TraversalCost`. `Acceleration` → `tlas.sceneSahCost`; `AllPrimitives` → `placedTriangles + instances.size()`. Four orders of magnitude apart on a real model, and the linear scan is precisely the case `WORK_PER_FRAME_BUDGET` exists to catch (a 1M-triangle linear render once took the window server down). `tracesPerBounce()` doubles the price when kernel 06's `nextEvent` finds a light of its kind in the scene, since each bounce then walks the scene twice.
+- **"Direct lighting"** (`drawLightingSettings()`, in the Raytrace Render panel): the "Strategy" combo over kernel 06's variants, and a line counting the light list by kind.
+- **"Compare to reference"** (`drawReference()`): "Use this render as reference" copies the accumulation into `m_reference`; from then on each frame's RMSE and relative MSE against it are read back and shown.
 
-### 8.10 Scene file, payload version 8
+### 8.10 Scene file, payload versions 8 to 10
 
-Version 9 adds one material type, `"pbr"` (`"albedo"`, `"metallic"`, `"roughness"`, `"emission"`, `"strength"`). Nothing else changed, so a version 8 file reads unchanged.
+Version 9 adds one material type, `"pbr"` (`"albedo"`, `"metallic"`, `"roughness"`, `"emission"`, `"strength"`). Nothing else changed, so a version 8 file reads unchanged. Version 10 adds `"lights"` (§8.14).
 
 ```json
 "kernels": {"00":"thin_lens", ..., "02":"linear", ...},
@@ -428,7 +448,7 @@ Version 9 adds one material type, `"pbr"` (`"albedo"`, `"metallic"`, `"roughness
             "spatialBudget":0.3,"maxDepth":48}
 ```
 
-By **id, not index**. `kernelSelectionFromIds()` collects unknown slots and unknown ids into `SceneDescription::kernelWarnings`, which `openScene()` folds into the `IoResult` problem list; the slot keeps its default. Both blocks are optional, so every file back to version 1 still opens. **The node layout is deliberately not saved** — it follows the kernel 02 selection, so storing it would let a file contradict itself. `newScene()` resets both to their defaults.
+By **id, not index**. The entry for a following slot (`"08"`) is written but never read, so a file from before shadow rays, which says `"08":"none"`, opens without a warning. A file without `"kernels"` opens with kernel 06's default, `mis_power`. `kernelSelectionFromIds()` collects unknown slots and unknown ids into `SceneDescription::kernelWarnings`, which `openScene()` folds into the `IoResult` problem list; the slot keeps its default. Both blocks are optional, so every file back to version 1 still opens. **The node layout is deliberately not saved** — it follows the kernel 02 selection, so storing it would let a file contradict itself. `newScene()` resets both to their defaults.
 
 ### 8.11 Verified behaviour (2026-09-25 smoke run, hooks since stripped)
 
@@ -438,6 +458,8 @@ Cornell box, 200×150, 16 spp, fixed seed 12345, validation layers on:
 - **Zero validation errors** after the texture-array fix in §8.8.
 - Scene round trip: saved with `linear` selected → reopened as `linear`. A version-4 file (`assets/scenes/sphere_scene.gltf`) opens with the default `bvh_binary`.
 - `bin/bvh_bench assets/structure.glb --rays 500`: PASS, 0 mismatches across all 4 builders × 2 layouts.
+
+The shadow-ray work repeated it: `bsdf` renders bit-identical to the commit before it (Cornell box 200×150×16, the sphere scene 200×150×16, Sponza 160×90×4), and the three traversal pairs agree bit for bit with shadow rays. `docs/plans/completed/shadow-rays-nee.md` §9 has the convergence numbers.
 
 The bit-identical comparison is the regression test to repeat after any change in this area; it is far more sensitive than looking at an image.
 
@@ -450,21 +472,45 @@ Every glTF material now becomes the `pbr` `SceneMaterial` type (`gltfTriMaterial
 - **`BvhTriangle::v0.w`'s top bit** (`BVH_TRIANGLE_CUTOUT`) marks a triangle whose glTF material is `alphaMode` `MASK`. Mask the index with `BVH_TRIANGLE_INDEX_MASK` / `CRT_TRIANGLE_INDEX_MASK` before using it. The CPU traversals ignore the bit.
 - **Binding 12 is `materialTextures`** (`CrtBinding::MaterialTextures`). Kernels 02 (alpha test, normal maps), 04 (emissive texture) and 06 (base colour, metal/rough) declare it.
 - **Normal maps are applied in kernel 02**, the only kernel that reads the attribute record, so `HitRecord.normal` arrives at 06 already perturbed. The front face is still decided by the unmapped normal, and a mapped normal that faces away from the ray is dropped.
-- **Radiance slots accumulate.** Kernels 03 and 04 add to the slot rather than write it, because a hit on a `pbr` surface with emission goes onto both the emissive and the surface queue.
-- **Punctual lights** (`KHR_lights_punctual`) load into `LoadedGLTF::lights` and nothing reads them yet. `docs/plans/shadow-rays-nee.md` §2.8 covers what rendering them needs.
+- **Radiance slots accumulate.** Kernels 03, 04 and 08 add to the slot rather than write it, because a hit on a `pbr` surface with emission goes onto both the emissive and the surface queue, and a shadow ray adds to the path that sent it.
+- **Punctual lights** (`KHR_lights_punctual`) load into `LoadedGLTF::lights`, and each import turns them into `SceneLight` objects (§8.14).
 
 The Cornell box and sphere scenes render bit-identical to the previous commit with a fixed seed.
 
-### 8.12 Deliberate behaviour change
+### 8.13 Deliberate behaviour change
 
 Kernel 01 hashes each live path's PCG state with the bounce index, where the pre-refactor tracer drew sequentially from one stream. **The noise pattern differs from before; the estimator and the converged image do not.** Slot 01 exists so a low-discrepancy sampler (Sobol/Halton, owen-scrambled) can replace one file — the reason pbrt gives sample generation its own kernel (PBR 4ed §15.3.5).
 
-### 8.13 Traps
+New scenes, and files without `"kernels"`, select `mis_power` for kernel 06, so their noise differs from before; the converged image does not. Selecting `bsdf` renders bit-identical to the tracer before shadow rays, in a scene without punctual lights. Punctual lights were not rendered at all before.
+
+### 8.14 Light sampling and MIS (2026-09-25)
+
+Design and verification: `docs/plans/completed/shadow-rays-nee.md` (§9 is the as-built record). Readable account: `docs/raytracing-overview.md` §5.
+
+- `PathState` is 64 bytes and carries the MIS record: `misPdf`, `misExponent` and two pads follow `bounce`. Kernel 00 sets `misPdf = CRT_MIS_FULL` (-1), and only kernel 06 changes it, for the ray it continues: -1 for full weight (BSDF sampling, or a specular surface), 0 when light sampling already covered every light in the list, otherwise the BSDF sample's solid-angle density. Kernels 03 and 04 compute the light sampling density of what the ray found, from `path.origin`, and weigh by `misWeight()`. Only a weight other than 1 is multiplied in, so `bsdf` adds exactly what it did before.
+- `HitRecord` stays 48 bytes: its spare pair is now `traversalCost` and `lightIndex`, the light record kernel 02 found (`CRT_NO_LIGHT` otherwise). A shape's is `GpuInstance.lightBase`, plus `boxFace()` for a box; a mesh triangle's is `triangleLights[lightBase + triangle index]`.
+- Binding 18, `Lights`, is a 32-byte `LightHeader` (count, `deltaCount`, the environment's index, inverse total and delta powers) and 96-byte `GpuLight` records. Binding 19, `ShadowRays`, is 32 bytes per ray-queue position. Binding 20, `TriangleLights`, maps each emissive mesh triangle to its record, and binding 21, `EnvironmentSampling`, holds the two environment tables.
+- The light list (`src/rt_lights.cpp`, `LightListBuilder`) is built by `buildSceneAccel()` on every scene edit, in world space. Punctual lights come first, because `lights[0, deltaCount)` is what the delta-only alias table covers; `addPunctual()` refuses a light once any other kind was added. Then shape faces (a box's six in -x, +x, -y, +y, -z, +z order), emissive triangles and the environment. Each record carries its entries in two Vose alias tables, one over every light and one over the delta lights.
+- `GpuLight.a/b/c` hold, by kind, a sphere's centre and radius; a rectangle's corner and the two edges from it; a cylinder's centre and radius, unit x axis and height, and unit length axis (its caps are part of the one record); a triangle's vertices, with `a.w` the attribute record, `b.w` the emissive layer and `c.w` the material, bit-cast. Point and spot keep position and range in `a`, the spot its direction and cone cosines in `b` and `c`; directional keeps its direction in `a`.
+- A light's power is πAL for a sphere, box face and cylinder; 2πAL for a quad and a triangle (two-sided), times the emissive texture's mean over the triangle (`RaytraceTextureArray::meanLuminance()`, 16 stratified points on a CPU copy of the layer); 4πI for a point; 2πI((1 − cos θi) + (cos θi − cos θo)/3) for a spot; πr²E for a directional light and πr²∫L dω for the environment, with r the scene's bounding-sphere radius.
+- The environment tables are pbrt-v4's `PiecewiseConstant2D`, built by `buildEnvironmentDistribution()` when the map loads (`VulkanEngine::m_environmentDistribution`) and uploaded device-local by `GpuPathTracer::uploadEnvironment()`. `envData[]` holds table 0 (luminance × sin θ, for light sampling alone) then table 1 (the same with the mean subtracted, for MIS), each as marginal CDF (h + 1), row CDFs (h × (w + 1)) and function values (h × w). Kernel 03 picks the table by the sign of `misPdf`.
+- The header readback holds `READBACK_HEADERS_PER_SLOT = 2 × CRT_MAX_DEPTH + 1` headers per frame slot, the shadow queue's at `CRT_MAX_DEPTH + 1 + bounce`. The traversal counters double in size, the shadow rays' at `2 × CRT_MAX_DEPTH + 2 × bounce`, and feed `TraversalWork`'s shadow fields. `CRT_MAX_DEPTH` is 16.
+- One more counter follows them, `traversalStats[CRT_STAT_DROPPED_SAMPLES]` at `4 × CRT_MAX_DEPTH`: the samples kernel 09 left out of the mean as non-finite. Kernel 09 declares `TraversalStats` for it, `record()` copies the counters back after kernel 09, and `GpuPathTracer::droppedSamples()` totals them over the render for the panel's warning.
+- The environment map's GPU copy is rgba16f, and a map whose peak exceeds half float's 65504 is stored divided by `VulkanEngine::m_environmentMapScale`, the smallest power of two that fits (`environmentStorageScale()`, `packEnvironmentTexels()`). `CrtParams.environmentIntensity` and the raster background's exposure carry intensity × scale. The light list prices the environment at the unscaled intensity, against tables built from the file's floats.
+- `SceneLight` (`rt_scene_types.h`) is a scene object like a camera: kind, pose, colour, intensity in the tracer's radiometric units, range and cones. `sceneLightOf()` imports `KHR_lights_punctual` with candela and lux divided by 683, and `removeGltf()` removes a model's lights with it. Scene payload version 10 saves them as `"lights"` records with the index of the `"model"` that brought them.
+- `crt_light.glsl` and `light_sampling.cpp` are line-for-line mirrors; `bin/light_test` checks every sampler's pdf against its density function and its solid angle against a counted reference, and the environment tables' normalisation.
+
+### 8.15 Traps
 
 - `CrtBinding` values **are** binding numbers, and `KernelSlot` values **are** filename prefixes and scene-file keys. Neither may be renumbered.
 - `kernelVariants()` assumes the registry is grouped by slot.
 - A new resource must be appended in the **same position** to `CrtBinding` and `crt_common.glsl`, and get a `case` in `writeSet()` — a missing case silently leaves the descriptor unwritten.
 - `queueAppend()` must be reached by **every invocation of the workgroup in uniform control flow**; a dead lane passes `survives = false`. Kernels 00, 02 and 06 therefore have no early return. Kernels 01, 03, 04 and 09 append to nothing and may return early.
 - Kernel 02 calls `queueAppend()` three times (once per classification queue) for exactly this reason.
-- `crt_bvh.glsl`/`crt_shape.glsl`/`crt_random.glsl` and the `crt_common.glsl` structs are mirrored line for line by `bvh_layout.h`, `shape.cpp`, `rt_random.cpp` and `rt_gpu.h` — change both sides together, then run `bvh_bench`.
+- `crt_bvh.glsl`/`crt_shape.glsl`/`crt_light.glsl` and the `crt_common.glsl` structs are mirrored line for line by `bvh_layout.h`, `shape.cpp`, `light_sampling.cpp` and `rt_gpu.h`/`rt_accel.h`/`rt_lights.h`. Change both sides together, then run `bvh_bench` and `light_test`.
+- A new kernel 06 variant must write `misPdf` for every path it continues. Leaving the value kernel 00 or the last bounce wrote counts a light found by the BSDF sample at the wrong weight, which shows as a wrong mean, not as noise.
+- A new kernel 02 variant needs a kernel 08 variant whose `followsVariant` is its `id`. Without one, `reconcileKernelSelection()` leaves kernel 08 on whatever it ran before.
+- Kernel 08 reads a shadow ray's origin from `hits[]`, so nothing may write `hits[]` between 06 and 08.
+- A degenerate box face keeps its record at zero power, so the six faces stay in the order kernel 02 names them. A zero-power record prices at pmf 0, which gives a BSDF sample full weight.
+- `environmentMap` holds the texels divided by `m_environmentMapScale`. A new shader that reads it must multiply by `pc.environmentIntensity`, which includes the scale, or it renders a bright map up to that factor too dark.
 - Both `.spv` outputs and `#include` resolution depend on the `-I` and relative-path handling in the root `CMakeLists.txt`; a new shader subdirectory works, a new include root does not without adding another `-I`.

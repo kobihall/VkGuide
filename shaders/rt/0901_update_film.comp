@@ -6,7 +6,11 @@
 // diagram; it is numbered 09 to keep one scheme for the whole directory.
 //
 // Slots that were not spawned (w == 0) and non-finite samples are skipped and not counted - one
-// NaN would poison the mean for good. A running mean rather than a running sum, because a
+// NaN would poison the mean for good. A dropped sample is not harmless, though: it was a real
+// path's contribution, and leaving it out biases the pixel towards the samples that survived. So
+// the drops are counted into traversalStats[CRT_STAT_DROPPED_SAMPLES], and the render panel
+// reports any. A texel of infinity in the environment map once dropped a third of all samples
+// without a trace. A running mean rather than a running sum, because a
 // future adaptive budget leaves pixels with different counts, and per-pixel counts are kept
 // for it (docs/plans/adaptive-sampling.md).
 
@@ -25,6 +29,7 @@ void main()
 
 	vec3 sum = vec3(0.0);
 	uint count = 0u;
+	uint dropped = 0u;
 	for (uint k = 0u; k < pc.samplesPerFrame; k++) {
 		const vec4 slotValue = radiance[pixel * pc.samplesPerFrame + k];
 		if (slotValue.w == 0.0) {
@@ -32,10 +37,14 @@ void main()
 		}
 		const bool finite = all(equal(slotValue.rgb, slotValue.rgb)) && all(lessThan(abs(slotValue.rgb), vec3(CRT_INFINITY)));
 		if (!finite) {
+			dropped++;
 			continue;
 		}
 		sum += slotValue.rgb;
 		count++;
+	}
+	if (dropped > 0u) {
+		atomicAdd(traversalStats[CRT_STAT_DROPPED_SAMPLES], dropped);
 	}
 
 	const uint n = imageLoad(sampleCount, coord).r;

@@ -112,6 +112,20 @@ bool hitShape(uint kind, vec3 origin, vec3 direction, float tMin, float tMax, ou
 	return tMax < tLimit;
 }
 
+// which face of the unit box a point on it lies on: -x, +x, -y, +y, -z, +z as 0-5, the order the
+// light list gives an emitting box's faces. src/light_sampling.cpp boxFaceOf
+uint boxFace(vec3 p)
+{
+	const vec3 a = abs(p);
+	if (a.x >= a.y && a.x >= a.z) {
+		return p.x >= 0.0 ? 1u : 0u;
+	}
+	if (a.y >= a.z) {
+		return p.y >= 0.0 ? 3u : 2u;
+	}
+	return p.z >= 0.0 ? 5u : 4u;
+}
+
 // the outward object-space normal at a point on the unit primitive, not normalised
 vec3 shapeNormal(uint kind, vec3 p)
 {

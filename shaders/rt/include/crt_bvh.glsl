@@ -5,11 +5,12 @@
 // (Ylitie et al. 2017) when the including shader defines CRT_BVH_CWBVH. The two builds are
 // shaders/rt/0201_intersect_closest_bvh.comp and 0202_intersect_closest_cwbvh.comp.
 //
-// Supplies traceScene() per the contract in crt_traverse.glsl.
+// Supplies traceScene() and occluded() per the contract in crt_traverse.glsl: one walk, which an
+// any-hit query leaves at its first hit.
 //
 // Mirrored line for line on the CPU by src/bvh_layout.h (traverseBinaryBvh, traceCwbvh) and
-// src/bvh_scene.cpp (traceScene), which tests/bvh_bench.cpp checks against brute force - a
-// change to one side must be made to the other. The node word layouts are documented at
+// src/bvh_scene.cpp (traceScene, occludedScene), which tests/bvh_bench.cpp checks against brute
+// force - a change to one side must be made to the other. The node word layouts are documented at
 // src/bvh_layout.h PackedBvh.
 //
 // Requires crt_common.glsl.
@@ -45,7 +46,7 @@ float slabNear(vec3 bmin, vec3 bmax, vec3 origin, vec3 reciprocal, float tMin, f
 // Aila-Laine: both children's boxes live in the parent, so one fetch of 64 bytes tests two boxes.
 // Leaf children are intersected on the spot; of the interior ones the nearer is taken and the
 // farther pushed (Bikker part 2's ordered traversal)
-void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit)
+void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit, bool anyHit)
 {
 	const vec3 reciprocal = safeReciprocal(direction);
 	uint stack[CRT_BINARY_STACK_SIZE];
@@ -64,11 +65,17 @@ void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 di
 		float tRight = slabNear(uintBitsToFloat(w2.xyz), uintBitsToFloat(w3.xyz), origin, reciprocal, tMin, tMax);
 
 		if (w2.w > 0u && tLeft < CRT_INFINITY) {
-			testTriangles(instance.triangleBase + w0.w, w2.w, instanceIndex, origin, direction, tMin, tMax, hit);
+			testTriangles(instance.triangleBase + w0.w, w2.w, instanceIndex, origin, direction, tMin, tMax, hit, anyHit);
+			if (traceDone(anyHit, hit)) {
+				return;
+			}
 			tLeft = CRT_INFINITY;
 		}
 		if (w3.w > 0u && tRight < CRT_INFINITY) {
-			testTriangles(instance.triangleBase + w1.w, w3.w, instanceIndex, origin, direction, tMin, tMax, hit);
+			testTriangles(instance.triangleBase + w1.w, w3.w, instanceIndex, origin, direction, tMin, tMax, hit, anyHit);
+			if (traceDone(anyHit, hit)) {
+				return;
+			}
 			tRight = CRT_INFINITY;
 		}
 
@@ -104,7 +111,7 @@ uint byteOf(uint word, uint index)
 // children in bits 24-31 | interior mask in bits 0-7), a triangle group (first triangle, hit
 // triangles in bits 0-23). Interior children are visited highest bit first, and their bits were
 // placed so that order is front to back for this ray's octant
-void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit)
+void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit, bool anyHit)
 {
 	const vec3 reciprocal = safeReciprocal(direction);
 	const uint octantInverse = 7u - ((direction.x < 0.0 ? 4u : 0u) | (direction.y < 0.0 ? 2u : 0u) | (direction.z < 0.0 ? 1u : 0u));
@@ -185,7 +192,10 @@ void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 di
 		while (triangleGroup.y != 0u) {
 			const uint index = uint(findMSB(triangleGroup.y));
 			triangleGroup.y &= ~(1u << index);
-			testTriangles(instance.triangleBase + triangleGroup.x + index, 1u, instanceIndex, origin, direction, tMin, tMax, hit);
+			testTriangles(instance.triangleBase + triangleGroup.x + index, 1u, instanceIndex, origin, direction, tMin, tMax, hit, anyHit);
+			if (traceDone(anyHit, hit)) {
+				return;
+			}
 		}
 
 		if (nodeGroup.y <= 0x00FFFFFFu) {
@@ -202,7 +212,7 @@ void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 di
 //---------------------------------------------------------------- TLAS
 
 // one instance, mesh or shape, by carrying the ray into its object space
-void testInstance(uint slot, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit)
+void testInstance(uint slot, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit, bool anyHit)
 {
 	const GpuInstance instance = instances[slot];
 	vec3 localOrigin;
@@ -214,21 +224,24 @@ void testInstance(uint slot, vec3 origin, vec3 direction, float tMin, inout floa
 		return;
 	}
 
-	traverseBlas(instance, slot, localOrigin, localDirection, tMin, tMax, hit);
+	traverseBlas(instance, slot, localOrigin, localDirection, tMin, tMax, hit, anyHit);
 }
 
-// The closest hit of a world-space ray (direction normalised) in [tMin, tMax]. False for a miss.
-// The TLAS is always the binary layout: it holds a few hundred instances, each far more expensive
-// than a box test, so there is nothing for a wide node to save
-bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit)
+// The scene walk both contract functions share: the closest hit in [tMin, tMax], or with `anyHit`
+// the first one found. The TLAS is always the binary layout: it holds a few hundred instances, each
+// far more expensive than a box test, so there is nothing for a wide node to save
+void walkScene(vec3 origin, vec3 direction, float tMin, float tMax, bool anyHit, out TraceHit hit)
 {
 	resetTrace(hit);
 	// the unbounded shapes first: a near plane hit then prunes the TLAS walk
 	for (uint i = 0u; i < pc.unboundedCount; i++) {
-		testInstance(i, origin, direction, tMin, tMax, hit);
+		testInstance(i, origin, direction, tMin, tMax, hit, anyHit);
+		if (traceDone(anyHit, hit)) {
+			return;
+		}
 	}
 	if (pc.tlasInstanceCount == 0u) {
-		return hit.t < CRT_INFINITY;
+		return;
 	}
 
 	const vec3 reciprocal = safeReciprocal(direction);
@@ -248,13 +261,19 @@ bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHi
 
 		if (w2.w > 0u && tLeft < CRT_INFINITY) {
 			for (uint i = w0.w; i < w0.w + w2.w; i++) {
-				testInstance(pc.unboundedCount + i, origin, direction, tMin, tMax, hit);
+				testInstance(pc.unboundedCount + i, origin, direction, tMin, tMax, hit, anyHit);
+				if (traceDone(anyHit, hit)) {
+					return;
+				}
 			}
 			tLeft = CRT_INFINITY;
 		}
 		if (w3.w > 0u && tRight < CRT_INFINITY) {
 			for (uint i = w1.w; i < w1.w + w3.w; i++) {
-				testInstance(pc.unboundedCount + i, origin, direction, tMin, tMax, hit);
+				testInstance(pc.unboundedCount + i, origin, direction, tMin, tMax, hit, anyHit);
+				if (traceDone(anyHit, hit)) {
+					return;
+				}
 			}
 			tRight = CRT_INFINITY;
 		}
@@ -271,11 +290,24 @@ bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHi
 			node = w1.w;
 		} else {
 			if (stackSize == 0u) {
-				break;
+				return;
 			}
 			node = stack[--stackSize];
 		}
 	}
+}
 
+// The closest hit of a world-space ray (direction normalised) in [tMin, tMax]. False for a miss
+bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit)
+{
+	walkScene(origin, direction, tMin, tMax, false, hit);
+	return hit.t < CRT_INFINITY;
+}
+
+// Whether anything lies on the ray in [tMin, tMax]: the same walk, left at the first hit it finds
+bool occluded(vec3 origin, vec3 direction, float tMin, float tMax)
+{
+	TraceHit hit;
+	walkScene(origin, direction, tMin, tMax, true, hit);
 	return hit.t < CRT_INFINITY;
 }

@@ -1,0 +1,9 @@
+#version 460
+
+// 08 Trace Shadow Rays - two-level BVH, binary (Aila-Laine) BLAS nodes. Kernel 02's BVH (binary)
+// partner: the strategy is crt_bvh.glsl, the body around it crt_shadow.glsl.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_bvh.glsl"
+#include "include/crt_shadow.glsl"

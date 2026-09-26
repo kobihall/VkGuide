@@ -2,26 +2,51 @@
 
 // 04 HANDLE EMISSIVE GEOMETRY. The paths kernel 02 pushed onto CRT_QUEUE_EMISSIVE: rays that
 // hit something that glows. Each one collects what the surface emits through everything it
-// bounced off.
+// bounced off, weighted by the MIS record the vertex before it left:
 //
-//     L += throughput * Le
+//     L += throughput * Le * w
+//
+// w is 1 for a camera ray, after a specular bounce, and under BSDF sampling, where this is the only
+// way a light is found. When kernel 06 also sampled lights at the previous vertex, the same light
+// could have arrived through that shadow ray too, and counting both in full would count it twice.
+// Then w is the heuristic's weight of the BSDF sample's density (PathState.misPdf) against the
+// density light sampling would have given this point - the light's chance of being picked times its
+// solid-angle density from the previous vertex, which is the path's origin (PBR 4ed 13.4). Under
+// light sampling alone the record's density is 0, so a light the list holds gets nothing here. An
+// emitter the list does not hold (HitRecord.lightIndex CRT_NO_LIGHT, or one light sampling cannot
+// reach) keeps w = 1 in every strategy, since the BSDF sample is its only way in.
 //
 // Nothing is appended to the next ray queue. For an emissive material the path ends here. A pbr
 // surface with emission was also queued for 06, which carries the path on; src/rt_gpu.cpp runs
-// this kernel to completion first, since 06 overwrites the throughput read here.
-//
-// This is where the MIS weight goes. Under pure BSDF sampling a light found by chance is
-// counted at full weight, which is what happens here. Once kernel 06 also samples lights
-// directly, the same light would be counted twice, and this kernel has to scale its
-// contribution by the balance-heuristic weight against the probability that 06's light sample
-// would have found the same point (PBR 4ed 15.3.8). That is a change to this one file plus the
-// solid angle that 06 would have to leave in the path state - see docs/plans/shadow-rays-nee.md.
+// this kernel to completion first, since 06 overwrites the throughput and the origin read here.
 
 #extension GL_GOOGLE_include_directive : require
 #include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
+#include "equirect.glsl"
+#include "include/crt_light.glsl"
 #include "include/crt_debug.glsl"
 
 layout (local_size_x = CRT_WORKGROUP) in;
+
+// what the surface emits towards the ray: an emissive material's colour times its strength, a pbr
+// material's emission times its sRGB emissive texel
+vec3 emittedRadiance(GpuMaterial light, HitRecord hit)
+{
+	vec3 emitted = light.albedo * light.param;
+	if (light.type == CRT_MATERIAL_PBR) {
+		emitted = light.emission;
+		if (light.emissiveLayer >= 0) {
+			emitted *= srgbToLinear(textureLod(materialTextures, vec3(hit.uv, float(light.emissiveLayer)), 0.0).rgb);
+		}
+	}
+	return emitted;
+}
+
+float luminanceOf(vec3 c)
+{
+	return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
 
 void main()
 {
@@ -37,6 +62,25 @@ void main()
 	const HitRecord hit = hits[entry];
 	const vec3 inDir = normalize(path.direction);
 	const GpuMaterial light = materials[hit.materialAndFace >> 1u];
+
+	// the MIS weight of a light found by the BSDF sample, against light sampling from the vertex the
+	// ray left (the path's origin, which 06 has not yet moved on)
+	float weight = 1.0;
+	if (path.misPdf >= 0.0 && hit.lightIndex != CRT_NO_LIGHT) {
+		const float lightPdf = lightPmf(hit.lightIndex) * areaLightPdf(hit.lightIndex, path.origin, hit.position);
+		if (lightPdf > 0.0) {
+			weight = misWeight(path.misPdf, lightPdf, path.misExponent);
+		}
+	}
+
+	// the MIS weights view: the first vertex's direct light found by its BSDF sample, in red. A
+	// light seen straight from the camera belongs to neither technique
+	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS) {
+		if (path.bounce == 1u) {
+			radiance[path.radianceSlot].rgb += vec3(luminanceOf(path.throughput * emittedRadiance(light, hit) * weight), 0.0, 0.0);
+		}
+		return;
+	}
 
 	// a surface that also scatters is not where its path ends, so the debug views, which write a
 	// path's final value, are left to 06
@@ -54,13 +98,12 @@ void main()
 		return;
 	}
 
-	vec3 emitted = light.albedo * light.param;
-	if (light.type == CRT_MATERIAL_PBR) {
-		emitted = light.emission;
-		if (light.emissiveLayer >= 0) {
-			emitted *= srgbToLinear(textureLod(materialTextures, vec3(hit.uv, float(light.emissiveLayer)), 0.0).rgb);
-		}
+	// added, not written: the path may have passed other glowing surfaces on earlier bounces. The
+	// weight is applied only when it is not 1, so a strategy without light sampling adds exactly
+	// what it always did
+	vec3 contribution = path.throughput * emittedRadiance(light, hit);
+	if (weight != 1.0) {
+		contribution *= weight;
 	}
-	// added, not written: the path may have passed other glowing surfaces on earlier bounces
-	radiance[path.radianceSlot].rgb += path.throughput * emitted;
+	radiance[path.radianceSlot].rgb += contribution;
 }

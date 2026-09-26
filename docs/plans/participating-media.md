@@ -61,16 +61,16 @@ struct SceneMedium {
 
 Homogeneous only to begin with — a constant-density medium bounded by a shape instance. Heterogeneous (a voxel grid, delta tracking) is a much larger piece and should not be attempted first.
 
-A `SceneShape` gains an optional medium index, which is what makes "this box is fog" expressible. `scene_io.cpp` gains a `"media"` array and a per-shape `"medium"` field, at payload version 9; older files simply have none.
+A `SceneShape` gains an optional medium index, which is what makes "this box is fog" expressible. `scene_io.cpp` gains a `"media"` array and a per-shape `"medium"` field, at payload version 11 (10 added the punctual lights); older files simply have none.
 
 ### 3.2 Bindings
 
 Appended (never renumbered) to **both** `CrtBinding` in `src/rt_kernels.h` and `crt_common.glsl`:
 
-- `CrtBinding::Media = 18` (or the next free number if `shadow-rays-nee.md` landed first — the two plans must not both claim 18)
+- `CrtBinding::Media = 22`. Light sampling took 18 to 21 (`Lights`, `ShadowRays`, `TriangleLights`, `EnvironmentSampling`).
 - `CrtBinding::MediumScatterQueue` — or reuse the generic queue set by adding `CRT_QUEUE_MEDIUM_SCATTER = 6` and raising `CRT_QUEUE_COUNT`, which is the cheaper option and consistent with how every other queue is allocated.
 
-`PathState` needs a current medium index — which medium the ray is travelling inside. It is 48 bytes today with `bounce` in a full `uint`; the medium fits in that word's spare bits.
+`PathState` needs a current medium index: which medium the ray is travelling inside. It is 64 bytes since light sampling added its MIS record, and two of its words (`pad0`, `pad1`) are free for this.
 
 ### 3.3 Kernel 05
 
@@ -78,15 +78,15 @@ Homogeneous majorant sampling: draw `t = -log(1 - ξ) / σ_t` along the ray. If 
 
 ### 3.4 Kernel 07
 
-Sample the Henyey-Greenstein phase function for a new direction, scale the throughput by the single-scattering albedo `σ_s / σ_t`, append the path to the next ray queue. Structurally it is kernel 06 with a phase function in place of a BSDF — and like 06 it would emit a shadow ray onto `CRT_QUEUE_SHADOW` once `docs/plans/shadow-rays-nee.md` is done. That queue is already allocated and reset for exactly this reason.
+Sample the Henyey-Greenstein phase function for a new direction, scale the throughput by the single-scattering albedo `σ_s / σ_t`, append the path to the next ray queue. Structurally it is kernel 06 with a phase function in place of a BSDF, and like 06 it should emit a shadow ray onto `CRT_QUEUE_SHADOW` and leave an MIS record in the path. `nextEvent()` in `shaders/rt/include/crt_surface.glsl` is the model to follow, with the phase function's value and density in place of `evalSurface()` and `pdfSurface()`.
 
 ### 3.5 Kernel 02 and transmittance through shadow rays
 
-A shadow ray crossing a medium is attenuated rather than blocked. PBR handles this with a separate `IntersectShadowTr()` on its aggregate. Here it would be a second variant of kernel 08 (`0802_trace_shadow_rays_tr.comp`) that accumulates transmittance instead of returning on the first hit — one more registry entry, no scheduler change.
+A shadow ray crossing a medium is attenuated rather than blocked. PBR handles this with a separate `IntersectShadowTr()` on its aggregate. Kernel 08 now has one variant per traversal, each following its kernel 02 partner (`docs/plans/completed/shadow-rays-nee.md` §9), so transmittance is a second body beside `crt_shadow.glsl` that accumulates transmittance instead of returning on the first hit, built once per traversal.
 
 ### 3.6 Cross-slot constraints
 
-Selecting a 07 variant without a 05 variant renders nothing different, silently. This needs the `requires` mechanism described in `docs/plans/shadow-rays-nee.md` §2.6; whichever plan is built first should add it.
+Selecting a 07 variant without a 05 variant renders nothing different, silently. The light sampling work did not build the `requires` mechanism its plan proposed. It built `KernelVariant::followsSlot` instead: a slot whose variant is derived from another slot's selection, never chosen on its own. Kernel 08 follows kernel 02 that way, and kernel 07 can follow kernel 05 the same way.
 
 ### 3.7 The render guard
 
@@ -98,7 +98,7 @@ A medium adds distance sampling per bounce but no traversal, so `sceneCostPerRay
 2. `SceneMedium`, the scene-file format, and the editor UI for attaching one to a shape.
 3. Kernel 05 homogeneous, absorption only (no 07): a fog box should darken what is behind it.
 4. Kernel 07 with Henyey-Greenstein.
-5. Shadow-ray transmittance, once NEE exists.
+5. Shadow-ray transmittance through kernel 08.
 
 ## 5. Sources
 

@@ -64,12 +64,14 @@ struct CrtQueueHeader {
 static_assert(sizeof(CrtQueueHeader) == 16);
 
 // the largest path pool the tracer allocates: width x height x samplesPerFrame is clamped to it
-// by lowering samplesPerFrame. 104 bytes per path, so ~416 MB at the cap
+// by lowering samplesPerFrame. 184 bytes per path (path state, hit, shadow ray, radiance, six
+// queue entries), so ~736 MB at the cap
 inline constexpr uint32_t CRT_MAX_POOL = 4u * 1024u * 1024u;
 inline constexpr int CRT_MAX_DEPTH = 16;
 inline constexpr int CRT_MAX_SAMPLES_PER_FRAME = 8;
 
-// one frame's traversal work, summed over the extend dispatches of every bounce
+// one frame's traversal work, summed over the extend dispatches of every bounce, and apart from it
+// the shadow rays kernel 08 traced
 struct TraversalWork {
 	uint64_t rays { 0 };
 	uint64_t nodes { 0 };
@@ -78,11 +80,29 @@ struct TraversalWork {
 	uint64_t primaryRays { 0 };
 	uint64_t primaryNodes { 0 };
 	uint64_t primaryPrimitives { 0 };
+	// every bounce's shadow rays: an any-hit walk, which stops at the first thing in the way
+	uint64_t shadowRays { 0 };
+	uint64_t shadowNodes { 0 };
+	uint64_t shadowPrimitives { 0 };
 
 	double nodesPerRay() const { return rays > 0 ? (double)nodes / (double)rays : 0.0; }
 	double primitivesPerRay() const { return rays > 0 ? (double)primitives / (double)rays : 0.0; }
 	double primaryNodesPerRay() const { return primaryRays > 0 ? (double)primaryNodes / (double)primaryRays : 0.0; }
 	double primaryPrimitivesPerRay() const { return primaryRays > 0 ? (double)primaryPrimitives / (double)primaryRays : 0.0; }
+	double shadowNodesPerRay() const { return shadowRays > 0 ? (double)shadowNodes / (double)shadowRays : 0.0; }
+	double shadowPrimitivesPerRay() const { return shadowRays > 0 ? (double)shadowPrimitives / (double)shadowRays : 0.0; }
+};
+
+// how far the running render is from the reference image, over every pixel and channel
+struct ReferenceError {
+	// sqrt of the mean squared difference
+	double rmse { 0.0 };
+	// the mean of (render - reference)^2 / (reference^2 + 0.01): an error that weighs a dark pixel's
+	// noise like a bright one's, the usual way renderers' outputs are compared
+	double relativeMse { 0.0 };
+	// the samples per pixel the render had when this was measured
+	uint32_t samples { 0 };
+	bool valid { false };
 };
 
 enum class CrtDebugView : uint32_t {
@@ -93,6 +113,7 @@ enum class CrtDebugView : uint32_t {
 	BounceHeat,
 	SampleCountHeat,
 	TraversalCost,
+	MisWeights,
 	Count
 };
 
@@ -112,9 +133,14 @@ struct GpuRenderSnapshot {
 	// which kernel variant runs in each slot of the wavefront. Taken at the click like
 	// everything else here, so changing a strategy mid-render restarts rather than mixes
 	KernelSelection kernels;
+	// the environment map's sampling tables, when the map is the background and so a light kernel
+	// 06 can sample; compared by pointer, since one is built per map load. Null otherwise
+	std::shared_ptr<const EnvironmentDistribution> environment;
 	// sample the engine's environment map on a miss; false falls back to the sky gradient
 	bool useEnvironmentMap { false };
 	float environmentIntensity { 1.f };
+	// the power of two the map's texels are stored divided by (VulkanEngine::m_environmentMapScale)
+	float environmentMapScale { 1.f };
 	// a missed ray sees backgroundColor instead of the environment map or the sky gradient
 	bool solidBackground { false };
 	glm::vec3 backgroundColor { 0.f };
@@ -162,9 +188,26 @@ public:
 	// what the BVH traversal did in the last frame read back: counted, not timed, so it compares
 	// builders and layouts reliably even on a GPU whose clocks move (a throttling laptop)
 	const TraversalWork& traversalWork() const { return m_traversalWork; }
+	// samples kernel 09 has left out of the mean as non-finite since the render started. Anything
+	// above zero means a kernel produced a NaN or an infinity, and the image is biased by the
+	// samples it lost
+	uint64_t droppedSamples() const { return m_droppedSamples; }
 	// paths alive entering each bounce, [0] being what generate spawned; the proof the
 	// compaction works. From the last frame read back
 	const std::vector<uint32_t>& pathsAlivePerBounce() const { return m_pathsAlive; }
+	// shadow rays kernel 06 emitted at each bounce, from the same frame
+	const std::vector<uint32_t>& shadowRaysPerBounce() const { return m_shadowRays; }
+
+	// THE REFERENCE: a copy of the accumulation to measure later renders against, for comparing
+	// strategies at equal samples or equal time. Captured from the next frame recorded; kept until
+	// cleared or the tracer is destroyed, and measured only while the render is the same size
+	void captureReference();
+	void clearReference(VulkanEngine* engine);
+	bool hasReference() const { return m_hasReference; }
+	uint32_t referenceSamples() const { return m_referenceSamples; }
+	VkExtent2D referenceExtent() const { return { m_reference.imageExtent.width, m_reference.imageExtent.height }; }
+	// the last measurement read back, of the render currently in the accumulation
+	const ReferenceError& referenceError() const { return m_referenceError; }
 
 	// switchable mid-render; written through the radiance slots, so it accumulates like radiance
 	CrtDebugView debugView { CrtDebugView::None };
@@ -179,6 +222,10 @@ private:
 	void collectReadbacks(VulkanEngine* engine, uint32_t slot);
 	// a set holding exactly the bindings `variant` declared, allocated from this frame's pool
 	VkDescriptorSet writeSet(VulkanEngine* engine, const KernelVariant& variant, const ComputePass& pass);
+	// the environment map's tables, device-local, once per map; a stub when there is none
+	void uploadEnvironment(VulkanEngine* engine, const std::shared_ptr<const EnvironmentDistribution>& environment);
+	// the reference copy and its error measurement, inside record()
+	void recordReference(VkCommandBuffer cmd, VulkanEngine* engine, uint32_t slot);
 
 	// one ComputePass per registered kernel variant, [slot][variant], built in init() from the
 	// registry. A variant with implemented = false gets a default-constructed entry that is never
@@ -198,6 +245,8 @@ private:
 	AllocatedBuffer m_headers {};
 	AllocatedBuffer m_radiance {};
 	AllocatedBuffer m_sampleBudget {};
+	// one ShadowRay per pool slot, indexed like the hits by ray queue position
+	AllocatedBuffer m_shadowRayBuffer {};
 	AllocatedImage m_accumulation {};
 	AllocatedImage m_sampleCount {};
 
@@ -223,11 +272,23 @@ private:
 	VkDeviceSize m_instanceMaterialsBytes { 0 };
 	VkDeviceSize m_tlasOffset { 0 };
 	VkDeviceSize m_tlasBytes { 0 };
+	// the light list: its header and records, and the per-triangle table of emitting meshes
+	VkDeviceSize m_lightsOffset { 0 };
+	VkDeviceSize m_lightsBytes { 0 };
+	VkDeviceSize m_triangleLightsOffset { 0 };
+	VkDeviceSize m_triangleLightsBytes { 0 };
 	uint32_t m_tlasInstanceCount { 0 };
 	uint32_t m_unboundedCount { 0 };
 	// every instance, TLAS or not: what a traversal-free kernel 02 variant scans
 	uint32_t m_instanceCount { 0 };
 	std::shared_ptr<const RaytraceSceneAccel> m_uploadedScene;
+
+	// the environment map's two sampling tables (crt_common.glsl EnvironmentSamplingBuffer),
+	// device-local, replaced only when another map is loaded
+	AllocatedBuffer m_environmentBuffer {};
+	VkDeviceSize m_environmentBytes { 0 };
+	std::shared_ptr<const EnvironmentDistribution> m_uploadedEnvironment;
+	bool m_hasEnvironmentBuffer { false };
 
 	// per frame slot: timestamps (two queries) and the queue headers after each producer
 	VkQueryPool m_queryPool { VK_NULL_HANDLE };
@@ -247,7 +308,24 @@ private:
 	float m_lastFrameGpuMs { 0.f };
 	float m_totalGpuMs { 0.f };
 	TraversalWork m_traversalWork;
+	uint64_t m_droppedSamples { 0 };
 	AllocatedBuffer m_traversalStats {};
 	AllocatedBuffer m_statsReadback {};
 	std::vector<uint32_t> m_pathsAlive;
+	std::vector<uint32_t> m_shadowRays;
+
+	// the reference image, its error pass and the per-workgroup partial sums that pass writes, read
+	// back per frame slot like the headers
+	AllocatedImage m_reference {};
+	bool m_hasReference { false };
+	bool m_capturePending { false };
+	uint32_t m_referenceSamples { 0 };
+	ComputePass m_errorPass;
+	AllocatedBuffer m_errorPartials {};
+	AllocatedBuffer m_errorReadback {};
+	VkDeviceSize m_errorPartialsBytes { 0 };
+	// per frame slot: how many partials were written (0 for none) and at how many samples
+	std::vector<uint32_t> m_slotErrorGroups;
+	std::vector<uint32_t> m_slotErrorSamples;
+	ReferenceError m_referenceError;
 };

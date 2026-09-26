@@ -1,0 +1,9 @@
+#version 460
+
+// 08 Trace Shadow Rays - brute force, no acceleration structure. Kernel 02's linear-scan partner:
+// the strategy is crt_linear.glsl, the body around it crt_shadow.glsl, unchanged.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_linear.glsl"
+#include "include/crt_shadow.glsl"

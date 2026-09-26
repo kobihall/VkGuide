@@ -42,8 +42,8 @@ bool debugTerminalValue(HitRecord hit, vec3 inDir, bool isHit, out vec3 value)
 		value = isHit ? hit.normal * 0.5 + 0.5 : vec3(0.0);
 		return true;
 	case CRT_DEBUG_TRAVERSAL_COST:
-		// kernel 02 left this ray's cost in the record's spare pair, hit or miss
-		value = traversalHeat(hit.pad.x + hit.pad.y);
+		// kernel 02 left this ray's cost in the record, hit or miss
+		value = traversalHeat(hit.traversalCost);
 		return true;
 	}
 	return false;

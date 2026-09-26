@@ -99,6 +99,10 @@ struct BvhRay {
 	glm::vec3 direction { 0.f, 0.f, -1.f };
 	float tMin { 0.f };
 	float tMax { 1e30f };
+	// stop at the first hit found in [tMin, tMax] rather than the closest one: a shadow ray's
+	// question (shaders/rt/include/crt_traverse.glsl occluded()). The hit returned is then some hit,
+	// not necessarily the nearest
+	bool anyHit { false };
 };
 
 struct BvhHit {
@@ -150,8 +154,9 @@ inline float bvhSlab(const glm::vec3& bmin, const glm::vec3& bmax, const glm::ve
 }
 
 // The binary layout's traversal (shaders/crt_bvh.glsl traverseBinary), with the leaf test left to
-// the caller: `testLeaf(first, count, tMax)` intersects slots [first, first + count) and lowers
-// tMax on a hit. Near child first, far child on the stack.
+// the caller: `testLeaf(first, count, tMax)` intersects slots [first, first + count), lowers tMax on
+// a hit, and returns true to end the traversal there (an any-hit query that has its answer). Near
+// child first, far child on the stack.
 template<typename LeafTest>
 void traverseBinaryBvh(const PackedBvh& bvh, const BvhRay& ray, float& tMax, LeafTest&& testLeaf, uint32_t& nodesVisited, bool& stackOverflow)
 {
@@ -178,11 +183,15 @@ void traverseBinaryBvh(const PackedBvh& bvh, const BvhRay& ray, float& tMax, Lea
 		//leaves are folded into the parent: intersect their contents now, and only interior
 		//children remain to be ordered
 		if (leftCount > 0 && tLeft < 1e30f) {
-			testLeaf(leftIndex, leftCount, tMax);
+			if (testLeaf(leftIndex, leftCount, tMax)) {
+				return;
+			}
 			tLeft = 1e30f;
 		}
 		if (rightCount > 0 && tRight < 1e30f) {
-			testLeaf(rightIndex, rightCount, tMax);
+			if (testLeaf(rightIndex, rightCount, tMax)) {
+				return;
+			}
 			tRight = 1e30f;
 		}
 

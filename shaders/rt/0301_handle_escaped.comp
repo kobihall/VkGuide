@@ -2,22 +2,25 @@
 
 // 03 HANDLE ESCAPED. The paths kernel 02 pushed onto CRT_QUEUE_ESCAPED: rays that left the
 // scene without hitting anything. Each one collects the background through everything it
-// bounced off and ends there.
+// bounced off, weighted by the MIS record the vertex before it left, and ends there.
 //
-//     L += throughput * background(direction)
+//     L += throughput * background(direction) * w
+//
+// The environment map is a light like any other once kernel 06 samples it (pbrt-v4's
+// ImageInfiniteLight): w follows PathState.misPdf exactly as in kernel 04, with the light sampling's
+// density taken from the table 06 drew from - the MIS-compensated one under MIS, the full one under
+// light sampling alone. A solid colour or the sky gradient is not in the light list, so it keeps
+// w = 1 whatever the strategy.
 //
 // A path only ever reaches this kernel once, and never continues afterwards, so nothing is
 // appended to the next ray queue and the last workgroup's overhang can simply return.
-//
-// A future variant would be where an importance-sampled environment map earns its keep: with
-// next-event estimation the miss contribution has to be MIS-weighted against the light sample
-// that kernel 06 already took towards the same environment, which is a different formula here
-// but no change anywhere else.
 
 #extension GL_GOOGLE_include_directive : require
 #include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
 #include "equirect.glsl"
 #include "include/crt_background.glsl"
+#include "include/crt_light.glsl"
 #include "include/crt_debug.glsl"
 
 layout (local_size_x = CRT_WORKGROUP) in;
@@ -46,6 +49,31 @@ void main()
 		return;
 	}
 
-	// added, not written: the path may have passed glowing surfaces on earlier bounces
-	radiance[path.radianceSlot].rgb += path.throughput * backgroundRadiance(inDir);
+	// the MIS weight of the environment found by the BSDF sample, against light sampling
+	float weight = 1.0;
+	if (path.misPdf >= 0.0 && lightHeader.environment != CRT_NO_LIGHT) {
+		const uint table = path.misPdf > 0.0 ? 1u : 0u;
+		const float lightPdf = lightPmf(lightHeader.environment) * environmentPdf(table, inDir);
+		if (lightPdf > 0.0) {
+			weight = misWeight(path.misPdf, lightPdf, path.misExponent);
+		}
+	}
+
+	// the MIS weights view: the first vertex's direct light found by its BSDF sample, in red. The
+	// background seen straight from the camera belongs to neither technique
+	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS) {
+		if (path.bounce == 1u) {
+			radiance[path.radianceSlot].rgb += vec3(dot(path.throughput * backgroundRadiance(inDir) * weight, vec3(0.2126, 0.7152, 0.0722)), 0.0, 0.0);
+		}
+		return;
+	}
+
+	// added, not written: the path may have passed glowing surfaces on earlier bounces. The weight
+	// is applied only when it is not 1, so a strategy without light sampling adds exactly what it
+	// always did
+	vec3 contribution = path.throughput * backgroundRadiance(inDir);
+	if (weight != 1.0) {
+		contribution *= weight;
+	}
+	radiance[path.radianceSlot].rgb += contribution;
 }

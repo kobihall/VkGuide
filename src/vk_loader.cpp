@@ -265,7 +265,8 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 	LoadedGLTF& file = *scene.get();
 
 	//extensions fastgltf is not told about are skipped silently, and a file that *requires* one of
-	//them fails to load. KHR_lights_punctual is imported as data only (LoadedGLTF::lights)
+	//them fails to load. KHR_lights_punctual is read into LoadedGLTF::lights, which importGltf() turns
+	//into scene lights
 	fastgltf::Parser parser { fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_materials_emissive_strength };
 
 	constexpr auto gltfOptions = fastgltf::Options::DontRequireValidAssetMember | fastgltf::Options::AllowDouble | fastgltf::Options::LoadExternalBuffers;
@@ -589,7 +590,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 		file.lights.push_back(std::move(light));
 	}
 	if (!file.lights.empty()) {
-		fmt::println("loadGltf: {} punctual light(s) imported; the path tracer does not render them yet", file.lights.size());
+		fmt::println("loadGltf: {} punctual light(s) imported", file.lights.size());
 	}
 	return scene;
 }

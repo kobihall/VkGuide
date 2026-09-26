@@ -17,7 +17,7 @@
 //     05 Sample medium interaction not implemented
 //     06 Sample surface scattering per bounce, over the queue 02 filled with surface hits
 //     07 Sample medium scattering  not implemented
-//     08 Trace shadow rays         not implemented
+//     08 Trace shadow rays         per bounce, over the queue 06 filled with shadow rays
 //     09 Update film               once per frame, over the pixels
 //
 // ADDING A VARIANT. Write shaders/rt/NNVV_name.comp, then add one KernelVariant to the table in
@@ -74,6 +74,10 @@ enum class CrtBinding : uint32_t {
 	TlasNodes = 15,
 	InstanceMaterials = 16,
 	TraversalStats = 17,
+	Lights = 18,
+	ShadowRays = 19,
+	TriangleLights = 20,
+	EnvironmentSampling = 21,
 	Count
 };
 
@@ -99,6 +103,18 @@ enum class KernelSettings : uint32_t {
 	None,
 	// the BVH builder, leaf size and SAH costs, plus the build statistics
 	AccelerationStructure
+};
+
+// Which lights a kernel 06 variant sends shadow rays to - the strategy, as far as the rest of the
+// renderer needs to know it. The render guard prices a shadow ray like another traversal, and the
+// panels show the strategy by it
+enum class NextEvent : uint32_t {
+	// the variant samples no light
+	None,
+	// point, spot and directional lights only, which nothing else can reach
+	DeltaLights,
+	// every light in the light list
+	AllLights
 };
 
 // How a frame's cost is estimated for the render guard (RaytraceRenderer::estimatedWorkPerFrame).
@@ -133,6 +149,9 @@ struct KernelVariant {
 	// false for a slot the renderer does not implement yet: no pipeline is built, the scheduler
 	// skips it, and the panel greys it out. The shader file still exists as a stub
 	bool implemented { true };
+	// the slot's default: what a new scene selects, and what an unknown id in a scene file falls
+	// back to. Entry 0 when no variant of the slot claims it
+	bool isDefault { false };
 
 	KernelSettings settings { KernelSettings::None };
 	TraversalCost cost { TraversalCost::None };
@@ -140,6 +159,17 @@ struct KernelVariant {
 	// is what decides how they are packed - the layout is not separately choosable
 	bool requiresLayout { false };
 	BvhLayout layout { BvhLayout::Binary };
+
+	// kernel 06: which lights it samples (see NextEvent)
+	NextEvent nextEvent { NextEvent::None };
+
+	// A slot that is not chosen on its own. Each of its variants names the variant of `followsSlot`
+	// it goes with, and selecting that one selects this one: kernel 08 traces shadow rays with the
+	// traversal kernel 02 uses, since a CWBVH kernel cannot read binary nodes, so picking the 02
+	// variant picks its 08 partner. The panel shows such a slot as following, and a scene file's
+	// choice for it is re-derived on load rather than trusted
+	KernelSlot followsSlot { KernelSlot::Count };
+	const char* followsVariant { "" };
 };
 
 // 00, 01, ... as a two-character string, and the human name of the slot
@@ -169,12 +199,19 @@ struct KernelSelection {
 	bool operator==(const KernelSelection&) const = default;
 };
 
-// the first variant of every slot: the BVH traversal, BSDF scattering, no media
+// every slot's default variant: the binary BVH traversal, MIS with the power heuristic, no media
 KernelSelection defaultKernelSelection();
+
+// `selection` with every following slot (KernelVariant::followsSlot) set to the partner of what its
+// leader selects. Everything that changes a selection passes it through this, so a mismatched pair
+// never reaches the renderer
+KernelSelection reconcileKernelSelection(KernelSelection selection);
+// true for a slot whose variant follows another slot's rather than being chosen
+bool kernelSlotFollows(KernelSlot slot);
 
 // the selection as "<slot number>:<variant id>" pairs, for the scene file
 std::vector<std::pair<std::string, std::string>> kernelSelectionToIds(const KernelSelection& selection);
-// the inverse. Unknown slots and unknown ids are left at their default and reported in
+// the inverse, reconciled. Unknown slots and unknown ids are left at their default and reported in
 // `warnings` rather than failing the load - a scene saved by a build that had a strategy this
-// one does not must still open
+// one does not must still open. A following slot's id is not read at all: it is re-derived
 KernelSelection kernelSelectionFromIds(const std::vector<std::pair<std::string, std::string>>& ids, std::vector<std::string>* warnings);

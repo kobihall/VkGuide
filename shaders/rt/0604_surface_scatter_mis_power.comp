@@ -1,12 +1,13 @@
 #version 460
 
-// 06 Sample Surface Scattering - BSDF SAMPLING. A light counts only when the material's own sample
-// happens to hit it, at full weight; only the delta lights, which no BSDF sample can hit, get shadow
-// rays. The strategy's other half is kernels 03 and 04 taking whatever the path finds in full.
+// 06 Sample Surface Scattering - MULTIPLE IMPORTANCE SAMPLING, POWER HEURISTIC. A light sample and a
+// BSDF sample, each weighted by its share of the squared densities (PBR 4ed eq. 2.15, exponent 2),
+// which trusts the better technique more than the balance heuristic does.
 // The body is crt_surface.glsl; see there for what the three strategies share.
 
 #extension GL_GOOGLE_include_directive : require
-#define CRT_DIRECT_LIGHTING 0
+#define CRT_DIRECT_LIGHTING 2
+#define CRT_MIS_EXPONENT 2.0
 #include "include/crt_common.glsl"
 #include "include/crt_random.glsl"
 #include "equirect.glsl"

@@ -376,7 +376,8 @@ PackedBvh packBvh(Bvh bvh, const BvhBuildInput& input, BvhLayout layout)
 
 namespace {
 
-void testTriangles(std::span<const BvhTriangle> triangles, uint32_t first, uint32_t count, const BvhRay& ray, float& tMax, BvhHit& hit)
+// true when an any-hit ray has found its hit and the traversal can stop
+bool testTriangles(std::span<const BvhTriangle> triangles, uint32_t first, uint32_t count, const BvhRay& ray, float& tMax, BvhHit& hit)
 {
 	for (uint32_t i = first; i < first + count; i++) {
 		hit.trianglesTested++;
@@ -388,15 +389,19 @@ void testTriangles(std::span<const BvhTriangle> triangles, uint32_t first, uint3
 			hit.t = t;
 			hit.slot = i;
 			hit.barycentrics = barycentrics;
+			if (ray.anyHit) {
+				return true;
+			}
 		}
 	}
+	return false;
 }
 
 BvhHit traceBinary(const PackedBvh& bvh, std::span<const BvhTriangle> triangles, const BvhRay& ray)
 {
 	BvhHit hit;
 	float tMax = ray.tMax;
-	traverseBinaryBvh(bvh, ray, tMax, [&](uint32_t first, uint32_t count, float& t) { testTriangles(triangles, first, count, ray, t, hit); }, hit.nodesVisited, hit.stackOverflow);
+	traverseBinaryBvh(bvh, ray, tMax, [&](uint32_t first, uint32_t count, float& t) { return testTriangles(triangles, first, count, ray, t, hit); }, hit.nodesVisited, hit.stackOverflow);
 	return hit;
 }
 
@@ -494,7 +499,9 @@ BvhHit traceCwbvh(const PackedBvh& bvh, std::span<const BvhTriangle> triangles, 
 		while (triangleGroup.y != 0u) {
 			const uint32_t index = findMsb(triangleGroup.y);
 			triangleGroup.y &= ~(1u << index);
-			testTriangles(triangles, triangleGroup.x + index, 1, ray, tMax, hit);
+			if (testTriangles(triangles, triangleGroup.x + index, 1, ray, tMax, hit)) {
+				return hit;
+			}
 		}
 
 		if (nodeGroup.y <= 0x00FFFFFFu) {

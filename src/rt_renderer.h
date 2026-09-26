@@ -69,6 +69,9 @@ public:
 	// above. A BVH ray and a brute-force ray differ by orders of magnitude, so the guard has to
 	// ask the strategy rather than assume one
 	double sceneCostPerRay() const;
+	// the rays one path traces per bounce under the selected kernel 06 variant: 1, or 2 when it also
+	// sends a shadow ray - which it does only if the scene has a light of the kind it samples
+	double tracesPerBounce() const;
 	// roughly a second of the extend stage on the development GPU, which leaves the watchdog a wide
 	// margin. Deliberately not a setting: the override below is per-render and never saved
 	static constexpr double WORK_PER_FRAME_BUDGET = 5.0e8;
@@ -135,6 +138,12 @@ private:
 	void ensureSceneAccel(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	// the "Acceleration structure" section: builder and layout, and what they produced
 	void drawAccelSettings(VulkanEngine* engine);
+	// the "Direct lighting" combo over kernel 06's variants and what the light list holds
+	void drawLightingSettings(VulkanEngine* engine);
+	// the "Compare to reference" section: capture, clear, and the running render's error
+	void drawReference(VulkanEngine* engine);
+	// the environment as the light list sees it: the map's tables when the map is the background
+	EnvironmentLight environmentLight(VulkanEngine* engine) const;
 	void ensureDisplayImage(VulkanEngine* engine, uint32_t width, uint32_t height);
 	void destroyDisplayImage(VulkanEngine* engine);
 	void drawSettings(VulkanEngine* engine);
@@ -170,6 +179,8 @@ private:
 	std::shared_ptr<const RaytraceSceneAccel> m_sceneAccel;
 	std::vector<SceneMeshObject> m_sceneAccelObjects;
 	std::vector<SceneShape> m_sceneAccelShapes;
+	std::vector<SceneLight> m_sceneAccelLights;
+	EnvironmentLight m_sceneAccelEnvironment;
 	uint64_t m_sceneAccelModelRevision { 0 };
 	uint64_t m_sceneAccelRevision { 0 };
 	bool m_hasSceneAccel { false };

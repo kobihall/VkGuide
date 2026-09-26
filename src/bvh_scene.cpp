@@ -186,6 +186,7 @@ SceneHit traceScene(const Tlas& tlas, std::span<const Blas* const> blases, std::
 		local.direction = glm::mat3(worldToObject) * ray.direction;
 		local.tMin = ray.tMin;
 		local.tMax = t;
+		local.anyHit = ray.anyHit;
 
 		const SceneInstance& instance = instances[index];
 		if (instance.kind == SceneInstanceKind::Shape) {
@@ -218,14 +219,28 @@ SceneHit traceScene(const Tlas& tlas, std::span<const Blas* const> blases, std::
 	//the unbounded shapes first: a near plane hit then prunes the TLAS walk
 	for (const uint32_t index : tlas.unbounded) {
 		testInstance(index, tMax);
+		if (ray.anyHit && hit.hit) {
+			return hit;
+		}
 	}
 
 	auto testInstances = [&](uint32_t first, uint32_t count, float& t) {
 		for (uint32_t slot = first; slot < first + count; slot++) {
 			testInstance(tlas.bvh.primOrder[slot], t);
+			if (ray.anyHit && hit.hit) {
+				return true;
+			}
 		}
+		return false;
 	};
 
 	traverseBinaryBvh(tlas.bvh, ray, tMax, testInstances, hit.nodesVisited, hit.stackOverflow);
 	return hit;
+}
+
+bool occludedScene(const Tlas& tlas, std::span<const Blas* const> blases, std::span<const SceneInstance> instances, const BvhRay& ray)
+{
+	BvhRay shadow = ray;
+	shadow.anyHit = true;
+	return traceScene(tlas, blases, instances, shadow).hit;
 }

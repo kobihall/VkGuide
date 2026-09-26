@@ -21,6 +21,18 @@ if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
     target_compile_options(rt_bvh PRIVATE -O2)
 endif()
 
+# The light sampling next-event estimation uses, as plain C++: the line-for-line mirror of
+# shaders/rt/include/crt_light.glsl, built into the app (the environment map's tables, the light
+# list's geometry) and checked on its own by tests/light_test.cpp
+add_library(rt_light STATIC
+    light_sampling.cpp
+    light_sampling.h)
+target_include_directories(rt_light PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(rt_light PUBLIC rt_bvh glm)
+if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
+    target_compile_options(rt_light PRIVATE -O2)
+endif()
+
 # Add source to this project's executable.
 add_executable(vulkan_guide
     main.cpp
@@ -64,6 +76,8 @@ add_executable(vulkan_guide
     rt_gpu.h
     rt_accel.cpp
     rt_accel.h
+    rt_lights.cpp
+    rt_lights.h
     rt_kernels.cpp
     rt_kernels.h
     camera.cpp
@@ -74,7 +88,7 @@ set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGE
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide PUBLIC rt_bvh vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
+target_link_libraries(vulkan_guide PUBLIC rt_bvh rt_light vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
 
 target_link_libraries(vulkan_guide PRIVATE GPUOpen::VulkanMemoryAllocator)
 
