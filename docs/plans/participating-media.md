@@ -1,105 +1,133 @@
-# Kernels 05 and 07: participating media
+# Participating media
 
-*Not implemented. `shaders/rt/0501_sample_medium_interaction.comp` and `0701_sample_medium_scattering.comp` are stubs registered with `implemented = false`.*
+Everything the tracer renders is a surface: a ray crosses vacuum until it hits something. Participating media make the space between surfaces take part: fog, smoke, clouds, murky water, the inside of a glass of milk. A ray crossing one may be absorbed or scattered before it reaches the surface kernel 02 found. Kernels 05 and 07 of PBR 4ed Figure 15.2 exist for this and are stubs here. This plan fills them with pbrt-v4's volumetric path tracing: null-scattering delta tracking against majorants, ratio-tracked transmittance for shadow rays, chromatic media through spectral MIS, and homogeneous, grid and NanoVDB media. *Ray Tracing: The Next Week*'s constant-density medium is the homogeneous case.
 
-## 0. Scope
+*Not implemented. `shaders/rt/0501_sample_medium_interaction.comp` and `0701_sample_medium_scattering.comp` are registered with `implemented = false`. Depends on [thin-hit-record.md](thin-hit-record.md) and [material-system.md](material-system.md) (the `interface` material). Chromatic media use [spectral-rendering.md](spectral-rendering.md)'s lanes. This revision replaces the earlier draft of this file. Part of the [roadmap](roadmap.md).*
 
-Everything the tracer renders today is a surface: a ray travels through vacuum until it hits something. Participating media make the space between surfaces take part — fog, smoke, clouds, the inside of a candle or a glass of milk. A ray passing through one may be absorbed, or scattered into a new direction, before it ever reaches the surface kernel 02 found.
+## Decision already made
 
-These are the two kernels of the PBR wavefront figure that this renderer has no equivalent of at all, and they are the reason the figure's numbering has gaps here. They are documented together because kernel 07 is meaningless without kernel 05.
+The earlier draft weighed three ways for kernel 05 to overrule kernel 02's classification of a hit: (a) move all classification into kernel 05, (b) mark paths dead for kernel 06 to skip, or (c) have kernel 05 rebuild the surface queue. On 2026-09-26 the user chose pbrt-v4's arrangement instead:
 
-## 1. Where they sit
+- Kernel 02 classifies rays that travel through vacuum exactly as today, and sends rays that travel inside a medium to a medium queue with their hit.
+- Kernel 05 drains that queue, samples the medium up to the hit, and appends the paths that reach the surface to the normal escaped, emissive and surface queues itself.
 
-Kernel 05 runs **between** 02 and the surface kernels, and it can overrule 02's answer:
+Nothing is undone, scenes without media pay nothing, and kernel 05 runs only over the rays that need it.
 
-```
-02 Intersect Closest
-      |  writes hits[], and pushes onto escaped / emissive / surface
-      v
-05 Sample Medium Interaction          <-- only for rays inside a medium
-      |
-      +-- scattered before the surface --> 07 Sample Medium Scattering --> next ray queue
-      |                                          (and a shadow ray, with NEE)
-      `-- reached the surface ----------> 03 / 04 / 06 as usual, with the
-                                          throughput scaled by transmittance
-```
+## What the renderer does today
 
-`GpuPathTracer::record()` already dispatches slot 05 after 02 and before 06, with a barrier, and slot 07 after 06 — so the schedule needs no change. What it does need is for 05 to be able to **remove** a path from the surface queue after 02 put it there.
+- No medium concept exists in `rt_scene_types.h`, the scene file or the GPU structs.
+- Kernel 02 writes `hits[]` and appends each path to the escaped, emissive and surface queues (`crt_intersect.glsl`).
+- `PathState.pad0` and `pad1` are free; the roadmap gives `pad0` to this plan as `medium`.
+- `GpuInstance` (`src/rt_accel.h`) has two padding words.
+- Kernel 08 answers visible or blocked; it has no notion of partial transmittance.
 
-## 2. The hard part: 05 rewrites 02's classification
+## Design
 
-Every other kernel in this renderer only ever consumes a queue and appends to another. Kernel 05 is the first that has to *undo* an earlier kernel's decision, and it is the main design question this document exists to record.
+### The schedule
 
-Three options, in preference order:
-
-**(a) 05 owns the classification, 02 stops doing it.** Kernel 02 writes `hits[]` and nothing else; a new `CRT_QUEUE_INTERSECTED` holds everything it traced. 05 then drains that queue and pushes to escaped / emissive / surface / medium-scatter. Without media, a trivial pass-through variant of 05 does the classification exactly as `crt_intersect.glsl` does now.
-
-- Clean: one kernel owns the decision, and nothing has to be undone.
-- Costs a dispatch and a queue round trip per bounce even when there is no medium, which is the common case.
-- Needs a second variant of 02 (one that classifies, one that does not) or a `#define` — either way the traversal strategies stay untouched, since classification lives in `crt_intersect.glsl`, not in the strategy files.
-
-**(b) 05 marks paths dead and the surface kernels skip them.** A flag in `PathState`; kernel 06 checks it and returns early. Cheapest to build, but it puts divergent dead lanes back into 06, which is precisely what the wavefront split exists to prevent (PBR 4ed §15.1.2). It also makes 06's queue count wrong for the readback stats.
-
-**(c) 05 rebuilds the surface queue.** 05 drains `CRT_QUEUE_SURFACE` and re-appends the survivors to a second surface queue that 06 reads. Keeps 02 as it is, costs one more queue, and means 06's source queue depends on whether 05 ran — a conditional the scheduler would have to express.
-
-**Recommendation: (a)**, taken when media work actually starts. It is the most invasive but it is the only one that leaves the dataflow honest, and the pass-through variant keeps the no-media path a single extra dispatch that does almost nothing. (b) is the tempting shortcut and should be resisted for the same reason the 03/04/06 split was made in the first place.
-
-## 3. The rest of the work
-
-### 3.1 Scene model
-
-`rt_scene_types.h` has no medium concept. Add:
-
-```cpp
-struct SceneMedium {
-    glm::vec3 sigmaA { 0.f };   // absorption
-    glm::vec3 sigmaS { 0.f };   // scattering
-    float     g { 0.f };        // Henyey-Greenstein asymmetry
-    float     scale { 1.f };
-};
+```text
+02 intersect
+ ├─ ray in vacuum ──> escaped, emissive and surface queues, as today
+ └─ ray in a medium ─> queue 7 (MEDIUM_SAMPLE) ─> 05 sample the medium
+                                                  ├─ reached the surface ─> escaped, emissive and surface queues
+                                                  ├─ absorbed: the path ends
+                                                  └─ scattered ─> queue 8 (MEDIUM_SCATTER) ─> 07 ─> next ray, shadow ray
 ```
 
-Homogeneous only to begin with — a constant-density medium bounded by a shape instance. Heterogeneous (a voxel grid, delta tracking) is a much larger piece and should not be attempted first.
+The per-bounce order becomes `02 → 05 → {03, 04, 06, 07} → 08`. The classification code moves from `crt_intersect.glsl` into `crt_classify.glsl`, which kernels 02 and 05 share, so both append to the queues the same way, including the basic and complex surface queues of [material-system.md](material-system.md). Queues 7 and 8 are the roadmap's `CRT_QUEUE_MEDIUM_SAMPLE` and `CRT_QUEUE_MEDIUM_SCATTER`.
 
-A `SceneShape` gains an optional medium index, which is what makes "this box is fog" expressible. `scene_io.cpp` gains a `"media"` array and a per-shape `"medium"` field, at payload version 11 (10 added the punctual lights); older files simply have none.
+### Scene model
 
-### 3.2 Bindings
+- `SceneMedium` in a named list beside the materials: a kind, σa and σs as `SpectrumRef`s with a scale, a Henyey–Greenstein asymmetry `g`, and optional emission `Le` with a scale. Grid kinds add a file and a transform.
+- A `MediumInterface {inside, outside}` on every shape and mesh object, both "none" by default. `GpuInstance` packs the two indices into one of its padding words.
+- `SceneCamera.medium`, the medium the camera sits in. Kernel 00 starts paths in it.
+- The `interface` material type ([material-system.md](material-system.md)), pbrt's material-less surface: invisible, it only changes the medium a ray is in. Kernels 02 and 05 continue the ray through it into the next ray queue with the new medium, without a bounce. Such a crossing still takes one wavefront iteration, so a scene with interfaces records its bounce loop 4 iterations past the ray depth.
 
-Appended (never renumbered) to **both** `CrtBinding` in `src/rt_kernels.h` and `crt_common.glsl`:
+*Ray Tracing: The Next Week*'s `constant_medium` with density `d` and albedo `a` inside a boundary shape is a homogeneous medium with σs = d·a and σa = d·(1 − a), isotropic, inside a shape whose material is `interface`. Its "Cornell box with smoke" scene becomes a test scene.
 
-- `CrtBinding::Media = 22`. Light sampling took 18 to 21 (`Lights`, `ShadowRays`, `TriangleLights`, `EnvironmentSampling`).
-- `CrtBinding::MediumScatterQueue` — or reuse the generic queue set by adding `CRT_QUEUE_MEDIUM_SCATTER = 6` and raising `CRT_QUEUE_COUNT`, which is the cheaper option and consistent with how every other queue is allocated.
+### Media kinds
 
-`PathState` needs a current medium index: which medium the ray is travelling inside. It is 64 bytes since light sampling added its MIS record, and two of its words (`pad0`, `pad1`) are free for this.
+| Kind | Data | pbrt-v4 |
+|---|---|---|
+| Homogeneous | σa, σs, g, Le | `homogeneous` |
+| Density grid | a float grid scaling σa and σs; optional temperature grid for blackbody emission ([spectral-rendering.md](spectral-rendering.md)'s `Blackbody` kind) | `uniformgrid` |
+| RGB grid | per-voxel RGB σa, σs and Le, uplifted like textures | `rgbgrid` |
+| NanoVDB | a sparse `.nvdb` volume, read on the GPU through NanoVDB's portable `PNanoVDB.h`, which compiles as GLSL | `nanovdb` |
+| Cloud | pbrt's procedural cloud density, once `crt_noise.glsl` exists ([procedural-textures.md](procedural-textures.md)) | `cloud` |
 
-### 3.3 Kernel 05
+Medium records go into binding 22 (`Media`). Grids, NanoVDB buffers and majorant grids go into binding 33 (`MediumGrids`).
 
-Homogeneous majorant sampling: draw `t = -log(1 - ξ) / σ_t` along the ray. If `t < hit.t`, the path scatters in the volume — push to the medium-scatter queue. Otherwise it reaches the surface, and the throughput is scaled by the transmittance `exp(-σ_t · hit.t)`.
+### Kernel 05: sampling the medium
 
-### 3.4 Kernel 07
+pbrt's `SampleT_maj()` with null scattering (PBR 4ed §11.2.1 and §14.1.3): a majorant σmaj bounds σt along the ray. For a homogeneous medium it is σt itself; for a grid it comes from a 16³ majorant grid walked by a DDA (pbrt's `MajorantGrid` and `DDAMajorantIterator`). At each tentative collision, sampled by the majorant:
 
-Sample the Henyey-Greenstein phase function for a new direction, scale the throughput by the single-scattering albedo `σ_s / σ_t`, append the path to the next ray queue. Structurally it is kernel 06 with a phase function in place of a BSDF, and like 06 it should emit a shadow ray onto `CRT_QUEUE_SHADOW` and leave an MIS record in the path. `nextEvent()` in `shaders/rt/include/crt_surface.glsl` is the model to follow, with the phase function's value and density in place of `evalSurface()` and `pdfSurface()`.
+- Add emission `β σa Le / σmaj` if the medium emits, as pbrt does at every event.
+- Choose absorption, real scattering or null scattering with probabilities `σa/σmaj`, `σs/σmaj` and `σn/σmaj`.
+- Absorption ends the path. Scattering appends it to queue 8 with the scattering point. Null scattering continues.
+- Passing the hit distance appends the path to the surface queues through `crt_classify.glsl`, or to the escaped queue if there was no hit.
 
-### 3.5 Kernel 02 and transmittance through shadow rays
+The number of events is unbounded, so after the first two numbers, which come from `RaySamples.medium` ([sample-generation.md](sample-generation.md)), kernel 05 draws from the path's PCG stream. pbrt does the same with an RNG hashed from the ray.
 
-A shadow ray crossing a medium is attenuated rather than blocked. PBR handles this with a separate `IntersectShadowTr()` on its aggregate. Kernel 08 now has one variant per traversal, each following its kernel 02 partner (`docs/plans/completed/shadow-rays-nee.md` §9), so transmittance is a second body beside `crt_shadow.glsl` that accumulates transmittance instead of returning on the first hit, built once per traversal.
+### Chromatic media
 
-### 3.6 Cross-slot constraints
+When σt differs between lanes, sampling distances by one lane's majorant would starve the others. pbrt samples by the first (hero) wavelength and weighs with spectral MIS, carrying per-lane rescaled path probabilities `r_u` (unidirectional) and `r_l` (light sampling) that fold the distance-sampling densities into the MIS weights (PBR 4ed §14.2.2 and §14.2.3). This plan does the same:
 
-Selecting a 07 variant without a 05 variant renders nothing different, silently. The light sampling work did not build the `requires` mechanism its plan proposed. It built `KernelVariant::followsSlot` instead: a slot whose variant is derived from another slot's selection, never chosen on its own. Kernel 08 follows kernel 02 that way, and kernel 07 can follow kernel 05 the same way.
+- `MediumPathState {Spectrum r_u; Spectrum r_l;}` per path slot, 32 bytes at four lanes, in binding 49 (new). It is allocated only when the scene has a medium, and kernels 03, 04, 05, 06, 07 and 08 read it behind a uniform `CRT_FLAG_MEDIA` flag. Scenes without media keep the scalar MIS record.
+- In exact RGB the lanes are fixed channels, not random wavelengths, so kernel 05 picks the sampling channel uniformly at random per path. That keeps pbrt's one-sample MIS over lanes valid.
+- pbrt's formulation is the balance heuristic over techniques and lanes. In scenes with media, the MIS power variant therefore behaves as the balance one, and the panel says so.
 
-### 3.7 The render guard
+### Kernel 07: scattering in the medium
 
-A medium adds distance sampling per bounce but no traversal, so `sceneCostPerRay()` is roughly unchanged. Heterogeneous media with delta tracking would change that materially and should revisit it.
+The medium's counterpart of kernel 06, with a phase function in place of a BSDF:
 
-## 4. Order of work
+- Henyey–Greenstein sampling and evaluation (`crt_medium.glsl`), isotropic at `g = 0`.
+- Next-event estimation as in the MIS variants of kernel 06, with the phase function's value and density. A medium vertex has no normal, so it sets `CRT_PATH_PREV_IN_MEDIUM` in `PathState.flags`, and light shape sampling ([light-shape-sampling.md](light-shape-sampling.md)) and the BVH light sampler's receiver term use their normal-free forms.
+- The continuation ray goes to the next ray queue in the same medium, and the shadow ray records the medium it starts in (`ShadowRay.mediumAndGroup`, the roadmap's shadow-ray table).
 
-1. Decide (a)/(b)/(c) above and restructure the 02 → 05 hand-off. Verify with the pass-through variant that images are **bit-identical** to today's before any medium exists — the same check that validated the BVH-versus-linear swap.
-2. `SceneMedium`, the scene-file format, and the editor UI for attaching one to a shape.
-3. Kernel 05 homogeneous, absorption only (no 07): a fog box should darken what is behind it.
-4. Kernel 07 with Henyey-Greenstein.
-5. Shadow-ray transmittance through kernel 08.
+### Kernel 08: transmittance
 
-## 5. Sources
+A shadow ray through a medium is attenuated, not blocked. pbrt's `TraceTransmittance()` walks the segment: the closest hit along it is either an opaque surface (the ray is blocked) or an interface, in which case ratio tracking through the current medium up to the interface multiplies the contribution per lane by the transmittance estimate and updates `r_u` and `r_l`, and the walk continues in the next medium.
 
-PBR 4ed chapter 11 (volume scattering), §14.2 (volumetric path tracing) and §15.3.7 (the wavefront's media kernels); Shirley, *Ray Tracing: The Next Week* §9 (constant-density media, which is the level step 3 should aim at).
+The walk needs closest hits, not the any-hit `occluded()` query. Every kernel 02 traversal therefore gets a second kernel 08 partner (`0804` to `0806`, transmittance versions of `0801` to `0803`), built from `traceScene()` and the traversal's strategy file. `KernelVariant` gains `transmittancePartner`, which the schedule uses instead of the normal partner when the scene has a medium. The walk stops after 16 interfaces.
+
+### Later
+
+- Sampling volumetric emission directly: a medium's emission is found only by paths that pass through it (PBR 4ed exercise 14.4). Adding emissive grids to the light list with a distribution over their majorant cells (Villemin and Hery 2013; Simon et al. 2017) fixes that.
+- Equiangular sampling towards point lights in homogeneous media (Kulla and Fajardo 2012).
+- Product sampling of distances (Wrenninge and Villemin 2020, PBR 4ed exercise 14.5) with the reservoirs of [resampled-direct-lighting.md](resampled-direct-lighting.md).
+- Guiding in volumes ([path-guiding.md](path-guiding.md)).
+- Residual ratio tracking for transmittance (Novák et al. 2014, PBR 4ed exercise 14.2).
+
+## Registry, bindings and data
+
+- `0501_null_scattering` and `0701_phase_function` replace the `none` stubs. Kernel 05's domain becomes queue 7, and kernel 07's queue 8.
+- `0804` to `0806`, the transmittance partners; `KernelVariant::transmittancePartner`.
+- Bindings 22 `Media`, 33 `MediumGrids` and 49 `MediumPathState` (new; the roadmap's binding table gains it).
+- `PathState.medium`; `CRT_PATH_PREV_IN_MEDIUM` in `PathState.flags`; `ShadowRay.mediumAndGroup`; the medium interface in `GpuInstance`'s padding.
+- `crt_classify.glsl`, `crt_medium.glsl`; `rt_media` and `bin/media_test` (roadmap).
+- Scene file: `"media"`, per-object `"mediumInterface"`, and the camera's `"medium"`.
+- Panels: a Media folder in the Scene panel, inside and outside combos per object, and a medium combo per camera.
+
+## Verification
+
+- With no medium in the scene, every scene renders bit-identical. The classification moves into `crt_classify.glsl` unchanged, and queues 7 and 8 stay empty.
+- `bin/media_test`: Henyey–Greenstein samples match their pdf (χ²); ratio tracking's mean transmittance equals `exp(−σt d)` for a homogeneous segment and a quadrature for a grid; the majorant grid bounds the density in every cell.
+- Beer–Lambert: an emissive quad seen through an absorbing slab of thickness `d` is dimmed by `exp(−σa d)`, within noise.
+- White furnace ([verification-harness.md](verification-harness.md)): a sphere of non-absorbing medium (albedo 1) under a uniform white environment is invisible.
+- A density grid filled with one constant value renders the same image as the equivalent homogeneous medium.
+- A chromatic medium in exact RGB equals three monochromatic renders, one per channel.
+- *The Next Week*'s Cornell box with smoke renders with and without next-event estimation in kernel 07, and both converge to the same image.
+
+## Order of work
+
+1. `crt_classify.glsl`, queues 7 and 8, `PathState.medium` and the flag. Bit-identical.
+2. `SceneMedium`, medium interfaces, the `interface` material, the camera's medium, the scene file and the panels.
+3. Homogeneous media: kernel 05 with absorption, then kernel 07 without next-event estimation.
+4. Next-event estimation in kernel 07, and the transmittance partners of kernel 08.
+5. `MediumPathState` and chromatic media.
+6. Density and RGB grids with majorant grids, and emission.
+7. NanoVDB.
+
+## Sources
+
+PBR 4ed chapter 11 (§11.1 to §11.3, volume scattering processes, transmittance, null scattering and phase functions; §11.4, the medium interface, homogeneous media, the DDA majorant iterator, and uniform and RGB grid media), §14.1 and §14.2 (the equation of transfer with null scattering, sampling the majorant transmittance, `VolPathIntegrator`, chromatic media and spectral MIS, ratio tracking), §15.3 (the wavefront integrator's medium queues), chapter 14 "Further Reading" and exercises 14.2, 14.4 and 14.5; pbrt-v4 `src/pbrt/media.h` (including the cloud and NanoVDB media, which the book does not describe), `wavefront/media.cpp`, `wavefront/intersect.h`; Shirley, *Ray Tracing: The Next Week*, "Volumes"; Novák et al. 2014, *Residual ratio tracking for estimating attenuation in participating media*; Kulla and Fajardo 2012, *Importance sampling techniques for path tracing in participating media*; Villemin and Hery 2013, *Practical illumination from flames*; Simon et al. 2017, *Line integration for rendering heterogeneous emissive volumes*; Museth 2021, *NanoVDB: a GPU-friendly and portable VDB data structure for real-time rendering and simulation*.

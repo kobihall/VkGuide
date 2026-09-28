@@ -18,8 +18,6 @@ Planning-only, as of 2026-08-23. Nothing in `src/`/`shaders/` has been implement
 
 **BVH (implemented 2026-09-18, after (5)):** `docs/plans/completed/bvh-acceleration.md` — the two-level BVH that replaced (5)'s linear triangle scan: swappable builders and GPU node layouts, a CPU mirror + `bin/bvh_bench` for verification, measurements in its §9.
 
-**Outside the numbered sequence:** `docs/plans/adaptive-sampling.md` — a barebones plan for the sample-allocation policy that fills the per-pixel budget the wavefront path tracer (5) threads through from the start; depends on (5). And `docs/plans/depth-of-field.md` — a short, human-oriented to-do for wiring up the CPU raytracer's aperture and focus distance, which the user is implementing by hand. Depends only on (2) and can be done any time.
-
 ## Dependency graph
 
 ```
@@ -50,3 +48,9 @@ Planning-only, as of 2026-08-23. Nothing in `src/`/`shaders/` has been implement
 - **`src/camera.h`/`.cpp` are touched more subtly than a single doc's file table might suggest**: (1) gates WASD and mouse-look at the *callback* level in `vk_engine.cpp` (not inside `Camera` itself — `Camera` stays unaware of capture state), (5) is the first to actually add a field to `Camera` (`m_hasChanged`), and (3) extends (1)'s capture-mode check (again in `vk_engine.cpp`, not `Camera`) to also arbitrate against the gizmo. If you're implementing one of these and `camera.h/.cpp` looks untouched by your doc specifically, check whether the change actually belongs in `vk_engine.cpp` instead.
 - **CPU material → GPU material conversion is a small, slightly under-specified step**: `docs/plans/completed/raytracing-in-a-weekend.md`'s materials are separate C++ classes reached via virtual dispatch (`lambertian`/`metal`/`phong`/`dielectric`); `docs/plans/compute-pipeline-raytracing.md` §2.6 uploads a single flat tagged-union `GpuMaterial{type, ...}` SSBO from them but doesn't spell out the per-material-type conversion step. Not a contradiction, just something to write when you get there.
 - **A few stale cross-references were found and corrected during this audit** (mismatched file attributions for camera-input gating and the simulation plane's gizmo button, and two facts in `codebase-map.md` that had since been superseded by later findings — the ImGui docking-branch question and a real bug found in `createImage()`'s upload-size calculation). If you're reading a doc and something it says about another doc seems off, the other doc is more likely to be right — but check both against current source regardless.
+
+## The physically based rendering roadmap
+
+`docs/plans/roadmap.md`, written 2026-09-26, plans every feature of *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* that the path tracer lacks or implements weakly: 43 plans in `docs/plans/`. It records the decisions that shape them, the binding numbers, queues and struct fields they reserve, and the order to build them in. Each of those plans assumes the roadmap, `docs/raytracing-overview.md` and `docs/codebase-map.md` §8, and uses a shorter template than the seven docs above.
+
+The roadmap revised two earlier drafts to its template: `docs/plans/adaptive-sampling.md`, the policy that fills the per-pixel sample budget (5) threads through, and `docs/plans/participating-media.md`, kernels 05 and 07. The earlier `docs/plans/depth-of-field.md` was deleted on 2026-09-26: the GPU path tracer has had a thin-lens camera since (5), and `docs/plans/cameras.md` keeps its click-to-focus idea.
