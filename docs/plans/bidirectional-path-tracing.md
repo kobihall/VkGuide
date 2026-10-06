@@ -2,7 +2,7 @@
 
 A path tracer builds every path from the camera. Light that reaches the camera only through a small or specular route, such as a caustic under a glass sphere or a room lit through a narrow gap, is found by chance and converges slowly. Bidirectional methods also trace paths from the lights and connect the two. PBR 3rd edition chapter 16, whose material the 4th edition moved online, gives the path-space measurement equation, camera importance, light tracing and bidirectional path tracing (BDPT) with multiple importance sampling. On 2026-09-26 the user chose two BDPT integrators: pbrt 3's, for parity with pbrt, and a light-vertex-cache BDPT built for GPUs. This plan adds light tracing, which both share, and then both.
 
-*Not implemented. Depends on [integrator-layer.md](integrator-layer.md), [light-types.md](light-types.md) (emitted-ray sampling), [bsdf-library.md](bsdf-library.md) (importance transport), [cameras.md](cameras.md) and [film-and-reconstruction.md](film-and-reconstruction.md) (the splat hook). Part of the [roadmap](roadmap.md).*
+*Not implemented. Depends on [light-types.md](light-types.md) (emitted-ray sampling), [bsdf-library.md](bsdf-library.md) (importance transport), [cameras.md](cameras.md) and [film-and-reconstruction.md](film-and-reconstruction.md) (the splat hook). Part of the [roadmap](roadmap.md).*
 
 ## Decisions already made
 
@@ -29,16 +29,19 @@ On 2026-09-26 the user chose:
 
 ### Light tracing, `light`
 
-pbrt-v4's `LightPathIntegrator`: trace paths from the lights only, and at every vertex connect to the camera. Kernels in `shaders/rt/light/`, numbered like the path tracer's for familiarity:
+pbrt-v4's `LightPathIntegrator`: trace paths from the lights only, and at every vertex connect to the camera. It runs the path tracer's 01, 02 and 09 unchanged ([integrator-layer.md](completed/integrator-layer.md)) and adds four stages to the library, in the roadmap's range 11 to 18:
 
-| Slot | Kernel |
+| Stage | What it does |
 |---|---|
-| 00 | emit: pick a light by the light selection, sample an emitted ray, and connect the light's own point to the camera |
-| 01 | the sampler, shared with the path tracer |
-| 02 | intersect, one six-line file per traversal strategy |
-| 06 | at each surface vertex, connect to the camera (a shadow ray towards a lens point carrying the splat), then sample the adjoint BSDF and continue |
-| 08 | trace the camera connections and splat the unoccluded ones |
-| 09 | film resolve |
+| 01 | the sampler, the path tracer's |
+| 11 | emit light rays: pick a light by the light selection, sample an emitted ray, and connect the light's own point to the camera |
+| 02 | intersect closest, the path tracer's, with the selected traversal |
+| 12 | connect to the camera: at each surface vertex, a connection ray towards a lens point, carrying the splat |
+| 13 | scatter light paths: sample the adjoint BSDF and continue |
+| 14 | trace camera connections and splat the unoccluded ones; it traces, so the build compiles it for every traversal |
+| 09 | the film, the path tracer's, with the splat hook of [film-and-reconstruction.md](film-and-reconstruction.md) |
+
+Kernel 02 still sorts light-path hits onto the emissive queue, which `light` does not drain; a light path ignores the emitters it hits.
 
 Escaped light paths are dropped. Light tracing alone renders caustics seen directly well and everything else poorly, which makes it a reference for the caustic paths the path tracer struggles with, and the base of both BDPT integrators.
 
@@ -47,7 +50,9 @@ Escaped light paths are dropped. Light tracing alone renders caustics seen direc
 Davidovič et al. 2014, after van Antwerpen 2011 and the vertex-connection half of VCM (Georgiev et al. 2012):
 
 1. The light pass traces `N_L` light subpaths with the `light` kernels. Every non-specular vertex is stored in the light vertex cache: position, the thin hit record, the incoming direction, the throughput, the path length and two MIS partial sums. Connections to the camera splat as in light tracing.
-2. In the camera pass, camera paths run through the path tracer's kernels. At each non-specular vertex, besides the light sample, kernel 06 connects to K light vertices picked uniformly from the cache (the **Connections** setting, 1 to 4), weighing each by `cache size / (K N_L)`, one shadow ray each.
+2. In the camera pass, camera paths run through the path tracer's 00, 01, 02, 08 and 09. Two stages of `lvc`'s own replace 03, 04 and 06, because every contribution is weighed against more strategies than the path tracer's two:
+    - Stage 15, handle emitters, drains the escaped and emissive queues with the bodies of kernels 03 and 04, built with the recursive weights below.
+    - Stage 16, scatter and connect, drains the surface queue with `crt_surface.glsl` built with the same weights: the light sample goes to kernel 08 as today, and K light vertices picked uniformly from the cache (the **Connections** setting, 1 to 4) are connected inline with `occluded()`, each weighed by `cache size / (K N_L)`. It traces, so the build compiles it for every traversal.
 3. The MIS weights use Georgiev's recursive form (*Implementing vertex connection and merging*, as in SmallVCM): each subpath carries partial sums (`dVCM`, `dVC`) updated per bounce, so a connection's weight comes from the two vertices' partial sums, and no path is stored.
 
 `N_L` is sized so the cache fits a memory budget (256 MB by default): with 64-byte vertices and depth 8, about 500,000 light paths per frame. The cache goes into binding 52, `LightVertexCache` (new; the roadmap's binding table gains it). The camera paths' extra MIS state lives in the `lvc` integrator's own pool buffers, so the path tracer's `PathState` does not change.
@@ -59,8 +64,8 @@ Vertex merging, the other half of VCM, adds photon-mapping-style density estimat
 PBR 3ed §16.3, faithfully:
 
 - Each path slot traces a camera subpath and a light subpath, storing pbrt's `Vertex` records (type, throughput, the interaction, `delta`, `pdfFwd`, `pdfRev`) for both, up to the maximum depth, in binding 53, `BdptVertices` (new). At pbrt's default depth of 5 that is about 1.3 KB per slot, so the pool holds 256K slots (344 MB).
-- Both subpaths trace through the same queues, with a flag telling the scatter kernel which transport mode applies.
-- A connection kernel then evaluates every strategy (s, t): the unshadowed contribution, pbrt's MIS weight (`MISWeight()`, which walks both subpaths with the reverse densities, PBR 3ed §16.3.4), and the visibility. Visibility is tested inline with `occluded()`, one call per strategy, because queueing up to 20 shadow rays per slot would cost more memory than the vertices. The strategies with `t = 1` splat; the rest add to the slot's pixel.
+- Both subpaths trace through the path tracer's 01 and 02 and the same queues. The camera subpath starts at kernel 00 and the light subpath at `light`'s stage 11. Stage 17, store vertices and scatter, records each hit as a `Vertex` and samples the BSDF, in radiance or importance mode by a flag in the path state.
+- Stage 18, connect subpaths, then evaluates every strategy (s, t): the unshadowed contribution, pbrt's MIS weight (`MISWeight()`, which walks both subpaths with the reverse densities, PBR 3ed §16.3.4), and the visibility. Visibility is tested inline with `occluded()`, one call per strategy, because queueing up to 20 shadow rays per slot would cost more memory than the vertices. It traces, so the build compiles it for every traversal. The strategies with `t = 1` splat; the rest add to the slot's pixel.
 - Infinite lights follow PBR 3ed §16.3.5.
 - pbrt's debugging outputs `visualizestrategies` and `visualizeweights` become an option that writes each (s, t) strategy's weighted or unweighted contribution to its own auxiliary image, through the `ChannelSums` buffer of [aovs-and-image-output.md](aovs-and-image-output.md).
 
@@ -70,7 +75,8 @@ Both BDPT integrators start with surfaces only. pbrt 3's BDPT handles media, wit
 
 ## Registry, bindings and data
 
-- Integrators `light`, `lvc` and `bdpt` ([integrator-layer.md](integrator-layer.md)), with their kernels in `shaders/rt/light/`, `shaders/rt/lvc/` and `shaders/rt/bdpt/`.
+- Integrators `light`, `lvc` and `bdpt` ([integrator-layer.md](completed/integrator-layer.md)).
+- Stages 11 to 18 in the stage library, their shaders in `shaders/rt/` beside the path tracer's, since `lvc`, `bdpt` and `sppm` share them. Plumbing that nobody swaps, such as `lvc`'s cache compaction, goes in `shaders/rt/lvc/` as plain compute passes.
 - Bindings 42 `SplatAccumulation`, 52 `LightVertexCache` and 53 `BdptVertices`.
 - `We()`, `Pdf_We()` and `Sample_Wi()` in `crt_camera.glsl`, mirrored in C++.
 - Settings: **Connections** (`lvc`), **Light vertex cache budget**, **Visualize strategies** (`bdpt`).

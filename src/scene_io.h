@@ -16,7 +16,7 @@
 // something to branch on; every older version still loads - 1 (spheres only), 2 (no render
 // settings), 3 (no cameras), 4 (no mesh objects), 5 (spheres rather than geometry) and 6 (no
 // emissive material or background colour), 7 (no kernel selection or BVH settings), 8 (no pbr
-// material), 9 (no punctual lights).
+// material), 9 (no punctual lights), 10 (no integrator or traversal).
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -77,13 +77,13 @@ struct SceneDescription {
 	float environmentIntensity { 1.f };
 	// a solid colour replacing the environment map and the sky for missed rays; none by default
 	std::optional<glm::vec3> backgroundColor;
-	// version 8: which kernel variant runs in each slot of the wavefront, and how the BVH those
-	// kernels read is built. Saved by ID, never by index, so a build that registers its variants
+	// version 8: which kernel variant runs in each stage of the wavefront, and how the BVH those
+	// kernels read is built; version 11: the integrator and the traversal. Saved by ID, never by index, so a build that registers its variants
 	// in another order still opens the file, and one that has dropped a variant falls back to the
 	// slot's default with a warning rather than failing the load
 	KernelSelection kernels { defaultKernelSelection() };
 	AccelSettings accel { defaultAccelSettings() };
-	// what was skipped on load: an unknown kernel slot, an unknown variant, an unknown builder
+	// what was skipped on load: an unknown integrator, traversal, kernel slot, variant or builder
 	std::vector<std::string> kernelWarnings;
 };
 

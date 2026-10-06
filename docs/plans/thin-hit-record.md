@@ -2,7 +2,7 @@
 
 Kernel 02 resolves every hit into a 48-byte record: position, the shading normal after normal mapping, uv, material, face and light index. Materials, bump mapping, anisotropy, ray cones, error-bounded offsets and media all need more than that record holds: the geometric normal, a tangent frame, and position derivatives. This plan makes the hit record thin, as pbrt-v4 does, and adds one shared include that rebuilds the full surface interaction wherever it is needed.
 
-*Not implemented. Depends on [integrator-layer.md](integrator-layer.md). Part of the [roadmap](roadmap.md).*
+*Not implemented. No prerequisites. Part of the [roadmap](roadmap.md).*
 
 ## Decision already made
 

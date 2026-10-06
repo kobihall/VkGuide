@@ -1,97 +1,37 @@
 #pragma once
 
-// The GPU path tracer: a wavefront tracer over the scene's shapes and meshes, progressive, in
-// compute, with a two-level BVH (rt_accel.h, shaders/crt_bvh.glsl) finding every hit.
+// The GPU renderer: what every integrator shares, around the one integrator a render runs.
 //
-// One render is a snapshot taken at start() - camera, scene, settings, seed - refined by
-// samplesPerFrame samples per pixel every engine frame until maxSamples, or stop(). Per frame,
-// record() runs generate -> [extend -> shade] x rayDepth -> resolve over a path pool of
-// width x height x samplesPerFrame paths, with index queues compacted per bounce by a
-// workgroup-aggregated allocator whose header doubles as the indirect dispatch arguments, then
-// tonemaps the running mean into the renderer's display image. The design and its reasoning are
-// docs/plans/compute-pipeline-raytracing.md §2.7-§2.12; the buffer contracts are
-// shaders/crt_common.glsl, mirrored below with static_asserts.
+// One render is a snapshot taken at start() - camera, scene, settings, seed, kernel selection -
+// refined every engine frame until maxSamples, or stop(). Per frame, record() zeroes the traversal
+// counters, asks the active integrator's schedule (rt_schedule.h) to record its work, copies the
+// counters back, measures the reference and tonemaps the running mean into the renderer's display
+// image. The path tracer's schedule is rt_path_schedule.h; the design is
+// docs/plans/completed/integrator-layer.md, and the buffer contracts are
+// shaders/rt/include/crt_common.glsl, mirrored in rt_gpu_types.h.
 //
-// Everything Vulkan-facing is owned here: the ComputePasses (one extend build per BVH layout),
-// every pool buffer, the accumulation images, the scene upload (the BVH geometry device-local, the
-// per-edit instances and TLAS host-visible), timestamp queries and the queue-header and traversal
-// counter readbacks. The renderer owns the display image, the BVH settings and the panel.
+// Owned here: the scene upload (the BVH geometry device-local, the per-edit instances, TLAS and
+// light list host-visible), the environment's sampling tables, the film (the accumulation and
+// sample-count images), the reference and its error pass, timestamps, the traversal counters and
+// their readback, the wavefront pool every queue-based schedule runs on, the resource table every
+// descriptor set is written from, and the pipeline cache. The RaytraceRenderer owns the display
+// image, the BVH settings and the panels.
 
+#include <map>
+#include <memory>
+#include <span>
 #include <vector>
 
-#include <array>
-
 #include <rt_accel.h>
+#include <rt_gpu_types.h>
 #include <rt_kernels.h>
 #include <rt_scene_types.h>
+#include <rt_wavefront.h>
 #include <vk_compute.h>
 #include <vk_types.h>
 
 class VulkanEngine;
-
-// C++ mirrors of the std430 structs in shaders/crt_common.glsl. vec3 pads to 16 bytes there, so
-// every struct is laid out with an explicit fourth component. The acceleration structure's own
-// (GpuInstance, GpuTriangleAttributes, BvhTriangle) are in rt_accel.h and bvh_layout.h
-struct CrtMaterial {
-	// the base colour or emitted colour, by type
-	glm::vec3 albedo;
-	// fuzz | smoothness | ir | strength, by type; unused by pbr
-	float param;
-	uint32_t type;
-	// the texture layers (RaytraceTriMaterial), -1 for none. Always -1 for a shape, which has no
-	// uvs to sample with
-	int32_t albedoLayer;
-	// the traversal's alpha test threshold on the base colour texel, 0 for never cut out
-	float alphaCutoff;
-	float metallic;
-	// pbr: emission x strength, linear
-	glm::vec3 emission;
-	float roughness;
-	int32_t normalLayer;
-	int32_t metalRoughLayer;
-	int32_t emissiveLayer;
-	float normalScale;
-};
-static_assert(sizeof(CrtMaterial) == 64);
-
-struct CrtQueueHeader {
-	// == VkDispatchIndirectCommand, maintained by the allocator as ceil(rayCount / workgroup)
-	uint32_t groupCountX;
-	uint32_t groupCountY;
-	uint32_t groupCountZ;
-	uint32_t rayCount;
-};
-static_assert(sizeof(CrtQueueHeader) == 16);
-
-// the largest path pool the tracer allocates: width x height x samplesPerFrame is clamped to it
-// by lowering samplesPerFrame. 184 bytes per path (path state, hit, shadow ray, radiance, six
-// queue entries), so ~736 MB at the cap
-inline constexpr uint32_t CRT_MAX_POOL = 4u * 1024u * 1024u;
-inline constexpr int CRT_MAX_DEPTH = 16;
-inline constexpr int CRT_MAX_SAMPLES_PER_FRAME = 8;
-
-// one frame's traversal work, summed over the extend dispatches of every bounce, and apart from it
-// the shadow rays kernel 08 traced
-struct TraversalWork {
-	uint64_t rays { 0 };
-	uint64_t nodes { 0 };
-	uint64_t primitives { 0 };
-	// bounce 0 alone: camera rays, coherent and cheaper than the bounces after
-	uint64_t primaryRays { 0 };
-	uint64_t primaryNodes { 0 };
-	uint64_t primaryPrimitives { 0 };
-	// every bounce's shadow rays: an any-hit walk, which stops at the first thing in the way
-	uint64_t shadowRays { 0 };
-	uint64_t shadowNodes { 0 };
-	uint64_t shadowPrimitives { 0 };
-
-	double nodesPerRay() const { return rays > 0 ? (double)nodes / (double)rays : 0.0; }
-	double primitivesPerRay() const { return rays > 0 ? (double)primitives / (double)rays : 0.0; }
-	double primaryNodesPerRay() const { return primaryRays > 0 ? (double)primaryNodes / (double)primaryRays : 0.0; }
-	double primaryPrimitivesPerRay() const { return primaryRays > 0 ? (double)primaryPrimitives / (double)primaryRays : 0.0; }
-	double shadowNodesPerRay() const { return shadowRays > 0 ? (double)shadowNodes / (double)shadowRays : 0.0; }
-	double shadowPrimitivesPerRay() const { return shadowRays > 0 ? (double)shadowPrimitives / (double)shadowRays : 0.0; }
-};
+class IntegratorSchedule;
 
 // how far the running render is from the reference image, over every pixel and channel
 struct ReferenceError {
@@ -130,7 +70,7 @@ struct GpuRenderSnapshot {
 	RenderSettings settings;
 	// the seed actually used (settings.seed if fixed, otherwise drawn at Render)
 	uint32_t seed { 0 };
-	// which kernel variant runs in each slot of the wavefront. Taken at the click like
+	// the integrator, the traversal and the variant of every stage. Taken at the click like
 	// everything else here, so changing a strategy mid-render restarts rather than mixes
 	KernelSelection kernels;
 	// the environment map's sampling tables, when the map is the background and so a light kernel
@@ -146,15 +86,20 @@ struct GpuRenderSnapshot {
 	glm::vec3 backgroundColor { 0.f };
 };
 
-class GpuPathTracer {
+class GpuRenderer {
 public:
+	GpuRenderer();
+	~GpuRenderer();
+
+	// builds the default selection's pipelines, so the first render does not wait for them
 	void init(VulkanEngine* engine);
 	// requires the device to be idle
 	void destroy(VulkanEngine* engine);
 
-	// starts (or restarts) a render: reallocates the pool for the snapshot's size if it changed
-	// (after a device-wide wait - rare), uploads the scene into a fresh buffer, and arms the
-	// next record() to clear the accumulation. Cheap enough to call on every camera move
+	// starts (or restarts) a render: switches schedule if the integrator changed (after a
+	// device-wide wait - rare), reallocates the film if its size changed, uploads the scene, builds
+	// any pipeline the selection needs that is not built yet, and has the schedule size its own
+	// buffers. Cheap enough to call on every camera move
 	void start(VulkanEngine* engine, GpuRenderSnapshot snapshot);
 	// keeps the image
 	void stop();
@@ -163,21 +108,20 @@ public:
 	uint32_t samplesAccumulated() const { return m_samplesAccumulated; }
 	// 0 = unlimited
 	uint32_t maxSamples() const { return m_maxSamples; }
-	// the pool's actual samples per frame, after clamping to CRT_MAX_POOL
-	uint32_t samplesPerFrame() const { return m_samplesPerFrame; }
+	// what one frame of the active integrator adds, after its own clamping
+	uint32_t samplesPerFrame() const;
 	uint32_t width() const { return m_snapshot.width; }
 	uint32_t height() const { return m_snapshot.height; }
 
-	// once per frame inside draw(), after the fence wait: collects the timestamps and queue
-	// headers recorded FRAME_OVERLAP frames ago into this frame's slot
+	// once per frame inside draw(), after the fence wait: collects the timestamps and readbacks
+	// recorded FRAME_OVERLAP frames ago into this frame's slot
 	void beginFrame(VulkanEngine* engine);
 
-	// records this frame's tracing work into cmd while running, and whenever the accumulation
-	// holds a render, tonemaps it (scaled by `exposure`) into displayImage, which must be in
-	// VK_IMAGE_LAYOUT_GENERAL
+	// records this frame's work into cmd while running, and whenever the film holds a render,
+	// tonemaps it (scaled by `exposure`) into displayImage, which must be in VK_IMAGE_LAYOUT_GENERAL
 	void record(VkCommandBuffer cmd, VulkanEngine* engine, const AllocatedImage& displayImage, float exposure);
 
-	// the accumulation holds a render (running or finished) worth tonemapping
+	// the film holds a render (running or finished) worth tonemapping
 	bool hasImage() const { return m_hasImage; }
 
 	// GPU time of the last recorded frame of this render, and the running total; 0 when the
@@ -185,22 +129,22 @@ public:
 	bool hasTimestamps() const { return m_hasTimestamps; }
 	float lastFrameGpuMs() const { return m_lastFrameGpuMs; }
 	float totalGpuMs() const { return m_totalGpuMs; }
-	// what the BVH traversal did in the last frame read back: counted, not timed, so it compares
+	// what the traversal did in the last frame read back: counted, not timed, so it compares
 	// builders and layouts reliably even on a GPU whose clocks move (a throttling laptop)
-	const TraversalWork& traversalWork() const { return m_traversalWork; }
+	const TraversalWork& traversalWork() const;
 	// samples kernel 09 has left out of the mean as non-finite since the render started. Anything
 	// above zero means a kernel produced a NaN or an infinity, and the image is biased by the
 	// samples it lost
 	uint64_t droppedSamples() const { return m_droppedSamples; }
-	// paths alive entering each bounce, [0] being what generate spawned; the proof the
-	// compaction works. From the last frame read back
-	const std::vector<uint32_t>& pathsAlivePerBounce() const { return m_pathsAlive; }
-	// shadow rays kernel 06 emitted at each bounce, from the same frame
-	const std::vector<uint32_t>& shadowRaysPerBounce() const { return m_shadowRays; }
+	// the active schedule's per-bounce counts, from the last frame read back
+	std::span<const ScheduleCounter> counters() const;
+
+	// the schedule that records `id`, for pricing a render that has not started
+	const IntegratorSchedule& schedule(IntegratorId id) const;
 
 	// THE REFERENCE: a copy of the accumulation to measure later renders against, for comparing
 	// strategies at equal samples or equal time. Captured from the next frame recorded; kept until
-	// cleared or the tracer is destroyed, and measured only while the render is the same size
+	// cleared or the renderer is destroyed, and measured only while the render is the same size
 	void captureReference();
 	void clearReference(VulkanEngine* engine);
 	bool hasReference() const { return m_hasReference; }
@@ -212,92 +156,95 @@ public:
 	// switchable mid-render; written through the radiance slots, so it accumulates like radiance
 	CrtDebugView debugView { CrtDebugView::None };
 
+
+	// FOR SCHEDULES. The render being recorded, every binding's resource, and the wavefront pool
+	const GpuRenderSnapshot& snapshot() const { return m_snapshot; }
+	CrtResourceTable& resources() { return m_resources; }
+	WavefrontPool& wavefrontPool() { return m_pool; }
+	// the pipeline of `variant`, built on first use. A kernel that traces is built for the
+	// snapshot's traversal, with the traversal's bindings added to its own
+	const ComputePass& pass(VulkanEngine* engine, const KernelVariant& variant);
+	// one launch of `variant`: its descriptor set written from the resource table for exactly the
+	// bindings it declared (and its traversal's), its push constants, its size
+	void dispatch(VkCommandBuffer cmd, VulkanEngine* engine, const KernelVariant& variant, const CrtParams& params, const DispatchSize& size);
+
 private:
-	void allocatePool(VulkanEngine* engine, uint32_t width, uint32_t height, uint32_t samplesPerFrame);
-	void freePool(VulkanEngine* engine);
+	// the pipeline of `variant` for traversal `traversal` (ignored for a kernel that does not trace)
+	const ComputePass& pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal);
+	// builds every pipeline the selection's integrator runs
+	void preparePipelines(VulkanEngine* engine, const KernelSelection& selection);
+	// the bindings `variant` is built and written with under `traversal`: its own, plus the
+	// traversal's if it traces, each once
+	static std::vector<CrtBinding> bindingsOf(const KernelVariant& variant, uint32_t traversal);
+
+	// the accumulation and sample-count images, reallocated (after a device-wide wait) when the
+	// render's size changes
+	void ensureFilm(VulkanEngine* engine, uint32_t width, uint32_t height);
+	void freeFilm(VulkanEngine* engine);
 	void uploadScene(VulkanEngine* engine);
 	void uploadGeometry(VulkanEngine* engine, const std::shared_ptr<const RaytraceGeometry>& geometry);
 	// hands a buffer the frame in flight may still read to the deletion queue of that frame's slot
 	void retireBuffer(VulkanEngine* engine, AllocatedBuffer& buffer);
 	void collectReadbacks(VulkanEngine* engine, uint32_t slot);
-	// a set holding exactly the bindings `variant` declared, allocated from this frame's pool
-	VkDescriptorSet writeSet(VulkanEngine* engine, const KernelVariant& variant, const ComputePass& pass);
+	// the engine-owned images (the environment map, the texture array), which can change between
+	// frames, published each frame before anything is written
+	void publishEngineImages(VulkanEngine* engine);
 	// the environment map's tables, device-local, once per map; a stub when there is none
 	void uploadEnvironment(VulkanEngine* engine, const std::shared_ptr<const EnvironmentDistribution>& environment);
+	// the push constants every integrator shares: the camera, the scene's counts, the flags
+	CrtParams baseParams(VulkanEngine* engine) const;
 	// the reference copy and its error measurement, inside record()
 	void recordReference(VkCommandBuffer cmd, VulkanEngine* engine, uint32_t slot);
 
-	// one ComputePass per registered kernel variant, [slot][variant], built in init() from the
-	// registry. A variant with implemented = false gets a default-constructed entry that is never
-	// bound. Which of them actually runs is m_selection, set per render by the snapshot
-	std::array<std::vector<ComputePass>, (size_t)KernelSlot::Count> m_passes;
+	CrtResourceTable m_resources;
 
-	// the pool, sized for m_poolWidth x m_poolHeight x m_samplesPerFrame paths
-	uint32_t m_poolWidth { 0 };
-	uint32_t m_poolHeight { 0 };
-	uint32_t m_samplesPerFrame { 0 };
-	uint32_t m_poolSize { 0 };
-	bool m_hasPool { false };
-	bool m_hasImage { false };
-	AllocatedBuffer m_paths {};
-	AllocatedBuffer m_hits {};
-	AllocatedBuffer m_queues {};
-	AllocatedBuffer m_headers {};
-	AllocatedBuffer m_radiance {};
-	AllocatedBuffer m_sampleBudget {};
-	// one ShadowRay per pool slot, indexed like the hits by ray queue position
-	AllocatedBuffer m_shadowRayBuffer {};
+	// ONE PIPELINE PER (VARIANT, TRAVERSAL), built on first use: a kernel that traces is built once
+	// per traversal, one that does not once, keyed with NO_TRAVERSAL. The registry's entries never
+	// move, so a variant's address is its identity
+	static constexpr uint32_t NO_TRAVERSAL = ~0u;
+	std::map<std::pair<const KernelVariant*, uint32_t>, ComputePass> m_passes;
+
+	// one schedule per integrator, IntegratorId order, created in the constructor; the active one
+	// is the snapshot's integrator. m_scheduleActive says whether it has buffers to release
+	std::vector<std::unique_ptr<IntegratorSchedule>> m_schedules;
+	IntegratorId m_activeIntegrator { IntegratorId::Path };
+	bool m_scheduleActive { false };
+
+	WavefrontPool m_pool;
+
+	// the film, sized for the render
 	AllocatedImage m_accumulation {};
 	AllocatedImage m_sampleCount {};
+	bool m_hasFilm { false };
+	bool m_hasImage { false };
 
 	// the BLASes' nodes, triangles and shading attributes, device-local. Uploaded once per BLAS set
 	// - on a model import or a BVH settings change - through a staging buffer
 	AllocatedBuffer m_geometryBuffer {};
-	VkDeviceSize m_blasNodesOffset { 0 };
-	VkDeviceSize m_blasNodesBytes { 0 };
-	VkDeviceSize m_blasTrianglesOffset { 0 };
-	VkDeviceSize m_blasTrianglesBytes { 0 };
-	VkDeviceSize m_attributesOffset { 0 };
-	VkDeviceSize m_attributesBytes { 0 };
 	std::shared_ptr<const RaytraceGeometry> m_uploadedGeometry;
 
-	// the per-edit part: instances, materials, the per-surface material table and the TLAS.
-	// Small, host-visible, and replaced whenever the scene changes - a gizmo drag under
+	// the per-edit part: instances, materials, the per-surface material table, the TLAS and the
+	// light list. Small, host-visible, and replaced whenever the scene changes - a gizmo drag under
 	// restart-on-change rebuilds it every frame, which is why the geometry lives elsewhere
 	AllocatedBuffer m_sceneBuffer {};
-	VkDeviceSize m_instancesBytes { 0 };
-	VkDeviceSize m_materialsOffset { 0 };
-	VkDeviceSize m_materialsBytes { 0 };
-	VkDeviceSize m_instanceMaterialsOffset { 0 };
-	VkDeviceSize m_instanceMaterialsBytes { 0 };
-	VkDeviceSize m_tlasOffset { 0 };
-	VkDeviceSize m_tlasBytes { 0 };
-	// the light list: its header and records, and the per-triangle table of emitting meshes
-	VkDeviceSize m_lightsOffset { 0 };
-	VkDeviceSize m_lightsBytes { 0 };
-	VkDeviceSize m_triangleLightsOffset { 0 };
-	VkDeviceSize m_triangleLightsBytes { 0 };
 	uint32_t m_tlasInstanceCount { 0 };
 	uint32_t m_unboundedCount { 0 };
-	// every instance, TLAS or not: what a traversal-free kernel 02 variant scans
+	// every instance, TLAS or not: what the linear traversal scans
 	uint32_t m_instanceCount { 0 };
 	std::shared_ptr<const RaytraceSceneAccel> m_uploadedScene;
 
 	// the environment map's two sampling tables (crt_common.glsl EnvironmentSamplingBuffer),
 	// device-local, replaced only when another map is loaded
 	AllocatedBuffer m_environmentBuffer {};
-	VkDeviceSize m_environmentBytes { 0 };
 	std::shared_ptr<const EnvironmentDistribution> m_uploadedEnvironment;
 	bool m_hasEnvironmentBuffer { false };
 
-	// per frame slot: timestamps (two queries) and the queue headers after each producer
+	// per frame slot: timestamps (two queries)
 	VkQueryPool m_queryPool { VK_NULL_HANDLE };
 	bool m_hasTimestamps { false };
 	float m_timestampPeriodNs { 1.f };
-	AllocatedBuffer m_headerReadback {};
-	// which render, and how many headers, each slot's readback belongs to; 0 = nothing recorded
+	// which render each slot's readback belongs to; 0 = nothing recorded
 	std::vector<uint64_t> m_slotRender;
-	std::vector<uint32_t> m_slotHeaderCount;
 
 	GpuRenderSnapshot m_snapshot;
 	uint64_t m_renderSerial { 0 };
@@ -307,15 +254,14 @@ private:
 	uint32_t m_maxSamples { 0 };
 	float m_lastFrameGpuMs { 0.f };
 	float m_totalGpuMs { 0.f };
-	TraversalWork m_traversalWork;
 	uint64_t m_droppedSamples { 0 };
+	// the traversal counters every kernel that traces adds to, zeroed per frame, and their readback
+	// per frame slot
 	AllocatedBuffer m_traversalStats {};
 	AllocatedBuffer m_statsReadback {};
-	std::vector<uint32_t> m_pathsAlive;
-	std::vector<uint32_t> m_shadowRays;
 
 	// the reference image, its error pass and the per-workgroup partial sums that pass writes, read
-	// back per frame slot like the headers
+	// back per frame slot
 	AllocatedImage m_reference {};
 	bool m_hasReference { false };
 	bool m_capturePending { false };

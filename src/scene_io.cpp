@@ -33,7 +33,11 @@ namespace {
 //   "position", "color", "intensity" in the tracer's radiometric units, and by type an
 //   "orientation", a "range", an "innerCone" and "outerCone" in degrees, and the "model" it was
 //   imported with. Absent in an older file, whose models' own lights their imports recreate
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 10;
+//11: adds "integrator", the light transport algorithm's key, and "traversal", the id of the
+//   traversal every kernel that traces is built for. Kernels 02 and 08 become one variant each,
+//   "closest" and "occlusion"; an older file's kernel 02 entry names the traversal instead, and its
+//   kernel 08 entry is not read
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 11;
 
 //---------------------------------------------------------------- writing
 
@@ -158,21 +162,22 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"unlimitedSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"restartOnChange":{}}})",
 		r.width, r.height, r.matchViewport, r.antialiasing, r.maxSamples, r.unlimitedSamples, r.rayDepth, r.useFixedSeed, r.seed, r.samplesPerFrame, r.russianRoulette, r.minBouncesBeforeRoulette, r.restartOnChange);
 
-	//version 8: the wavefront kernel selection, by slot number and variant id. Ids rather than
-	//indices so that registering a new variant, or reordering the table, never silently changes
-	//what an existing scene renders with
+	//version 11: the integrator and the traversal; version 8: the variant of each stage, by slot
+	//number and variant id. Ids rather than indices so that registering a new variant, or reordering
+	//a table, never silently changes what an existing scene renders with
+	const KernelSelectionIds kernelIds = kernelSelectionToIds(scene.kernels);
+	json += fmt::format(R"(,"integrator":{},"traversal":{})", jsonString(kernelIds.integrator), jsonString(kernelIds.traversal));
 	json += R"(,"kernels":{)";
-	const std::vector<std::pair<std::string, std::string>> kernelIds = kernelSelectionToIds(scene.kernels);
-	for (size_t i = 0; i < kernelIds.size(); i++) {
+	for (size_t i = 0; i < kernelIds.stages.size(); i++) {
 		if (i > 0) {
 			json += ',';
 		}
-		json += fmt::format("{}:{}", jsonString(kernelIds[i].first), jsonString(kernelIds[i].second));
+		json += fmt::format("{}:{}", jsonString(kernelIds.stages[i].first), jsonString(kernelIds.stages[i].second));
 	}
 	json += '}';
 
 	//version 8: how the BVH is built. The node layout is deliberately NOT here - it follows
-	//whichever kernel 02 variant is selected, so saving it would let a file contradict itself
+	//whichever traversal is selected, so saving it would let a file contradict itself
 	const BvhBuildOptions& a = scene.accel.blas;
 	json += fmt::format(R"(,"accel":{{"builder":{},"maxLeafSize":{},"binCount":{},"traversalCost":{},"intersectionCost":{},"spatialAlpha":{},"spatialBudget":{},"maxDepth":{}}})",
 		jsonString(bvhBuilderName(a.builder)), a.maxLeafSize, a.binCount,
@@ -461,27 +466,42 @@ void readOptionalFloat(JsonElement element, float& out)
 	}
 }
 
-//version 8: {"00":"thin_lens","02":"bvh_binary",...}. Unknown slots and unknown variant ids are
-//collected as warnings and left at their default rather than failing the load - a scene saved by
-//a build with a strategy this one does not have must still open
-void readKernelSelection(JsonElement element, SceneDescription& scene)
+//version 8: "kernels", {"00":"thin_lens","02":"closest",...}; version 11: "integrator" and
+//"traversal" beside it. Before version 11 the traversal was kernel 02's variant ("02":"bvh_binary")
+//and kernel 08 followed it, so an older file's "02" is read as the traversal and its "08" not at
+//all. Unknown keys and ids are collected as warnings and left at their default rather than failing
+//the load - a scene saved by a build with a strategy this one does not have must still open
+void readKernelSelection(simdjson::dom::object& root, int64_t version, SceneDescription& scene)
 {
-	simdjson::dom::object object;
-	if (element.get_object().get(object) != simdjson::SUCCESS) {
-		return;
+	KernelSelectionIds ids;
+	std::string_view text;
+	if (root["integrator"].get_string().get(text) == simdjson::SUCCESS) {
+		ids.integrator = std::string(text);
 	}
-	std::vector<std::pair<std::string, std::string>> ids;
-	for (auto field : object) {
-		std::string_view value;
-		if (field.value.get_string().get(value) != simdjson::SUCCESS) {
-			continue;
+	if (root["traversal"].get_string().get(text) == simdjson::SUCCESS) {
+		ids.traversal = std::string(text);
+	}
+	simdjson::dom::object object;
+	if (root["kernels"].get_object().get(object) == simdjson::SUCCESS) {
+		for (auto field : object) {
+			std::string_view value;
+			if (field.value.get_string().get(value) != simdjson::SUCCESS) {
+				continue;
+			}
+			if (version < 11 && field.key == "02") {
+				ids.traversal = std::string(value);
+				continue;
+			}
+			if (version < 11 && field.key == "08") {
+				continue;
+			}
+			ids.stages.emplace_back(std::string(field.key), std::string(value));
 		}
-		ids.emplace_back(std::string(field.key), std::string(value));
 	}
 	scene.kernels = kernelSelectionFromIds(ids, &scene.kernelWarnings);
 }
 
-//version 8. The layout is not read: it follows the selected kernel 02 variant, and
+//version 8. The layout is not read: it follows the selected traversal, and
 //RaytraceRenderer::setAccelSettings() puts it right
 void readAccelSettings(JsonElement element, AccelSettings& out)
 {
@@ -779,7 +799,7 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 
 	//version 8: the kernel selection and the BVH settings. Both optional; an older file simply
 	//keeps the defaults SceneDescription was constructed with
-	readKernelSelection(root["kernels"], ctx.scene);
+	readKernelSelection(root, version, ctx.scene);
 	readAccelSettings(root["accel"], ctx.scene.accel);
 
 	//version 4: cameras. An older file gets one default camera, carrying the lens settings its

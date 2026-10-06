@@ -2,7 +2,7 @@
 
 Every random number the tracer uses comes from one PCG stream per path, drawn lazily inside kernels 00 and 06. Independent samples are PBR's baseline: they have the worst possible discrepancy, spread their error as white noise, and converge at O(1/n) in MSE. Stratified and low-discrepancy samples converge faster, and blue-noise variants distribute the remaining error in a way the eye forgives. Slot 01 was created for exactly this (its header comment says so); this plan fills it.
 
-*Not implemented. Depends on [integrator-layer.md](integrator-layer.md). Part of the [roadmap](roadmap.md).*
+*Not implemented. No prerequisites. Part of the [roadmap](roadmap.md).*
 
 ## Decisions already made
 

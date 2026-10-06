@@ -43,11 +43,11 @@ Private and shared-memory stacks visit the same nodes in the same order, so thei
 
 With a fixed number of bounce iterations, the last bounces run on nearly empty queues. Novák et al. 2010 (PBR 4ed exercise 15.5) refill the freed pool slots with new camera paths at the start of each iteration:
 
-- A regenerating kernel 00 variant fills free slots, taking the next (pixel, sample) pair from a global counter, so every pixel still receives its samples in order and the samplers see the sample indices they expect.
-- A path writes its radiance to the film when it terminates, not at the end of the frame, so kernel 09 runs per iteration over a queue of finished paths.
+- Stage 24, regenerate paths, fills free slots, taking the next (pixel, sample) pair from a global counter, so every pixel still receives its samples in order and the samplers see the sample indices they expect.
+- A path writes its radiance to the film when it terminates, not at the end of the frame, so stage 25, film per finished path, runs per iteration over a queue of finished paths.
 - The frame ends when the sample budget is spent and every queue is empty. The CPU reads the counters back with the usual `FRAME_OVERLAP` latency and stops recording iterations.
 
-This is a second path-tracer schedule under [integrator-layer.md](integrator-layer.md)'s `IntegratorSchedule` interface, selected by a setting, since it changes how frames are recorded, not what any kernel computes. Russian roulette's splitting ([russian-roulette.md](russian-roulette.md)) needs its free slots.
+This is a second integrator, `path_regen`, with its own schedule under the `IntegratorSchedule` interface of [integrator-layer.md](completed/integrator-layer.md), since it changes how frames are recorded rather than what the stages compute. It runs the path tracer's 01 to 08 and stages 24 and 25 in place of 00 and 09. Those two are stages rather than variants of 00 and 09, because the path tracer's schedule cannot run them. Russian roulette's splitting ([russian-roulette.md](russian-roulette.md)) needs its free slots.
 
 ### Pool sizing and passes
 

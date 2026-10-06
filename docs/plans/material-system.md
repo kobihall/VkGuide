@@ -111,7 +111,7 @@ Every material type is flagged basic or complex in its traits. Complex means a l
 - Every kernel 06 variant is compiled twice, with `#define CRT_MATERIAL_CLASS 0` or `1`. The basic build's type switch contains only basic types, so it allocates registers for them alone.
 - The schedule dispatches kernel 06 once per queue, basic first. Both dispatches read the same path state and write disjoint entries, so the order changes no result.
 
-The registry gains one field: `KernelVariant::perMaterialClass`, set on every kernel 06 variant, and later on kernel 07 variants that evaluate surface materials. `GpuRenderer` builds a pipeline per class for such variants, and `KernelDomain::SurfaceQueues` dispatches it over both queues.
+The registry gains one field: `KernelVariant::perMaterialClass`, set on every kernel 06 variant, and later on kernel 07 variants that evaluate surface materials. CMake compiles such a kernel once per class through the same permutation step that builds a tracing kernel once per traversal ([integrator-layer.md](completed/integrator-layer.md)), `GpuRenderer`'s pipeline cache gains the class in its key, and `KernelDomain::SurfaceQueues` dispatches the variant over both queues.
 
 ### The Materials window
 

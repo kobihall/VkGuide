@@ -2,7 +2,7 @@
 
 This roadmap covers every feature that *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* describe and this renderer lacks or implements weakly. Each feature has a plan in `docs/plans/`. This file records the decisions that shape all of them and reserves the resources they share, so that the plans can be implemented in any order without colliding.
 
-*Written 2026-09-26. Nothing here is implemented. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
+*Written 2026-09-26. The integrator layer was implemented on 2026-09-29; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
 
 ## Decisions that shape every plan
 
@@ -12,7 +12,7 @@ The user settled these on 2026-09-26. Treat them as fixed.
 |---|---|
 | Spectral transport | A runtime mode. Kernels are compiled in families by lane count (`CRT_LANES` 4, 8, 16, 32). Exact RGB stays available and bit-identical. New scenes default to exact RGB. |
 | Spectral data | Materials and lights are authored once as `SpectrumRef`s, and each spectral representation evaluates or projects them. |
-| Bidirectional methods | An integrator layer: the registry is keyed by integrator, the path tracer keeps slots 00 to 09, and BDPT, SPPM and MLT get their own kernel sets. |
+| Bidirectional methods | An integrator layer over one shared stage library (revised and implemented 2026-09-29, when the user asked for as much code as possible to serve every integrator). The path tracer's stages keep 00 to 09. BDPT, SPPM and MLT run those stages where they can and add their own to the library. The traversal is a scene-wide choice that every tracing kernel is built for. |
 | BDPT and MLT | Two BDPT integrators: a light-vertex-cache BDPT and pbrt 3's. MLT is primary-sample-space MLT over the path tracer first, then multiplexed MLT over pbrt 3's BDPT. |
 | Hit record | Thin: kernel 02 writes instance, primitive, barycentrics and t. `crt_interaction.glsl` rebuilds the surface interaction where it is needed. |
 | Material dispatch | Two surface queues, basic and complex, with kernel 06 compiled once per class. |
@@ -46,7 +46,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 
 | Plan | What it adds |
 |---|---|
-| [integrator-layer.md](integrator-layer.md) | Registry keyed by integrator, per-integrator schedules and shader directories |
+| [integrator-layer.md](completed/integrator-layer.md) | Implemented: the stage library every integrator shares, traversals built into every tracing kernel, per-integrator schedules |
 | [thin-hit-record.md](thin-hit-record.md) | 24-byte hit record, `SurfaceInteraction` reconstruction, geometric normal, shading frame, shape uvs |
 | [robust-intersections.md](robust-intersections.md) | Error-bounded spawn points, watertight triangles, conservative box tests, camera-relative rendering space |
 | [verification-harness.md](verification-harness.md) | BSDF chi-square tests, white furnace scenes, image metrics, convergence curves |
@@ -106,7 +106,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 | [curves-and-hair.md](curves-and-hair.md) | Bézier curve primitive and the hair BSDF |
 | [subdivision-and-displacement.md](subdivision-and-displacement.md) | Loop subdivision and displacement by tessellation |
 | [csg.md](csg.md) | Constructive solid geometry over analytic shapes |
-| [alternative-accelerators.md](alternative-accelerators.md) | Kd-tree and grid traversals as kernel 02/08 pairs, LBVH builder |
+| [alternative-accelerators.md](alternative-accelerators.md) | Kd-tree and grid traversals, LBVH builder |
 | [gpu-bvh-construction.md](gpu-bvh-construction.md) | LBVH and PLOC built on the GPU, TLAS refit |
 
 ### Other integrators
@@ -138,9 +138,8 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 ## Dependencies between the plans
 
 ```text
-integrator-layer ─┬─> bidirectional-path-tracing ─┬─> photon-mapping
-                  │                               └─> metropolis-light-transport
-                  └─> (every other plan registers its kernels through it)
+integrator-layer (implemented) ─> bidirectional-path-tracing ─┬─> photon-mapping
+                                                              └─> metropolis-light-transport
 
 thin-hit-record ─┬─> robust-intersections
                  ├─> material-system ─┬─> bsdf-library ─┬─> layered-materials
@@ -169,7 +168,7 @@ alternative-accelerators ─> gpu-bvh-construction ─> wavefront-performance (r
 verification-harness ─> (every plan with a new BSDF, sampler or light)
 ```
 
-The foundations change the shape of every kernel, so do them first and in this order: integrator layer, thin hit record, robust intersections, verification harness, material system, spectral rendering, sample generation, film. After that the groups are largely independent.
+The foundations change the shape of every kernel, so do them first and in this order (the integrator layer is done): thin hit record, robust intersections, verification harness, material system, spectral rendering, sample generation, film. After that the groups are largely independent.
 
 ## Rules every plan follows
 
@@ -271,13 +270,25 @@ The radiance slot (`radiance[]`, binding 4) stays a `vec4` in film space in ever
 
 `GpuInstance` grows to 128 bytes in [thin-hit-record.md](thin-hit-record.md). Its two padding words are taken: the first by the medium interface (participating-media), the second by the index into `MotionTransforms` (motion-blur). For a shape, `attributeBase`, which only meshes use, indexes `ShapeParams` (analytic-shapes). A plan that needs more per-instance data adds a buffer indexed by instance rather than growing the struct.
 
-### New kernel slots and directories
+### New stages, traversals and directories
 
-The path tracer's slots keep today's numbers 00 to 09, because scene files name them. A new stage of the path tracer appends a slot after them: [subsurface-scattering.md](subsurface-scattering.md) adds slot 10, and `MAX_SLOTS` ([integrator-layer.md](integrator-layer.md)) is 16. New integrators number their own slots from 00 in their own directories (integrator-layer). New variants of path-tracer slots take the next free `VV` in their slot; the plans name the ones they add, and a clash between two plans is settled by whichever lands second taking the next number.
+The stage library ([integrator-layer.md](completed/integrator-layer.md)) is shared by every integrator, and its numbers are scene-file keys, so they are append-only. 00 to 09 are the path tracer's. A variant of a stage must work in every integrator that runs the stage; a kernel that only makes sense inside one integrator is a new stage. These numbers are reserved so that plans landing in any order never collide:
+
+| Stages | Plan |
+|---|---|
+| 10 | subsurface-scattering: sample subsurface |
+| 11 to 18 | bidirectional-path-tracing: 11 emit light rays, 12 connect to the camera, 13 scatter light paths, 14 trace camera connections, 15 handle emitters (`lvc`), 16 scatter and connect (`lvc`), 17 store vertices and scatter (`bdpt`), 18 connect subpaths (`bdpt`) |
+| 19 to 21 | photon-mapping: 19 store visible points, 20 deposit photons, 21 update photon statistics |
+| 22, 23 | metropolis-light-transport: 22 mutate chain samples, 23 accept and splat |
+| 24, 25 | wavefront-performance: 24 regenerate paths, 25 film per finished path |
+
+New variants of a stage take the next free `VV` in it; the plans name the ones they add, and a clash between two plans is settled by whichever lands second taking the next number.
+
+A kernel that traces includes `crt_trace.glsl` and is compiled once per traversal, so a new traversal is a strategy file, a `crt_trace.glsl` branch, and a `TraversalVariant` row, never a `.comp` file. Stage shaders stay in `shaders/rt/`, since integrators share them. A schedule's fixed passes, which nobody swaps (grid builds, prefix sums, bootstraps), are plain compute passes in `shaders/rt/<integrator>/`.
 
 ### Scene files
 
-Every plan that saves something bumps `SCENE_FILE_FORMAT_VERSION` by one when it lands (10 today), and every older version keeps loading. Plans do not pre-assign version numbers, since the order they land in is unknown.
+Every plan that saves something bumps `SCENE_FILE_FORMAT_VERSION` by one when it lands (11 today), and every older version keeps loading. Plans do not pre-assign version numbers, since the order they land in is unknown.
 
 ### CPU mirrors and tests
 

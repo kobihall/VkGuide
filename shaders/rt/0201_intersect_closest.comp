@@ -1,0 +1,9 @@
+#version 460
+
+// 02 Intersect Closest. The body is crt_intersect.glsl; the search is whichever traversal this
+// build is for (crt_trace.glsl), since the build compiles this file once per traversal.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_trace.glsl"
+#include "include/crt_intersect.glsl"

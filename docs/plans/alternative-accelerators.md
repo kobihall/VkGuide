@@ -1,13 +1,13 @@
 # Alternative acceleration structures
 
-The tracer has one family of acceleration structure, the two-level BVH, with four CPU builders (midpoint, binned SAH, sweep SAH, SBVH) and two GPU layouts (binary Aila–Laine and 8-wide CWBVH). pbrt covers more: the 3rd edition's kd-tree accelerator (§4.4) and linear BVHs built from Morton codes (§4.3.3, HLBVH), pbrt-v4's equal-counts split, and in its further reading uniform grids and treelet restructuring. This plan adds the kd-tree and the uniform grid as kernel 02 and 08 variant pairs, and the missing BVH builders, so each can be compared against the others with the same tools.
+The tracer has one family of acceleration structure, the two-level BVH, with four CPU builders (midpoint, binned SAH, sweep SAH, SBVH) and two GPU layouts (binary Aila–Laine and 8-wide CWBVH). pbrt covers more: the 3rd edition's kd-tree accelerator (§4.4) and linear BVHs built from Morton codes (§4.3.3, HLBVH), pbrt-v4's equal-counts split, and in its further reading uniform grids and treelet restructuring. This plan adds the kd-tree and the uniform grid as traversals, and the missing BVH builders, so each can be compared against the others with the same tools.
 
 *Not implemented. No plan dependencies; follows the BVH library's existing conventions. [gpu-bvh-construction.md](gpu-bvh-construction.md) builds on the LBVH builder here. Part of the [roadmap](roadmap.md).*
 
 ## What the renderer does today
 
 - `rt_bvh` (`src/bvh*.{h,cpp}`) is Vulkan-free and always built at `-O2`. `BvhBuilder` selects the builder; `BvhLayout` packs the tree for the GPU; `bvh_scene` holds the CPU traversals that mirror `crt_bvh.glsl` line for line.
-- A traversal strategy is one include file supplying `traceScene()` and `occluded()` behind the contract in `crt_traverse.glsl`, plus a six-line kernel 02 `.comp` and its kernel 08 partner. The node layout follows the selected kernel 02 variant.
+- A traversal is one strategy file supplying `traceScene()` and `occluded()` behind the contract in `crt_traverse.glsl`, one branch in `crt_trace.glsl`, and one `TraversalVariant` row ([integrator-layer.md](completed/integrator-layer.md)). The build compiles every kernel that traces once per traversal, so a new traversal reaches kernels 02 and 08 and every tracing stage of every integrator with no `.comp` file of its own. The node layout follows the selected traversal.
 - `bin/bvh_bench` checks every builder and layout against brute force and reports the work counters: nodes visited and primitives tested. The laptop throttles, so these counters, not timings, are the comparison (memory note, BVH state).
 
 ## Design
@@ -35,11 +35,10 @@ A grid per BLAS with `3 ∛N` cells along the longest axis, after pbrt 2's heuri
 
 ### Strategies
 
-Each structure is a strategy under the traversal contract:
+Each structure is a traversal:
 
-- `crt_kdtree.glsl` and `crt_grid.glsl`, with kernel 02 variants `0204_intersect_closest_kdtree` and `0205_intersect_closest_grid`.
-- Their kernel 08 partners take the next free numbers in slot 08, after the transmittance partners of [participating-media.md](participating-media.md), and so do their own transmittance partners.
-- `BvhLayout` gains `KdTree` and `Grid`, packed by `bvh_layout.cpp`; the BLAS cache builds whichever the selected kernel 02 variant needs.
+- `crt_kdtree.glsl` and `crt_grid.glsl`, reached through `CRT_TRAVERSAL_KDTREE` and `CRT_TRAVERSAL_GRID` branches in `crt_trace.glsl`, with `TraversalVariant` rows `kdtree` and `grid`. Kernel 02, kernel 08, the transmittance variant of kernel 08 from [participating-media.md](participating-media.md), and every other tracing stage are then built for them by CMake.
+- `BvhLayout` gains `KdTree` and `Grid`, packed by `bvh_layout.cpp`; the BLAS cache builds whichever the selected traversal needs.
 - `bvh_scene` gains the CPU mirrors, line for line, as for the BVH layouts.
 
 Every strategy maintains the traversal counters (`g_nodesVisited`, `g_primitivesTested`), which the contract requires. For a grid, a visited cell counts as a node.
@@ -48,7 +47,7 @@ Every strategy maintains the traversal counters (`g_nodesVisited`, `g_primitives
 
 - `BvhBuilder`: `EqualCounts`, `Lbvh`, and a **Restructure treelets** option on every builder.
 - `BvhLayout`: `KdTree`, `Grid`. Both pack into the existing node binding: the kd-tree's nodes and leaf index lists, and the grid's header, cell offsets and index array.
-- Kernel 02 variants `0204` and `0205`, their kernel 08 partners, and their transmittance partners.
+- Traversals `kdtree` and `grid`: two strategy files, two `crt_trace.glsl` branches, two `TraversalVariant` rows.
 - `bvh_bench` flags: `--builders` gains `e` and `l`, `--layouts` gains `k` and `g`, `--restructure`.
 
 ## Verification
@@ -62,7 +61,7 @@ Every strategy maintains the traversal counters (`g_nodesVisited`, `g_primitives
 
 1. Equal counts, then LBVH and HLBVH, with `bvh_bench`.
 2. Treelet restructuring.
-3. The kd-tree: build, CPU traversal, `bvh_bench`, then the GLSL strategy and its kernel pair.
+3. The kd-tree: build, CPU traversal, `bvh_bench`, then the GLSL strategy and its traversal row.
 4. The uniform grid, the same way.
 
 ## Sources

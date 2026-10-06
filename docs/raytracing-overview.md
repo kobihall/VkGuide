@@ -30,9 +30,7 @@ The numbering is figure 15.2 of PBR 4ed, and **the directory listing is the diag
 shaders/rt/
   0001_generate_camera_rays.comp        00
   0101_generate_samples.comp            01
-  0201_intersect_closest_bvh.comp       02  ┐
-  0202_intersect_closest_cwbvh.comp     02  ├ interchangeable
-  0203_intersect_closest_linear.comp    02  ┘
+  0201_intersect_closest.comp           02  built once per traversal
   0301_handle_escaped.comp              03
   0401_handle_emissive.comp             04
   0501_sample_medium_interaction.comp   05  (stub)
@@ -41,9 +39,7 @@ shaders/rt/
   0603_surface_scatter_mis_balance.comp 06  │ strategies
   0604_surface_scatter_mis_power.comp   06  ┘
   0701_sample_medium_scattering.comp    07  (stub)
-  0801_trace_shadow_rays_bvh.comp       08  ┐
-  0802_trace_shadow_rays_cwbvh.comp     08  │ one per kernel 02 traversal
-  0803_trace_shadow_rays_linear.comp    08  ┘
+  0801_trace_shadow_rays.comp           08  built once per traversal
   0901_update_film.comp                 09
   include/                              the shared pieces
 ```
@@ -58,7 +54,7 @@ shaders/rt/
 | 03 | Handle escaped | the escaped queue | A ray that left the scene collects the background, weighted by the path's MIS record, and ends |
 | 04 | Handle emissive geometry | the emissive queue | A ray that hit a light collects its emission, weighted by the path's MIS record, and ends. A ray that hit a glowing `pbr` surface collects its emission and carries on through 06 |
 | 06 | Sample surface scattering | the surface queue | Samples a light and pushes a shadow ray towards it, then scatters the path off the surface, or ends it |
-| 08 | Trace shadow rays | the shadow queue | Traces each shadow ray with kernel 02's traversal and adds its light where nothing is in the way |
+| 08 | Trace shadow rays | the shadow queue | Traces each shadow ray with the selected traversal and adds its light where nothing is in the way |
 | 09 | Update film | the pixels, once per frame | Folds the frame's samples into the running mean |
 
 Then a shared tonemap pass turns the accumulated linear HDR into the rgba8 image the "Raytraced Output" window shows.
@@ -86,78 +82,67 @@ The workgroup-aggregated allocator that appends to a queue keeps `groupCountX` e
 
 ## 3. Swapping strategies
 
-This is the part built for experimenting. **Which shader runs in each slot is chosen at runtime**, from the *Windows → Raytracer Shaders* panel, and saved with the scene. Kernel 06's direct-lighting strategy also has a combo of its own, **Raytrace Render** → **Direct lighting** → **Strategy**.
+This is the part built for experimenting. **Which shader runs in each slot, and which traversal every tracing kernel walks, are chosen at runtime**, from the **Windows** → **Raytracer Shaders** panel, and saved with the scene. Kernel 06's direct-lighting strategy also has a combo of its own, **Raytrace Render** → **Direct lighting** → **Strategy**.
 
 ### What exists today
 
-| Slot | Variants |
+| Choice | Options |
 |---|---|
-| 02 Intersect closest | **BVH (binary)** · BVH (compressed 8-wide) · Linear scan (brute force) |
+| Integrator | **Path tracing** |
+| Traversal | **BVH (binary)** · BVH (compressed 8-wide) · Linear scan (brute force) |
 | 06 Sample surface scattering | BSDF sampling · Light sampling · MIS (balance heuristic) · **MIS (power heuristic)** |
-| 08 Trace shadow rays | one partner per 02 variant, selected with it |
-| everything else | one each |
+| every other slot | one each |
 
 The defaults are in bold. Section 5 covers the kernel 06 strategies.
 
-The three traversal variants are the demonstration. They are three files of *six lines each*:
+The traversals are the demonstration. A traversal is not a kernel variant but a scene-wide choice, like pbrt's aggregate: kernel 02 and kernel 08 are each one file, and the build compiles each once per traversal. Kernel 02 is:
 
 ```glsl
 #version 460
-// 02 Intersect Closest - brute force, no acceleration structure.
+// 02 Intersect Closest.
 #extension GL_GOOGLE_include_directive : require
 #include "include/crt_common.glsl"
-#include "include/crt_linear.glsl"      // <-- the only line that differs
+#include "include/crt_trace.glsl"       // <-- whichever traversal this build is for
 #include "include/crt_intersect.glsl"
 ```
 
-Because everything that is *not* the search — classifying the hit, interpolating normals and uvs, writing the record, pushing the queues — lives in `crt_intersect.glsl`, shared unchanged. A strategy file supplies exactly two functions, the closest-hit search kernel 02 runs and the any-hit test kernel 08 runs for shadow rays:
+`crt_trace.glsl` holds one branch per traversal, each including its strategy file, and CMake compiles every `.comp` that includes it once per branch, to `0201_intersect_closest.comp.bvh_binary.spv` and its siblings. Everything that is *not* the search — classifying the hit, interpolating normals and uvs, writing the record, pushing the queues — lives in `crt_intersect.glsl`, shared unchanged. A strategy file supplies exactly two functions, the closest-hit search kernel 02 runs and the any-hit test kernel 08 runs for shadow rays:
 
 ```glsl
 bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit);
 bool occluded(vec3 origin, vec3 direction, float tMin, float tMax);
 ```
 
-That is the contract, and it is written down in `include/crt_traverse.glsl` along with the pieces every strategy needs regardless: the hit record, the work counters, the triangle test with its alpha cutouts, the object-space transform. Each strategy's kernel 08 variant is the same six lines with `crt_shadow.glsl` in place of `crt_intersect.glsl`.
+That is the contract, and it is written down in `include/crt_traverse.glsl` along with the pieces every strategy needs regardless: the hit record, the work counters, the triangle test with its alpha cutouts, the object-space transform. Kernel 08 is the same file with `crt_shadow.glsl` in place of `crt_intersect.glsl`, and any later kernel that traces, in any integrator, is built the same way.
 
 **Verified:** with a fixed seed, all three strategies produce *bit-identical* images, shadow rays included. Swapping the traversal changes the cost and nothing else.
 
 ### Adding a fourth traversal
 
 1. Write `include/crt_yourthing.glsl` defining `traceScene()` and `occluded()`.
-2. Write `shaders/rt/0204_intersect_closest_yourthing.comp`, the six lines above with your include, and `shaders/rt/0804_trace_shadow_rays_yourthing.comp`, the same with `crt_shadow.glsl` last.
-3. Add two entries to the table in `src/rt_kernels.cpp`: the kernel 02 variant, and a kernel 08 variant that follows it.
+2. Add a branch to `include/crt_trace.glsl`:
 
-Step 3 is where you say which buffers each reads:
+    ```glsl
+    #elif defined(CRT_TRAVERSAL_YOURTHING)
+    #include "crt_yourthing.glsl"
+    ```
 
-```cpp
-v.push_back(KernelVariant {
-    .slot = KernelSlot::IntersectClosest,
-    .id = "yourthing",                 // saved in the scene file; never rename it
-    .name = "Your thing",              // what the panel shows
-    .description = "...",
-    .shader = "rt/0204_intersect_closest_yourthing.comp",
-    .domain = KernelDomain::CurrentRayQueue,
-    .bindings = intersectBindings(true),
-    .settings = KernelSettings::AccelerationStructure,
-    .cost = TraversalCost::Acceleration,
-    .requiresLayout = true,
-    .layout = BvhLayout::Binary,       // the node layout it reads
-});
-v.push_back(KernelVariant {
-    .slot = KernelSlot::TraceShadowRays,
-    .id = "yourthing",
-    .name = "Your thing",
-    .description = "...",
-    .shader = "rt/0804_trace_shadow_rays_yourthing.comp",
-    .domain = KernelDomain::FixedQueue,
-    .queue = QUEUE_SHADOW,
-    .bindings = shadowBindings(true),
-    .followsSlot = KernelSlot::IntersectClosest,
-    .followsVariant = "yourthing",    // the kernel 02 variant it goes with
-});
-```
+3. Add a row to the traversal table in `src/rt_kernels.cpp`, whose `id` is the branch's name in lower case:
 
-There is no fourth step. The pipelines, their descriptor set layouts, descriptor writes and dispatches, the panel rows and the scene-file entries all come from those two entries, and selecting the new traversal selects its kernel 08 partner.
+    ```cpp
+    {
+        .id = "yourthing",                 // saved in the scene file; never rename it
+        .name = "Your thing",              // what the panel shows
+        .description = "...",
+        .bindings = traversalBindings(true),  // what the search reads
+        .settings = KernelSettings::AccelerationStructure,
+        .cost = TraversalCost::Acceleration,
+        .requiresLayout = true,
+        .layout = BvhLayout::Binary,       // the node layout it reads
+    },
+    ```
+
+There is no `.comp` file to write. The next build compiles kernel 02, kernel 08, and every other kernel that traces for the new traversal, and the pipelines, their descriptor set layouts, descriptor writes and dispatches, the panel's **Traversal** combo and the scene-file entry all come from that row.
 
 ### How the "which quantities are read and written" problem is solved
 
@@ -169,41 +154,45 @@ The awkward part of swapping shaders is that different shaders want different re
 
 The binding *numbers* are global and fixed, declared once in `include/crt_common.glsl` and mirrored by the `CrtBinding` enum. But a variant declares which **subset** it uses, and gets a descriptor set layout containing only those numbers. Vulkan is perfectly happy with a layout that has gaps, so:
 
-- The BVH variants list `BlasNodes` and `TlasNodes`. The linear variant doesn't — it never binds them at all.
+- The BVH traversals list `BlasNodes` and `TlasNodes`, which a tracing kernel gets on top of its own list. The linear traversal doesn't, so its builds never bind them at all.
 - Kernel 09 binds three things. A BVH kernel 02 binds fourteen.
 - No existing shader's binding numbers changed, so `crt_common.glsl` stayed a single shared include.
 
-Adding a resource is: a new number at the *end* of `crt_common.glsl`, a matching enumerator at the end of `CrtBinding`, a `case` in `GpuPathTracer::writeSet()`, and listing it in the variants that want it. Existing numbers never move.
+Adding a resource is: a new number at the *end* of `crt_common.glsl`, a matching enumerator at the end of `CrtBinding`, one call by whatever owns the resource to publish it into the renderer's resource table, and listing it in the variants that want it. Existing numbers never move.
 
 ### UI that follows the selection
 
-A variant declares what settings it implies, and the rest of the app reacts without knowing which variants those are:
+A variant or a traversal declares what settings it implies, and the rest of the app reacts without knowing which ones those are:
 
-- The **"Acceleration structure" section** of the Raytrace Render panel only appears when the selected 02 variant declares `KernelSettings::AccelerationStructure`. Pick the linear scan and the whole section disappears, because none of it means anything any more.
-- The **node layout is no longer a separate control**. It was a combo next to the builder; it is now implied by which 02 variant you picked, because a CWBVH kernel simply cannot read binary nodes. Picking the variant rebuilds the BLASes in the layout it needs.
-- The **render guard** asks the variant what a ray costs. A BVH ray costs the scene's SAH — tens of steps. A brute-force ray costs *every primitive in the scene*. That is four orders of magnitude, and it is exactly the case the guard exists for: a linear scan over a million triangles at 1080p once hung this machine's GPU hard enough to take the window server down. Switch kernel 02 to linear on a large model and the Render button refuses until you lower the resolution or accept it explicitly. Kernel 06's variant adds whether each bounce also traces a shadow ray, which doubles the price whenever the scene has a light for it to aim at.
+- The **"Acceleration structure" section** of the Raytrace Render panel only appears when the selected traversal declares `KernelSettings::AccelerationStructure`. Pick the linear scan and the whole section disappears, because none of it means anything any more.
+- The **node layout is no longer a separate control**. It was a combo next to the builder; it is now implied by which traversal you picked, because a CWBVH kernel simply cannot read binary nodes. Picking the traversal rebuilds the BLASes in the layout it needs.
+- The **render guard** asks the traversal what a ray costs, and the integrator how many rays a frame traces. A BVH ray costs the scene's SAH — tens of steps. A brute-force ray costs *every primitive in the scene*. That is four orders of magnitude, and it is exactly the case the guard exists for: a linear scan over a million triangles at 1080p once hung this machine's GPU hard enough to take the window server down. Switch the traversal to linear on a large model and the Render button refuses until you lower the resolution or accept it explicitly. Kernel 06's variant adds whether each bounce also traces a shadow ray, which doubles the price whenever the scene has a light for it to aim at.
 
-### When a slot follows another
+### Integrators
 
-Kernel 08 traces shadow rays through the same acceleration structure kernel 02 walks, and a CWBVH kernel cannot read binary nodes. So kernel 08 is never chosen on its own: each of its variants names the kernel 02 variant it goes with (`KernelVariant::followsSlot`), and selecting a traversal selects its partner. The **Raytracer Shaders** window shows the row as following kernel 02, and a scene file's entry for it is not read.
+The kernels are a library of stages that every light transport algorithm draws on, not the property of the path tracer. An integrator is a list of the stages it runs and a schedule that records them; today there is one, **Path tracing**, which runs 00 to 09. Light tracing, bidirectional path tracing, photon mapping, and Metropolis light transport are planned as further integrators that run the path tracer's stages where they can (the sampler, kernel 02, kernel 08, and the film) and add stages of their own to the library. One rule keeps a stage shareable: a variant of it must work in every integrator that runs it. `docs/plans/completed/integrator-layer.md` has the design; the **Integrator** combo heads both the Raytrace Render panel's settings and the Raytracer Shaders window.
 
 ### What gets saved
 
-Payload version 8 of the scene file adds the kernel selection and the BVH build settings. A file saved today with the linear scan selected holds:
+Payload version 8 of the scene file adds the kernel selection and the BVH build settings, and version 11 the integrator and the traversal. A file saved today with the linear scan selected holds:
 
 ```json
-"kernels": {"00":"thin_lens","01":"pcg_hash","02":"linear","03":"background",
-            "04":"direct","05":"none","06":"mis_power","07":"none","08":"linear","09":"running_mean"},
+"integrator": "path",
+"traversal": "linear",
+"kernels": {"00":"thin_lens","01":"pcg_hash","02":"closest","03":"background",
+            "04":"direct","05":"none","06":"mis_power","07":"none","08":"occlusion","09":"running_mean"},
 "accel":   {"builder":"spatial splits (SBVH)","maxLeafSize":4, ...}
 ```
 
 Saved **by id, never by index**, so adding or reordering variants later can't silently change what an old scene renders with. An id this build doesn't recognise falls back to the slot's default and reports it as a load warning rather than failing. Every older scene file still opens. A file without `"kernels"` opens with today's defaults, so kernel 06 renders it with MIS (power heuristic) rather than the BSDF sampling the file was made with.
 
-The node layout is deliberately *not* saved — it follows the kernel 02 selection, so storing it would let a file contradict itself.
+The node layout is deliberately *not* saved — it follows the traversal, so storing it would let a file contradict itself.
 
 Payload version 9 adds the `pbr` material type (`"albedo"`, `"metallic"`, `"roughness"`, `"emission"`, `"strength"`), which shapes and mesh overrides can use as well as glTF models.
 
 Payload version 10 adds `"lights"`, the punctual lights, each with its `"type"` (point, spot, directional), `"position"`, `"color"` and `"intensity"`, and as its type needs an `"orientation"`, a `"range"`, an `"innerCone"` and an `"outerCone"` in degrees. A light imported with a glTF model also records the `"model"` it came from.
+
+Payload version 11 adds `"integrator"` and `"traversal"`. Kernels 02 and 08 become one variant each, `"closest"` and `"occlusion"`. An older file named its traversal as kernel 02's variant, and opens with that as its traversal.
 
 ---
 
@@ -397,8 +386,11 @@ The MIS weights view works differently: it lets a path run to its second vertex 
 |---|---|
 | The kernels | `shaders/rt/NNVV_*.comp` |
 | Shared shader code | `shaders/rt/include/` |
-| The registry — **edit this to add a variant** | `src/rt_kernels.h/.cpp` |
-| Pipelines, buffers, the schedule | `src/rt_gpu.h/.cpp` |
+| The registry — **edit this to add a variant, a traversal or an integrator** | `src/rt_kernels.h/.cpp` |
+| Which traversal a tracing kernel is built for | `shaders/rt/include/crt_trace.glsl` |
+| What every integrator shares: uploads, film, reference, pipelines, resource table | `src/rt_gpu.h/.cpp`, `src/rt_gpu_types.h` |
+| The per-path buffers | `src/rt_wavefront.h/.cpp` |
+| The path tracer's schedule, and the interface a schedule implements | `src/rt_path_schedule.h/.cpp`, `src/rt_schedule.h/.cpp` |
 | The panels, the render guard, BVH and direct-lighting settings, the reference readout | `src/rt_renderer.h/.cpp` |
 | BVH building and layouts (no Vulkan) | `src/bvh*.{h,cpp}`, `src/rt_accel.*` |
 | Scene persistence | `src/scene_io.*` |
@@ -406,10 +398,10 @@ The MIS weights view works differently: it lets a path run to its second vertex 
 | Kernel 06's and 08's bodies | `shaders/rt/include/crt_surface.glsl`, `crt_shadow.glsl` |
 | The light list | `src/rt_lights.h/.cpp`, built by `buildSceneAccel()` in `src/rt_accel.cpp` |
 | Light sampling on the CPU (no Vulkan) | `src/light_sampling.h/.cpp` |
-| The reference error | `shaders/image_error.comp`, `GpuPathTracer::recordReference()` |
+| The reference error | `shaders/image_error.comp`, `GpuRenderer::recordReference()` |
 | CPU verification harnesses | `tests/bvh_bench.cpp` → `bin/bvh_bench`, `tests/light_test.cpp` → `bin/light_test` |
 
-Several shader files are mirrored line for line by CPU code: `crt_bvh.glsl` ↔ `bvh_layout.h`, `crt_shape.glsl` ↔ `shape.cpp`, `crt_light.glsl` ↔ `light_sampling.cpp`, and the `crt_common.glsl` structs ↔ `rt_gpu.h`, `rt_accel.h` and `rt_lights.h`, with `static_assert`s on size. Each carries a "change both together" note in its header. `bvh_bench` checks the traversal side against brute force and `light_test` checks every light's sample densities, which transitively validates the GLSL.
+Several shader files are mirrored line for line by CPU code: `crt_bvh.glsl` ↔ `bvh_layout.h`, `crt_shape.glsl` ↔ `shape.cpp`, `crt_light.glsl` ↔ `light_sampling.cpp`, and the `crt_common.glsl` structs ↔ `rt_gpu_types.h`, `rt_accel.h` and `rt_lights.h`, with `static_assert`s on size. Each carries a "change both together" note in its header. `bvh_bench` checks the traversal side against brute force and `light_test` checks every light's sample densities, which transitively validates the GLSL.
 
 ---
 

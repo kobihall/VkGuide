@@ -2,7 +2,7 @@
 
 Every render uses Ray Tracing in One Weekend's thin-lens perspective camera: a pinhole when the aperture is zero, a uniformly sampled disk otherwise. pbrt adds orthographic and spherical projections, a realistic camera that traces rays through the lens elements of real lens prescriptions, and the camera measurement equation that gives a lens its vignetting. Its exercises add aperture shapes for bokeh and tilt-shift film planes. This plan adds all of them as camera data, and absorbs the one useful idea of the deleted `depth-of-field.md`, focusing by clicking.
 
-*Not implemented. Depends on [integrator-layer.md](integrator-layer.md) and [sample-generation.md](sample-generation.md). Part of the [roadmap](roadmap.md).*
+*Not implemented. Depends on [sample-generation.md](sample-generation.md). Part of the [roadmap](roadmap.md).*
 
 ## Decision already made
 

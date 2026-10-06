@@ -74,6 +74,13 @@ add_executable(vulkan_guide
     rt_renderer.h
     rt_gpu.cpp
     rt_gpu.h
+    rt_gpu_types.h
+    rt_wavefront.cpp
+    rt_wavefront.h
+    rt_schedule.cpp
+    rt_schedule.h
+    rt_path_schedule.cpp
+    rt_path_schedule.h
     rt_accel.cpp
     rt_accel.h
     rt_lights.cpp

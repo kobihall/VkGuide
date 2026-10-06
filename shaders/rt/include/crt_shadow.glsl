@@ -1,7 +1,7 @@
 // Kernel 08 Trace Shadow Rays - the body every variant shares.
 //
-// The including .comp has already supplied occluded() through one of the traversal strategies
-// (crt_traverse.glsl states the contract). This file drains CRT_QUEUE_SHADOW, which kernel 06 filled
+// The including .comp has already supplied occluded() through crt_trace.glsl, for whichever
+// traversal the build compiled it for (crt_traverse.glsl states the contract). This file drains CRT_QUEUE_SHADOW, which kernel 06 filled
 // with the ray queue position of every path that sampled a light, and for each shadow ray asks one
 // question - is anything in the way - adding the contribution 06 already worked out when nothing is.
 // No closest hit, no attributes, no material: pbrt-v4's IntersectShadow() (PBR 4ed 15.3.10).
@@ -10,14 +10,14 @@
 // stops just short of the light (ShadowRay.tMax). The alpha test is part of the triangle test every
 // strategy shares, so cut-out foliage casts cut-out shadows here too.
 //
-// Why kernel 08 has one variant per traversal rather than one shader: a shadow ray walks the same
-// acceleration structure as a camera ray, and a CWBVH kernel cannot read binary nodes. Selecting a
-// kernel 02 variant therefore selects its kernel 08 partner (src/rt_kernels.h followsVariant).
+// A shadow ray walks the same acceleration structure as a camera ray, and a CWBVH walk cannot read
+// binary nodes, so kernel 08 is built for every traversal like kernel 02 and the renderer runs both
+// for the one traversal selected (src/rt_kernels.h TraversalVariant).
 //
 // Its traversal work goes into traversalStats after the extend stage's, per bounce, so the panel can
 // show what shadow rays cost apart from the rest.
 //
-// Requires crt_common.glsl and an occluded() from one of the strategy headers.
+// Requires crt_common.glsl and crt_trace.glsl.
 
 layout (local_size_x = CRT_WORKGROUP) in;
 

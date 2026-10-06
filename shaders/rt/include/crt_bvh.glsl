@@ -1,9 +1,9 @@
-// Kernel 02 Intersect Closest, strategy: TWO-LEVEL BOUNDING VOLUME HIERARCHY.
+// Traversal strategy: TWO-LEVEL BOUNDING VOLUME HIERARCHY.
 //
 // A binary TLAS over the instances, and each instance's BLAS in whichever layout the scene was
 // built with - binary (Aila & Laine 2009) by default, or the compressed 8-wide CWBVH
-// (Ylitie et al. 2017) when the including shader defines CRT_BVH_CWBVH. The two builds are
-// shaders/rt/0201_intersect_closest_bvh.comp and 0202_intersect_closest_cwbvh.comp.
+// (Ylitie et al. 2017) when CRT_BVH_CWBVH is defined. crt_trace.glsl includes it for the
+// bvh_binary and bvh_cwbvh traversals, defining that for the second.
 //
 // Supplies traceScene() and occluded() per the contract in crt_traverse.glsl: one walk, which an
 // any-hit query leaves at its first hit.

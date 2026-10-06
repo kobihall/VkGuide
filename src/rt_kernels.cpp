@@ -28,14 +28,13 @@ std::vector<CrtBinding> withCore(std::initializer_list<CrtBinding> extra)
 	return bindings;
 }
 
-// The bindings a traversal variant of kernel 02 shares whatever its strategy: the ray queue it
-// reads, the hit records and classification queues it writes, the instances and their geometry,
-// the materials it classifies emissive hits with, the textures its alpha test and normal maps
-// sample, the work counters, and the table that names an emitting triangle's light record
-std::vector<CrtBinding> intersectBindings(bool usesAcceleration)
+// What every traversal's search reads: the instances and their triangles, what the alpha test
+// samples (the materials, their textures, the per-surface material table and the triangles' uvs),
+// and the work counters every strategy maintains. A BVH adds its node arrays; a linear scan needs
+// nothing more
+std::vector<CrtBinding> traversalBindings(bool usesAcceleration)
 {
-	std::vector<CrtBinding> bindings = withCore({
-		CrtBinding::Hits,
+	std::vector<CrtBinding> bindings {
 		CrtBinding::Instances,
 		CrtBinding::Materials,
 		CrtBinding::BlasTriangles,
@@ -43,34 +42,7 @@ std::vector<CrtBinding> intersectBindings(bool usesAcceleration)
 		CrtBinding::TriangleAttributes,
 		CrtBinding::InstanceMaterials,
 		CrtBinding::TraversalStats,
-		CrtBinding::TriangleLights,
-	});
-	if (usesAcceleration) {
-		//the only difference between a BVH strategy and a brute-force one, as far as resources go:
-		//the node arrays. A linear scan never binds them
-		bindings.push_back(CrtBinding::BlasNodes);
-		bindings.push_back(CrtBinding::TlasNodes);
-	}
-	return bindings;
-}
-
-// The bindings a kernel 08 variant shares with its kernel 02 partner's search - the instances,
-// their geometry, and what the alpha test reads - plus the shadow rays it drains, the hits they
-// start from and the radiance they add to. No hit records written, no queues filled
-std::vector<CrtBinding> shadowBindings(bool usesAcceleration)
-{
-	std::vector<CrtBinding> bindings = withCore({
-		CrtBinding::Hits,
-		CrtBinding::Radiance,
-		CrtBinding::ShadowRays,
-		CrtBinding::Instances,
-		CrtBinding::Materials,
-		CrtBinding::BlasTriangles,
-		CrtBinding::MaterialTextures,
-		CrtBinding::TriangleAttributes,
-		CrtBinding::InstanceMaterials,
-		CrtBinding::TraversalStats,
-	});
+	};
 	if (usesAcceleration) {
 		bindings.push_back(CrtBinding::BlasNodes);
 		bindings.push_back(CrtBinding::TlasNodes);
@@ -99,8 +71,8 @@ std::vector<CrtBinding> scatterBindings(bool allLights)
 	return bindings;
 }
 
-// The registry. One entry per shaders/rt/*.comp; the order within a slot is the order the panel
-// lists them, and the variant marked isDefault (or else entry 0) is that slot's default.
+// The stage library. One entry per shaders/rt/*.comp; the order within a slot is the order the
+// panel lists them, and the variant marked isDefault (or else entry 0) is that slot's default.
 const std::vector<KernelVariant>& registry()
 {
 	static const std::vector<KernelVariant> variants = [] {
@@ -129,41 +101,19 @@ const std::vector<KernelVariant>& registry()
 		});
 
 		//---------------------------------------------------------------- 02 intersect closest
+		//the search is the selected traversal's; what is listed here is what the body around it
+		//reads and writes: the ray queue, the hit records and classification queues, the materials it
+		//classifies emissive hits with, the attributes and textures its normal maps read, and the
+		//table that names an emitting triangle's light record
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::IntersectClosest,
-			.id = "bvh_binary",
-			.name = "BVH (binary)",
-			.description = "Two-level BVH, Aila-Laine nodes: two boxes per 64-byte fetch, ordered traversal.",
-			.shader = "rt/0201_intersect_closest_bvh.comp",
+			.id = "closest",
+			.name = "Closest hit",
+			.description = "Finds each ray's nearest hit with the selected traversal and sorts it onto the escaped, emissive and surface queues.",
+			.shader = "rt/0201_intersect_closest.comp",
 			.domain = KernelDomain::CurrentRayQueue,
-			.bindings = intersectBindings(true),
-			.settings = KernelSettings::AccelerationStructure,
-			.cost = TraversalCost::Acceleration,
-			.requiresLayout = true,
-			.layout = BvhLayout::Binary,
-		});
-		v.push_back(KernelVariant {
-			.slot = KernelSlot::IntersectClosest,
-			.id = "bvh_cwbvh",
-			.name = "BVH (compressed 8-wide)",
-			.description = "Two-level BVH, CWBVH nodes: eight quantised children per node, octant-ordered.",
-			.shader = "rt/0202_intersect_closest_cwbvh.comp",
-			.domain = KernelDomain::CurrentRayQueue,
-			.bindings = intersectBindings(true),
-			.settings = KernelSettings::AccelerationStructure,
-			.cost = TraversalCost::Acceleration,
-			.requiresLayout = true,
-			.layout = BvhLayout::Cwbvh8,
-		});
-		v.push_back(KernelVariant {
-			.slot = KernelSlot::IntersectClosest,
-			.id = "linear",
-			.name = "Linear scan (brute force)",
-			.description = "No acceleration structure: every ray against every instance and every triangle.",
-			.shader = "rt/0203_intersect_closest_linear.comp",
-			.domain = KernelDomain::CurrentRayQueue,
-			.bindings = intersectBindings(false),
-			.cost = TraversalCost::AllPrimitives,
+			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Materials, CrtBinding::MaterialTextures, CrtBinding::TriangleAttributes, CrtBinding::TriangleLights, CrtBinding::TraversalStats }),
+			.traces = true,
 		});
 
 		//---------------------------------------------------------------- 03 handle escaped
@@ -268,43 +218,18 @@ const std::vector<KernelVariant>& registry()
 		});
 
 		//---------------------------------------------------------------- 08 trace shadow rays
-		//one partner per kernel 02 traversal, since a shadow ray walks the same structure: selecting
-		//the traversal selects its partner here
+		//the shadow rays it drains, the hits they start from and the radiance they add to; the search
+		//is the selected traversal's, the same one kernel 02 walks
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::TraceShadowRays,
-			.id = "bvh_binary",
-			.name = "BVH (binary)",
-			.description = "Any-hit walk of the two-level BVH, binary nodes: stops at the first thing in the way.",
-			.shader = "rt/0801_trace_shadow_rays_bvh.comp",
+			.id = "occlusion",
+			.name = "Occlusion",
+			.description = "An any-hit walk with the selected traversal, stopping at the first thing in the way.",
+			.shader = "rt/0801_trace_shadow_rays.comp",
 			.domain = KernelDomain::FixedQueue,
 			.queue = QUEUE_SHADOW,
-			.bindings = shadowBindings(true),
-			.followsSlot = KernelSlot::IntersectClosest,
-			.followsVariant = "bvh_binary",
-		});
-		v.push_back(KernelVariant {
-			.slot = KernelSlot::TraceShadowRays,
-			.id = "bvh_cwbvh",
-			.name = "BVH (compressed 8-wide)",
-			.description = "Any-hit walk of the two-level BVH, CWBVH nodes: stops at the first thing in the way.",
-			.shader = "rt/0802_trace_shadow_rays_cwbvh.comp",
-			.domain = KernelDomain::FixedQueue,
-			.queue = QUEUE_SHADOW,
-			.bindings = shadowBindings(true),
-			.followsSlot = KernelSlot::IntersectClosest,
-			.followsVariant = "bvh_cwbvh",
-		});
-		v.push_back(KernelVariant {
-			.slot = KernelSlot::TraceShadowRays,
-			.id = "linear",
-			.name = "Linear scan (brute force)",
-			.description = "Every instance and triangle until one is in the way.",
-			.shader = "rt/0803_trace_shadow_rays_linear.comp",
-			.domain = KernelDomain::FixedQueue,
-			.queue = QUEUE_SHADOW,
-			.bindings = shadowBindings(false),
-			.followsSlot = KernelSlot::IntersectClosest,
-			.followsVariant = "linear",
+			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Radiance, CrtBinding::ShadowRays, CrtBinding::TraversalStats }),
+			.traces = true,
 		});
 
 		//---------------------------------------------------------------- 09 update film
@@ -332,15 +257,78 @@ struct SlotInfo {
 constexpr std::array<SlotInfo, (size_t)KernelSlot::Count> SLOT_INFO { {
 	{ "00", "Generate camera rays", "One primary ray per (pixel, sample) slot of the path pool. Runs once per frame." },
 	{ "01", "Generate samples", "Prepares each live path's random samples for this bounce. Where a low-discrepancy sampler goes." },
-	{ "02", "Intersect closest", "Finds each ray's nearest hit and sorts the paths into the escaped, emissive and surface queues." },
+	{ "02", "Intersect closest", "Finds each ray's nearest hit with the selected traversal and sorts the paths into the escaped, emissive and surface queues." },
 	{ "03", "Handle escaped", "Paths that left the scene collect the background and end." },
 	{ "04", "Handle emissive geometry", "Paths that hit a light collect its emission, weighted by the MIS record kernel 06 left." },
 	{ "05", "Sample medium interaction", "Would decide whether a ray scatters in a participating medium before reaching its surface." },
 	{ "06", "Sample surface scattering", "Samples a light and scatters the path off the surface it hit. The choice of direct-lighting strategy." },
 	{ "07", "Sample medium scattering", "Would scatter a path off a medium's phase function." },
-	{ "08", "Trace shadow rays", "Traces the shadow rays kernel 06 emitted, with kernel 02's traversal, and adds the light that gets through." },
+	{ "08", "Trace shadow rays", "Traces the shadow rays kernel 06 emitted, with the selected traversal, and adds the light that gets through." },
 	{ "09", "Update film", "Folds the frame's samples into the running per-pixel mean. Runs once per frame." },
 } };
+
+// The traversals, in the order the panel lists them. Each id is a CRT_TRAVERSAL_<ID> branch of
+// shaders/rt/include/crt_trace.glsl, lower-cased
+const std::vector<TraversalVariant>& traversalRegistry()
+{
+	static const std::vector<TraversalVariant> traversals {
+		{
+			.id = "bvh_binary",
+			.name = "BVH (binary)",
+			.description = "Two-level BVH, Aila-Laine nodes: two boxes per 64-byte fetch, ordered traversal.",
+			.bindings = traversalBindings(true),
+			.settings = KernelSettings::AccelerationStructure,
+			.cost = TraversalCost::Acceleration,
+			.requiresLayout = true,
+			.layout = BvhLayout::Binary,
+			.isDefault = true,
+		},
+		{
+			.id = "bvh_cwbvh",
+			.name = "BVH (compressed 8-wide)",
+			.description = "Two-level BVH, CWBVH nodes: eight quantised children per node, octant-ordered.",
+			.bindings = traversalBindings(true),
+			.settings = KernelSettings::AccelerationStructure,
+			.cost = TraversalCost::Acceleration,
+			.requiresLayout = true,
+			.layout = BvhLayout::Cwbvh8,
+		},
+		{
+			.id = "linear",
+			.name = "Linear scan (brute force)",
+			.description = "No acceleration structure: every ray against every instance and every triangle.",
+			.bindings = traversalBindings(false),
+			.cost = TraversalCost::AllPrimitives,
+		},
+	};
+	return traversals;
+}
+
+// The integrators, in IntegratorId order
+const std::vector<IntegratorInfo>& integratorRegistry()
+{
+	static const std::vector<IntegratorInfo> integrators {
+		{
+			.id = IntegratorId::Path,
+			.key = "path",
+			.name = "Path tracing",
+			.description = "Unidirectional paths from the camera, with next-event estimation at every surface.",
+			.stages = {
+				KernelSlot::GenerateCameraRays,
+				KernelSlot::GenerateSamples,
+				KernelSlot::IntersectClosest,
+				KernelSlot::HandleEscaped,
+				KernelSlot::HandleEmissive,
+				KernelSlot::SampleMediumInteraction,
+				KernelSlot::SurfaceScattering,
+				KernelSlot::SampleMediumScattering,
+				KernelSlot::TraceShadowRays,
+				KernelSlot::UpdateFilm,
+			},
+		},
+	};
+	return integrators;
+}
 
 }
 
@@ -396,6 +384,55 @@ int findKernelVariant(KernelSlot slot, std::string_view id)
 	return -1;
 }
 
+std::span<const TraversalVariant> traversalVariants()
+{
+	return traversalRegistry();
+}
+
+const TraversalVariant* traversalVariant(uint32_t index)
+{
+	const std::vector<TraversalVariant>& all = traversalRegistry();
+	return index < all.size() ? &all[index] : nullptr;
+}
+
+int findTraversal(std::string_view id)
+{
+	const std::vector<TraversalVariant>& all = traversalRegistry();
+	for (uint32_t i = 0; i < (uint32_t)all.size(); i++) {
+		if (id == all[i].id) {
+			return (int)i;
+		}
+	}
+	return -1;
+}
+
+std::span<const IntegratorInfo> integrators()
+{
+	return integratorRegistry();
+}
+
+const IntegratorInfo& integratorInfo(IntegratorId id)
+{
+	const std::vector<IntegratorInfo>& all = integratorRegistry();
+	return id < IntegratorId::Count ? all[(size_t)id] : all.front();
+}
+
+IntegratorId findIntegrator(std::string_view key)
+{
+	for (const IntegratorInfo& info : integratorRegistry()) {
+		if (key == info.key) {
+			return info.id;
+		}
+	}
+	return IntegratorId::Count;
+}
+
+bool integratorRunsStage(IntegratorId id, KernelSlot slot)
+{
+	const std::vector<KernelSlot>& stages = integratorInfo(id).stages;
+	return std::find(stages.begin(), stages.end(), slot) != stages.end();
+}
+
 KernelSelection defaultKernelSelection()
 {
 	KernelSelection selection;
@@ -407,51 +444,61 @@ KernelSelection defaultKernelSelection()
 			}
 		}
 	}
-	return reconcileKernelSelection(selection);
-}
-
-bool kernelSlotFollows(KernelSlot slot)
-{
-	const std::span<const KernelVariant> variants = kernelVariants(slot);
-	return !variants.empty() && variants.front().followsSlot != KernelSlot::Count;
-}
-
-KernelSelection reconcileKernelSelection(KernelSelection selection)
-{
-	for (uint32_t i = 0; i < (uint32_t)KernelSlot::Count; i++) {
-		const KernelSlot slot = (KernelSlot)i;
-		if (!kernelSlotFollows(slot)) {
-			continue;
-		}
-		const std::span<const KernelVariant> variants = kernelVariants(slot);
-		const KernelVariant* leader = selection.selected(variants.front().followsSlot);
-		for (uint32_t v = 0; v < (uint32_t)variants.size(); v++) {
-			if (leader != nullptr && std::string_view(variants[v].followsVariant) == leader->id) {
-				selection[slot] = v;
-			}
+	const std::vector<TraversalVariant>& traversals = traversalRegistry();
+	for (uint32_t t = 0; t < (uint32_t)traversals.size(); t++) {
+		if (traversals[t].isDefault) {
+			selection.traversal = t;
 		}
 	}
+	selection.integrator = IntegratorId::Path;
 	return selection;
 }
 
-std::vector<std::pair<std::string, std::string>> kernelSelectionToIds(const KernelSelection& selection)
+KernelSelectionIds kernelSelectionToIds(const KernelSelection& selection)
 {
-	std::vector<std::pair<std::string, std::string>> out;
+	KernelSelectionIds out;
+	out.integrator = selection.selectedIntegrator().key;
+	const TraversalVariant* traversal = selection.selectedTraversal();
+	out.traversal = traversal != nullptr ? traversal->id : "";
 	for (uint32_t i = 0; i < (uint32_t)KernelSlot::Count; i++) {
 		const KernelSlot slot = (KernelSlot)i;
 		const KernelVariant* variant = selection.selected(slot);
 		if (variant == nullptr) {
 			continue;
 		}
-		out.emplace_back(kernelSlotNumber(slot), variant->id);
+		out.stages.emplace_back(kernelSlotNumber(slot), variant->id);
 	}
 	return out;
 }
 
-KernelSelection kernelSelectionFromIds(const std::vector<std::pair<std::string, std::string>>& ids, std::vector<std::string>* warnings)
+KernelSelection kernelSelectionFromIds(const KernelSelectionIds& ids, std::vector<std::string>* warnings)
 {
 	KernelSelection selection = defaultKernelSelection();
-	for (const auto& [slotNumber, variantId] : ids) {
+	auto warn = [&](std::string message) {
+		if (warnings != nullptr) {
+			warnings->push_back(std::move(message));
+		}
+	};
+
+	if (!ids.integrator.empty()) {
+		const IntegratorId integrator = findIntegrator(ids.integrator);
+		if (integrator == IntegratorId::Count) {
+			warn(fmt::format("integrator \"{}\" is not one this build has; using \"{}\"", ids.integrator, selection.selectedIntegrator().key));
+		} else {
+			selection.integrator = integrator;
+		}
+	}
+	if (!ids.traversal.empty()) {
+		const int traversal = findTraversal(ids.traversal);
+		if (traversal < 0) {
+			const TraversalVariant* fallback = selection.selectedTraversal();
+			warn(fmt::format("traversal \"{}\" is not one this build has; using \"{}\"", ids.traversal, fallback != nullptr ? fallback->id : "none"));
+		} else {
+			selection.traversal = (uint32_t)traversal;
+		}
+	}
+
+	for (const auto& [slotNumber, variantId] : ids.stages) {
 		//the slot is named by its two-digit number, so a slot this build does not have is simply
 		//not found rather than mis-indexed
 		KernelSlot slot = KernelSlot::Count;
@@ -462,26 +509,17 @@ KernelSelection kernelSelectionFromIds(const std::vector<std::pair<std::string, 
 			}
 		}
 		if (slot == KernelSlot::Count) {
-			if (warnings != nullptr) {
-				warnings->push_back(fmt::format("kernel slot \"{}\" is not one this build has; ignored", slotNumber));
-			}
-			continue;
-		}
-		//a following slot's choice is derived from its leader's below, whatever the file says; a
-		//file older than shadow rays says "none" here
-		if (kernelSlotFollows(slot)) {
+			warn(fmt::format("kernel slot \"{}\" is not one this build has; ignored", slotNumber));
 			continue;
 		}
 		const int index = findKernelVariant(slot, variantId);
 		if (index < 0) {
-			if (warnings != nullptr) {
-				const KernelVariant* fallback = selection.selected(slot);
-				warnings->push_back(fmt::format("kernel {} has no variant \"{}\" in this build; using \"{}\"",
-					kernelSlotNumber(slot), variantId, fallback != nullptr ? fallback->id : "none"));
-			}
+			const KernelVariant* fallback = selection.selected(slot);
+			warn(fmt::format("kernel {} has no variant \"{}\" in this build; using \"{}\"",
+				kernelSlotNumber(slot), variantId, fallback != nullptr ? fallback->id : "none"));
 			continue;
 		}
 		selection[slot] = (uint32_t)index;
 	}
-	return reconcileKernelSelection(selection);
+	return selection;
 }

@@ -2,7 +2,7 @@
 
 // The raytracer as the user sees it: the "Raytrace Render" panel, the RenderSettings, the
 // choice of scene camera, the Render/Stop buttons and the "Raytraced Output" window, in front
-// of the GPU path tracer (rt_gpu.h).
+// of the GPU renderer (rt_gpu.h) and whichever integrator the selection names.
 //
 // A render is of a scene camera. It starts from what the scene, the camera and the settings
 // are at that moment; with "restart on change" (the default) the renderer watches all three
@@ -58,20 +58,18 @@ public:
 	// time and never when a render starts
 	void prepareGeometry(VulkanEngine* engine);
 
-	// The work one extend dispatch of a render at this size would do, in the SAH's units (roughly
-	// node visits + primitive tests): pixels x samples per frame x the scene's expected cost per ray.
-	// Before the BVH that cost was the triangle count, and a 1M-triangle model at 1080p (~2e12
-	// tests in one dispatch) overran the GPU watchdog and took the window server - and the kernel -
-	// down with it. The BVH brings the cost per ray to tens, but the guard stays: it is the one
-	// thing between a pathological scene (thousands of overlapping instances) and a dead machine.
-	static double estimatedWorkPerFrame(const RenderSettings& settings, double costPerRay);
-	// what one ray of the CURRENTLY SELECTED kernel 02 variant costs in this scene, in the units
-	// above. A BVH ray and a brute-force ray differ by orders of magnitude, so the guard has to
-	// ask the strategy rather than assume one
+	// The work one frame of a render with these settings would do, in the SAH's units (roughly node
+	// visits + primitive tests), as the selected integrator's schedule prices it from the cost of
+	// one ray. Before the BVH that cost was the triangle count, and a 1M-triangle model at 1080p
+	// (~2e12 tests in one dispatch) overran the GPU watchdog and took the window server - and the
+	// kernel - down with it. The BVH brings the cost per ray to tens, but the guard stays: it is
+	// the one thing between a pathological scene (thousands of overlapping instances) and a dead
+	// machine.
+	double estimatedWorkPerFrame(const RenderSettings& settings) const;
+	// what one ray of the CURRENTLY SELECTED traversal costs in this scene, in the units above. A
+	// BVH ray and a brute-force ray differ by orders of magnitude, so the guard has to ask the
+	// traversal rather than assume one
 	double sceneCostPerRay() const;
-	// the rays one path traces per bounce under the selected kernel 06 variant: 1, or 2 when it also
-	// sends a shadow ray - which it does only if the scene has a light of the kind it samples
-	double tracesPerBounce() const;
 	// roughly a second of the extend stage on the development GPU, which leaves the watchdog a wide
 	// margin. Deliberately not a setting: the override below is per-render and never saved
 	static constexpr double WORK_PER_FRAME_BUDGET = 5.0e8;
@@ -85,22 +83,22 @@ public:
 	uint64_t renderCameraId() const { return m_renderCameraId; }
 	void setRenderCamera(uint64_t id) { m_renderCameraId = id; }
 
-	// which kernel variant runs in each slot of the wavefront (src/rt_kernels.h). Saved with the
-	// scene; changing one restarts a running render, exactly like a setting
+	// the integrator, the traversal and the variant of each stage (src/rt_kernels.h). Saved with
+	// the scene; changing one restarts a running render, exactly like a setting
 	const KernelSelection& kernels() const { return m_kernels; }
 	void setKernels(const KernelSelection& selection);
 
 	// the BVH builder and layout, saved with the scene alongside the kernel selection because
-	// the two are chosen together: the selected kernel 02 variant is what fixes the layout
+	// the two are chosen together: the selected traversal is what fixes the layout
 	const AccelSettings& accelSettings() const { return m_accelSettings; }
 	void setAccelSettings(VulkanEngine* engine, const AccelSettings& settings);
-	// the BLAS node layout the selected kernel 02 variant can read. Selecting the traversal is
-	// what chooses the layout - there is no separate control for it, because a mismatch between
-	// the two is not a preference, it is an unreadable buffer
+	// the BLAS node layout the selected traversal can read. Selecting the traversal is what
+	// chooses the layout - there is no separate control for it, because a mismatch between the
+	// two is not a preference, it is an unreadable buffer
 	BvhLayout requiredLayout() const;
 
-	// the "Raytracer Shaders" window: one row per kernel slot of the PBR wavefront figure, each
-	// a combo over that slot's registered variants
+	// the "Raytracer Shaders" window: the integrator and the traversal, then one row per stage the
+	// integrator runs, each a combo over that stage's registered variants
 	void drawKernelPanel(VulkanEngine* engine);
 	bool* kernelPanelVisibilityFlag() { return &m_showKernelPanel; }
 
@@ -138,6 +136,8 @@ private:
 	void ensureSceneAccel(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	// the "Acceleration structure" section: builder and layout, and what they produced
 	void drawAccelSettings(VulkanEngine* engine);
+	// the "Integrator" combo, shared by both panels: true when the selection changed
+	bool drawIntegratorCombo();
 	// the "Direct lighting" combo over kernel 06's variants and what the light list holds
 	void drawLightingSettings(VulkanEngine* engine);
 	// the "Compare to reference" section: capture, clear, and the running render's error
@@ -164,7 +164,7 @@ private:
 	int m_customHeight { RESOLUTION_PRESETS[DEFAULT_RESOLUTION_PRESET].height };
 	uint64_t m_renderCameraId { 0 };
 
-	GpuPathTracer m_gpu;
+	GpuRenderer m_gpu;
 
 	// the BVH settings, as applied (m_accelSettings) and as being edited in the panel
 	AccelSettings m_accelSettings { defaultAccelSettings() };

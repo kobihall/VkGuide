@@ -6,6 +6,7 @@
 #include <imgui.h>
 
 #include <rt_scene.h>
+#include <rt_schedule.h>
 #include <rt_scene_editor.h>
 #include <vk_engine.h>
 #include <vk_images.h>
@@ -82,17 +83,16 @@ void RaytraceRenderer::cancelRender()
 
 void RaytraceRenderer::setKernels(const KernelSelection& selection)
 {
-	//kernel 08 follows kernel 02, whatever the caller handed over
-	m_kernels = reconcileKernelSelection(selection);
-	//a kernel 02 variant that names a node layout is what decides how the BLASes are packed, so a
-	//selection that disagrees with the built set is reconciled by the caller through
-	//requiredLayout() - see drawKernelPanel() and openScene()
+	m_kernels = selection;
+	//the traversal is what decides how the BLASes are packed, so a selection that disagrees with the
+	//built set is reconciled by the caller through requiredLayout() - see drawKernelPanel() and
+	//openScene()
 }
 
 BvhLayout RaytraceRenderer::requiredLayout() const
 {
-	const KernelVariant* intersect = m_kernels.selected(KernelSlot::IntersectClosest);
-	return (intersect != nullptr && intersect->requiresLayout) ? intersect->layout : m_accelSettings.layout;
+	const TraversalVariant* traversal = m_kernels.selectedTraversal();
+	return (traversal != nullptr && traversal->requiresLayout) ? traversal->layout : m_accelSettings.layout;
 }
 
 void RaytraceRenderer::setAccelSettings(VulkanEngine* engine, const AccelSettings& settings)
@@ -181,13 +181,13 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		prospective.height = (int)engine->m_drawExtent.height;
 	}
 	const double costPerRay = sceneCostPerRay();
-	const double work = estimatedWorkPerFrame(prospective, costPerRay * tracesPerBounce());
+	const double work = estimatedWorkPerFrame(prospective);
 	const bool overBudget = work > WORK_PER_FRAME_BUDGET;
 
 	if (m_sceneAccel != nullptr && m_sceneAccel->meshInstanceCount > 0) {
 		ImGui::Text("%zu triangle(s) placed, ~%.0f steps/ray, %.1e steps/frame", m_sceneAccel->placedTriangles, costPerRay, work);
 		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("The BVH's expected cost of one ray (SAH: node visits + primitive tests),\ntimes pixels x samples/frame, doubled when kernel 06 also sends shadow rays.\nWhat the render guard below is judged on.");
+			ImGui::SetTooltip("The BVH's expected cost of one ray (SAH: node visits + primitive tests),\ntimes pixels x samples/frame x the rays the integrator traces per sample.\nWhat the render guard below is judged on.");
 		}
 	}
 
@@ -262,7 +262,7 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		}
 	}
 
-	//what the BVH did for the last frame traced, running or finished
+	//what the traversal did for the last frame traced, running or finished
 	const TraversalWork& traversal = m_gpu.traversalWork();
 	if (traversal.rays > 0) {
 		ImGui::Text("BVH work per ray: %.1f nodes + %.1f primitives (camera rays %.1f + %.1f)", traversal.nodesPerRay(), traversal.primitivesPerRay(), traversal.primaryNodesPerRay(), traversal.primaryPrimitivesPerRay());
@@ -277,19 +277,14 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 		}
 	}
 
-	//the compaction readout: the counts must fall monotonically
-	const std::vector<uint32_t>& alive = m_gpu.pathsAlivePerBounce();
-	if (!alive.empty()) {
-		std::string line = "Paths alive per bounce:";
-		for (uint32_t count : alive) {
-			line += fmt::format(" {}", count);
+	//the schedule's queue readouts, such as the path tracer's compaction: its paths alive per
+	//bounce must fall monotonically
+	for (const ScheduleCounter& counter : m_gpu.counters()) {
+		if (counter.values.empty()) {
+			continue;
 		}
-		ImGui::TextWrapped("%s", line.c_str());
-	}
-	const std::vector<uint32_t>& shadows = m_gpu.shadowRaysPerBounce();
-	if (traversal.shadowRays > 0) {
-		std::string line = "Shadow rays per bounce:";
-		for (uint32_t count : shadows) {
+		std::string line = fmt::format("{}:", counter.label);
+		for (uint32_t count : counter.values) {
 			line += fmt::format(" {}", count);
 		}
 		ImGui::TextWrapped("%s", line.c_str());
@@ -297,10 +292,14 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 
 	drawReference(engine);
 
-	ImGui::SeparatorText("Direct lighting");
-	drawLightingSettings(engine);
+	//a section for kernel 06's strategies only while the integrator runs kernel 06
+	if (integratorRunsStage(m_kernels.integrator, KernelSlot::SurfaceScattering)) {
+		ImGui::SeparatorText("Direct lighting");
+		drawLightingSettings(engine);
+	}
 
 	ImGui::SeparatorText("Settings");
+	drawIntegratorCombo();
 	drawSettings(engine);
 
 	drawAccelSettings(engine);
@@ -414,13 +413,13 @@ double RaytraceRenderer::sceneCostPerRay() const
 	if (m_sceneAccel == nullptr) {
 		return 1.0;
 	}
-	//WHICH strategy kernel 02 is running decides what a ray costs, and the difference is four
-	//orders of magnitude on a real model. A BVH ray costs the scene's SAH (tens of steps); a
-	//brute-force ray costs every primitive in the scene. Reading this off the selected variant
-	//rather than assuming a BVH is what keeps the guard honest when the traversal is swapped -
-	//the linear scan is exactly the case the guard exists for
-	const KernelVariant* intersect = m_kernels.selected(KernelSlot::IntersectClosest);
-	const TraversalCost cost = intersect != nullptr ? intersect->cost : TraversalCost::Acceleration;
+	//WHICH traversal is selected decides what a ray costs, and the difference is four orders of
+	//magnitude on a real model. A BVH ray costs the scene's SAH (tens of steps); a brute-force ray
+	//costs every primitive in the scene. Reading this off the selected traversal rather than
+	//assuming a BVH is what keeps the guard honest when it is swapped - the linear scan is exactly
+	//the case the guard exists for
+	const TraversalVariant* traversal = m_kernels.selectedTraversal();
+	const TraversalCost cost = traversal != nullptr ? traversal->cost : TraversalCost::Acceleration;
 	switch (cost) {
 	case TraversalCost::AllPrimitives:
 		//every triangle of every placed mesh, plus one test per shape instance
@@ -433,31 +432,16 @@ double RaytraceRenderer::sceneCostPerRay() const
 	return std::max((double)m_sceneAccel->tlas.sceneSahCost, 1.0);
 }
 
-double RaytraceRenderer::tracesPerBounce() const
+double RaytraceRenderer::estimatedWorkPerFrame(const RenderSettings& settings) const
 {
-	//a shadow ray is a second walk through the scene, priced like the first: the any-hit early out
-	//makes it cheaper, which leaves the guard erring on the safe side
-	const KernelVariant* scatter = m_kernels.selected(KernelSlot::SurfaceScattering);
-	if (scatter == nullptr || m_sceneAccel == nullptr) {
-		return 1.0;
-	}
-	const GpuLightHeader& lights = m_sceneAccel->lights.header;
-	switch (scatter->nextEvent) {
-	case NextEvent::AllLights:
-		return lights.count > 0 ? 2.0 : 1.0;
-	case NextEvent::DeltaLights:
-		return lights.deltaCount > 0 ? 2.0 : 1.0;
-	case NextEvent::None:
-		break;
-	}
-	return 1.0;
-}
-
-double RaytraceRenderer::estimatedWorkPerFrame(const RenderSettings& settings, double costPerRay)
-{
-	const double pixels = (double)std::max(settings.width, 2) * (double)std::max(settings.height, 2);
-	const double samples = (double)std::clamp(settings.samplesPerFrame, 1, CRT_MAX_SAMPLES_PER_FRAME);
-	return pixels * samples * costPerRay;
+	//the integrator knows how many rays a frame of it traces; the traversal what each costs
+	const WorkEstimate estimate {
+		.settings = settings,
+		.costPerRay = sceneCostPerRay(),
+		.kernels = m_kernels,
+		.lights = m_sceneAccel != nullptr ? &m_sceneAccel->lights.header : nullptr,
+	};
+	return m_gpu.schedule(m_kernels.integrator).estimatedWorkPerFrame(estimate);
 }
 
 void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor)
@@ -491,9 +475,9 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	//enough to trip the GPU watchdog, and the failure mode is not a dropped frame - it is the
 	//display driver being killed. Refused here rather than in the panel so that no caller can
 	//reach it another way, and acknowledged only for the exact cost that was shown
-	const double work = estimatedWorkPerFrame(settings, costPerRay * tracesPerBounce());
+	const double work = estimatedWorkPerFrame(settings);
 	if (work > WORK_PER_FRAME_BUDGET && !(m_acceptedHeavyRender && work <= m_acceptedWork)) {
-		m_blockedReason = fmt::format("~{:.0f} steps per ray at {}x{}x{} is {:.1e} per frame, over the {:.0e} budget. Lower the resolution or samples per frame, hide some objects, switch kernel 02 back to a BVH, or accept it below",
+		m_blockedReason = fmt::format("~{:.0f} steps per ray at {}x{}x{} is {:.1e} per frame, over the {:.0e} budget. Lower the resolution or samples per frame, hide some objects, switch the traversal back to a BVH, or accept it below",
 			costPerRay, settings.width, settings.height, settings.samplesPerFrame, work, WORK_PER_FRAME_BUDGET);
 		fmt::println("RaytraceRenderer: render refused - {}", m_blockedReason);
 		m_gpu.stop();
@@ -697,6 +681,30 @@ void RaytraceRenderer::drawReference(VulkanEngine* engine)
 	}
 }
 
+bool RaytraceRenderer::drawIntegratorCombo()
+{
+	//every registered integrator; which stages it runs is the registry's, so the rest of the panels
+	//follow the choice without knowing what it is
+	bool changed = false;
+	const IntegratorInfo& selected = m_kernels.selectedIntegrator();
+	if (ImGui::BeginCombo("Integrator", selected.name)) {
+		for (const IntegratorInfo& info : integrators()) {
+			if (ImGui::Selectable(info.name, info.id == m_kernels.integrator)) {
+				changed = info.id != m_kernels.integrator;
+				m_kernels.integrator = info.id;
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("%s", info.description);
+			}
+		}
+		ImGui::EndCombo();
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("%s\nThe light transport algorithm. Saved with the scene.", selected.description);
+	}
+	return changed;
+}
+
 void RaytraceRenderer::drawKernelPanel(VulkanEngine* engine)
 {
 	if (!m_showKernelPanel) {
@@ -707,27 +715,52 @@ void RaytraceRenderer::drawKernelPanel(VulkanEngine* engine)
 		return;
 	}
 
-	ImGui::TextWrapped("The wavefront, one kernel per row, in dispatch order. The numbering follows figure 15.2 of "
-		"Physically Based Rendering 4ed; shaders/rt/NNVV_*.comp holds kernel NN variant VV.");
+	ImGui::TextWrapped("The integrator, the traversal every kernel that traces is built for, then the integrator's "
+		"stages in dispatch order. The numbering follows figure 15.2 of Physically Based Rendering 4ed; "
+		"shaders/rt/NNVV_*.comp holds stage NN variant VV.");
 	ImGui::Separator();
 
-	//ONE LOOP FOR EVERY SLOT. Nothing here names a kernel or a strategy: the rows, the combos and
-	//the greying-out all come from the registry, so a new variant appears in this window as soon
-	//as it is registered, with no edit to this function
 	const KernelSelection before = m_kernels;
-	for (uint32_t i = 0; i < (uint32_t)KernelSlot::Count; i++) {
-		const KernelSlot slot = (KernelSlot)i;
+	drawIntegratorCombo();
+
+	//the traversal: not a stage but what every stage that traces walks
+	const TraversalVariant* traversal = m_kernels.selectedTraversal();
+	if (ImGui::BeginCombo("Traversal", traversal != nullptr ? traversal->name : "none")) {
+		const std::span<const TraversalVariant> traversals = traversalVariants();
+		for (uint32_t t = 0; t < (uint32_t)traversals.size(); t++) {
+			if (ImGui::Selectable(traversals[t].name, m_kernels.traversal == t)) {
+				m_kernels.traversal = t;
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("%s\n\nshaders/rt/include/crt_trace.glsl: CRT_TRAVERSAL_%s", traversals[t].description, traversals[t].id);
+			}
+		}
+		ImGui::EndCombo();
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("How every kernel that traces searches the scene. Each such kernel is built once per traversal.");
+	}
+	if (traversal != nullptr) {
+		ImGui::Indent();
+		ImGui::TextDisabled("%s", traversal->description);
+		ImGui::Unindent();
+	}
+	ImGui::Separator();
+
+	//ONE LOOP FOR EVERY STAGE THE INTEGRATOR RUNS. Nothing here names a kernel or a strategy: the
+	//rows, the combos and the greying-out all come from the registry, so a new variant appears in
+	//this window as soon as it is registered, with no edit to this function
+	const std::vector<KernelSlot>& stages = m_kernels.selectedIntegrator().stages;
+	for (const KernelSlot slot : stages) {
 		const std::span<const KernelVariant> variants = kernelVariants(slot);
 		if (variants.empty()) {
 			continue;
 		}
 		const KernelVariant* selected = m_kernels.selected(slot);
 		const bool implemented = selected != nullptr && selected->implemented;
-		//a following slot's variant is decided by its leader's: shown, never chosen
-		const bool follows = kernelSlotFollows(slot);
 
-		ImGui::PushID((int)i);
-		ImGui::BeginDisabled((!implemented && variants.size() <= 1) || follows);
+		ImGui::PushID((int)slot);
+		ImGui::BeginDisabled(!implemented && variants.size() <= 1);
 
 		const std::string label = fmt::format("{}  {}", kernelSlotNumber(slot), kernelSlotName(slot));
 		if (ImGui::BeginCombo(label.c_str(), selected != nullptr ? selected->name : "none")) {
@@ -750,8 +783,8 @@ void RaytraceRenderer::drawKernelPanel(VulkanEngine* engine)
 		ImGui::Indent();
 		if (!implemented) {
 			ImGui::TextDisabled("not implemented - the kernel is skipped");
-		} else if (follows) {
-			ImGui::TextDisabled("follows kernel %s: %s", kernelSlotNumber(variants.front().followsSlot), selected->description);
+		} else if (selected->traces && traversal != nullptr) {
+			ImGui::TextDisabled("%s Built for: %s.", selected->description, traversal->name);
 		} else {
 			ImGui::TextDisabled("%s", selected->description);
 		}
@@ -760,11 +793,9 @@ void RaytraceRenderer::drawKernelPanel(VulkanEngine* engine)
 	}
 
 	if (m_kernels != before) {
-		//a new kernel 02 brings its kernel 08 partner with it
-		m_kernels = reconcileKernelSelection(m_kernels);
-		//a traversal variant fixes the BLAS node layout, so selecting one may mean rebuilding
-		//every BLAS. setAccelSettings() does nothing when the layout already matches, which is
-		//the common case of swapping something other than kernel 02
+		//the traversal fixes the BLAS node layout, so selecting one may mean rebuilding every BLAS.
+		//setAccelSettings() does nothing when the layout already matches, which is the common case
+		//of swapping a stage's variant
 		setAccelSettings(engine, m_accelSettings);
 	}
 
@@ -781,20 +812,20 @@ void RaytraceRenderer::drawKernelPanel(VulkanEngine* engine)
 
 void RaytraceRenderer::drawAccelSettings(VulkanEngine* engine)
 {
-	//THE SECTION ONLY EXISTS WHILE A KERNEL THAT USES IT IS SELECTED. Switching kernel 02 to the
-	//linear scan makes every control below meaningless, so rather than grey them out the whole
-	//section goes away - the variant declares KernelSettings::AccelerationStructure and the panel
-	//reacts, without the panel knowing which variants those are
-	const KernelVariant* intersect = m_kernels.selected(KernelSlot::IntersectClosest);
-	if (intersect == nullptr || intersect->settings != KernelSettings::AccelerationStructure) {
+	//THE SECTION ONLY EXISTS WHILE A TRAVERSAL THAT USES IT IS SELECTED. Switching to the linear
+	//scan makes every control below meaningless, so rather than grey them out the whole section goes
+	//away - the traversal declares KernelSettings::AccelerationStructure and the panel reacts,
+	//without the panel knowing which traversals those are
+	const TraversalVariant* traversal = m_kernels.selectedTraversal();
+	if (traversal == nullptr || traversal->settings != KernelSettings::AccelerationStructure) {
 		return;
 	}
 	if (!ImGui::CollapsingHeader("Acceleration structure")) {
 		return;
 	}
-	ImGui::TextDisabled("Kernel 02: %s", intersect->name);
+	ImGui::TextDisabled("Traversal: %s", traversal->name);
 	if (ImGui::IsItemHovered()) {
-		ImGui::SetTooltip("The node layout follows the kernel 02 variant selected in the Raytracer Shaders\nwindow, so there is no separate control for it here.");
+		ImGui::SetTooltip("The node layout follows the traversal selected in the Raytracer Shaders\nwindow, so there is no separate control for it here.");
 	}
 
 	AccelSettings& pending = m_pendingAccelSettings;
@@ -808,7 +839,7 @@ void RaytraceRenderer::drawAccelSettings(VulkanEngine* engine)
 		}
 		ImGui::EndCombo();
 	}
-	//the layout is not editable here: it is whatever the selected kernel 02 variant can read
+	//the layout is not editable here: it is whatever the selected traversal can read
 	pending.layout = requiredLayout();
 	ImGui::LabelText("Node layout", "%s", bvhLayoutName(pending.layout));
 

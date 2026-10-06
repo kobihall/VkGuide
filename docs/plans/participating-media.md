@@ -88,7 +88,7 @@ The medium's counterpart of kernel 06, with a phase function in place of a BSDF:
 
 A shadow ray through a medium is attenuated, not blocked. pbrt's `TraceTransmittance()` walks the segment: the closest hit along it is either an opaque surface (the ray is blocked) or an interface, in which case ratio tracking through the current medium up to the interface multiplies the contribution per lane by the transmittance estimate and updates `r_u` and `r_l`, and the walk continues in the next medium.
 
-The walk needs closest hits, not the any-hit `occluded()` query. Every kernel 02 traversal therefore gets a second kernel 08 partner (`0804` to `0806`, transmittance versions of `0801` to `0803`), built from `traceScene()` and the traversal's strategy file. `KernelVariant` gains `transmittancePartner`, which the schedule uses instead of the normal partner when the scene has a medium. The walk stops after 16 interfaces.
+The walk needs closest hits, not the any-hit `occluded()` query. Kernel 08 therefore gains a second variant, `0802_trace_transmittance`, built from `traceScene()` through `crt_trace.glsl` and so compiled for every traversal ([integrator-layer.md](completed/integrator-layer.md)). `KernelVariant` gains `withMedia`, the id of the variant the schedule runs instead of the selected one when the scene has a medium. The walk stops after 16 interfaces.
 
 ### Later
 
@@ -101,7 +101,7 @@ The walk needs closest hits, not the any-hit `occluded()` query. Every kernel 02
 ## Registry, bindings and data
 
 - `0501_null_scattering` and `0701_phase_function` replace the `none` stubs. Kernel 05's domain becomes queue 7, and kernel 07's queue 8.
-- `0804` to `0806`, the transmittance partners; `KernelVariant::transmittancePartner`.
+- `0802_trace_transmittance`, built for every traversal; `KernelVariant::withMedia`.
 - Bindings 22 `Media`, 33 `MediumGrids` and 49 `MediumPathState` (new; the roadmap's binding table gains it).
 - `PathState.medium`; `CRT_PATH_PREV_IN_MEDIUM` in `PathState.flags`; `ShadowRay.mediumAndGroup`; the medium interface in `GpuInstance`'s padding.
 - `crt_classify.glsl`, `crt_medium.glsl`; `rt_media` and `bin/media_test` (roadmap).
@@ -123,7 +123,7 @@ The walk needs closest hits, not the any-hit `occluded()` query. Every kernel 02
 1. `crt_classify.glsl`, queues 7 and 8, `PathState.medium` and the flag. Bit-identical.
 2. `SceneMedium`, medium interfaces, the `interface` material, the camera's medium, the scene file and the panels.
 3. Homogeneous media: kernel 05 with absorption, then kernel 07 without next-event estimation.
-4. Next-event estimation in kernel 07, and the transmittance partners of kernel 08.
+4. Next-event estimation in kernel 07, and the transmittance variant of kernel 08.
 5. `MediumPathState` and chromatic media.
 6. Density and RGB grids with majorant grids, and emission.
 7. NanoVDB.

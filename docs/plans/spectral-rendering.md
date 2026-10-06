@@ -2,7 +2,7 @@
 
 The tracer multiplies RGB triples. PBR 4ed §4.6.4 shows why that is not physics: the same sRGB green, expressed in ACES2065-1 and multiplied by itself, comes out darker, more saturated and outside the gamut of real colours, because a product of tristimulus values depends on the colour space. Dispersion, blackbody emitters, measured metal indices of refraction and chromatic media all need light carried per wavelength. This plan makes the quantity every path carries a spectrum whose size and meaning are chosen at runtime, while exact RGB stays available and bit-identical.
 
-*Not implemented. Depends on [integrator-layer.md](integrator-layer.md), [thin-hit-record.md](thin-hit-record.md) and [material-system.md](material-system.md). Part of the [roadmap](roadmap.md).*
+*Not implemented. Depends on [thin-hit-record.md](thin-hit-record.md) and [material-system.md](material-system.md). Part of the [roadmap](roadmap.md).*
 
 ## Requirements and decisions
 
@@ -57,8 +57,8 @@ With four lanes the struct is one `vec4`, and arithmetic on lanes 0 to 2 is exac
 
 Kernels whose code touches radiance or reflectance depend on the lane count: 00, 01 (if a sampler writes wavelength dimensions), 03, 04, 05, 06, 07, 08 and 09. Kernel 02 does not, since the thin hit record carries no radiance. `KernelVariant` gains `laneDependent`, and:
 
-- CMake compiles each lane-dependent kernel once per family listed in `VKGUIDE_SPECTRAL_FAMILIES` (default `4;8;16;32`), as `0601_surface_scatter_bsdf.lanes8.comp.spv` and so on. Kernels that are not lane-dependent compile once.
-- `GpuRenderer` builds a family's pipelines the first time a render needs that family, after a device wait, and keeps them. A render that stays in one family never pays for the others.
+- CMake compiles each lane-dependent kernel once per family listed in `VKGUIDE_SPECTRAL_FAMILIES` (default `4;8;16;32`), as `0601_surface_scatter_bsdf.comp.lanes8.spv` and so on. Kernels that are not lane-dependent compile once. This is the second permutation axis after the traversal one of [integrator-layer.md](completed/integrator-layer.md): a kernel that traces and is lane-dependent, such as kernel 08, is compiled once per family and traversal, as `0801_trace_shadow_rays.comp.lanes8.bvh_binary.spv`.
+- `GpuRenderer`'s pipeline cache, keyed today by variant and traversal, gains the family in its key. It builds a family's pipelines the first time a render needs that family and keeps them, so a render that stays in one family never pays for the others.
 
 A future polarized family ([polarization.md](polarization.md)) turns each lane of the throughput into a four-component adjoint Stokes vector; the throughput's type is the only one that changes.
 

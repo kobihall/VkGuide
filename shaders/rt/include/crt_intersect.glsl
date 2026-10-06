@@ -1,6 +1,7 @@
 // Kernel 02 Intersect Closest - the body every variant shares.
 //
-// The including .comp has already supplied traceScene() (crt_traverse.glsl). This file does
+// The including .comp has already supplied traceScene() through crt_trace.glsl, for whichever
+// traversal the build compiled it for (crt_traverse.glsl states the contract). This file does
 // everything around it: pull the ray from the current ray queue, trace it, turn whatever came
 // back into a HitRecord, and push the path onto exactly one of the three classification queues
 // that kernel 03, 04 and 06 drain.
@@ -11,7 +12,7 @@
 //     hit, anything else           -> CRT_QUEUE_SURFACE   -> 06 Sample Surface Scattering
 //
 // A glowing pbr surface is the one case on two queues, as in pbrt-v4's wavefront integrator: 04
-// adds what it emits and 06 carries the path on. src/rt_gpu.cpp puts a barrier between the two,
+// adds what it emits and 06 carries the path on. src/rt_path_schedule.cpp puts a barrier between the two,
 // because 04 reads the throughput that 06 then overwrites.
 //
 // This is also where a normal map is applied: the tangent frame lives in the triangle's attribute

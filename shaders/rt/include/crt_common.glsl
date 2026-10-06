@@ -1,8 +1,8 @@
-// Shared by every kernel of the GPU path tracer (shaders/rt/NNVV_*.comp): the buffer contracts,
-// the BINDING NUMBERS every kernel agrees on, the push-constant block, the queue set and the
-// workgroup-aggregated queue allocator. The C++ side is src/rt_gpu.h and src/rt_kernels.h, which
-// mirror the structs with static_asserts - std430 pads every vec3 to 16 bytes, so each struct
-// carries an explicit fourth component.
+// Shared by every kernel of every integrator (shaders/rt/NNVV_*.comp): the buffer contracts, the
+// BINDING NUMBERS every kernel agrees on, the push-constant block, the queue set and the
+// workgroup-aggregated queue allocator. The C++ side is src/rt_gpu_types.h and src/rt_kernels.h,
+// which mirror the structs with static_asserts - std430 pads every vec3 to 16 bytes, so each
+// struct carries an explicit fourth component.
 //
 // BINDING NUMBERS ARE GLOBAL AND STABLE. Every kernel declares only the bindings it actually
 // uses, at the number given here, and src/rt_kernels.cpp builds that kernel's descriptor set
@@ -146,7 +146,7 @@ struct GpuInstance {
 
 #define CRT_INSTANCE_SHAPE 0xFFFFFFFFu
 
-// 64 bytes. src/rt_gpu.h CrtMaterial
+// 64 bytes. src/rt_gpu_types.h CrtMaterial
 struct GpuMaterial {
 	// the base colour or the emitted colour, by type
 	vec3 albedo;
@@ -265,7 +265,7 @@ struct QueueHeader {
 #define CRT_QUEUE_SHADOW 5u
 #define CRT_QUEUE_COUNT 6u
 
-// src/rt_gpu.h CRT_MAX_DEPTH: traversalStats holds the extend counters for this many bounces, then
+// src/rt_gpu_types.h CRT_MAX_DEPTH: traversalStats holds the extend counters for this many bounces, then
 // the shadow-ray counters for as many again
 #define CRT_MAX_DEPTH 16u
 // the traversalStats entry after both: how many samples kernel 09 dropped as non-finite this frame
@@ -315,7 +315,7 @@ layout (std430, set = 0, binding = 16) readonly buffer InstanceMaterialBuffer { 
 // the extend stage's work, per bounce: [2 * bounce] BVH nodes visited, [2 * bounce + 1] primitives
 // tested, summed over every ray of the frame; then from [2 * CRT_MAX_DEPTH] the same for the
 // shadow rays. Zeroed each frame and read back like the queue headers: the hardware-independent
-// measure of a BVH (src/rt_gpu.h traversalWork). Last, [CRT_STAT_DROPPED_SAMPLES], kernel 09's
+// measure of a BVH (src/rt_gpu_types.h TraversalWork). Last, [CRT_STAT_DROPPED_SAMPLES], kernel 09's
 // count of the samples it left out of the mean
 layout (std430, set = 0, binding = 17) buffer TraversalStatsBuffer { uint traversalStats[]; };
 // every light kernel 06 can sample: the punctual lights, then the area lights and the environment
@@ -340,7 +340,7 @@ layout (std430, set = 0, binding = 21) readonly buffer EnvironmentSamplingBuffer
 	float envData[];
 };
 
-// src/rt_gpu.cpp CrtParams
+// src/rt_gpu_types.h CrtParams
 layout (push_constant) uniform Params {
 	vec4 origin;
 	vec4 lowerLeft;

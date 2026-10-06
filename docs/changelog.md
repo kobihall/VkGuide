@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-29
+
+### New
+
+- **Windows** → **Raytracer Shaders** has an **Integrator** combo and a **Traversal** combo above the kernel rows, and **Raytrace Render** has the **Integrator** combo at the top of its settings. Path tracing is the only integrator so far.
+
+### Changed
+
+- The traversal (BVH binary, BVH compressed 8-wide, or linear scan) is its own choice rather than kernel 02's variant. Kernels 02 and 08 each show one variant, built for the selected traversal, and the render guard's message names the traversal instead of kernel 02.
+- Scene files are payload version 11, which adds `"integrator"` and `"traversal"`. An older file opens with its kernel 02 choice as its traversal and renders exactly as before.
+
+### Internal
+
+- `GpuPathTracer` is split into `GpuRenderer` (`src/rt_gpu.h`: what every integrator shares), `WavefrontPool` (`src/rt_wavefront.h`: the per-path buffers), and `PathSchedule` (`src/rt_path_schedule.h`), behind the `IntegratorSchedule` interface in `src/rt_schedule.h`. The design is `docs/plans/completed/integrator-layer.md`.
+- `KernelSlot` is a stage library shared by every integrator, and a variant of a stage must work in every integrator that runs it. `docs/plans/roadmap.md` reserves stages 10 to 25 for the plans that add them.
+- A kernel that traces includes `shaders/rt/include/crt_trace.glsl` and is compiled once per traversal, to `<name>.comp.<id>.spv`. `0201_intersect_closest.comp` and `0801_trace_shadow_rays.comp` replace the six per-traversal files, and a new traversal is a strategy file, a `crt_trace.glsl` branch, and a `TraversalVariant` row. `KernelVariant::followsSlot` is gone.
+- Each owner publishes its resources into `CrtResourceTable`, and descriptor sets are written from it. A kernel that declares a binding nobody published aborts at its first dispatch instead of reading a stale descriptor.
+- Pipelines are built on first use, keyed by variant and traversal; the default selection's are built at startup. `CrtParams` and the other C++ mirrors of `crt_common.glsl` moved to `src/rt_gpu_types.h`.
+
 ## 2026-09-26
 
 ### New

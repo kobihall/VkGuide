@@ -1,7 +1,7 @@
 #version 460
 
 // How far a render is from a reference image: the GPU path tracer's accumulation against a copy of
-// an earlier one (src/rt_gpu.h GpuPathTracer::captureReference), for comparing sampling strategies
+// an earlier one (src/rt_gpu.h GpuRenderer::captureReference), for comparing sampling strategies
 // at equal samples or equal time. Each workgroup reduces its 16 x 16 pixels to two sums in shared
 // memory and writes them to its own slot; the CPU adds the slots up once they are read back, so no
 // float atomics are needed.

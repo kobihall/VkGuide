@@ -1,0 +1,10 @@
+#version 460
+
+// 08 Trace Shadow Rays. The body is crt_shadow.glsl; the search is whichever traversal this build
+// is for (crt_trace.glsl), the same one kernel 02 walks, since the build compiles both once per
+// traversal.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_trace.glsl"
+#include "include/crt_shadow.glsl"

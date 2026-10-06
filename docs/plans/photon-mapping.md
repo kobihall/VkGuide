@@ -2,7 +2,7 @@
 
 Some light paths no unbiased method samples well. A caustic seen in a mirror, a pool floor lit through water and viewed through the water, is a specular–diffuse–specular path: neither the camera side nor the light side can connect across the diffuse vertex, so path tracing and BDPT converge on it very slowly. Photon mapping estimates the light at diffuse points from photons deposited nearby, which trades a bias that vanishes over time for robustness on those paths. pbrt 3's `SPPMIntegrator` implements stochastic progressive photon mapping (Hachisuka and Jensen 2009; PBR 3ed §16.2): each iteration traces camera paths to visible points, traces photons from the lights, and shrinks each pixel's gathering radius so that the estimate is consistent. This plan adds it as an integrator.
 
-*Not implemented. Depends on [integrator-layer.md](integrator-layer.md) and the light-tracing kernels of [bidirectional-path-tracing.md](bidirectional-path-tracing.md). Part of the [roadmap](roadmap.md).*
+*Not implemented. Depends on the light-tracing stages of [bidirectional-path-tracing.md](bidirectional-path-tracing.md). Part of the [roadmap](roadmap.md).*
 
 ## What the renderer does today
 
@@ -13,14 +13,14 @@ Some light paths no unbiased method samples well. A caustic seen in a mirror, a 
 
 ### One iteration
 
-pbrt's algorithm, with its three passes as groups of kernels in `shaders/rt/sppm/`:
+pbrt's algorithm, with its three passes built from the stage library ([integrator-layer.md](completed/integrator-layer.md)): the path tracer's stages, `light`'s, and three of `sppm`'s own in the roadmap's range 19 to 21.
 
-1. In the camera pass, camera paths run through the path tracer's generate, intersect and scatter kernels. At each vertex they add emitted light and a light sample to the pixel's direct estimate `Ld`, as the path tracer does. Specular vertices continue. The first non-specular vertex becomes the pixel's *visible point*: position, outgoing direction, the thin hit record from which the BSDF can be rebuilt, and the path throughput `β`. The path then ends.
+1. In the camera pass, camera paths run through the path tracer's 00 to 04 and 08. At each vertex they add emitted light and a light sample to the pixel's direct estimate `Ld`, as the path tracer does. Stage 19, store visible points, replaces kernel 06: it includes `crt_surface.glsl` for the light sample, continues specular vertices, and makes the first non-specular vertex the pixel's *visible point*: position, outgoing direction, the thin hit record from which the BSDF can be rebuilt, and the path throughput `β`. The path then ends.
 2. The grid build inserts every visible point's bounding sphere, of the pixel's current radius, into a hash grid over the scene: a count pass with atomics, a prefix sum, and a fill pass, giving compact per-cell lists. pbrt builds lock-free linked lists instead; compact lists read better on the GPU. The cell size is the largest radius, so a photon needs to look in one cell only.
-3. In the photon pass, photons leave the lights through the `light` integrator's emit kernel, choosing lights by power. At each photon–surface hit after the first, which the camera pass's direct estimate already counts, the deposit kernel looks up the hit's cell. For each visible point there within its radius, it adds `β_photon · f(wo, wi)` to that pixel's flux `Φ` and increments its photon count `M`, both with atomics. Then the photon scatters by the adjoint BSDF and continues, with Russian roulette.
-4. The update applies pbrt's rule per pixel, with γ = 2/3: `N' = N + γM`, `r' = r √(N' / (N + M))`, `τ' = (τ + β_visible Φ) r'² / r²`; then `Φ` and `M` reset.
+3. In the photon pass, photons leave the lights through `light`'s stage 11, choosing lights by power, and trace through the path tracer's 01 and 02. At each photon–surface hit after the first, which the camera pass's direct estimate already counts, stage 20, deposit photons, looks up the hit's cell. For each visible point there within its radius, it adds `β_photon · f(wo, wi)` to that pixel's flux `Φ` and increments its photon count `M`, both with atomics. Then the photon scatters by the adjoint BSDF in `light`'s stage 13 and continues, with Russian roulette.
+4. Stage 21, update photon statistics, applies pbrt's rule per pixel, with γ = 2/3: `N' = N + γM`, `r' = r √(N' / (N + M))`, `τ' = (τ + β_visible Φ) r'² / r²`; then `Φ` and `M` reset.
 
-The pixel's estimate after `k` iterations is `Ld / k + τ / (k N_p π r²)`, where `N_p` is the photons emitted per iteration. The integrator's film kernel writes it into the accumulation image each iteration, so the display, **Compare to reference** and export work unchanged.
+The pixel's estimate after `k` iterations is `Ld / k + τ / (k N_p π r²)`, where `N_p` is the photons emitted per iteration. Stage 21 writes it into the accumulation image each iteration, in place of kernel 09, so the display, **Compare to reference** and export work unchanged.
 
 ### Settings and memory
 
@@ -43,7 +43,8 @@ From PBR 3ed's chapter 16 exercises:
 
 ## Registry, bindings and data
 
-- Integrator `sppm` ([integrator-layer.md](integrator-layer.md)), kernels in `shaders/rt/sppm/`.
+- Integrator `sppm` ([integrator-layer.md](completed/integrator-layer.md)), running the path tracer's 00 to 04 and 08, `light`'s 11 and 13, and stages 19 to 21, whose shaders sit in `shaders/rt/` with the rest of the library.
+- The grid build's count, prefix sum and fill are plain compute passes in `shaders/rt/sppm/`, since nobody swaps them.
 - Bindings 43 `PhotonGrid` and 54 `VisiblePoints`.
 - Settings: **Photons per iteration**, **Initial radius**.
 

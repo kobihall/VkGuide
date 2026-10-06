@@ -9,13 +9,15 @@
 // in [tMin, tMax]; crt_intersect.glsl turns it into a HitRecord and the classification queues, and
 // no kernel downstream of 02 ever learns which strategy produced the hit. occluded() answers a
 // shadow ray's question - is anything at all in [tMin, tMax] - and may stop at the first hit it
-// finds; crt_shadow.glsl, the body of kernel 08, is its one caller. Both sit on the one search, so
-// swapping the strategy swaps them together and shadow rays keep working whichever is selected.
+// finds; crt_shadow.glsl, the body of kernel 08, calls it. Both sit on the one search, so every
+// kernel that traces uses the same traversal and shadow rays keep working whichever is selected.
 //
-// A third strategy is therefore one new file that includes this one and defines both functions,
-// plus two .comp files: one that includes it and crt_intersect.glsl (kernel 02) and one that
-// includes it and crt_shadow.glsl (kernel 08). See shaders/rt/include/crt_bvh.glsl (two-level
-// BVH) and crt_linear.glsl (brute force) for the two that exist.
+// No kernel includes a strategy directly. A kernel that traces includes crt_trace.glsl, and the
+// build compiles it once per traversal, so a strategy is written once and every tracing kernel of
+// every integrator runs it. A new strategy is one file that includes this one and defines both
+// functions, one branch in crt_trace.glsl and one TraversalVariant row in src/rt_kernels.cpp. See
+// shaders/rt/include/crt_bvh.glsl (two-level BVH) and crt_linear.glsl (brute force) for the two
+// that exist.
 //
 // This file holds what every strategy needs regardless of how it searches: the hit record, the
 // work counters that make strategies comparable, the primitive tests (alpha test included), and

@@ -1183,7 +1183,7 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	m_raytraceScene.replaceCameras(std::move(scene.cameras));
 	m_raytracer.setSettings(scene.render);
 	//the kernel selection first: it is what decides the BLAS node layout, so setAccelSettings()
-	//below sees the layout the file's traversal kernel actually needs
+	//below sees the layout the file's traversal actually needs
 	m_raytracer.setKernels(scene.kernels);
 	m_raytracer.setAccelSettings(this, scene.accel);
 	for (const std::string& warning : scene.kernelWarnings) {

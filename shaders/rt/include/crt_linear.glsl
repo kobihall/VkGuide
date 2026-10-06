@@ -1,8 +1,8 @@
-// Kernel 02 Intersect Closest, strategy: BRUTE FORCE.
+// Traversal strategy: BRUTE FORCE. crt_trace.glsl includes it for the linear traversal.
 //
 // No acceleration structure at all. Every ray is tested against every instance, and inside a
 // mesh instance against every one of its triangles. This is what the tracer did before the BVH
-// (commit 85823b5, when the scene was flat sphere and triangle lists); it is kept as a variant
+// (commit 85823b5, when the scene was flat sphere and triangle lists); it is kept as a traversal
 // because it is the ground truth every other strategy is checked against, and because the
 // contrast in the traversal counters is the clearest demonstration of what a BVH buys.
 //

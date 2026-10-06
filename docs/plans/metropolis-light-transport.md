@@ -2,7 +2,7 @@
 
 Every other integrator draws each sample independently, so a path that carries light through a hard-to-find route, such as the gap of a door left ajar, is found only as often as its probability says. Metropolis light transport (MLT) finds such a path once and then explores its neighbourhood by mutating it, spending samples in proportion to each path's contribution to the image. pbrt 3 implements it in primary sample space (Kelemen et al. 2002), where a path is the vector of random numbers that generated it, and multiplexes the strategies of its BDPT (Hachisuka et al. 2014; PBR 3ed §16.4). The user chose primary-sample-space MLT over the existing path tracer first, and multiplexed MLT over pbrt 3's BDPT after it. This plan adds both as integrators.
 
-*Not implemented. Depends on [integrator-layer.md](integrator-layer.md), [sample-generation.md](sample-generation.md) (the sample record the chains write), and the splat buffer of [bidirectional-path-tracing.md](bidirectional-path-tracing.md). Multiplexed MLT also needs that plan's `bdpt` integrator. Part of the [roadmap](roadmap.md).*
+*Not implemented. Depends on [sample-generation.md](sample-generation.md) (the sample record the chains write), and the splat buffer of [bidirectional-path-tracing.md](bidirectional-path-tracing.md). Multiplexed MLT also needs that plan's `bdpt` integrator. Part of the [roadmap](roadmap.md).*
 
 ## Decision already made
 
@@ -26,12 +26,12 @@ A path is a deterministic function of its primary samples, the vector `X` of uni
 
 ### PSSMLT, `pssmlt`
 
-The integrator reuses the path tracer's kernels 00, 02, 03, 04, 06 and 08 unchanged, and supplies its own:
+The integrator runs the path tracer's 00 and 02 to 08 unchanged, with the selected traversal, and adds two stages to the library ([integrator-layer.md](completed/integrator-layer.md)) as stages 22 and 23, which the roadmap reserves. They are stages rather than variants of 01 and 09, because a chain sampler or an accept step would break the path tracer if it could be selected there:
 
-| Slot | Kernel |
-|---|---|
-| 01 | the chain sampler: brings the chain's proposed `X` up to date for this bounce's dimensions and writes `RaySamples` from it, including the camera pass |
-| 09 | accept: the proposal's contribution `I(X') = luminance(L')`, acceptance `a = min(1, I(X') / I(X))`, then splat both the current and the proposed path with Veach's expected-value weights, `(1 − a) L / I(X)` and `a L' / I(X')`, times `b / M`, and keep or restore `X` |
+| Stage | Runs where the path tracer runs | What it does |
+|---|---|---|
+| 22 mutate chain samples | 01 | brings the chain's proposed `X` up to date for this bounce's dimensions and writes `RaySamples` from it, including the camera pass |
+| 23 accept and splat | 09 | the proposal's contribution `I(X') = luminance(L')`, acceptance `a = min(1, I(X') / I(X))`, then splat both the current and the proposed path with Veach's expected-value weights, `(1 − a) L / I(X)` and `a L' / I(X')`, times `b / M`, and keep or restore `X` |
 
 `b` is the image's mean contribution and `M` the mutations per pixel. Each chain is one pool slot, so a frame advances every chain by one mutation.
 
@@ -48,7 +48,7 @@ Hachisuka et al. 2014, as pbrt 3's `MLTIntegrator`, over the `bdpt` integrator:
 - Each chain has a fixed path length `d`, chosen at bootstrap in proportion to each length's share of `b`.
 - `X` has three streams, as pbrt's `MLTSampler` interleaves them: the camera subpath, the light subpath, and the connection. Its first number picks one strategy `(s, t)` with `s + t = d + 2`, uniformly.
 - A proposal generates only `t` camera vertices and `s` light vertices, evaluates that one connection, and weighs it by the number of strategies times its MIS weight. The chain therefore moves between strategies as well as paths, and spends its time on whichever strategy captures the light best.
-- Kernels reuse `bdpt`'s subpath and connection kernels, with this integrator's chain sampler and accept kernel.
+- It runs `bdpt`'s stages with stages 22 and 23 in place of 01 and 09.
 
 ### Later
 
@@ -57,7 +57,7 @@ Hachisuka et al. 2014, as pbrt 3's `MLTIntegrator`, over the `bdpt` integrator:
 
 ## Registry, bindings and data
 
-- Integrators `pssmlt` and `mmlt` ([integrator-layer.md](integrator-layer.md)), kernels in `shaders/rt/mlt/`; `pssmlt` registers the path tracer's shaders for slots 00, 02 to 08.
+- Integrators `pssmlt` and `mmlt` ([integrator-layer.md](completed/integrator-layer.md)) and stages 22 and 23, whose shaders sit in `shaders/rt/` with the rest of the library. `pssmlt` runs the path tracer's 00 and 02 to 08 as they are, and the bootstrap's passes are plain compute passes in `shaders/rt/mlt/`.
 - Binding 44 `MarkovChains`; binding 42 `SplatAccumulation`, shared.
 - Settings: **Chains**, **Large step probability**, **Sigma**, **Bootstrap samples**.
 - C++ mirror: `MLTSampler`'s lazy mutation in `rt_sampler`, with its test in `bin/sampler_test`.

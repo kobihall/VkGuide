@@ -17,8 +17,9 @@
 // reach) keeps w = 1 in every strategy, since the BSDF sample is its only way in.
 //
 // Nothing is appended to the next ray queue. For an emissive material the path ends here. A pbr
-// surface with emission was also queued for 06, which carries the path on; src/rt_gpu.cpp runs
-// this kernel to completion first, since 06 overwrites the throughput and the origin read here.
+// surface with emission was also queued for 06, which carries the path on;
+// src/rt_path_schedule.cpp runs this kernel to completion first, since 06 overwrites the
+// throughput and the origin read here.
 
 #extension GL_GOOGLE_include_directive : require
 #include "include/crt_common.glsl"

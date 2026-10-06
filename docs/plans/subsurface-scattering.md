@@ -32,10 +32,10 @@ The named measured materials are pbrt's table (`GetMediumScatteringProperties()`
 Both methods are long, divergent loops that would waste the wavefront's bounce iterations if split into one dispatch per step. They get one kernel of their own:
 
 - Kernel 06, when it samples transmission into a `subsurface` material, appends the path to queue 9 (`CRT_QUEUE_SUBSURFACE`, reserved by the roadmap) instead of the next ray queue.
-- A new path-tracer slot, 10 (`sample_subsurface`), drains queue 9. Its one variant, `1001_subsurface`, branches on the material's method, a branch that is uniform per material. It appends each result to the next ray queue and, where the exit point allows it, a shadow ray to the shadow queue.
+- A new stage, 10 (`sample_subsurface`), drains queue 9. Its one variant, `1001_subsurface`, branches on the material's method, a branch that is uniform per material. It traces through `crt_trace.glsl`, so the build compiles it for every traversal ([integrator-layer.md](completed/integrator-layer.md)). It appends each result to the next ray queue and, where the exit point allows it, a shadow ray to the shadow queue.
 - The schedule dispatches slot 10 after kernel 06 and before kernel 08, only when the scene has a `subsurface` material. pbrt-v4's wavefront runs its `SampleSubsurface()` at the same point.
 
-Slot 10 extends the PBR Figure 15.2 numbering past 09, which the roadmap allows because it renames nothing. Its random numbers come from the path's PCG stream, since the sample record's three vectors are taken.
+Stage 10 extends the PBR Figure 15.2 numbering past 09, which the roadmap allows because it renames nothing. The path tracer's `IntegratorInfo` lists it between 06 and 08. Its random numbers come from the path's PCG stream, since the sample record's three vectors are taken.
 
 ### Random walk
 
