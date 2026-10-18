@@ -9,7 +9,7 @@
 // ADDING AN INTEGRATOR. Its IntegratorId and IntegratorInfo row in rt_kernels.cpp, its stages in
 // the stage library (a new stage only where no existing one will do), a class implementing this
 // interface, and one case in createSchedule(). docs/plans/completed/integrator-layer.md has the
-// design, and docs/plans/roadmap.md reserves the stage numbers.
+// design, and docs/plans/pbrt-roadmap.md reserves the stage numbers.
 
 #include <memory>
 #include <span>

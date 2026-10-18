@@ -8,7 +8,7 @@
 //
 // THE STAGES are one library shared by every integrator. 00-09 follow the wavefront figure of
 // Physically Based Rendering 4ed, chapter 15 (figure 15.2), plus 09 for the film update that sits
-// outside it; docs/plans/roadmap.md reserves the numbers after them for the plans that add stages.
+// outside it; docs/plans/pbrt-roadmap.md reserves the numbers after them for the plans that add stages.
 // shaders/rt/ holds one file per variant, named NNVV_<what it does>.comp for stage NN variant VV,
 // so the directory listing IS the diagram.
 //

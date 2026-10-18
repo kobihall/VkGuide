@@ -2,7 +2,7 @@
 
 The renderer has one light transport algorithm, the wavefront path tracer, and its kernel registry, its scene file, and `GpuPathTracer::record()` all assume it. Light tracing, two bidirectional path tracers, photon mapping, and Metropolis light transport each need their own schedule and buffers, but most of what they trace, sample and accumulate is code the path tracer already has. This plan puts integrators above a shared library of wavefront stages, so that the traversal, the sampler, the light sampling, and the film are written once and every integrator runs them.
 
-*Implemented 2026-09-29; the as-built record is the last section. Part of the [roadmap](../roadmap.md).*
+*Implemented 2026-09-29; the as-built record is the last section. Part of the [roadmap](../pbrt-roadmap.md).*
 
 ## Decisions already made
 
@@ -96,12 +96,12 @@ struct IntegratorInfo {
 
 | Integrator | Plan | Runs from the path tracer | Runs from another integrator | Stages of its own |
 |---|---|---|---|---|
-| `light` | [bidirectional-path-tracing.md](../bidirectional-path-tracing.md) | 01, 02, 09 | | 11 emit light rays, 12 connect to the camera, 13 scatter light paths, 14 trace camera connections |
-| `lvc` | [bidirectional-path-tracing.md](../bidirectional-path-tracing.md) | 00, 01, 02, 08, 09 | `light`'s 11 to 14 | 15 handle emitters, 16 scatter and connect |
-| `bdpt` | [bidirectional-path-tracing.md](../bidirectional-path-tracing.md) | 00, 01, 02, 09 | `light`'s 11 | 17 store vertices and scatter, 18 connect subpaths |
-| `sppm` | [photon-mapping.md](../photon-mapping.md) | 00 to 04, 08 | `light`'s 11 and 13 | 19 store visible points, 20 deposit photons, 21 update photon statistics |
-| `pssmlt` | [metropolis-light-transport.md](../metropolis-light-transport.md) | 00, 02 to 08 | | 22 mutate chain samples, 23 accept and splat |
-| `mmlt` | [metropolis-light-transport.md](../metropolis-light-transport.md) | | `bdpt`'s stages | 22, 23 |
+| `light` | [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md) | 01, 02, 09 | | 11 emit light rays, 12 connect to the camera, 13 scatter light paths, 14 trace camera connections |
+| `lvc` | [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md) | 00, 01, 02, 08, 09 | `light`'s 11 to 14 | 15 handle emitters, 16 scatter and connect |
+| `bdpt` | [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md) | 00, 01, 02, 09 | `light`'s 11 | 17 store vertices and scatter, 18 connect subpaths |
+| `sppm` | [pbrt-photon-mapping.md](../pbrt-photon-mapping.md) | 00 to 04, 08 | `light`'s 11 and 13 | 19 store visible points, 20 deposit photons, 21 update photon statistics |
+| `pssmlt` | [pbrt-metropolis-light-transport.md](../pbrt-metropolis-light-transport.md) | 00, 02 to 08 | | 22 mutate chain samples, 23 accept and splat |
+| `mmlt` | [pbrt-metropolis-light-transport.md](../pbrt-metropolis-light-transport.md) | | `bdpt`'s stages | 22, 23 |
 
 Where an integrator weighs a contribution differently from the path tracer (`lvc`'s emitters, `sppm`'s first diffuse vertex), its stage includes the path tracer's body with a define, the way kernel 06's four variants share `crt_surface.glsl`. Every stage that traces, shared or not, is built for every traversal.
 
@@ -117,7 +117,7 @@ Where an integrator weighs a contribution differently from the path tracer (`lvc
 Resources and pipelines:
 
 - **The resource table.** Each owner publishes its resources into a table indexed by `CrtBinding` when it allocates or uploads them, and `writeSet()` reads the table. A binding that no owner published stops the program with its name, where a missing `switch` case used to leave the descriptor silently unwritten.
-- **The pipeline cache.** Pipelines are keyed by variant and traversal, and built for the active integrator's stages when a render starts, with the default selection's built at startup. The lane-count families of [spectral-rendering.md](../spectral-rendering.md) and the material classes of [material-system.md](../material-system.md) extend the key.
+- **The pipeline cache.** Pipelines are keyed by variant and traversal, and built for the active integrator's stages when a render starts, with the default selection's built at startup. The lane-count families of [pbrt-spectral-rendering.md](../pbrt-spectral-rendering.md) and the material classes of [pbrt-material-system.md](../pbrt-material-system.md) extend the key.
 - **Push constants.** Every kernel takes the one `Params` block, since a shared kernel is compiled once. An integrator that needs values of its own appends fields to it.
 
 The render guard's policy (the budget, the refusal and **Render anyway**) stays in `RaytraceRenderer`. The estimate comes from the active schedule, and the cost of one ray from the traversal.
@@ -152,7 +152,7 @@ Stages stay in `shaders/rt/`, because every integrator shares them. A schedule's
 3. The split into `GpuRenderer`, `WavefrontPool` and `PathSchedule`, with the resource table and the pipeline cache.
 4. The panels.
 
-Steps 1 to 3 change no image. The first new integrator arrives with [bidirectional-path-tracing.md](../bidirectional-path-tracing.md).
+Steps 1 to 3 change no image. The first new integrator arrives with [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md).
 
 ## Verification
 

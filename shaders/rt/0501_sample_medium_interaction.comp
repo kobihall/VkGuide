@@ -15,7 +15,7 @@
 // path is passed through to the same classification queues 02 already uses, with its throughput
 // scaled by the transmittance along the way.
 //
-// See docs/plans/participating-media.md for the plan, including which queues and buffers it
+// See docs/plans/pbrt-participating-media.md for the plan, including which queues and buffers it
 // adds and where they hook into the kernel registry.
 
 #extension GL_GOOGLE_include_directive : require

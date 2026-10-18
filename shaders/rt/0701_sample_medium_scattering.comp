@@ -12,7 +12,7 @@
 // counterpart of what kernel 06 does at a surface. With next-event estimation it would also
 // emit a shadow ray onto CRT_QUEUE_SHADOW, which is why that queue is allocated for both.
 //
-// See docs/plans/participating-media.md.
+// See docs/plans/pbrt-participating-media.md.
 
 #extension GL_GOOGLE_include_directive : require
 #include "include/crt_common.glsl"

@@ -12,7 +12,7 @@
 // reports any. A texel of infinity in the environment map once dropped a third of all samples
 // without a trace. A running mean rather than a running sum, because a
 // future adaptive budget leaves pixels with different counts, and per-pixel counts are kept
-// for it (docs/plans/adaptive-sampling.md).
+// for it (docs/plans/pbrt-adaptive-sampling.md).
 
 #extension GL_GOOGLE_include_directive : require
 #include "include/crt_common.glsl"

@@ -44,7 +44,7 @@ shaders/rt/
   include/                              the shared pieces
 ```
 
-`NNVV` is kernel `NN`, variant `VV`. Slots 05 and 07 have no implementation, since there is no participating media, but they keep their numbers, carry a stub file that documents what would go there, and have a plan (`docs/plans/participating-media.md`).
+`NNVV` is kernel `NN`, variant `VV`. Slots 05 and 07 have no implementation, since there is no participating media, but they keep their numbers, carry a stub file that documents what would go there, and have a plan (`docs/plans/pbrt-participating-media.md`).
 
 | # | Kernel | Runs over | What it does |
 |---|---|---|---|

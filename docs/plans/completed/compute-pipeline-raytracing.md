@@ -164,7 +164,7 @@ Two knobs, in two places, replacing the second draft's "reuse the background eff
 
 ### 2.11 The adaptive-sampling hook: a per-pixel budget and per-pixel sample counts, no policy
 
-*(Approved as "hook only"; the policy is `docs/plans/adaptive-sampling.md`.)* `sampleBudget[W*H]` (uint) says how many of a frame's `K` slots a pixel spawns; `generate` runs over all `W*H*K` pairs, spawns only `k < min(budget, K)`, pre-writes 0 to every radiance slot, and goes through the queue allocator so a sparse budget makes the first extend smaller for free. Today the buffer is filled with `K` at Render and never written again. `sampleCount` (`r32ui`) is per-pixel truth about the mean, maintained by `resolve`; the tonemap needs nothing from it, a future policy and a debug heat-map read it. With a uniform budget, `samplesAccumulated += K` per frame is exactly what every pixel holds, and that drives the progress bar and the stop test.
+*(Approved as "hook only"; the policy is `docs/plans/pbrt-adaptive-sampling.md`.)* `sampleBudget[W*H]` (uint) says how many of a frame's `K` slots a pixel spawns; `generate` runs over all `W*H*K` pairs, spawns only `k < min(budget, K)`, pre-writes 0 to every radiance slot, and goes through the queue allocator so a sparse budget makes the first extend smaller for free. Today the buffer is filled with `K` at Render and never written again. `sampleCount` (`r32ui`) is per-pixel truth about the mean, maintained by `resolve`; the tonemap needs nothing from it, a future policy and a debug heat-map read it. With a uniform budget, `samplesAccumulated += K` per frame is exactly what every pixel holds, and that drives the progress bar and the stop test.
 
 ### 2.12 Additions to the general compute framework and to `vkutil`
 

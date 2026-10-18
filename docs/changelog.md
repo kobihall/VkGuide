@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-18
+
+### Internal
+
+- The plans for features from the pbrt books are renamed `docs/plans/pbrt-*.md`, and their roadmap is `docs/plans/pbrt-roadmap.md`. The laser optics simulator is planned in `docs/plans/physoptics-*.md`, with `docs/plans/physoptics-laser-optics.md` as its overview and the build order for every plan.
+- The descriptions of the stub kernels 05 and 07 in **Windows** → **Raytracer Shaders** name the plan by its new path, `docs/plans/pbrt-participating-media.md`.
+
 ## 2026-09-29
 
 ### New
@@ -14,7 +21,7 @@
 ### Internal
 
 - `GpuPathTracer` is split into `GpuRenderer` (`src/rt_gpu.h`: what every integrator shares), `WavefrontPool` (`src/rt_wavefront.h`: the per-path buffers), and `PathSchedule` (`src/rt_path_schedule.h`), behind the `IntegratorSchedule` interface in `src/rt_schedule.h`. The design is `docs/plans/completed/integrator-layer.md`.
-- `KernelSlot` is a stage library shared by every integrator, and a variant of a stage must work in every integrator that runs it. `docs/plans/roadmap.md` reserves stages 10 to 25 for the plans that add them.
+- `KernelSlot` is a stage library shared by every integrator, and a variant of a stage must work in every integrator that runs it. `docs/plans/pbrt-roadmap.md` reserves stages 10 to 25 for the plans that add them.
 - A kernel that traces includes `shaders/rt/include/crt_trace.glsl` and is compiled once per traversal, to `<name>.comp.<id>.spv`. `0201_intersect_closest.comp` and `0801_trace_shadow_rays.comp` replace the six per-traversal files, and a new traversal is a strategy file, a `crt_trace.glsl` branch, and a `TraversalVariant` row. `KernelVariant::followsSlot` is gone.
 - Each owner publishes its resources into `CrtResourceTable`, and descriptor sets are written from it. A kernel that declares a binding nobody published aborts at its first dispatch instead of reading a stale descriptor.
 - Pipelines are built on first use, keyed by variant and traversal; the default selection's are built at startup. `CrtParams` and the other C++ mirrors of `crt_common.glsl` moved to `src/rt_gpu_types.h`.
@@ -45,7 +52,7 @@
 - **Raytracer Shaders** window, under **Windows**. Pick which shader runs in each kernel of the wavefront path tracer. The choice saves with the scene.
 - Kernel 02, intersect closest, has three shaders: BVH (binary), BVH (compressed 8-wide), and a linear scan with no acceleration structure. All three produce identical images from the same seed.
 - Raytracing shaders live in `shaders/rt/`, named `NNVV_<name>.comp` for kernel `NN`, variant `VV`. The numbering follows figure 15.2 of *Physically Based Rendering*, 4th edition.
-- Kernels 05 and 07 (participating media) exist as stubs and show greyed out in the shader window. The plan is in `docs/plans/participating-media.md`.
+- Kernels 05 and 07 (participating media) exist as stubs and show greyed out in the shader window. The plan is in `docs/plans/pbrt-participating-media.md`.
 - `docs/raytracing-overview.md` describes the tracer end to end.
 - A sixth material type, **pbr**, is glTF 2.0's metallic-roughness model: a GGX specular lobe over a diffuse base, with metallic, roughness and an emission that does not end the path. Shapes and mesh overrides can pick it in the **Scene** panel.
 - The path tracer applies glTF normal maps, metallic-roughness textures and emissive textures. Tangents come from the file's `TANGENT` attribute, or are generated from the uvs when it has none.

@@ -2,7 +2,7 @@
 
 The strongest test of a physically based renderer is the same scene rendered by a trusted one. pbrt-v4 is that renderer here: its source is in `../pbr-book-website/pbrt-v4`, it builds on this Mac, and the scenes published with it (the separate `pbrt-v4-scenes` repository) cover every feature the other plans add. Comparing the two renderers needs a scene both can read. This plan adds an importer for a subset of pbrt-v4's scene format that grows with the features, and a comparison workflow built on OpenEXR export.
 
-*Not implemented. Depends on [aovs-and-image-output.md](aovs-and-image-output.md) (EXR reference loading). What it can import grows with every other plan. Part of the [roadmap](roadmap.md).*
+*Not implemented. Depends on [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) (EXR reference loading). What it can import grows with every other plan. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -35,22 +35,22 @@ Each pbrt feature maps to the plan that adds it. Until that plan lands, the impo
 
 | pbrt | Here | Until then |
 |---|---|---|
-| `perspective`, `orthographic`, `spherical`, `realistic` cameras | [cameras.md](cameras.md) | perspective with the same pose |
-| `rgb`, `gbuffer`, `spectral` films; `iso`, `exposuretime`, `whitebalance`, `sensor` | [film-and-reconstruction.md](film-and-reconstruction.md), [display-and-color.md](display-and-color.md), [aovs-and-image-output.md](aovs-and-image-output.md) | resolution only |
-| samplers, `pixelsamples` | [sample-generation.md](sample-generation.md) | PCG, and the sample count |
-| filters | [film-and-reconstruction.md](film-and-reconstruction.md) | box |
-| `path`, `volpath`, `bdpt`, `lightpath`, `sppm`, `mlt`, `ambientocclusion` | the integrators of the other plans; `ambientocclusion` is [aovs-and-image-output.md](aovs-and-image-output.md)'s debug view | `path` |
-| `trianglemesh`, `plymesh` (with `displacement`), `loopsubdiv` | meshes; [subdivision-and-displacement.md](subdivision-and-displacement.md) | meshes without refinement |
-| `sphere`, `cylinder`, `disk`, `bilinearmesh`, `curve` | [analytic-shapes.md](analytic-shapes.md), [curves-and-hair.md](curves-and-hair.md) | full spheres; others skipped |
-| materials, `interface` | [bsdf-library.md](bsdf-library.md), [layered-materials.md](layered-materials.md), [measured-bsdfs.md](measured-bsdfs.md), [curves-and-hair.md](curves-and-hair.md), [subsurface-scattering.md](subsurface-scattering.md), [material-system.md](material-system.md) | a `pbr` material with the closest parameters, or grey Lambertian |
-| `imagemap` and the other textures | [textures.md](textures.md), [procedural-textures.md](procedural-textures.md) | image maps only; procedural textures become their mean |
-| lights | [light-types.md](light-types.md), [environment-lighting.md](environment-lighting.md) | point, spot, distant, diffuse area, image infinite (converted to equirectangular) |
-| media | [participating-media.md](participating-media.md) | skipped |
-| spectra: named, `blackbody`, `.spd` files | [spectral-rendering.md](spectral-rendering.md) | their RGB projection |
+| `perspective`, `orthographic`, `spherical`, `realistic` cameras | [pbrt-cameras.md](pbrt-cameras.md) | perspective with the same pose |
+| `rgb`, `gbuffer`, `spectral` films; `iso`, `exposuretime`, `whitebalance`, `sensor` | [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md), [pbrt-display-and-color.md](pbrt-display-and-color.md), [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) | resolution only |
+| samplers, `pixelsamples` | [pbrt-sample-generation.md](pbrt-sample-generation.md) | PCG, and the sample count |
+| filters | [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) | box |
+| `path`, `volpath`, `bdpt`, `lightpath`, `sppm`, `mlt`, `ambientocclusion` | the integrators of the other plans; `ambientocclusion` is [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md)'s debug view | `path` |
+| `trianglemesh`, `plymesh` (with `displacement`), `loopsubdiv` | meshes; [pbrt-subdivision-and-displacement.md](pbrt-subdivision-and-displacement.md) | meshes without refinement |
+| `sphere`, `cylinder`, `disk`, `bilinearmesh`, `curve` | [pbrt-analytic-shapes.md](pbrt-analytic-shapes.md), [pbrt-curves-and-hair.md](pbrt-curves-and-hair.md) | full spheres; others skipped |
+| materials, `interface` | [pbrt-bsdf-library.md](pbrt-bsdf-library.md), [pbrt-layered-materials.md](pbrt-layered-materials.md), [pbrt-measured-bsdfs.md](pbrt-measured-bsdfs.md), [pbrt-curves-and-hair.md](pbrt-curves-and-hair.md), [pbrt-subsurface-scattering.md](pbrt-subsurface-scattering.md), [pbrt-material-system.md](pbrt-material-system.md) | a `pbr` material with the closest parameters, or gray Lambertian |
+| `imagemap` and the other textures | [pbrt-textures.md](pbrt-textures.md), [pbrt-procedural-textures.md](pbrt-procedural-textures.md) | image maps only; procedural textures become their mean |
+| lights | [pbrt-light-types.md](pbrt-light-types.md), [pbrt-environment-lighting.md](pbrt-environment-lighting.md) | point, spot, distant, diffuse area, image infinite (converted to equirectangular) |
+| media | [pbrt-participating-media.md](pbrt-participating-media.md) | skipped |
+| spectra: named, `blackbody`, `.spd` files | [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) | their RGB projection |
 
 Every substitution and every unknown directive or parameter goes into an import report shown after loading, with file and line, so a mismatch in the comparison can be traced to what the importer dropped.
 
-Units: with pbrt's default sensor and imaging ratio, an emitter `"rgb L" [1 1 1]` produces a pixel value of 1, so RGB emission and reflectance carry over unchanged in exact RGB mode. Lights given by `power` or `illuminance` go through [light-types.md](light-types.md)'s photometric conversions, and the comparison scenes test them.
+Units: with pbrt's default sensor and imaging ratio, an emitter `"rgb L" [1 1 1]` produces a pixel value of 1, so RGB emission and reflectance carry over unchanged in exact RGB mode. Lights given by `power` or `illuminance` go through [pbrt-light-types.md](pbrt-light-types.md)'s photometric conversions, and the comparison scenes test them.
 
 ### PLY and files
 
@@ -59,11 +59,11 @@ Units: with pbrt's default sensor and imaging ratio, an emitter `"rgb L" [1 1 1]
 
 ### In the scene model
 
-A `.pbrt` file imports as a model, like a glTF file: **File** → **Import pbrt Scene...** reads it, its meshes become mesh objects, and its analytic shapes, cameras and lights become scene objects. The scene file records the `.pbrt` path and re-imports it on load, and edits to its materials are saved as overrides, as [material-system.md](material-system.md) does for glTF materials. Its render settings (resolution, samples, integrator, filter) are offered, not forced: **Use pbrt settings** applies them.
+A `.pbrt` file imports as a model, like a glTF file: **File** → **Import pbrt Scene...** reads it, its meshes become mesh objects, and its analytic shapes, cameras and lights become scene objects. The scene file records the `.pbrt` path and re-imports it on load, and edits to its materials are saved as overrides, as [pbrt-material-system.md](pbrt-material-system.md) does for glTF materials. Its render settings (resolution, samples, integrator, filter) are offered, not forced: **Use pbrt settings** applies them.
 
 ### Comparing with pbrt
 
-A script, `tools/compare_with_pbrt.sh`, renders a scene with a locally built pbrt-v4 to EXR, renders it here in batch mode ([aovs-and-image-output.md](aovs-and-image-output.md)), and reports the relative MSE and the mean relative error between them. **Compare to reference** does the same interactively after **Load reference**. Both renderers need enough samples that their noise is below the difference being looked for; the script reports each image's own variance estimate beside the difference.
+A script, `tools/compare_with_pbrt.sh`, renders a scene with a locally built pbrt-v4 to EXR, renders it here in batch mode ([pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md)), and reports the relative MSE and the mean relative error between them. **Compare to reference** does the same interactively after **Load reference**. Both renderers need enough samples that their noise is below the difference being looked for; the script reports each image's own variance estimate beside the difference.
 
 ## Registry, bindings and data
 
@@ -78,7 +78,7 @@ A script, `tools/compare_with_pbrt.sh`, renders a scene with a locally built pbr
 - Parser tests: pbrt-v4's tokenizer cases; a hand-written scene using every supported directive round-trips its transforms to 1e-6.
 - `assets/scenes/cornell_box.gltf` written out by hand as a `.pbrt` file, and the Cornell box from `pbrt-v4-scenes`, rendered by both renderers at 16384 spp: relative MSE below the two images' own noise, and the mean relative error under 0.5 %.
 - A scene with `fov` on a portrait film frames the same view in both renderers.
-- As each plan lands, its features gain a comparison scene: glass and metal for [bsdf-library.md](bsdf-library.md), a hair model for [curves-and-hair.md](curves-and-hair.md), a smoke volume for [participating-media.md](participating-media.md), and so on.
+- As each plan lands, its features gain a comparison scene: glass and metal for [pbrt-bsdf-library.md](pbrt-bsdf-library.md), a hair model for [pbrt-curves-and-hair.md](pbrt-curves-and-hair.md), a smoke volume for [pbrt-participating-media.md](pbrt-participating-media.md), and so on.
 
 ## Order of work
 

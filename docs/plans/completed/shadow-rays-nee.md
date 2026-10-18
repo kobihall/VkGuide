@@ -123,7 +123,7 @@ Selecting `0603 mis` with `0401 direct` renders a too-bright image with no error
 std::vector<std::pair<KernelSlot, const char*>> requires;
 ```
 
-`drawKernelPanel()` then, on a change, applies any `requires` of the newly selected variant and marks the forced rows so it is visible rather than surprising. This is the natural place for it — the same mechanism will be wanted by participating media (`docs/plans/participating-media.md`), where kernel 07 is meaningless without 05.
+`drawKernelPanel()` then, on a change, applies any `requires` of the newly selected variant and marks the forced rows so it is visible rather than surprising. This is the natural place for it — the same mechanism will be wanted by participating media (`docs/plans/pbrt-participating-media.md`), where kernel 07 is meaningless without 05.
 
 ### 2.7 The render guard
 
