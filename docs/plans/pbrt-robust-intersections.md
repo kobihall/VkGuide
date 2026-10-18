@@ -2,7 +2,7 @@
 
 Every ray the tracer spawns starts at a hit point computed in float, and every trace ignores hits closer than `CRT_T_MIN = 0.001`. That fixed epsilon is too large for small objects (a leaf 1 mm thick loses its back face) and too small for large or distant ones (a surface at 10 km self-shadows). Möller–Trumbore can also miss a ray that passes exactly through the edge shared by two triangles. This plan adopts pbrt's approach: bound the error of every intersection point, offset spawned rays just past that bound, and use a watertight triangle test.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decisions already made
 
@@ -27,7 +27,7 @@ Each primitive reports a conservative absolute error `pError` for the point it r
 - The instance transform adds `γ3 (|m00 x| + |m01 y| + |m02 z| + |m03|)` per row.
 - Optical bodies ([physoptics-optical-surfaces.md](physoptics-optical-surfaces.md)): a conic or toroidal hit is reprojected onto its surface along the normal and bounded like a quadric, a plane's error is zero along its normal, and the surface frame's transform adds its own term like an instance's. A light path through a long train of optics spawns a ray at every surface, so these offsets decide whether thin cemented interfaces are found.
 
-These need the object-to-world rows that [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) adds to `GpuInstance`. `surfaceInteraction()` fills `SurfaceInteraction.pError`.
+These need the object-to-world rows that [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) adds to `GpuInstance`. `surfaceInteraction()` fills `SurfaceInteraction.pError`.
 
 ### Spawning rays
 

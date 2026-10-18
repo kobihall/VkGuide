@@ -2,7 +2,7 @@
 
 The tracer has five analytic shapes: sphere, infinite plane, quad, box and capped cylinder, each a unit primitive placed by an instance transform. pbrt has more. Its disks and annuli make round area lights, and its partial spheres, cylinders and disks cut away a range of angle or height. The 3rd edition adds cones, paraboloids and hyperboloids, and the 4th edition adds bilinear patches, which are non-planar quads with a fast intersection test. *The Next Week*'s "Additional 2D Primitives" section derives disks, annuli and triangles from the quad's own plane coordinates. This plan adds all of them through the existing `SHAPE_TRAITS` machinery.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) (each shape's uv and derivatives). Disk sampling by solid angle is in [pbrt-light-shape-sampling.md](pbrt-light-shape-sampling.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (each shape's uv and derivatives). Disk sampling by solid angle is in [pbrt-light-shape-sampling.md](pbrt-light-shape-sampling.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -39,7 +39,7 @@ The bilinear patch uses Reshetov's intersection (2019), which pbrt-v4 adopted. I
 Each kind gets:
 
 - `intersectShape()` and `shapeNormal()` cases in C++ and GLSL, with the rounding-error bounds of [pbrt-robust-intersections.md](pbrt-robust-intersections.md) once that plan lands (PBR 4ed §6.8.5 gives them for every quadric).
-- A row in [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md)'s parameterization table: pbrt's (u, v), which for partial shapes span only the kept range, and dp/du, dp/dv, dn/du and dn/dv.
+- A row in [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md)'s parameterization table: pbrt's (u, v), which for partial shapes span only the kept range, and dp/du, dp/dv, dn/du and dn/dv.
 - A bounding box for the TLAS, tightened to the kept range for partial shapes.
 - A preview mesh in `shape_mesh.cpp`.
 - A `SHAPE_TRAITS` row with its params and values.

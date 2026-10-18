@@ -152,6 +152,36 @@ bool intersectShape(ShapeKind kind, const glm::vec3& origin, const glm::vec3& di
 	return false;
 }
 
+uint32_t shapePart(ShapeKind kind, const glm::vec3& point)
+{
+	switch (kind) {
+	case ShapeKind::Box: {
+		// the face is the axis the point lies furthest out along
+		const glm::vec3 a = glm::abs(point);
+		if (a.x >= a.y && a.x >= a.z) {
+			return point.x >= 0.f ? 1u : 0u;
+		}
+		if (a.y >= a.z) {
+			return point.y >= 0.f ? 3u : 2u;
+		}
+		return point.z >= 0.f ? 5u : 4u;
+	}
+	case ShapeKind::Cylinder: {
+		// whichever surface the point is nearer to: the rim at radius 1, or a cap at |y| = 0.5
+		const float radial = std::sqrt(point.x * point.x + point.z * point.z);
+		if (std::abs(0.5f - std::abs(point.y)) < std::abs(1.f - radial)) {
+			return point.y >= 0.f ? SHAPE_CYLINDER_TOP : SHAPE_CYLINDER_BOTTOM;
+		}
+		return SHAPE_CYLINDER_SIDE;
+	}
+	case ShapeKind::Sphere:
+	case ShapeKind::Plane:
+	case ShapeKind::Quad:
+		break;
+	}
+	return 0;
+}
+
 glm::vec3 shapeNormal(ShapeKind kind, const glm::vec3& point)
 {
 	switch (kind) {
@@ -161,24 +191,126 @@ glm::vec3 shapeNormal(ShapeKind kind, const glm::vec3& point)
 	case ShapeKind::Quad:
 		return glm::vec3(0.f, 1.f, 0.f);
 	case ShapeKind::Box: {
-		// the face is the axis the point lies furthest out along
-		const glm::vec3 a = glm::abs(point);
-		if (a.x >= a.y && a.x >= a.z) {
-			return glm::vec3(point.x >= 0.f ? 1.f : -1.f, 0.f, 0.f);
-		}
-		if (a.y >= a.z) {
-			return glm::vec3(0.f, point.y >= 0.f ? 1.f : -1.f, 0.f);
-		}
-		return glm::vec3(0.f, 0.f, point.z >= 0.f ? 1.f : -1.f);
+		const uint32_t face = shapePart(kind, point);
+		glm::vec3 n(0.f);
+		n[face >> 1] = (face & 1u) != 0 ? 1.f : -1.f;
+		return n;
 	}
 	case ShapeKind::Cylinder: {
-		// whichever surface the point is nearer to: the rim at radius 1, or a cap at |y| = 0.5
-		const float radial = std::sqrt(point.x * point.x + point.z * point.z);
-		if (std::abs(0.5f - std::abs(point.y)) < std::abs(1.f - radial)) {
-			return glm::vec3(0.f, point.y >= 0.f ? 1.f : -1.f, 0.f);
+		const uint32_t part = shapePart(kind, point);
+		if (part != SHAPE_CYLINDER_SIDE) {
+			return glm::vec3(0.f, part == SHAPE_CYLINDER_TOP ? 1.f : -1.f, 0.f);
 		}
 		return glm::vec3(point.x, 0.f, point.z);
 	}
 	}
 	return glm::vec3(0.f, 1.f, 0.f);
+}
+
+namespace {
+
+constexpr float SHAPE_PI = 3.14159265358979323846f;
+
+// an angle about +y in [0, 1), measured from +x towards `towardsZ` (-1 or 1) times +z
+float shapeTurn(const glm::vec3& p, float towardsZ)
+{
+	const float phi = std::atan2(towardsZ * p.z, p.x);
+	return (phi < 0.f ? phi + 2.f * SHAPE_PI : phi) / (2.f * SHAPE_PI);
+}
+
+}
+
+glm::vec2 shapeUv(ShapeKind kind, uint32_t part, const glm::vec3& p)
+{
+	switch (kind) {
+	case ShapeKind::Sphere:
+		return glm::vec2(shapeTurn(p, -1.f), std::acos(std::clamp(p.y, -1.f, 1.f)) / SHAPE_PI);
+	case ShapeKind::Plane:
+		return glm::vec2(p.x, p.z);
+	case ShapeKind::Quad:
+		return glm::vec2(p.x + 0.5f, p.z + 0.5f);
+	case ShapeKind::Box:
+		switch (part) {
+		case 0:
+			return glm::vec2(p.z + 0.5f, 0.5f - p.y);
+		case 1:
+			return glm::vec2(0.5f - p.z, 0.5f - p.y);
+		case 2:
+			return glm::vec2(0.5f - p.x, p.z + 0.5f);
+		case 3:
+			return glm::vec2(p.x + 0.5f, p.z + 0.5f);
+		case 4:
+			return glm::vec2(0.5f - p.x, 0.5f - p.y);
+		}
+		return glm::vec2(p.x + 0.5f, 0.5f - p.y);
+	case ShapeKind::Cylinder: {
+		if (part == SHAPE_CYLINDER_SIDE) {
+			return glm::vec2(shapeTurn(p, -1.f), 0.5f - p.y);
+		}
+		const float radial = std::sqrt(p.x * p.x + p.z * p.z);
+		return glm::vec2(shapeTurn(p, part == SHAPE_CYLINDER_TOP ? -1.f : 1.f), radial);
+	}
+	}
+	return glm::vec2(0.f);
+}
+
+ShapeDerivatives shapeDerivatives(ShapeKind kind, uint32_t part, const glm::vec3& p)
+{
+	ShapeDerivatives d;
+	const float turn = 2.f * SHAPE_PI;
+	switch (kind) {
+	case ShapeKind::Sphere: {
+		// p = (sin(theta) cos(phi), cos(theta), -sin(theta) sin(phi)), and n = p
+		const float sinTheta = std::sqrt(p.x * p.x + p.z * p.z);
+		const glm::vec2 phi = sinTheta > 0.f ? glm::vec2(p.x, -p.z) / sinTheta : glm::vec2(1.f, 0.f);
+		d.dpdu = turn * glm::vec3(p.z, 0.f, -p.x);
+		d.dpdv = SHAPE_PI * glm::vec3(p.y * phi.x, -sinTheta, -p.y * phi.y);
+		d.dndu = d.dpdu;
+		d.dndv = d.dpdv;
+		break;
+	}
+	case ShapeKind::Box:
+		switch (part) {
+		case 0:
+			d.dpdu = glm::vec3(0.f, 0.f, 1.f);
+			d.dpdv = glm::vec3(0.f, -1.f, 0.f);
+			break;
+		case 1:
+			d.dpdu = glm::vec3(0.f, 0.f, -1.f);
+			d.dpdv = glm::vec3(0.f, -1.f, 0.f);
+			break;
+		case 2:
+			d.dpdu = glm::vec3(-1.f, 0.f, 0.f);
+			d.dpdv = glm::vec3(0.f, 0.f, 1.f);
+			break;
+		case 3:
+			break;
+		case 4:
+			d.dpdu = glm::vec3(-1.f, 0.f, 0.f);
+			d.dpdv = glm::vec3(0.f, -1.f, 0.f);
+			break;
+		default:
+			d.dpdv = glm::vec3(0.f, -1.f, 0.f);
+			break;
+		}
+		break;
+	case ShapeKind::Cylinder:
+		if (part == SHAPE_CYLINDER_SIDE) {
+			// p = (cos(phi), y, -sin(phi)), and n = (x, 0, z)
+			d.dpdu = turn * glm::vec3(p.z, 0.f, -p.x);
+			d.dpdv = glm::vec3(0.f, -1.f, 0.f);
+			d.dndu = d.dpdu;
+		} else {
+			// the top cap turns as the side does and the bottom cap the other way, each seen from outside
+			const float towardsZ = part == SHAPE_CYLINDER_TOP ? -1.f : 1.f;
+			d.dpdu = turn * glm::vec3(-towardsZ * p.z, 0.f, towardsZ * p.x);
+			const float radial = std::sqrt(p.x * p.x + p.z * p.z);
+			d.dpdv = radial > 0.f ? glm::vec3(p.x, 0.f, p.z) / radial : glm::vec3(1.f, 0.f, 0.f);
+		}
+		break;
+	case ShapeKind::Plane:
+	case ShapeKind::Quad:
+		break;
+	}
+	return d;
 }

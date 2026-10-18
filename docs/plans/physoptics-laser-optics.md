@@ -107,7 +107,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 ### Milestone 0: foundations
 
-1. [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md)
+1. [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md). Implemented 2026-10-18.
 2. [pbrt-robust-intersections.md](pbrt-robust-intersections.md)
 3. [pbrt-verification-harness.md](pbrt-verification-harness.md)
 4. [pbrt-material-system.md](pbrt-material-system.md)

@@ -2,7 +2,7 @@
 
 Several plans add sampling code whose bugs do not show as crashes or obvious artifacts: a BSDF whose sampling density disagrees with its `pdf()` by a few percent renders a plausible image with the wrong brightness under MIS. `bin/light_test` already catches that class of bug for lights. This plan builds the equivalent for BSDFs and samplers, adds scene-level energy tests, and extends **Compare to reference** so that convergence rates, not only single errors, can be measured.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) only for the GPU parity pass. Build it before [pbrt-bsdf-library.md](pbrt-bsdf-library.md), which relies on it. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) only for the GPU parity pass. Build it before [pbrt-bsdf-library.md](pbrt-bsdf-library.md), which relies on it. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What exists today
 

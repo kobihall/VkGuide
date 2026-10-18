@@ -2,7 +2,7 @@
 
 This roadmap covers every feature that *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* describe and this renderer lacks or implements weakly. Each feature has a plan in `docs/plans/`, named `pbrt-*.md` since 2026-10-18. This file records the decisions that shape all of them and reserves the resources they share, so that the plans can be implemented in any order without colliding.
 
-*Written 2026-09-26. The integrator layer was implemented on 2026-09-29; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
+*Written 2026-09-26. The integrator layer was implemented on 2026-09-29 and the thin hit record on 2026-10-18; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
 
 *Revised 2026-10-18 for the [laser optics plan](physoptics-laser-optics.md), whose `physoptics-*.md` plans build on these. That plan's roadmap gives one linear order for both sets of plans; it pulls several of these forward (the foundations, the BSDF library, light types, image output, the display transform, the light integrator of bidirectional path tracing, cameras and polarization). The reservations below gain the laser optics plan's rows, and every rule here applies to its plans too.*
 
@@ -49,7 +49,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 | Plan | What it adds |
 |---|---|
 | [integrator-layer.md](completed/integrator-layer.md) | Implemented: the stage library every integrator shares, traversals built into every tracing kernel, per-integrator schedules |
-| [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) | 24-byte hit record, `SurfaceInteraction` reconstruction, geometric normal, shading frame, shape uvs |
+| [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) | Implemented: 24-byte hit record, `SurfaceInteraction` reconstruction, geometric normal, shading frame, shape uvs |
 | [pbrt-robust-intersections.md](pbrt-robust-intersections.md) | Error-bounded spawn points, watertight triangles, conservative box tests, camera-relative rendering space |
 | [pbrt-verification-harness.md](pbrt-verification-harness.md) | BSDF chi-square tests, white furnace scenes, image metrics, convergence curves |
 | [pbrt-material-system.md](pbrt-material-system.md) | Named material library, parameter records, material traits table, basic and complex surface queues |
@@ -170,7 +170,7 @@ alternative-accelerators ─> gpu-bvh-construction ─> wavefront-performance (r
 verification-harness ─> (every plan with a new BSDF, sampler or light)
 ```
 
-The foundations change the shape of every kernel, so do them first and in this order (the integrator layer is done): thin hit record, robust intersections, verification harness, material system, spectral rendering, sample generation, film. After that the groups are largely independent.
+The foundations change the shape of every kernel, so do them first and in this order (the integrator layer and the thin hit record are done): robust intersections, verification harness, material system, spectral rendering, sample generation, film. After that the groups are largely independent.
 
 ## Rules every plan follows
 
@@ -263,7 +263,7 @@ The radiance slot (`radiance[]`, binding 4) stays a `vec4` in film space in ever
 
 | Field | Type | Owner |
 |---|---|---|
-| `origin` | `vec3` | thin-hit-record (today the origin is read from `hits[]`) |
+| `origin` | `vec3` | thin-hit-record (implemented) |
 | `mediumAndGroup` | `uint`: the medium the ray starts in (low 24 bits) and the light group (high 8 bits) | participating-media, aovs-and-image-output |
 | `direction`, `tMax` | `vec3`, `float` | existing |
 | `contribution` | `Spectrum` (was `vec3`) | spectral-rendering |
@@ -273,7 +273,7 @@ The radiance slot (`radiance[]`, binding 4) stays a `vec4` in film space in ever
 
 ### Instances
 
-`GpuInstance` grows to 128 bytes in [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md). Its two padding words are taken: the first by the medium interface (participating-media), the second by the index into `MotionTransforms` (motion-blur). For a shape, `attributeBase`, which only meshes use, indexes `ShapeParams` (analytic-shapes); for an optical body (`CRT_SHAPE_OPTIC`, physoptics-optical-surfaces) it indexes `OpticSurfaces` instead, and `triangleCount` holds the body's surface count. A plan that needs more per-instance data adds a buffer indexed by instance rather than growing the struct.
+`GpuInstance` grew to 128 bytes in [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md). Its two padding words are taken: the first by the medium interface (participating-media), the second by the index into `MotionTransforms` (motion-blur). For a shape, `attributeBase`, which only meshes use, indexes `ShapeParams` (analytic-shapes); for an optical body (`CRT_SHAPE_OPTIC`, physoptics-optical-surfaces) it indexes `OpticSurfaces` instead, and `triangleCount` holds the body's surface count. A plan that needs more per-instance data adds a buffer indexed by instance rather than growing the struct.
 
 ### New stages, traversals and directories
 

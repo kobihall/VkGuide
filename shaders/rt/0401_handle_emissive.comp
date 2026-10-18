@@ -13,8 +13,9 @@
 // density light sampling would have given this point - the light's chance of being picked times its
 // solid-angle density from the previous vertex, which is the path's origin (PBR 4ed 13.4). Under
 // light sampling alone the record's density is 0, so a light the list holds gets nothing here. An
-// emitter the list does not hold (HitRecord.lightIndex CRT_NO_LIGHT, or one light sampling cannot
-// reach) keeps w = 1 in every strategy, since the BSDF sample is its only way in.
+// emitter the list does not hold (SurfaceInteraction.lightIndex CRT_NO_LIGHT, or one light sampling
+// cannot reach) keeps w = 1 in every strategy, since the BSDF sample is its only way in. The point,
+// the uv, the material and the light record come from crt_interaction.glsl.
 //
 // Nothing is appended to the next ray queue. For an emissive material the path ends here. A pbr
 // surface with emission was also queued for 06, which carries the path on;
@@ -23,6 +24,7 @@
 
 #extension GL_GOOGLE_include_directive : require
 #include "include/crt_common.glsl"
+#include "include/crt_interaction.glsl"
 #include "include/crt_random.glsl"
 #include "equirect.glsl"
 #include "include/crt_light.glsl"
@@ -32,13 +34,13 @@ layout (local_size_x = CRT_WORKGROUP) in;
 
 // what the surface emits towards the ray: an emissive material's colour times its strength, a pbr
 // material's emission times its sRGB emissive texel
-vec3 emittedRadiance(GpuMaterial light, HitRecord hit)
+vec3 emittedRadiance(GpuMaterial light, SurfaceInteraction si)
 {
 	vec3 emitted = light.albedo * light.param;
 	if (light.type == CRT_MATERIAL_PBR) {
 		emitted = light.emission;
 		if (light.emissiveLayer >= 0) {
-			emitted *= srgbToLinear(textureLod(materialTextures, vec3(hit.uv, float(light.emissiveLayer)), 0.0).rgb);
+			emitted *= srgbToLinear(textureLod(materialTextures, vec3(si.uv, float(light.emissiveLayer)), 0.0).rgb);
 		}
 	}
 	return emitted;
@@ -62,13 +64,14 @@ void main()
 	const PathState path = paths[pathIndex];
 	const HitRecord hit = hits[entry];
 	const vec3 inDir = normalize(path.direction);
-	const GpuMaterial light = materials[hit.materialAndFace >> 1u];
+	const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
+	const GpuMaterial light = materials[si.material];
 
 	// the MIS weight of a light found by the BSDF sample, against light sampling from the vertex the
 	// ray left (the path's origin, which 06 has not yet moved on)
 	float weight = 1.0;
-	if (path.misPdf >= 0.0 && hit.lightIndex != CRT_NO_LIGHT) {
-		const float lightPdf = lightPmf(hit.lightIndex) * areaLightPdf(hit.lightIndex, path.origin, hit.position);
+	if (path.misPdf >= 0.0 && si.lightIndex != CRT_NO_LIGHT) {
+		const float lightPdf = lightPmf(si.lightIndex) * areaLightPdf(si.lightIndex, path.origin, si.p);
 		if (lightPdf > 0.0) {
 			weight = misWeight(path.misPdf, lightPdf, path.misExponent);
 		}
@@ -78,7 +81,7 @@ void main()
 	// light seen straight from the camera belongs to neither technique
 	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS) {
 		if (path.bounce == 1u) {
-			radiance[path.radianceSlot].rgb += vec3(luminanceOf(path.throughput * emittedRadiance(light, hit) * weight), 0.0, 0.0);
+			radiance[path.radianceSlot].rgb += vec3(luminanceOf(path.throughput * emittedRadiance(light, si) * weight), 0.0, 0.0);
 		}
 		return;
 	}
@@ -89,8 +92,12 @@ void main()
 		return;
 	}
 
+	// only a glTF material carries a normal map, and it is pbr, whose debug views 06 writes: the
+	// emitters left here shade with the unmapped normal
+	bool frontFace;
+	const vec3 normal = facingShadingNormal(si, inDir, frontFace);
 	vec3 value;
-	if (debugTerminalValue(hit, inDir, true, value)) {
+	if (debugTerminalValue(normal, si.frontFace ? si.n : -si.n, hit.traversalCost, inDir, true, value)) {
 		radiance[path.radianceSlot] = vec4(value, 1.0);
 		return;
 	}
@@ -102,7 +109,7 @@ void main()
 	// added, not written: the path may have passed other glowing surfaces on earlier bounces. The
 	// weight is applied only when it is not 1, so a strategy without light sampling adds exactly
 	// what it always did
-	vec3 contribution = path.throughput * emittedRadiance(light, hit);
+	vec3 contribution = path.throughput * emittedRadiance(light, si);
 	if (weight != 1.0) {
 		contribution *= weight;
 	}

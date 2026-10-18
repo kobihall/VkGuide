@@ -78,8 +78,10 @@ std::shared_ptr<const RaytraceBlas> buildMeshBlas(const MeshAsset& mesh, const A
 	auto tangentOf = [&](uint32_t vertex) { return hasTangents ? mesh.cpuTangents[vertex] : glm::vec4(0.f, 0.f, 0.f, 1.f); };
 
 	std::vector<glm::vec3> vertices;
-	//per triangle, whether its material can cut it out: marked on the BLAS's triangles below
+	//per triangle, whether its material can cut it out and which surface it belongs to: both marked
+	//on the BLAS's triangles below
 	std::vector<uint8_t> cutout;
+	std::vector<uint32_t> surfaceOf;
 	forEachMeshTriangle(mesh, [&](uint32_t surfaceIndex, uint32_t, uint32_t ia, uint32_t ib, uint32_t ic) {
 		const GeoSurface& surface = mesh.surfaces[surfaceIndex];
 		const bool masked = surface.material != nullptr && surface.material->alphaMode == GltfAlphaMode::Mask;
@@ -90,6 +92,7 @@ std::shared_ptr<const RaytraceBlas> buildMeshBlas(const MeshAsset& mesh, const A
 		vertices.push_back(b.position);
 		vertices.push_back(c.position);
 		cutout.push_back(masked ? 1 : 0);
+		surfaceOf.push_back(surfaceIndex);
 
 		const glm::vec4 ta = tangentOf(ia);
 		const glm::vec4 tb = tangentOf(ib);
@@ -113,9 +116,13 @@ std::shared_ptr<const RaytraceBlas> buildMeshBlas(const MeshAsset& mesh, const A
 	}
 	for (BvhTriangle& triangle : out->blas.triangles) {
 		const uint32_t index = std::bit_cast<uint32_t>(triangle.v0.w);
-		if (index < cutout.size() && cutout[index] != 0) {
+		if (index >= cutout.size()) {
+			continue;
+		}
+		if (cutout[index] != 0) {
 			triangle.v0.w = std::bit_cast<float>(index | BVH_TRIANGLE_CUTOUT);
 		}
+		triangle.e1.w = std::bit_cast<float>(surfaceOf[index]);
 	}
 	return out;
 }
@@ -375,10 +382,12 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	auto gpuInstance = [&](uint32_t index) {
 		const SceneInstance& instance = instances[index];
 		const glm::mat4& m = accel->tlas.worldToObject[index];
+		const glm::mat4& w = instance.objectToWorld;
 		GpuInstance gpu {};
-		gpu.row0 = glm::vec4(m[0][0], m[1][0], m[2][0], m[3][0]);
-		gpu.row1 = glm::vec4(m[0][1], m[1][1], m[2][1], m[3][1]);
-		gpu.row2 = glm::vec4(m[0][2], m[1][2], m[2][2], m[3][2]);
+		for (int row = 0; row < 3; row++) {
+			gpu.toObject[row] = glm::vec4(m[0][row], m[1][row], m[2][row], m[3][row]);
+			gpu.toWorld[row] = glm::vec4(w[0][row], w[1][row], w[2][row], w[3][row]);
+		}
 		gpu.materialBase = materialBase[index];
 		gpu.lightBase = lightBase[index];
 		if (instance.kind == SceneInstanceKind::Shape) {

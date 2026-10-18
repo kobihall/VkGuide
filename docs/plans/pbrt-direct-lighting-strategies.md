@@ -43,7 +43,7 @@ It suits a scene with a few lights where every light matters everywhere, such as
 
 ### Shadow queue capacity
 
-Splitting and all-lights sampling put up to `N × lights` shadow rays in the queue per vertex. The pool is sized so the shadow queue fits the memory budget: with 48-byte shadow rays ([pbrt-thin-hit-record.md](pbrt-thin-hit-record.md)) and 4 shadow rays per slot, a 4M-slot pool would need 768 MB, so the pool shrinks to fit. The render guard counts `1 + shadow rays per vertex` traversals per bounce.
+Splitting and all-lights sampling put up to `N × lights` shadow rays in the queue per vertex. The pool is sized so the shadow queue fits the memory budget: with 48-byte shadow rays ([pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md)) and 4 shadow rays per slot, a 4M-slot pool would need 768 MB, so the pool shrinks to fit. The render guard counts `1 + shadow rays per vertex` traversals per bounce.
 
 ### Later
 

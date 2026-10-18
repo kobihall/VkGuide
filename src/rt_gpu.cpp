@@ -83,6 +83,8 @@ const char* crtDebugViewName(CrtDebugView view)
 		return "BVH traversal cost";
 	case CrtDebugView::MisWeights:
 		return "MIS weights (red BSDF, green light)";
+	case CrtDebugView::NormalDisagreement:
+		return "shading vs geometric normal (red past 90 degrees)";
 	case CrtDebugView::Count:
 		break;
 	}

@@ -6,7 +6,23 @@
 // Mirrored line for line by src/shape.h/.cpp, where the primitives are defined; a change to one
 // side must be made to the other. Every surface is two-sided.
 //
-// Included by crt_bvh.glsl, after the safeReciprocal it uses.
+// THE PARAMETERIZATION. Each kind has PBR's parametric (u, v) and their derivatives, to texture a
+// shape and to give it a tangent frame. One convention throughout, glTF's: seen from outside, u
+// runs to the right and v runs down, so an image the material samples at (u, v) appears upright
+// and unmirrored, exactly as on a glTF mesh. It makes cross(dp/du, dp/dv) point INTO the surface,
+// the opposite of pbrt, whose image textures flip v instead.
+//
+//     sphere     u = phi / 2pi, v = theta / pi, with phi = atan(-z, x) and theta from +y
+//     plane      object x and z, unscaled: a texture tiles once per unit and turns with the plane
+//     quad       object x and z mapped to [0, 1]
+//     box        each face its two axes mapped to [0, 1]; the four sides wrap like a cylinder, and
+//                the top joins the +z face
+//     cylinder   the side as the sphere, with v = 0.5 - y; each cap polar, v the radius
+//
+// Included by crt_traverse.glsl and crt_interaction.glsl. Requires crt_common.glsl.
+
+#ifndef CRT_SHAPE_GLSL
+#define CRT_SHAPE_GLSL
 
 // src/shape.h ShapeKind
 #define CRT_SHAPE_SPHERE 0u
@@ -14,6 +30,8 @@
 #define CRT_SHAPE_QUAD 2u
 #define CRT_SHAPE_BOX 3u
 #define CRT_SHAPE_CYLINDER 4u
+
+#define CRT_SHAPE_PI 3.14159265358979323846
 
 // lowers tMax to `candidate` when it is a nearer hit in range
 bool acceptRoot(float candidate, float tMin, inout float tMax)
@@ -126,6 +144,29 @@ uint boxFace(vec3 p)
 	return p.z >= 0.0 ? 5u : 4u;
 }
 
+// the parts of a cylinder (shapePart())
+#define CRT_CYLINDER_SIDE 0u
+#define CRT_CYLINDER_BOTTOM 1u
+#define CRT_CYLINDER_TOP 2u
+
+// which part of the unit primitive a point on it lies on, what HitRecord.primitive holds for a
+// shape: a box's face in boxFace() order, a cylinder's side or cap by whichever surface the point
+// is nearer to (the rim at radius 1, or a cap at |y| = 0.5), and 0 for a shape of one part
+uint shapePart(uint kind, vec3 p)
+{
+	if (kind == CRT_SHAPE_BOX) {
+		return boxFace(p);
+	}
+	if (kind == CRT_SHAPE_CYLINDER) {
+		const float radial = sqrt(p.x * p.x + p.z * p.z);
+		if (abs(0.5 - abs(p.y)) < abs(1.0 - radial)) {
+			return p.y >= 0.0 ? CRT_CYLINDER_TOP : CRT_CYLINDER_BOTTOM;
+		}
+		return CRT_CYLINDER_SIDE;
+	}
+	return 0u;
+}
+
 // the outward object-space normal at a point on the unit primitive, not normalised
 vec3 shapeNormal(uint kind, vec3 p)
 {
@@ -134,23 +175,125 @@ vec3 shapeNormal(uint kind, vec3 p)
 	}
 	if (kind == CRT_SHAPE_BOX) {
 		// the face is the axis the point lies furthest out along
-		const vec3 a = abs(p);
-		if (a.x >= a.y && a.x >= a.z) {
-			return vec3(p.x >= 0.0 ? 1.0 : -1.0, 0.0, 0.0);
-		}
-		if (a.y >= a.z) {
-			return vec3(0.0, p.y >= 0.0 ? 1.0 : -1.0, 0.0);
-		}
-		return vec3(0.0, 0.0, p.z >= 0.0 ? 1.0 : -1.0);
+		const uint face = boxFace(p);
+		vec3 n = vec3(0.0);
+		n[face >> 1u] = (face & 1u) != 0u ? 1.0 : -1.0;
+		return n;
 	}
 	if (kind == CRT_SHAPE_CYLINDER) {
-		// whichever surface the point is nearer to: the rim at radius 1, or a cap at |y| = 0.5
-		const float radial = sqrt(p.x * p.x + p.z * p.z);
-		if (abs(0.5 - abs(p.y)) < abs(1.0 - radial)) {
-			return vec3(0.0, p.y >= 0.0 ? 1.0 : -1.0, 0.0);
+		const uint part = shapePart(kind, p);
+		if (part != CRT_CYLINDER_SIDE) {
+			return vec3(0.0, part == CRT_CYLINDER_TOP ? 1.0 : -1.0, 0.0);
 		}
 		return vec3(p.x, 0.0, p.z);
 	}
 	// plane and quad
 	return vec3(0.0, 1.0, 0.0);
 }
+
+// an angle about +y in [0, 1), measured from +x towards `towardsZ` (-1 or 1) times +z
+float shapeTurn(vec3 p, float towardsZ)
+{
+	const float phi = atan(towardsZ * p.z, p.x);
+	return (phi < 0.0 ? phi + 2.0 * CRT_SHAPE_PI : phi) / (2.0 * CRT_SHAPE_PI);
+}
+
+// the (u, v) of a point on `part` of the unit primitive (the table at the top of this file). Kernel
+// 02 stores it in HitRecord.barycentrics, so the angles are solved once per hit
+vec2 shapeUv(uint kind, uint part, vec3 p)
+{
+	if (kind == CRT_SHAPE_SPHERE) {
+		return vec2(shapeTurn(p, -1.0), acos(clamp(p.y, -1.0, 1.0)) / CRT_SHAPE_PI);
+	}
+	if (kind == CRT_SHAPE_PLANE) {
+		return p.xz;
+	}
+	if (kind == CRT_SHAPE_QUAD) {
+		return p.xz + 0.5;
+	}
+	if (kind == CRT_SHAPE_BOX) {
+		switch (part) {
+		case 0u:
+			return vec2(p.z + 0.5, 0.5 - p.y);
+		case 1u:
+			return vec2(0.5 - p.z, 0.5 - p.y);
+		case 2u:
+			return vec2(0.5 - p.x, p.z + 0.5);
+		case 3u:
+			return vec2(p.x + 0.5, p.z + 0.5);
+		case 4u:
+			return vec2(0.5 - p.x, 0.5 - p.y);
+		}
+		return vec2(p.x + 0.5, 0.5 - p.y);
+	}
+	if (kind == CRT_SHAPE_CYLINDER) {
+		if (part == CRT_CYLINDER_SIDE) {
+			return vec2(shapeTurn(p, -1.0), 0.5 - p.y);
+		}
+		const float radial = sqrt(p.x * p.x + p.z * p.z);
+		return vec2(shapeTurn(p, part == CRT_CYLINDER_TOP ? -1.0 : 1.0), radial);
+	}
+	return vec2(0.0);
+}
+
+// The object-space derivatives of the point and of the normal (shapeNormal(), unnormalised) with
+// respect to shapeUv()'s u and v, from the point alone. The sphere's u derivative vanishes at its
+// poles and a cap's v derivative is taken along +x at its centre: wherever dp/du is zero, a
+// tangent frame has to come from the normal instead
+void shapeDerivatives(uint kind, uint part, vec3 p, out vec3 dpdu, out vec3 dpdv, out vec3 dndu, out vec3 dndv)
+{
+	dpdu = vec3(1.0, 0.0, 0.0);
+	dpdv = vec3(0.0, 0.0, 1.0);
+	dndu = vec3(0.0);
+	dndv = vec3(0.0);
+	const float turn = 2.0 * CRT_SHAPE_PI;
+	if (kind == CRT_SHAPE_SPHERE) {
+		// p = (sin(theta) cos(phi), cos(theta), -sin(theta) sin(phi)), and n = p
+		const float sinTheta = sqrt(p.x * p.x + p.z * p.z);
+		const vec2 phi = sinTheta > 0.0 ? vec2(p.x, -p.z) / sinTheta : vec2(1.0, 0.0);
+		dpdu = turn * vec3(p.z, 0.0, -p.x);
+		dpdv = CRT_SHAPE_PI * vec3(p.y * phi.x, -sinTheta, -p.y * phi.y);
+		dndu = dpdu;
+		dndv = dpdv;
+	} else if (kind == CRT_SHAPE_BOX) {
+		switch (part) {
+		case 0u:
+			dpdu = vec3(0.0, 0.0, 1.0);
+			dpdv = vec3(0.0, -1.0, 0.0);
+			break;
+		case 1u:
+			dpdu = vec3(0.0, 0.0, -1.0);
+			dpdv = vec3(0.0, -1.0, 0.0);
+			break;
+		case 2u:
+			dpdu = vec3(-1.0, 0.0, 0.0);
+			dpdv = vec3(0.0, 0.0, 1.0);
+			break;
+		case 3u:
+			break;
+		case 4u:
+			dpdu = vec3(-1.0, 0.0, 0.0);
+			dpdv = vec3(0.0, -1.0, 0.0);
+			break;
+		default:
+			dpdv = vec3(0.0, -1.0, 0.0);
+			break;
+		}
+	} else if (kind == CRT_SHAPE_CYLINDER) {
+		if (part == CRT_CYLINDER_SIDE) {
+			// p = (cos(phi), y, -sin(phi)), and n = (x, 0, z)
+			dpdu = turn * vec3(p.z, 0.0, -p.x);
+			dpdv = vec3(0.0, -1.0, 0.0);
+			dndu = dpdu;
+		} else {
+			// the top cap turns as the side does and the bottom cap the other way, each seen from outside
+			const float towardsZ = part == CRT_CYLINDER_TOP ? -1.0 : 1.0;
+			dpdu = turn * vec3(-towardsZ * p.z, 0.0, towardsZ * p.x);
+			const float radial = sqrt(p.x * p.x + p.z * p.z);
+			dpdv = radial > 0.0 ? vec3(p.x, 0.0, p.z) / radial : vec3(1.0, 0.0, 0.0);
+		}
+	}
+	// plane and quad: the defaults
+}
+
+#endif

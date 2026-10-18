@@ -15,7 +15,10 @@
 // scatterSurface() for its BSDF lobe - it is the sampling STRATEGY that differs, not the material
 // model - so this file is shared by every 06 variant rather than living inside one.
 //
-// Requires crt_common.glsl and crt_random.glsl.
+// The material is evaluated here too: its textures (resolveMaterial()) and its normal map
+// (materialShadingNormal()), both from the SurfaceInteraction kernel 06 rebuilt.
+//
+// Requires crt_common.glsl, crt_interaction.glsl and crt_random.glsl.
 
 float schlick(float cosine, float refIdx)
 {
@@ -326,6 +329,59 @@ float pdfSurface(GpuMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 		return pdfPbr(m, inDir, normal, wi);
 	}
 	return 0.0;
+}
+
+// The object-space normal a material's normal map gives at this point of a triangle, or false where
+// there is none to apply: no map, or a vertex without a tangent (a mesh with no uvs, or degenerate
+// ones). `objectNormal` is the interpolated vertex normal (triangleObjectNormal())
+bool normalMapped(GpuMaterial material, GpuTriangleAttributes attributes, vec2 bary, vec2 uv, vec3 objectNormal, out vec3 mapped)
+{
+	mapped = objectNormal;
+	if (material.normalLayer < 0 || (attributes.tangents.w & CRT_TANGENT_MISSING) != 0u) {
+		return false;
+	}
+	const float w = 1.0 - bary.x - bary.y;
+	const vec3 n = normalize(objectNormal);
+	vec3 t = w * unpackTangent(attributes.tangents.x) + bary.x * unpackTangent(attributes.tangents.y) + bary.y * unpackTangent(attributes.tangents.z);
+	t -= n * dot(n, t);
+	if (dot(t, t) < 1e-12) {
+		return false;
+	}
+	t = normalize(t);
+	// glTF: bitangent = cross(normal, tangent.xyz) * tangent.w. The first vertex's sign stands for
+	// the triangle's, since a mirrored uv seam never runs through a triangle's interior
+	const vec3 b = cross(n, t) * ((attributes.tangents.w & 1u) != 0u ? -1.0 : 1.0);
+	vec3 texel = textureLod(materialTextures, vec3(uv, float(material.normalLayer)), 0.0).xyz * 2.0 - 1.0;
+	texel.xy *= material.normalScale;
+	// built in object space and carried to world space like any normal. Under a non-uniform scale
+	// that skews the tangent components slightly; every model in use is scaled uniformly
+	mapped = t * texel.x + b * texel.y + n * texel.z;
+	return dot(mapped, mapped) > 1e-12;
+}
+
+// The shading normal the materials below take: the interaction's ns turned to face the incoming ray
+// (facingShadingNormal()), then perturbed by the material's normal map. A mapped normal is kept only
+// while it still faces the ray: one tilted past the viewer would send the BSDF's continuation into
+// the surface. `frontFace` is the side of the unmapped normal the ray arrived on, since a normal map
+// changes how a surface shades, not which side it is. Only a glTF material, on a triangle, has a map
+vec3 materialShadingNormal(GpuMaterial material, HitRecord hit, SurfaceInteraction si, vec3 inDir, out bool frontFace)
+{
+	vec3 normal = facingShadingNormal(si, inDir, frontFace);
+	const GpuInstance instance = instances[hit.instance];
+	if (material.normalLayer < 0 || instance.nodeBase == CRT_INSTANCE_SHAPE) {
+		return normal;
+	}
+	const BvhTriangle tri = blasTriangles[hit.primitive];
+	const GpuTriangleAttributes attributes = triangleAttributes[instance.attributeBase + (floatBitsToUint(tri.v0.w) & CRT_TRIANGLE_INDEX_MASK)];
+	vec3 mappedObjectNormal;
+	if (normalMapped(material, attributes, hit.barycentrics, si.uv, triangleObjectNormal(attributes, tri, hit.barycentrics), mappedObjectNormal)) {
+		vec3 mapped = worldNormal(instance, mappedObjectNormal);
+		mapped = frontFace ? mapped : -mapped;
+		if (dot(mapped, inDir) < 0.0) {
+			normal = mapped;
+		}
+	}
+	return normal;
 }
 
 // a textured material's factors modulated by its textures, exactly as glTF defines them: base

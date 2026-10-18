@@ -30,8 +30,11 @@
 // which is unbiased and makes late bounces cheap under compaction. It judges only the
 // continuation: the shadow ray from this vertex is already on its way.
 //
-// Requires crt_common.glsl, crt_random.glsl, equirect.glsl, crt_scatter.glsl, crt_light.glsl and
-// crt_debug.glsl.
+// The surface itself comes from crt_interaction.glsl, rebuilt from the thin hit record, and the
+// shadow ray leaves from its point: kernel 08 reads the origin from the ShadowRay, not from hits[].
+//
+// Requires crt_common.glsl, crt_interaction.glsl, crt_random.glsl, equirect.glsl, crt_scatter.glsl,
+// crt_light.glsl and crt_debug.glsl.
 
 #define CRT_DIRECT_BSDF 0
 #define CRT_DIRECT_LIGHT 1
@@ -48,9 +51,10 @@
 layout (local_size_x = CRT_WORKGROUP) in;
 
 // The next-event estimate at this vertex: sample one light, evaluate the BSDF towards it, and write
-// shadowRays[entry] if it would add anything. Draws its random numbers after the BSDF sample's, so
-// a strategy that samples nothing here leaves the path's random stream exactly as it was
-bool nextEvent(GpuMaterial material, vec3 inDir, HitRecord hit, PathState path, inout uint rng, uint entry)
+// shadowRays[entry] if it would add anything. `position` is the vertex and the shadow ray's origin,
+// `normal` the shading normal the material takes. Draws its random numbers after the BSDF sample's,
+// so a strategy that samples nothing here leaves the path's random stream exactly as it was
+bool nextEvent(GpuMaterial material, vec3 inDir, vec3 position, vec3 normal, PathState path, inout uint rng, uint entry)
 {
 	vec3 direction;
 	float distance;
@@ -64,7 +68,7 @@ bool nextEvent(GpuMaterial material, vec3 inDir, HitRecord hit, PathState path, 
 		return false;
 	}
 	const uint index = sampleDeltaLightIndex(randomFloat(rng));
-	if (!sampleDeltaLight(lights[index], hit.position, direction, distance, emitted)) {
+	if (!sampleDeltaLight(lights[index], position, direction, distance, emitted)) {
 		return false;
 	}
 	lightPdf = deltaLightPmf(index);
@@ -78,14 +82,14 @@ bool nextEvent(GpuMaterial material, vec3 inDir, HitRecord hit, PathState path, 
 	// (pbrt-v4's compensated distribution); on its own, light sampling has to cover everything
 	const uint environmentTable = CRT_DIRECT_LIGHTING == CRT_DIRECT_MIS ? 1u : 0u;
 	float directionPdf;
-	if (!sampleLight(index, hit.position, u, environmentTable, direction, distance, emitted, directionPdf)) {
+	if (!sampleLight(index, position, u, environmentTable, direction, distance, emitted, directionPdf)) {
 		return false;
 	}
 	lightPdf = lightPmf(index) * directionPdf;
 #if CRT_DIRECT_LIGHTING == CRT_DIRECT_MIS
 	// a delta light is out of the BSDF sample's reach, so light sampling keeps its full weight
 	if (!isDeltaLight(lights[index].kind)) {
-		weight = misWeight(lightPdf, pdfSurface(material, inDir, hit.normal, direction), CRT_MIS_EXPONENT);
+		weight = misWeight(lightPdf, pdfSurface(material, inDir, normal, direction), CRT_MIS_EXPONENT);
 	}
 #endif
 #endif
@@ -98,7 +102,7 @@ bool nextEvent(GpuMaterial material, vec3 inDir, HitRecord hit, PathState path, 
 	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS && isDeltaLight(lights[index].kind)) {
 		return false;
 	}
-	vec3 contribution = path.throughput * evalSurface(material, inDir, hit.normal, direction) * emitted * (weight / lightPdf);
+	vec3 contribution = path.throughput * evalSurface(material, inDir, normal, direction) * emitted * (weight / lightPdf);
 	if (!(max(contribution.r, max(contribution.g, contribution.b)) > 0.0)) {
 		return false;
 	}
@@ -108,6 +112,8 @@ bool nextEvent(GpuMaterial material, vec3 inDir, HitRecord hit, PathState path, 
 	}
 
 	ShadowRay ray;
+	ray.origin = position;
+	ray.mediumAndGroup = 0u;
 	ray.direction = direction;
 	// short of the light itself, so the shadow ray cannot be stopped by the surface it is aimed at
 	ray.tMax = distance >= CRT_INFINITY ? CRT_INFINITY : distance * (1.0 - 1e-4);
@@ -137,20 +143,23 @@ void main()
 		PathState path = paths[pathIndex];
 		const HitRecord hit = hits[entry];
 		const vec3 inDir = normalize(path.direction);
+		// the path's origin has not moved since kernel 02 traced from it
+		const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
+		bool frontFace;
+		const vec3 normal = materialShadingNormal(materials[si.material], hit, si, inDir, frontFace);
 
 		vec3 debugValue;
-		if (debugTerminalValue(hit, inDir, true, debugValue)) {
+		if (debugTerminalValue(normal, si.frontFace ? si.n : -si.n, hit.traversalCost, inDir, true, debugValue)) {
 			// the debug views replace shading: each writes its value as the path's contribution
 			// and ends the path, so they accumulate (and average under jitter) like radiance
 			radiance[path.radianceSlot] = vec4(debugValue, 1.0);
 		} else {
-			const GpuMaterial material = resolveMaterial(hit.materialAndFace >> 1u, hit.uv);
-			const bool frontFace = (hit.materialAndFace & 1u) != 0u;
+			const GpuMaterial material = resolveMaterial(si.material, si.uv);
 			uint rng = path.rngState;
 
 			vec3 attenuation;
 			vec3 outDir;
-			bool alive = scatterSurface(material, inDir, hit.normal, frontFace, rng, attenuation, outDir);
+			bool alive = scatterSurface(material, inDir, normal, frontFace, rng, attenuation, outDir);
 			vec3 throughput = path.throughput * attenuation;
 			const uint nextBounce = path.bounce + 1u;
 
@@ -175,11 +184,11 @@ void main()
 			// the continuation, and a BSDF it could land in
 			const bool specular = isSpecularMaterial(material);
 			if (nextBounce < pc.rayDepth && !specular && !pastFirstVertex) {
-				shadow = nextEvent(material, inDir, hit, path, rng, entry);
+				shadow = nextEvent(material, inDir, si.p, normal, path, rng, entry);
 			}
 
 			if (alive) {
-				path.origin = hit.position;
+				path.origin = si.p;
 				path.direction = outDir;
 				path.rngState = rng;
 				path.throughput = throughput;
@@ -190,7 +199,7 @@ void main()
 #elif CRT_DIRECT_LIGHTING == CRT_DIRECT_LIGHT
 				path.misPdf = specular ? CRT_MIS_FULL : 0.0;
 #else
-				path.misPdf = specular ? CRT_MIS_FULL : pdfSurface(material, inDir, hit.normal, normalize(outDir));
+				path.misPdf = specular ? CRT_MIS_FULL : pdfSurface(material, inDir, normal, normalize(outDir));
 				path.misExponent = CRT_MIS_EXPONENT;
 #endif
 				paths[pathIndex] = path;

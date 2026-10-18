@@ -6,8 +6,8 @@
 // question - is anything in the way - adding the contribution 06 already worked out when nothing is.
 // No closest hit, no attributes, no material: pbrt-v4's IntersectShadow() (PBR 4ed 15.3.10).
 //
-// A shadow ray starts at its path's hit point, which is hits[] at the same queue position, and
-// stops just short of the light (ShadowRay.tMax). The alpha test is part of the triangle test every
+// A shadow ray starts at the spawn point kernel 06 gave it (ShadowRay.origin) and stops just short
+// of the light (ShadowRay.tMax). The alpha test is part of the triangle test every
 // strategy shares, so cut-out foliage casts cut-out shadows here too.
 //
 // A shadow ray walks the same acceleration structure as a camera ray, and a CWBVH walk cannot read
@@ -40,10 +40,10 @@ void main()
 	g_nodesVisited = 0u;
 	g_primitivesTested = 0u;
 	if (index < headers[CRT_QUEUE_SHADOW].rayCount) {
-		// the queue holds the RAY QUEUE POSITION: the index of the shadow ray and of the hit it leaves
+		// the queue holds the RAY QUEUE POSITION: the index of the shadow ray
 		const uint entry = queues[queueSlot(CRT_QUEUE_SHADOW, index)];
 		const ShadowRay ray = shadowRays[entry];
-		if (!occluded(hits[entry].position, ray.direction, CRT_T_MIN, ray.tMax)) {
+		if (!occluded(ray.origin, ray.direction, CRT_T_MIN, ray.tMax)) {
 			// added, not written: one path sends at most one shadow ray a bounce, and 03 and 04 have
 			// already added this bounce's emission
 			radiance[ray.radianceSlot].rgb += ray.contribution;

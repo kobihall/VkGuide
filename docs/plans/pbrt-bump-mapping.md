@@ -2,11 +2,11 @@
 
 The tracer applies glTF normal maps and nothing else: no material can perturb its shading normal from a height or displacement texture, which is what pbrt's `BumpMap()` does. Shading normals that differ from the geometry also cause artifacts the tracer does not guard against: black or faceted terminators on low-polygon meshes, and light leaking through surfaces whose shading normal faces a light the geometry hides. This plan adds displacement-based bump mapping and the two known fixes for those artifacts.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) (geometric normal, dp/du, dn/du; normal mapping moved to the material kernel) and [pbrt-textures.md](pbrt-textures.md) (scalar texture references, footprints). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (geometric normal, dp/du, dn/du; normal mapping moved to the material kernel) and [pbrt-textures.md](pbrt-textures.md) (scalar texture references, footprints). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
-- Normal maps are applied in kernel 02 (`normalMapped()` in `crt_intersect.glsl`), and [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) moves them into material evaluation unchanged.
+- Normal maps are applied in kernel 02 (`normalMapped()` in `crt_intersect.glsl`), and [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) moves them into material evaluation unchanged.
 - A mapped normal that faces away from the incoming ray is dropped.
 - Nothing compares the shading normal with the geometric normal, since the geometric normal is not kept.
 

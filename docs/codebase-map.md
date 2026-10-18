@@ -305,7 +305,7 @@ shaders/rt/
   0901_update_film.comp                 09 Update film (not a PBR figure box)
   include/
     crt_common.glsl      buffer structs, GLOBAL BINDING NUMBERS, push constants, queue set,
-                         queueAppend(), hitTriangle(), srgbToLinear()
+                         queueAppend(), hitTriangle(), the instance transforms, srgbToLinear()
     crt_random.glsl      PCG hash + sampling
     crt_trace.glsl       the traversal a tracing kernel is built for: one CRT_TRAVERSAL_<ID> branch
                          per traversal, which CMake reads to compile the permutations
@@ -313,9 +313,13 @@ shaders/rt/
                          instanceRay(), testShapeInstance(), resetTrace(); includes crt_shape.glsl
     crt_bvh.glsl         traceScene()/occluded() via two-level BVH; CRT_BVH_CWBVH picks the wide traversal
     crt_linear.glsl      traceScene()/occluded() via brute force
-    crt_shape.glsl       hitShape()/shapeNormal()/boxFace(); mirrors src/shape.cpp
-    crt_intersect.glsl   kernel 02's body: classify + write HitRecord (lightIndex too) + push the three queues
-    crt_scatter.glsl     the four BSDFs + resolveMaterial() + evalSurface()/pdfSurface()
+    crt_shape.glsl       hitShape(), shapePart(), shapeNormal(), shapeUv(), shapeDerivatives();
+                         mirrors src/shape.cpp
+    crt_intersect.glsl   kernel 02's body: write the thin HitRecord, classify, push the three queues
+    crt_interaction.glsl surfaceInteraction(): the surface rebuilt from a HitRecord and its ray;
+                         facingShadingNormal(), shadingFrame()
+    crt_scatter.glsl     the BSDFs + resolveMaterial() + materialShadingNormal() (the normal map)
+                         + evalSurface()/pdfSurface()
     crt_surface.glsl     kernel 06's body: next-event estimation, continuation, the MIS record;
                          CRT_DIRECT_LIGHTING (and CRT_MIS_EXPONENT) pick the strategy
     crt_shadow.glsl      kernel 08's body: occluded(), then add the ShadowRay's contribution
@@ -397,9 +401,7 @@ for bounce in [0, rayDepth):
                                                     04 reads the throughput 06 overwrites
     06 Surface scattering      indirect over SURFACE     only 06 writes paths[] and the next ray queue
     barrier
-    08 Trace shadow rays       indirect over SHADOW      a shadow ray's origin is hits[] at its
-                                                         queue position, so 08 runs before the
-                                                         next 02 overwrites it
+    08 Trace shadow rays       indirect over SHADOW      each shadow ray carries its own origin
     barrier; copyHeader(next, bounce + 1); copyHeader(SHADOW, CRT_MAX_DEPTH + 1 + bounce)
 09 Update film                 direct over width × height
 barrier; copy the frame's counters to readback, 09's dropped-sample count last
@@ -425,7 +427,7 @@ Both strategy files implement `occluded()` with the same walk as `traceScene()` 
 
 ### 8.8 Changes to existing structures
 
-- **`GpuInstance` is 80 bytes, not 64** (`rt_accel.h`, `static_assert` updated). Added `uint32_t triangleCount` + 3 pad, the first of which is now `lightBase` (§8.14). Filled from the new `BlasPlacement::triangleCount` in `packGeometry()`. Only `crt_linear.glsl` reads it — a BVH reaches triangles through leaves.
+- **`GpuInstance` is 80 bytes, not 64** (`rt_accel.h`, `static_assert` updated). Added `uint32_t triangleCount` + 3 pad, the first of which is now `lightBase` (§8.14). Filled from the new `BlasPlacement::triangleCount` in `packGeometry()`. Only `crt_linear.glsl` reads it — a BVH reaches triangles through leaves. It is 128 bytes since §8.17, which adds the object-to-world rows.
 - **`CrtParams` gained `uint32_t instanceCount`** in place of one pad float; still 176 bytes. Deliberately distinct from `tlasInstanceCount`, which goes to 0 when the TLAS fails to pack — that must not make geometry vanish from a strategy that never walks a TLAS.
 - **`GpuRenderSnapshot` gained `KernelSelection kernels`**, taken at Render like everything else, so changing a strategy mid-render restarts rather than mixes.
 - **`RenderKey` gained `KernelSelection kernels`**, so a swap restarts a running render under restart-on-change.
@@ -477,8 +479,8 @@ Every glTF material now becomes the `pbr` `SceneMaterial` type (`gltfTriMaterial
 - **`CrtMaterial` / `GpuMaterial` is 64 bytes**: adds the alpha cutoff, metallic, roughness, emission and the normal, metal/rough and emissive layers.
 - **`GpuTriangleAttributes` is 80 bytes**: adds `uvec4 tangents`, three octahedral-packed vertex tangents plus handedness and missing-tangent bits. `MeshAsset::cpuTangents` holds the source, from the file's `TANGENT` or generated from the uvs. It never reaches the raster vertex buffer.
 - **`BvhTriangle::v0.w`'s top bit** (`BVH_TRIANGLE_CUTOUT`) marks a triangle whose glTF material is `alphaMode` `MASK`. Mask the index with `BVH_TRIANGLE_INDEX_MASK` / `CRT_TRIANGLE_INDEX_MASK` before using it. The CPU traversals ignore the bit.
-- **Binding 12 is `materialTextures`** (`CrtBinding::MaterialTextures`). Kernels 02 (alpha test, normal maps), 04 (emissive texture) and 06 (base colour, metal/rough) declare it.
-- **Normal maps are applied in kernel 02**, the only kernel that reads the attribute record, so `HitRecord.normal` arrives at 06 already perturbed. The front face is still decided by the unmapped normal, and a mapped normal that faces away from the ray is dropped.
+- **Binding 12 is `materialTextures`** (`CrtBinding::MaterialTextures`). The traversal (alpha test), kernel 04 (emissive texture) and kernel 06 (base colour, metal/rough, normal maps) declare it.
+- **Normal maps are applied in kernel 06** since 2026-10-18 (§8.17), in `materialShadingNormal()`. The front face is still decided by the unmapped normal, and a mapped normal that faces away from the ray is dropped.
 - **Radiance slots accumulate.** Kernels 03, 04 and 08 add to the slot rather than write it, because a hit on a `pbr` surface with emission goes onto both the emissive and the surface queue, and a shadow ray adds to the path that sent it.
 - **Punctual lights** (`KHR_lights_punctual`) load into `LoadedGLTF::lights`, and each import turns them into `SceneLight` objects (§8.14).
 
@@ -495,8 +497,8 @@ New scenes, and files without `"kernels"`, select `mis_power` for kernel 06, so 
 Design and verification: `docs/plans/completed/shadow-rays-nee.md` (§9 is the as-built record). Readable account: `docs/raytracing-overview.md` §5.
 
 - `PathState` is 64 bytes and carries the MIS record: `misPdf`, `misExponent` and two pads follow `bounce`. Kernel 00 sets `misPdf = CRT_MIS_FULL` (-1), and only kernel 06 changes it, for the ray it continues: -1 for full weight (BSDF sampling, or a specular surface), 0 when light sampling already covered every light in the list, otherwise the BSDF sample's solid-angle density. Kernels 03 and 04 compute the light sampling density of what the ray found, from `path.origin`, and weigh by `misWeight()`. Only a weight other than 1 is multiplied in, so `bsdf` adds exactly what it did before.
-- `HitRecord` stays 48 bytes: its spare pair is now `traversalCost` and `lightIndex`, the light record kernel 02 found (`CRT_NO_LIGHT` otherwise). A shape's is `GpuInstance.lightBase`, plus `boxFace()` for a box; a mesh triangle's is `triangleLights[lightBase + triangle index]`.
-- Binding 18, `Lights`, is a 32-byte `LightHeader` (count, `deltaCount`, the environment's index, inverse total and delta powers) and 96-byte `GpuLight` records. Binding 19, `ShadowRays`, is 32 bytes per ray-queue position. Binding 20, `TriangleLights`, maps each emissive mesh triangle to its record, and binding 21, `EnvironmentSampling`, holds the two environment tables.
+- The light record a hit landed on is `SurfaceInteraction.lightIndex` (`CRT_NO_LIGHT` otherwise), which `surfaceInteraction()` finds; until 2026-10-18 kernel 02 stored it in the hit record (§8.17). A shape's is `GpuInstance.lightBase`, plus the box face (`HitRecord.primitive`) for a box; a mesh triangle's is `triangleLights[lightBase + triangle index]`.
+- Binding 18, `Lights`, is a 32-byte `LightHeader` (count, `deltaCount`, the environment's index, inverse total and delta powers) and 96-byte `GpuLight` records. Binding 19, `ShadowRays`, is 48 bytes per ray-queue position since §8.17. Binding 20, `TriangleLights`, maps each emissive mesh triangle to its record, and binding 21, `EnvironmentSampling`, holds the two environment tables.
 - The light list (`src/rt_lights.cpp`, `LightListBuilder`) is built by `buildSceneAccel()` on every scene edit, in world space. Punctual lights come first, because `lights[0, deltaCount)` is what the delta-only alias table covers; `addPunctual()` refuses a light once any other kind was added. Then shape faces (a box's six in -x, +x, -y, +y, -z, +z order), emissive triangles and the environment. Each record carries its entries in two Vose alias tables, one over every light and one over the delta lights.
 - `GpuLight.a/b/c` hold, by kind, a sphere's centre and radius; a rectangle's corner and the two edges from it; a cylinder's centre and radius, unit x axis and height, and unit length axis (its caps are part of the one record); a triangle's vertices, with `a.w` the attribute record, `b.w` the emissive layer and `c.w` the material, bit-cast. Point and spot keep position and range in `a`, the spot its direction and cone cosines in `b` and `c`; directional keeps its direction in `a`.
 - A light's power is πAL for a sphere, box face and cylinder; 2πAL for a quad and a triangle (two-sided), times the emissive texture's mean over the triangle (`RaytraceTextureArray::meanLuminance()`, 16 stratified points on a CPU copy of the layer); 4πI for a point; 2πI((1 − cos θi) + (cos θi − cos θo)/3) for a spot; πr²E for a directional light and πr²∫L dω for the environment, with r the scene's bounding-sphere radius.
@@ -518,7 +520,8 @@ Design and verification: `docs/plans/completed/shadow-rays-nee.md` (§9 is the a
 - A new kernel 06 variant must write `misPdf` for every path it continues. Leaving the value kernel 00 or the last bounce wrote counts a light found by the BSDF sample at the wrong weight, which shows as a wrong mean, not as noise.
 - A tracing kernel must include `include/crt_trace.glsl` **directly** in its `.comp` (CMake looks for that line) and set `KernelVariant::traces`. Adding the include to an existing `.comp` needs a manual `cmake ..`; editing `crt_trace.glsl` re-runs the configure step by itself.
 - A variant of a stage must work in every integrator that runs the stage. A kernel that only makes sense in one integrator is a new stage (numbers reserved in `docs/plans/pbrt-roadmap.md`), not a variant.
-- Kernel 08 reads a shadow ray's origin from `hits[]`, so nothing may write `hits[]` between 06 and 08.
+- Every kernel that forms a hit point from `t` writes it as `fma(vec3(t), direction, origin)`. The shader compiler fuses `origin + t * direction` in some kernels and not others, and a point one ulp off changes kernel 04's MIS weight for a cylinder light (§8.17).
+- A kernel that calls `surfaceInteraction()` declares the bindings it reads (`withInteraction()` in `rt_kernels.cpp`), even if it never uses the field that needs one: the SPIR-V still references the buffer, and the validation layer reports `VUID-VkComputePipelineCreateInfo-layout-07988`.
 - A degenerate box face keeps its record at zero power, so the six faces stay in the order kernel 02 names them. A zero-power record prices at pmf 0, which gives a BSDF sample full weight.
 - `environmentMap` holds the texels divided by `m_environmentMapScale`. A new shader that reads it must multiply by `pc.environmentIntensity`, which includes the scale, or it renders a bright map up to that factor too dark.
 - Both `.spv` outputs and `#include` resolution depend on the `-I` and relative-path handling in the root `CMakeLists.txt`; a new shader subdirectory works, a new include root does not without adding another `-I`.
@@ -532,3 +535,18 @@ Design and as-built record: `docs/plans/completed/integrator-layer.md`.
 - **`GpuRenderer`** (`rt_gpu.h`) holds what every integrator shares: the scene, geometry, and environment uploads, the film, the reference, the tonemap, the timestamps, the traversal counters, the dropped-sample count, the resource table, the pipeline cache keyed by (variant, traversal), and `WavefrontPool` (`rt_wavefront.h`), the per-path buffers. `init()` builds the default selection's pipelines; `start()` builds whatever else the selection needs.
 - **`IntegratorSchedule`** (`rt_schedule.h`) records one integrator's frame between the renderer's shared head and tail. `createSchedule()` in `rt_schedule.cpp` ties each `IntegratorId` to its class. `PathSchedule` (`rt_path_schedule.h`) is the path tracer: the former `GpuPathTracer::record()` body, its header readback and its counters, and its guard estimate (the former `tracesPerBounce()` logic).
 - **Push constants**: one `CrtParams` block for every kernel of every integrator, now in `rt_gpu_types.h`. `GpuRenderer::baseParams()` fills the integrator-independent fields; the schedule adds `samplesPerFrame` and `poolSize`.
+
+### 8.17 The thin hit record (2026-10-18)
+
+Design and as-built record: `docs/plans/completed/pbrt-thin-hit-record.md`.
+
+- **`HitRecord` is 24 bytes**: `t`, `instance`, `barycentrics`, `primitive`, `traversalCost`, in that order so the `vec2` sits at an 8-byte offset. For a mesh `primitive` is the global `blasTriangles[]` index; for a shape it is the part hit (`shapePart()`: a box face in `boxFace()` order, a cylinder's side, bottom or top), and `barycentrics` holds the shape's uv.
+- **`crt_interaction.glsl`** rebuilds a `SurfaceInteraction` from a hit and its ray: the point, a zero `pError`, the geometric normal `n` and the shading normal `ns` (both outward as authored; a triangle's `n` is turned to its vertex normals' side), `dpdu`/`dpdv` and `dndu`/`dndv` in world space, the uv, the material and the light record, and `frontFace` against `n`. Kernels 04 and 06 call it. `facingShadingNormal()` turns `ns` to face the ray the way kernel 02 used to, for the existing materials.
+- **Kernel 02** writes the record and classifies from the material alone: a triangle's surface index is in `BvhTriangle.e1.w` (set in `buildMeshBlas()`), so it no longer fetches the attribute record or the triangle-light table.
+- **Normal maps** are applied by `materialShadingNormal()` in `crt_scatter.glsl`, with kernel 02's arithmetic unchanged. Kernel 04 uses the unmapped normal for its debug views, because only `pbr` materials carry maps and 06 writes their debug views.
+- **`ShadowRay` is 48 bytes** with `origin` and a reserved `mediumAndGroup` word first. Kernel 08 no longer declares `Hits`.
+- **`GpuInstance` is 128 bytes**: `toObject[3]` (the former `row0`..`row2`) and `toWorld[3]`, the object-to-world rows, which carry derivatives out of the instance.
+- **Shapes have uvs and derivatives** in `crt_shape.glsl` and `shape.cpp`, in glTF's orientation: seen from outside, u runs right and v runs down, so `cross(dpdu, dpdv)` points into the surface. `bvh_bench` checks them against finite differences, and their continuity across the sphere seam and the box edges, before its BVH tests.
+- **Debug view 8**, "shading vs geometric normal", is red where the shading normal the materials use and the geometric normal, both facing the ray, are more than 90 degrees apart. Cornell box: 0 pixels. Sponza at 320 × 180: 264 of 57,446 hit pixels.
+- **Pool memory** is 176 bytes per path, down from 184.
+- **Verified**: 22 fixed-seed renders matched byte for byte. 17 compared against the commit before: the Cornell box under all four kernel 06 variants and all three traversals, the sphere scene, the Veach scene, Sponza under both BVH layouts, and the normal, MIS-weight and traversal-cost views. 5 were of a scratch scene with every shape kind, emissive boxes and cylinders, and glass boxes and cylinders, against a build of the old sources. The validation layer reported nothing across five configurations. The traversal-cost view of Sponza has two possible outcomes even on unchanged code (49 of 57,600 floats differ between runs), and the new build matched one of them.

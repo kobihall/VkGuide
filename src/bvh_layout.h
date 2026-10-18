@@ -45,6 +45,9 @@ inline constexpr uint32_t BVH_CWBVH_MAX_LEAF_SIZE = 3;
 // is exactly what Moller-Trumbore consumes. 48 bytes; the shading attributes are fetched separately
 // and only for the closest hit. v0.w carries the triangle's own index (as float bits) so the hit
 // can find those attributes even though leaves re-order and spatial splits duplicate triangles.
+// e1.w is the engine's: a mesh's triangle carries the index (as float bits) of the surface it
+// belongs to, which names its material, and makeBvhTriangle() leaves it 0. Only xyz of e1 and e2
+// are edges.
 struct BvhTriangle {
 	glm::vec4 v0;
 	glm::vec4 e1;

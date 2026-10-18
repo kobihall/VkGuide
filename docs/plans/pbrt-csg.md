@@ -2,7 +2,7 @@
 
 Constructive solid geometry (CSG) builds a solid from others by union, intersection and difference: a cylinder with spherical pits, a lens as the intersection of two spheres, a box with a hole bored through it. PBR 4ed exercise 6.10 asks for it, pointing at Roth 1982 for ray casting CSG models and at Amanatides and Mitchell 1990 for its accuracy problems. This plan adds CSG over the analytic shapes as one more shape kind, so the traversal does not change.
 
-*Not implemented. Depends on [pbrt-analytic-shapes.md](pbrt-analytic-shapes.md) (shape values and more closed kinds) and [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-analytic-shapes.md](pbrt-analytic-shapes.md) (shape values and more closed kinds) and [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Relation to the optics plans
 
@@ -36,7 +36,7 @@ The hit records which operand the boundary came from:
 
 - The normal is that operand's, flipped when the operand is subtracted, so a hole bored through a box has normals facing into the hole.
 - The material is that operand's. A sphere cut out of a marble box shows the sphere's material on the cut surface, unless the user sets the CSG object's material to override every operand.
-- [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md)'s record holds the operand index in `primitive` and the operand's own parameters in `barycentrics`, so the interaction rebuilds from the operand like any shape.
+- [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md)'s record holds the operand index in `primitive` and the operand's own parameters in `barycentrics`, so the interaction rebuilds from the operand like any shape.
 
 The CSG object's bounds for the TLAS: for a union, the union of the operands' boxes; for an intersection, their intersection; for a difference, the first operand's box.
 

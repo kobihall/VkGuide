@@ -2,7 +2,7 @@
 
 Hair, fur and grass have millions of strands far thinner than a triangle mesh can represent economically. pbrt models them as cubic Bézier curves with a varying width, intersected by recursive subdivision, and shades them with a hair BSDF that follows how light scatters in a dielectric cylinder with pigment. This plan adds the curve primitive to the BVH, the hair BSDF, and a loader for Cem Yuksel's cyHair files, the format pbrt's `cyhair2pbrt` converts.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md), [pbrt-material-system.md](pbrt-material-system.md) and [pbrt-bsdf-library.md](pbrt-bsdf-library.md) (the BxDF interface and `rt_bsdf`). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md), [pbrt-material-system.md](pbrt-material-system.md) and [pbrt-bsdf-library.md](pbrt-bsdf-library.md) (the BxDF interface and `rt_bsdf`). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -24,7 +24,7 @@ pbrt-v4's `Curve` (PBR 4ed §6.7): a cubic Bézier segment of four control point
 
 The intersection follows pbrt: in a coordinate system where the ray runs along +z, subdivide the curve recursively until each piece is nearly straight, and test the ray against the resulting segments' widened bounds. pbrt derives the maximum depth from the curve's flatness and its width, capped at 10; on the GPU the recursion becomes a loop over a small explicit stack. PBR 4ed exercise 6.13 points at faster intersectors (Reshetov 2017; Reshetov and Luebke 2018, the phantom ray-hair intersector), which are later variants of the same test.
 
-A hit records the curve parameter `u` along the strand and `v` across it. The hair BSDF needs `h`, the offset from the fiber's axis in [−1, 1], which is `2v − 1`. [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md)'s barycentrics field carries `u` and `v`.
+A hit records the curve parameter `u` along the strand and `v` across it. The hair BSDF needs `h`, the offset from the fiber's axis in [−1, 1], which is `2v − 1`. [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md)'s barycentrics field carries `u` and `v`.
 
 ### In the BVH
 

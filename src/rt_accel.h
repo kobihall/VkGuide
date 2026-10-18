@@ -100,10 +100,12 @@ private:
 // one instance as the GPU reads it (crt_common.glsl GpuInstance): the unbounded shapes first, then
 // the TLAS's instances in its slot order
 struct GpuInstance {
-	// rows of the world-to-object transform, a mesh's and a shape's alike
-	glm::vec4 row0;
-	glm::vec4 row1;
-	glm::vec4 row2;
+	// rows of the world-to-object transform, a mesh's and a shape's alike: what carries a ray into
+	// the instance
+	glm::vec4 toObject[3];
+	// rows of the object-to-world transform: what carries a surface's derivatives back out
+	// (shaders/rt/include/crt_interaction.glsl)
+	glm::vec4 toWorld[3];
 	// the BLAS's first node, or GPU_INSTANCE_SHAPE for a shape
 	uint32_t nodeBase;
 	// a mesh: the BLAS's first triangle (BvhTriangle). A shape: its ShapeKind
@@ -122,7 +124,7 @@ struct GpuInstance {
 	uint32_t lightBase;
 	uint32_t pad[2];
 };
-static_assert(sizeof(GpuInstance) == 80);
+static_assert(sizeof(GpuInstance) == 128);
 
 inline constexpr uint32_t GPU_INSTANCE_SHAPE = 0xFFFFFFFFu;
 

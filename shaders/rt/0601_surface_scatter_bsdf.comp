@@ -8,6 +8,7 @@
 #extension GL_GOOGLE_include_directive : require
 #define CRT_DIRECT_LIGHTING 0
 #include "include/crt_common.glsl"
+#include "include/crt_interaction.glsl"
 #include "include/crt_random.glsl"
 #include "equirect.glsl"
 #include "include/crt_scatter.glsl"

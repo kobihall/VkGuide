@@ -50,7 +50,7 @@ shaders/rt/
 |---|---|---|---|
 | 00 | Generate camera rays | the whole path pool, once per frame | One primary ray per (pixel, sample) slot, jittered in the pixel and across the aperture |
 | 01 | Generate samples | the live ray queue, per bounce | Prepares each path's randomness for this bounce. Where a Sobol sampler would go |
-| 02 | Intersect closest | the live ray queue, per bounce | Finds the nearest hit, applies alpha cutouts and normal maps, and **sorts** the paths into three queues |
+| 02 | Intersect closest | the live ray queue, per bounce | Finds the nearest hit, applies alpha cutouts, writes a 24-byte hit record, and **sorts** the paths into three queues |
 | 03 | Handle escaped | the escaped queue | A ray that left the scene collects the background, weighted by the path's MIS record, and ends |
 | 04 | Handle emissive geometry | the emissive queue | A ray that hit a light collects its emission, weighted by the path's MIS record, and ends. A ray that hit a glowing `pbr` surface collects its emission and carries on through 06 |
 | 06 | Sample surface scattering | the surface queue | Samples a light and pushes a shadow ray towards it, then scatters the path off the surface, or ends it |
@@ -66,7 +66,7 @@ Two indexing conventions coexist, and this is the one thing worth holding in you
 - **`paths[]` and `radiance[]` are indexed by pool slot** — stable for a path's whole life.
 - **`hits[]` and `shadowRays[]` are indexed by ray-queue position** — compacted, and different every bounce.
 
-The two ray queues (ping-ponging between bounces) hold **path indices**. The three classification queues hold **ray-queue positions**, because that single number is *also* the index of the path's hit record. So kernel 06 pulls one number off its queue and reaches both the hit and the path from it, with no extra indirection. The shadow queue holds ray-queue positions too: kernel 06 writes a path's shadow ray at the position of its hit, and kernel 08 starts the ray from that hit's point. `PathState.radianceSlot` is the bridge back to the pixel.
+The two ray queues (ping-ponging between bounces) hold **path indices**. The three classification queues hold **ray-queue positions**, because that single number is *also* the index of the path's hit record. So kernel 06 pulls one number off its queue and reaches both the hit and the path from it, with no extra indirection. The shadow queue holds ray-queue positions too: kernel 06 writes a path's shadow ray at the position of its hit, with the point it leaves from, and kernel 08 traces it from there. `PathState.radianceSlot` is the bridge back to the pixel.
 
 ### How a kernel knows how many threads to launch
 
@@ -106,7 +106,7 @@ The traversals are the demonstration. A traversal is not a kernel variant but a 
 #include "include/crt_intersect.glsl"
 ```
 
-`crt_trace.glsl` holds one branch per traversal, each including its strategy file, and CMake compiles every `.comp` that includes it once per branch, to `0201_intersect_closest.comp.bvh_binary.spv` and its siblings. Everything that is *not* the search — classifying the hit, interpolating normals and uvs, writing the record, pushing the queues — lives in `crt_intersect.glsl`, shared unchanged. A strategy file supplies exactly two functions, the closest-hit search kernel 02 runs and the any-hit test kernel 08 runs for shadow rays:
+`crt_trace.glsl` holds one branch per traversal, each including its strategy file, and CMake compiles every `.comp` that includes it once per branch, to `0201_intersect_closest.comp.bvh_binary.spv` and its siblings. Everything that is *not* the search — writing the hit record, classifying the hit, pushing the queues — lives in `crt_intersect.glsl`, shared unchanged. A strategy file supplies exactly two functions, the closest-hit search kernel 02 runs and the any-hit test kernel 08 runs for shadow rays:
 
 ```glsl
 bool traceScene(vec3 origin, vec3 direction, float tMin, float tMax, out TraceHit hit);
@@ -225,12 +225,12 @@ $$\begin{bmatrix}t\\u\\v\end{bmatrix} = \frac{1}{(\vec d \times \vec e_2)\cdot \
 Two details in the two-level structure are worth knowing:
 
 - The object-space ray direction is **deliberately not renormalised**. Since $M(O + t\vec d) = MO + t\,M\vec d$, the parameter $t$ is identical in both spaces, so `tMin`, `tMax` and the running closest hit carry across the transform untouched.
-- Normals go back to world space as $\vec n' = n_x\,\text{row}_0 + n_y\,\text{row}_1 + n_z\,\text{row}_2$ using the stored world-to-object *rows* — which is exactly $(M^{-1})^T \vec n$, correct under non-uniform scale, with no matrix inverse computed anywhere.
+- Normals go back to world space as $\vec n' = n_x\,\text{row}_0 + n_y\,\text{row}_1 + n_z\,\text{row}_2$ using the stored world-to-object *rows* — which is exactly $(M^{-1})^T \vec n$, correct under non-uniform scale, with no matrix inverse computed anywhere. Position derivatives, which are vectors rather than normals, go out by the object-to-world rows the instance also stores.
 
-Only the closest hit pays for its shading data: the traversal touches positions alone, and uvs and shading normals are fetched and barycentrically interpolated once, at the end. Two exceptions:
+Only the closest hit pays for its shading data, and only in the kernel that shades it. Kernel 02 writes a thin hit record: the instance, the primitive (a triangle, or a shape's face or cap), the barycentrics (a shape's own uv), $t$, and the traversal cost. Kernels 04 and 06 rebuild the surface from it with `surfaceInteraction()` in `crt_interaction.glsl`: the point, the geometric and shading normals, the uv, $\partial p/\partial u$, $\partial p/\partial v$ and the normal's derivatives, the material and the light record. This is how pbrt-v4's wavefront works (PBR 4ed 15.3.6). Kernel 02 still needs the material to sort the hit, and a triangle names its surface, and so its material, in a spare word of the triangle record, so no attribute record is fetched there. Two exceptions:
 
 - **Alpha cutouts.** A triangle whose glTF material is `alphaMode` `MASK` carries a flag in the top bit of its index word. When the traversal hits one, it fetches the uv and the base colour texel's alpha, and rejects the hit if the alpha is below the material's cutoff. Unflagged triangles pay nothing.
-- **Normal maps.** Once the closest hit is known, kernel 02 perturbs the interpolated normal by the material's normal map in the tangent frame $(T, B, N)$ with $B = (N \times T)\,w$, glTF's convention. The front face is still decided by the unmapped normal.
+- **Normal maps** belong to the material. Kernel 06 perturbs the interpolated normal by the material's normal map in the tangent frame $(T, B, N)$ with $B = (N \times T)\,w$, glTF's convention, when it evaluates the material. The front face is still decided by the unmapped normal.
 
 A hit on a `pbr` material with emission goes onto the emissive **and** the surface queue, as in pbrt-v4. A barrier between 04 and 06 keeps 04's read of the throughput ahead of 06's write.
 
@@ -324,7 +324,7 @@ Point, spot and directional lights work the other way round: no ray can hit them
 
 ### The light list
 
-`src/rt_lights.cpp` gathers every light kernel 06 can sample, in world space, whenever the scene changes. Each gets a power, and an alias table picks one in proportion to it in constant time (pbrt-v4's `PowerLightSampler`, PBR 4ed 12.6.2). The delta lights come first and have a second table of their own, which BSDF sampling uses. Kernel 02 records which light a hit landed on (`HitRecord.lightIndex`) so kernel 04 can price it.
+`src/rt_lights.cpp` gathers every light kernel 06 can sample, in world space, whenever the scene changes. Each gets a power, and an alias table picks one in proportion to it in constant time (pbrt-v4's `PowerLightSampler`, PBR 4ed 12.6.2). The delta lights come first and have a second table of their own, which BSDF sampling uses. The surface interaction names the light a hit landed on (`SurfaceInteraction.lightIndex`), so kernel 04 can price it.
 
 | Light | Sampled | Density $p$ | Power |
 |---|---|---|---|

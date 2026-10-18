@@ -16,7 +16,11 @@
 //  - Cylinder: axis y, radius 1, y in [-0.5, 0.5], closed by both caps
 //
 // Every surface is two-sided, like the tracer's triangles. Mirrored line for line by
-// shaders/crt_shape.glsl - a change to one side must be made to the other.
+// shaders/rt/include/crt_shape.glsl - a change to one side must be made to the other.
+//
+// Each primitive has PBR's parametric (u, v) and their derivatives, in glTF's orientation: seen
+// from outside, u runs right and v runs down, so cross(dp/du, dp/dv) points into the surface. The
+// table is at the top of crt_shape.glsl, and bvh_bench checks the derivatives against the uvs.
 
 #include <cstdint>
 
@@ -54,5 +58,27 @@ Aabb shapeObjectBounds(ShapeKind kind);
 // the world-space ray it came from
 bool intersectShape(ShapeKind kind, const glm::vec3& origin, const glm::vec3& direction, float tMin, float tMax, float& t);
 
+// the parts of a cylinder (shapePart())
+inline constexpr uint32_t SHAPE_CYLINDER_SIDE = 0;
+inline constexpr uint32_t SHAPE_CYLINDER_BOTTOM = 1;
+inline constexpr uint32_t SHAPE_CYLINDER_TOP = 2;
+
+// which part of the unit primitive a point on it lies on, what the GPU's hit record holds for a
+// shape: a box's face (-x, +x, -y, +y, -z, +z as 0-5), a cylinder's side or cap by whichever surface
+// the point is nearer to, and 0 for a shape of one part
+uint32_t shapePart(ShapeKind kind, const glm::vec3& point);
+
 // the outward object-space normal at a point on the unit primitive, not normalised
 glm::vec3 shapeNormal(ShapeKind kind, const glm::vec3& point);
+
+// the (u, v) of a point on `part` of the unit primitive
+glm::vec2 shapeUv(ShapeKind kind, uint32_t part, const glm::vec3& point);
+
+// the object-space derivatives of the point and of the unnormalised normal with respect to u and v
+struct ShapeDerivatives {
+	glm::vec3 dpdu { 1.f, 0.f, 0.f };
+	glm::vec3 dpdv { 0.f, 0.f, 1.f };
+	glm::vec3 dndu { 0.f };
+	glm::vec3 dndv { 0.f };
+};
+ShapeDerivatives shapeDerivatives(ShapeKind kind, uint32_t part, const glm::vec3& point);

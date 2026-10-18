@@ -2,7 +2,7 @@
 
 Every direct-lighting strategy today draws its light sample from a density that ignores the BSDF and the cosine at the shading point, so on a glossy surface most light samples land where the BSDF is near zero. Resampled importance sampling (RIS, Talbot et al. 2005) draws several cheap candidates, weighs each by its unshadowed contribution, and keeps one, which approximates sampling the full product with a single shadow ray. ReSTIR (Bitterli et al. 2020) goes further and shares the kept candidates between neighboring pixels and across frames. PBR 4ed covers the reservoir sampling both are built on (§A.2) and cites both in its "Further Reading", and neither is in pbrt. The user chose to plan them as research. This plan adds RIS and ReSTIR as kernel 06 variants.
 
-*Not implemented, research. Benefits from [pbrt-bvh-light-sampler.md](pbrt-bvh-light-sampler.md) (a better candidate density) and relies on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) (a 24-byte hit to store per pixel). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented, research. Benefits from [pbrt-bvh-light-sampler.md](pbrt-bvh-light-sampler.md) (a better candidate density) and relies on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (a 24-byte hit to store per pixel). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 

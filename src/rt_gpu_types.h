@@ -98,8 +98,8 @@ inline constexpr uint32_t CRT_FLAG_SOLID_BACKGROUND = 1u << 3;
 inline constexpr uint32_t CRT_WORKGROUP = 64;
 
 // the largest path pool the tracer allocates: width x height x samplesPerFrame is clamped to it
-// by lowering samplesPerFrame. 184 bytes per path (path state, hit, shadow ray, radiance, six
-// queue entries), so ~736 MB at the cap
+// by lowering samplesPerFrame. 176 bytes per path (path state 64, hit 24, shadow ray 48, radiance
+// 16, six queue entries 24), so ~704 MB at the cap
 inline constexpr uint32_t CRT_MAX_POOL = 4u * 1024u * 1024u;
 inline constexpr int CRT_MAX_DEPTH = 16;
 inline constexpr int CRT_MAX_SAMPLES_PER_FRAME = 8;

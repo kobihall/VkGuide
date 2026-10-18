@@ -2,7 +2,7 @@
 
 A render exists only on the GPU: nothing saves it, so every comparison with pbrt, every reference image and every figure starts with a screenshot of an 8-bit tone-mapped window. The tracer also produces nothing beside its radiance. pbrt's `GBufferFilm` writes position, normals, depth derivatives, uv, albedo and variance next to the image in one OpenEXR file, and its `SpectralFilm` writes per-wavelength bands. This plan adds image export, those auxiliary outputs (AOVs), light groups for relighting after the render, and an ambient occlusion view.
 
-*Not implemented. Depends on [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) (`PixelState`, weight sums, variance) and [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) (the interaction the outputs read). PNG export uses [pbrt-display-and-color.md](pbrt-display-and-color.md)'s encoding. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) (`PixelState`, weight sums, variance) and [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (the interaction the outputs read). PNG export uses [pbrt-display-and-color.md](pbrt-display-and-color.md)'s encoding. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 

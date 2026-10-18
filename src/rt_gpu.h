@@ -54,6 +54,7 @@ enum class CrtDebugView : uint32_t {
 	SampleCountHeat,
 	TraversalCost,
 	MisWeights,
+	NormalDisagreement,
 	Count
 };
 

@@ -2,7 +2,7 @@
 
 Every texture the path tracer reads is resampled to 512 × 512, stored as one layer of a 2D array image with no mip levels, and read with `textureLod(..., 0)`. Distant textured surfaces alias into noise that only more samples can average out, high-resolution textures lose their detail, textures cannot repeat or clamp as their glTF sampler says, and shapes cannot be textured at all. This plan stores textures at their own size with mip chains, estimates each hit's footprint with ray cones, introduces the texture reference that material parameters use, and lets any material on any shape or mesh use an image.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) (shape uvs, derivatives) and [pbrt-material-system.md](pbrt-material-system.md) (parameters). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (shape uvs, derivatives) and [pbrt-material-system.md](pbrt-material-system.md) (parameters). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decision already made
 
@@ -52,7 +52,7 @@ struct TexRef {          // 32 bytes in the material's parameter block
 
 The mappings PBR 4ed §10.2 describes, chosen per reference:
 
-- UV mapping uses the mesh's first uv set, or the shape's own parameterization ([pbrt-thin-hit-record.md](pbrt-thin-hit-record.md)), with the glTF texture transform applied.
+- UV mapping uses the mesh's first uv set, or the shape's own parameterization ([pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md)), with the glTF texture transform applied.
 - Spherical and cylindrical mappings project about a point and axis in the object's space, for objects without useful uvs.
 - Planar mapping projects onto two axes, for decals and tiled floors.
 
@@ -63,7 +63,7 @@ A glTF texture's second uv set (`TEXCOORD_1`) is not loaded today; supporting `t
 pbrt's wavefront integrator carries no ray differentials and approximates the footprint from the camera alone (PBR 4ed §15.3.9), which is wrong after a curved reflection. Ray cones (Akenine-Möller et al. 2019, 2021) track a width and a spread angle per path, two floats:
 
 - Kernel 00 sets the spread to the angle one pixel subtends and the width to zero.
-- At a hit the width grows by `spread × t`, and the spread gains a term from the surface curvature for a reflection or refraction, which the interaction's normal derivatives give ([pbrt-thin-hit-record.md](pbrt-thin-hit-record.md)).
+- At a hit the width grows by `spread × t`, and the spread gains a term from the surface curvature for a reflection or refraction, which the interaction's normal derivatives give ([pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md)).
 - The mip level is `log2(width × sqrt(texelsPerUvArea × uvAreaPerWorldArea) / |cos θ|)`, with the triangle's uv-to-world area ratio precomputed per triangle and stored in `BvhTriangle.e2.w`, which is unused, and each shape's computed analytically.
 - Glossy reflections widen the spread by an amount tied to the roughness (Akenine-Möller 2021 §4), so blurry reflections fetch coarse mips.
 

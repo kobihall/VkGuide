@@ -28,8 +28,8 @@ inline constexpr uint32_t CRT_QUEUE_COUNT = 6;
 
 // mirrors of the remaining GLSL structs, for buffer sizing only
 inline constexpr VkDeviceSize CRT_PATH_STATE_SIZE = 64;
-inline constexpr VkDeviceSize CRT_HIT_RECORD_SIZE = 48;
-inline constexpr VkDeviceSize CRT_SHADOW_RAY_SIZE = 32;
+inline constexpr VkDeviceSize CRT_HIT_RECORD_SIZE = 24;
+inline constexpr VkDeviceSize CRT_SHADOW_RAY_SIZE = 48;
 
 class WavefrontPool {
 public:

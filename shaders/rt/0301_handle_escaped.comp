@@ -40,7 +40,7 @@ void main()
 	const vec3 inDir = normalize(path.direction);
 
 	vec3 value;
-	if (debugTerminalValue(hit, inDir, false, value)) {
+	if (debugTerminalValue(vec3(0.0), vec3(0.0), hit.traversalCost, inDir, false, value)) {
 		radiance[path.radianceSlot] = vec4(value, 1.0);
 		return;
 	}

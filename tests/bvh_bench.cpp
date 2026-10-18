@@ -10,12 +10,19 @@
 //    within half, and within one and a half times, brute force's closest distance, which must
 //    answer no and yes (and no, for a ray brute force says misses).
 //
+// First, and independent of the model, it checks the analytic shapes' parameterization
+// (src/shape.h, the mirror of crt_shape.glsl): on hit points of random rays, the uvs stay in
+// [0, 1], cross(dp/du, dp/dv) points into the surface, and dp/du, dp/dv and dn/du agree with finite
+// differences of shapeUv() and shapeNormal(); and the uvs are continuous, modulo 1, across the
+// sphere's seam, the box's side edges and its top's edge with the +z face.
+//
 // Run from anywhere:  ./bin/bvh_bench assets/structure.glb [--rays N] [--perturb] [--builders mbws] [--layouts bc]
 // --perturb additionally rotates and non-uniformly scales every instance, to exercise transforms.
 
 #include <bvh.h>
 #include <bvh_layout.h>
 #include <bvh_scene.h>
+#include <shape.h>
 
 #include <algorithm>
 #include <chrono>
@@ -128,6 +135,160 @@ struct Reference {
 	float t { 1e30f };
 };
 
+// the names of ShapeKind, which rt_scene_types.h's SHAPE_TRAITS holds on the engine side
+const char* shapeKindName(ShapeKind kind)
+{
+	constexpr const char* NAMES[] = { "sphere", "plane", "quad", "box", "cylinder" };
+	return NAMES[(size_t)kind];
+}
+
+// a uv difference with whole turns removed, in (-0.5, 0.5]: across a seam u jumps by 1
+float wrapped(float d)
+{
+	return d - std::round(d);
+}
+
+// a point near the unit primitive's `part` moved back onto it
+glm::vec3 ontoShape(ShapeKind kind, uint32_t part, glm::vec3 q)
+{
+	switch (kind) {
+	case ShapeKind::Sphere:
+		return glm::normalize(q);
+	case ShapeKind::Plane:
+	case ShapeKind::Quad:
+		q.y = 0.f;
+		return q;
+	case ShapeKind::Box:
+		q[part >> 1] = (part & 1u) != 0 ? 0.5f : -0.5f;
+		return q;
+	case ShapeKind::Cylinder:
+		if (part == SHAPE_CYLINDER_SIDE) {
+			const float radial = std::sqrt(q.x * q.x + q.z * q.z);
+			return glm::vec3(q.x / radial, q.y, q.z / radial);
+		}
+		q.y = part == SHAPE_CYLINDER_TOP ? 0.5f : -0.5f;
+		return q;
+	}
+	return q;
+}
+
+// The shapes' parameterization (see the top of this file). Returns how many checks failed
+size_t checkShapeParameterization()
+{
+	std::mt19937 rng(99);
+	std::uniform_real_distribution<float> unit(0.f, 1.f);
+	auto randomDirection = [&]() {
+		const float z = 2.f * unit(rng) - 1.f;
+		const float phi = 6.2831853f * unit(rng);
+		const float r = std::sqrt(std::max(0.f, 1.f - z * z));
+		return glm::vec3(r * std::cos(phi), r * std::sin(phi), z);
+	};
+
+	fmt::println("Shape parameterization (src/shape.h)");
+	fmt::println("{:<10} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}", "kind", "hits", "range", "facing", "dp/du", "dp/dv", "dn/du");
+	size_t failures = 0;
+	const float h = 1e-3f;
+	for (const ShapeKind kind : SHAPE_KINDS) {
+		size_t hits = 0;
+		size_t range = 0;
+		size_t facing = 0;
+		size_t derivativeU = 0;
+		size_t derivativeV = 0;
+		size_t normalU = 0;
+		for (int i = 0; i < 20000; i++) {
+			//rays from a sphere of radius 3 at points around the primitive, as a camera would see it
+			const glm::vec3 origin = 3.f * randomDirection();
+			const glm::vec3 target(unit(rng) - 0.5f, unit(rng) - 0.5f, unit(rng) - 0.5f);
+			const glm::vec3 direction = glm::normalize(1.2f * target - origin);
+			float t = 0.f;
+			if (!intersectShape(kind, origin, direction, 1e-4f, 1e30f, t)) {
+				continue;
+			}
+			hits++;
+			const glm::vec3 p = ontoShape(kind, shapePart(kind, origin + t * direction), origin + t * direction);
+			const uint32_t part = shapePart(kind, p);
+			const glm::vec2 uv = shapeUv(kind, part, p);
+			const ShapeDerivatives d = shapeDerivatives(kind, part, p);
+			const glm::vec3 n = glm::normalize(shapeNormal(kind, p));
+
+			if (shapeBounded(kind) && (uv.x < -1e-5f || uv.x > 1.f + 1e-5f || uv.y < -1e-5f || uv.y > 1.f + 1e-5f)) {
+				range++;
+			}
+			const glm::vec3 c = glm::cross(d.dpdu, d.dpdv);
+			if (glm::length(c) > 1e-4f && !(glm::dot(c, n) < 0.f)) {
+				facing++;
+			}
+
+			//a small step along each derivative must move uv by that step in its own coordinate alone.
+			//Steps that leave the part, or start where a derivative vanishes, test nothing
+			auto stepChecks = [&](const glm::vec3& dp, const glm::vec2& expected, size_t& positionErrors, size_t* normalErrors, const glm::vec3& dn) {
+				//dp is the point's change per unit of the coordinate, so h * dp moves the coordinate by h.
+				//Far out on the plane a float cannot resolve the step, so only points near the origin count
+				if (glm::length(dp) < 0.05f || glm::length(p) > 10.f) {
+					return;
+				}
+				const glm::vec3 q = ontoShape(kind, part, p + h * dp);
+				if (shapePart(kind, q) != part) {
+					return;
+				}
+				const glm::vec2 moved = shapeUv(kind, part, q) - uv;
+				const glm::vec2 step(wrapped(moved.x), wrapped(moved.y));
+				if (glm::length(step - h * expected) > 0.02f * h) {
+					if (positionErrors < 2) {
+						fmt::println("    {} part {} at ({:.3f}, {:.3f}, {:.3f}): uv moved ({:.3g}, {:.3g}) for a step of {:.3g}", shapeKindName(kind), part, p.x, p.y, p.z, step.x, step.y, h);
+					}
+					positionErrors++;
+				}
+				if (normalErrors != nullptr) {
+					const glm::vec3 normalStep = shapeNormal(kind, q) - shapeNormal(kind, p);
+					if (glm::length(normalStep - h * dn) > 0.02f * h * std::max(glm::length(dn), 1.f)) {
+						(*normalErrors)++;
+					}
+				}
+			};
+			stepChecks(d.dpdu, glm::vec2(1.f, 0.f), derivativeU, &normalU, d.dndu);
+			stepChecks(d.dpdv, glm::vec2(0.f, 1.f), derivativeV, nullptr, d.dndv);
+		}
+		fmt::println("{:<10} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}", shapeKindName(kind), hits, range, facing, derivativeU, derivativeV, normalU);
+		failures += range + facing + derivativeU + derivativeV + normalU;
+	}
+
+	//continuity: where two parts or the two ends of an angle meet, the uvs agree modulo 1
+	size_t seams = 0;
+	auto seam = [&](const char* what, glm::vec2 a, glm::vec2 b) {
+		if (std::abs(wrapped(a.x - b.x)) > 1e-3f || std::abs(wrapped(a.y - b.y)) > 1e-3f) {
+			if (seams < 4) {
+				fmt::println("    {} seam: ({:.4f}, {:.4f}) against ({:.4f}, {:.4f})", what, a.x, a.y, b.x, b.y);
+			}
+			seams++;
+		}
+	};
+	for (int i = 1; i < 100; i++) {
+		const float s = (float)i / 100.f;
+		//the sphere's seam is where phi = atan(-z, x) passes 0: x > 0, z = 0
+		const float theta = 3.14159265f * s;
+		const float delta = 1e-4f;
+		const glm::vec3 above(std::sin(theta) * std::cos(delta), std::cos(theta), -std::sin(theta) * std::sin(delta));
+		const glm::vec3 below(std::sin(theta) * std::cos(delta), std::cos(theta), std::sin(theta) * std::sin(delta));
+		seam("sphere", shapeUv(ShapeKind::Sphere, 0, above), shapeUv(ShapeKind::Sphere, 0, below));
+		seam("cylinder side", shapeUv(ShapeKind::Cylinder, SHAPE_CYLINDER_SIDE, glm::vec3(std::cos(delta), s - 0.5f, -std::sin(delta))),
+			shapeUv(ShapeKind::Cylinder, SHAPE_CYLINDER_SIDE, glm::vec3(std::cos(delta), s - 0.5f, std::sin(delta))));
+		//the box's four side edges, each shared by two faces, and the edge the top shares with +z
+		const float y = s - 0.5f;
+		seam("box +x/+z", shapeUv(ShapeKind::Box, 1, glm::vec3(0.5f, y, 0.5f)), shapeUv(ShapeKind::Box, 5, glm::vec3(0.5f, y, 0.5f)));
+		seam("box +z/-x", shapeUv(ShapeKind::Box, 5, glm::vec3(-0.5f, y, 0.5f)), shapeUv(ShapeKind::Box, 0, glm::vec3(-0.5f, y, 0.5f)));
+		seam("box -x/-z", shapeUv(ShapeKind::Box, 0, glm::vec3(-0.5f, y, -0.5f)), shapeUv(ShapeKind::Box, 4, glm::vec3(-0.5f, y, -0.5f)));
+		seam("box -z/+x", shapeUv(ShapeKind::Box, 4, glm::vec3(0.5f, y, -0.5f)), shapeUv(ShapeKind::Box, 1, glm::vec3(0.5f, y, -0.5f)));
+		seam("box +y/+z", shapeUv(ShapeKind::Box, 3, glm::vec3(y, 0.5f, 0.5f)), shapeUv(ShapeKind::Box, 5, glm::vec3(y, 0.5f, 0.5f)));
+		//the cylinder's side meets its top cap's rim at the same angle
+		const float phi = 6.2831853f * s;
+		const glm::vec3 rim(std::cos(phi), 0.5f, -std::sin(phi));
+		seam("cylinder side/top", shapeUv(ShapeKind::Cylinder, SHAPE_CYLINDER_SIDE, rim), shapeUv(ShapeKind::Cylinder, SHAPE_CYLINDER_TOP, rim));
+	}
+	fmt::println("seams: {} discontinuities\n", seams);
+	return failures + seams;
+}
+
 }
 
 int main(int argc, char* argv[])
@@ -152,6 +313,8 @@ int main(int argc, char* argv[])
 			layoutLetters = argv[++i];
 		}
 	}
+
+	const size_t shapeFailures = checkShapeParameterization();
 
 	LoadedScene loaded;
 	if (!loadScene(path, loaded)) {
@@ -282,7 +445,7 @@ int main(int argc, char* argv[])
 	const std::pair<char, BvhBuilder> builderChoices[] = { { 'm', BvhBuilder::Midpoint }, { 'b', BvhBuilder::BinnedSah }, { 'w', BvhBuilder::SweepSah }, { 's', BvhBuilder::SpatialSah } };
 	const std::pair<char, BvhLayout> layoutChoices[] = { { 'b', BvhLayout::Binary }, { 'c', BvhLayout::Cwbvh8 } };
 
-	int failures = 0;
+	int failures = shapeFailures > 0 ? 1 : 0;
 	for (const auto& [builderLetter, builder] : builderChoices) {
 		if (builderLetters.find(builderLetter) == std::string::npos) {
 			continue;

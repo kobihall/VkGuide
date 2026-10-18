@@ -44,23 +44,8 @@ struct TraceHit {
 uint g_nodesVisited;
 uint g_primitivesTested;
 
-// 1 / d with each zero component replaced by a tiny signed one, so no box test multiplies 0 by
-// infinity: NaN compares false both ways and would admit or reject a box arbitrarily
-vec3 safeReciprocal(vec3 d)
-{
-	const vec3 signs = vec3(greaterThanEqual(d, vec3(0.0))) * 2.0 - 1.0;
-	return 1.0 / mix(d, signs * 1e-12, lessThan(abs(d), vec3(1e-12)));
-}
-
-// the analytic shapes, which need safeReciprocal
+// the analytic shapes
 #include "crt_shape.glsl"
-
-// a point's uv from its triangle's attribute record and barycentrics
-vec2 triangleUv(GpuTriangleAttributes attributes, vec2 bary)
-{
-	const float w = 1.0 - bary.x - bary.y;
-	return w * vec2(attributes.n0.w, attributes.vAndSurface.x) + bary.x * vec2(attributes.n1.w, attributes.vAndSurface.y) + bary.y * vec2(attributes.n2.w, attributes.vAndSurface.z);
-}
 
 // Whether a candidate hit on a CRT_TRIANGLE_CUTOUT triangle lands in one of its material's holes.
 // Only flagged triangles pay for this - an instance, an attribute record, a material and a texel -
@@ -111,8 +96,8 @@ void testTriangles(uint first, uint count, uint instance, vec3 origin, vec3 dire
 void instanceRay(GpuInstance instance, vec3 origin, vec3 direction, out vec3 localOrigin, out vec3 localDirection)
 {
 	const vec4 o = vec4(origin, 1.0);
-	localOrigin = vec3(dot(instance.row0, o), dot(instance.row1, o), dot(instance.row2, o));
-	localDirection = vec3(dot(instance.row0.xyz, direction), dot(instance.row1.xyz, direction), dot(instance.row2.xyz, direction));
+	localOrigin = vec3(dot(instance.toObject[0], o), dot(instance.toObject[1], o), dot(instance.toObject[2], o));
+	localDirection = vec3(dot(instance.toObject[0].xyz, direction), dot(instance.toObject[1].xyz, direction), dot(instance.toObject[2].xyz, direction));
 }
 
 // one placed shape, in its own object space

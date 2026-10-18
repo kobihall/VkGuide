@@ -2,7 +2,7 @@
 
 The tracer multiplies RGB triples. PBR 4ed §4.6.4 shows why that is not physics: the same sRGB green, expressed in ACES2065-1 and multiplied by itself, comes out darker, more saturated and outside the gamut of real colors, because a product of tristimulus values depends on the color space. Dispersion, blackbody emitters, measured metal indices of refraction and chromatic media all need light carried per wavelength. This plan makes the quantity every path carries a spectrum whose size and meaning are chosen at runtime, while exact RGB stays available and bit-identical.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) and [pbrt-material-system.md](pbrt-material-system.md). The [laser optics plan](physoptics-laser-optics.md) builds its glasses, coatings, lasers and spectral goals on it; the additions marked 2026-10-18 below come from there. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) and [pbrt-material-system.md](pbrt-material-system.md). The [laser optics plan](physoptics-laser-optics.md) builds its glasses, coatings, lasers and spectral goals on it; the additions marked 2026-10-18 below come from there. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Requirements and decisions
 
@@ -87,7 +87,7 @@ Whatever the representation, a path stores only:
 - `lambdaU`, the one uniform sample its hero wavelengths derive from. The wavelengths and their densities are recomputed where needed, which is a handful of instructions and keeps `PathState` from growing by 8 floats per 4 lanes (pbrt-v4 chapter 15's exercise on compressing `SampledWavelengths`).
 - `laneMask`, which lanes are still alive after a dispersive event. All ones otherwise.
 
-A shadow ray is added to the film by kernel 08, after it knows the visibility and, in a medium, the per-lane transmittance ([pbrt-participating-media.md](pbrt-participating-media.md)). So `ShadowRay.contribution` becomes a `Spectrum` too, and the shadow ray carries the path's `lambdaU` and `laneMask` for the conversion. With four lanes the shadow ray is 64 bytes, up from [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md)'s 48; the roadmap's shadow-ray table gives the layout.
+A shadow ray is added to the film by kernel 08, after it knows the visibility and, in a medium, the per-lane transmittance ([pbrt-participating-media.md](pbrt-participating-media.md)). So `ShadowRay.contribution` becomes a `Spectrum` too, and the shadow ray carries the path's `lambdaU` and `laneMask` for the conversion. With four lanes the shadow ray is 64 bytes, up from [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md)'s 48; the roadmap's shadow-ray table gives the layout.
 
 ### `SpectrumRef`: authoring once
 

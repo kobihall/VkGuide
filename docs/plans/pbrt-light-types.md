@@ -2,7 +2,7 @@
 
 The tracer has pbrt's point, spot and distant lights, diffuse area emission from shapes and triangles, and an environment map. pbrt-v4 has nine light types; the missing ones are the projection light and the goniometric light. Its area lights can be one-sided and can carry an image, and its lights can be specified by the power or illuminance they deliver rather than by a raw scale. This plan adds those, and gives every light the emission-sampling functions that light tracing, BDPT and photon mapping need.
 
-*Not implemented. Depends on [pbrt-textures.md](pbrt-textures.md) (images for projection, goniometric and textured emission), [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) (shape uvs) and [pbrt-material-system.md](pbrt-material-system.md) (emission parameters). Color temperature comes from [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-textures.md](pbrt-textures.md) (images for projection, goniometric and textured emission), [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (shape uvs) and [pbrt-material-system.md](pbrt-material-system.md) (emission parameters). Color temperature comes from [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 

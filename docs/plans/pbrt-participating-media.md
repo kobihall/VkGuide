@@ -2,7 +2,7 @@
 
 Everything the tracer renders is a surface: a ray crosses vacuum until it hits something. Participating media make the space between surfaces take part: fog, smoke, clouds, murky water, the inside of a glass of milk. A ray crossing one may be absorbed or scattered before it reaches the surface kernel 02 found. Kernels 05 and 07 of PBR 4ed Figure 15.2 exist for this and are stubs here. This plan fills them with pbrt-v4's volumetric path tracing: null-scattering delta tracking against majorants, ratio-tracked transmittance for shadow rays, chromatic media through spectral MIS, and homogeneous, grid and NanoVDB media. *Ray Tracing: The Next Week*'s constant-density medium is the homogeneous case.
 
-*Not implemented. `shaders/rt/0501_sample_medium_interaction.comp` and `0701_sample_medium_scattering.comp` are registered with `implemented = false`. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) and [pbrt-material-system.md](pbrt-material-system.md) (the `interface` material). Chromatic media use [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)'s lanes. This revision replaces the earlier draft of this file. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. `shaders/rt/0501_sample_medium_interaction.comp` and `0701_sample_medium_scattering.comp` are registered with `implemented = false`. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) and [pbrt-material-system.md](pbrt-material-system.md) (the `interface` material). Chromatic media use [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)'s lanes. This revision replaces the earlier draft of this file. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decision already made
 

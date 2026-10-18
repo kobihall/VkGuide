@@ -33,6 +33,10 @@
 // where BSDF samples found it and green where light samples did, each weighted as the strategy
 // weighs it. Delta lights, which only light samples can reach, are left out
 #define CRT_DEBUG_MIS_WEIGHTS 7u
+// the shading normal the materials use against the geometric normal, both turned to face the ray:
+// red where they disagree by more than 90 degrees, so a material shades a side of the surface the
+// ray never reached; elsewhere grey, the cosine between them
+#define CRT_DEBUG_NORMAL_DISAGREEMENT 8u
 
 #define CRT_MATERIAL_LAMBERTIAN 0u
 #define CRT_MATERIAL_METAL 1u
@@ -70,28 +74,32 @@ struct PathState {
 // strategy then counts at full weight
 #define CRT_NO_LIGHT 0xFFFFFFFFu
 
-// 48 bytes, by QUEUE POSITION, not path index - extend writes hits[i] for queue entry i and
-// shade reads the same. t < 0 is a miss. Geometry-agnostic: a shape and a triangle write the
-// same record, and shade never learns which one it came from. A shape leaves uv at zero, which
-// is harmless because a shape's material never carries a texture
+// 24 bytes, by QUEUE POSITION, not path index - extend writes hits[i] for queue entry i and
+// shade reads the same. t < 0 is a miss. THE THIN HIT RECORD: which primitive was hit and where on
+// it, nothing derived from them. crt_interaction.glsl rebuilds the surface (point, normals, uv,
+// derivatives, material, light record) from the record and the ray that made it, in whichever
+// kernel needs it, as pbrt-v4's wavefront does (PBR 4ed 15.3.6). Ordered for std430, where the vec2
+// needs an 8-byte offset
 struct HitRecord {
-	vec3 position;
 	float t;
-	vec3 normal;
-	// material index << 1 | front face
-	uint materialAndFace;
-	vec2 uv;
+	// into instances[]
+	uint instance;
+	// a triangle's (u, v): the weights of its second and third vertices. A shape's own parameters,
+	// its uv (shapeUv() in crt_shape.glsl)
+	vec2 barycentrics;
+	// a mesh: the global blasTriangles[] index. A shape: the part hit (shapePart()): a box's face,
+	// a cylinder's side or cap, 0 for a shape of one part
+	uint primitive;
 	// BVH nodes visited + primitives tested finding this hit (the traversal-cost debug view)
 	float traversalCost;
-	// the light list record of the surface hit, or CRT_NO_LIGHT: what kernel 04 prices the MIS
-	// weight of an emitter found by a BSDF sample against
-	uint lightIndex;
 };
 
 // 48 bytes: one triangle of one BLAS, in its mesh's object space, as the traversal intersects it -
 // the first vertex and the two edges from it. v0.w's bits: the triangle's index within its mesh
 // (CRT_TRIANGLE_INDEX_MASK), which finds its GpuTriangleAttributes after leaves re-ordered it and
 // spatial splits duplicated it, and CRT_TRIANGLE_CUTOUT for a triangle the traversal alpha-tests.
+// e1.w's bits: the surface it belongs to within its mesh, which indexes the instance's material
+// table, so kernel 02 finds a hit's material without fetching the attribute record.
 // src/bvh_layout.h BvhTriangle
 struct BvhTriangle {
 	vec4 v0;
@@ -118,14 +126,13 @@ struct GpuTriangleAttributes {
 	uvec4 tangents;
 };
 
-// 64 bytes: a placed mesh (its BLAS, its per-surface material table) or a placed shape, either
-// under its world-to-object transform. The unbounded shapes first, then TLAS slot order.
-// src/rt_accel.h GpuInstance
+// 128 bytes: a placed mesh (its BLAS, its per-surface material table) or a placed shape, either
+// under its transform. The unbounded shapes first, then TLAS slot order. src/rt_accel.h GpuInstance
 struct GpuInstance {
-	// rows of the world-to-object transform
-	vec4 row0;
-	vec4 row1;
-	vec4 row2;
+	// rows of the world-to-object transform, which carries rays into the instance
+	vec4 toObject[3];
+	// rows of the object-to-world transform, which carries derivatives back out of it
+	vec4 toWorld[3];
 	// the BLAS's first node, or CRT_INSTANCE_SHAPE
 	uint nodeBase;
 	// a mesh: the BLAS's first triangle. A shape: its CRT_SHAPE_* kind
@@ -227,10 +234,13 @@ struct LightHeader {
 	float pad2;
 };
 
-// 32 bytes, by RAY QUEUE POSITION like hits[]: a shadow ray kernel 06 emitted. Its origin is that
-// position's hit point. The contribution is complete - throughput, BSDF, cosine, emitted radiance,
-// MIS weight and pdf all applied - so kernel 08 only decides whether to add it
+// 48 bytes, by RAY QUEUE POSITION like hits[]: a shadow ray kernel 06 emitted, from the spawn point
+// it chose. The contribution is complete - throughput, BSDF, cosine, emitted radiance, MIS weight
+// and pdf all applied - so kernel 08 only decides whether to add it
 struct ShadowRay {
+	vec3 origin;
+	// reserved for the medium the ray starts in and its light group (docs/plans/pbrt-roadmap.md); 0
+	uint mediumAndGroup;
 	vec3 direction;
 	float tMax;
 	vec3 contribution;
@@ -327,7 +337,7 @@ layout (std430, set = 0, binding = 18) readonly buffer LightBuffer {
 // one shadow ray per ray queue position, written by 06 and traced by 08
 layout (std430, set = 0, binding = 19) buffer ShadowRayBuffer { ShadowRay shadowRays[]; };
 // per emitting mesh instance, per triangle (by its index within its mesh): its record in lights[],
-// or CRT_NO_LIGHT. What kernel 02 fills HitRecord.lightIndex from
+// or CRT_NO_LIGHT. What crt_interaction.glsl names the light a hit landed on by
 layout (std430, set = 0, binding = 20) readonly buffer TriangleLightBuffer { uint triangleLights[]; };
 // the environment map's two sampling tables, full and MIS-compensated, one after the other; each
 // is a marginal cdf (height + 1), the row cdfs (height x (width + 1)) and the function (height x
@@ -422,6 +432,49 @@ void queueAppend(uint queue, bool survives, uint pathIndex)
 }
 
 //---------------------------------------------------------------- geometry
+
+// a world-space point in an instance's object space
+vec3 toObjectPoint(GpuInstance instance, vec3 p)
+{
+	const vec4 q = vec4(p, 1.0);
+	return vec3(dot(instance.toObject[0], q), dot(instance.toObject[1], q), dot(instance.toObject[2], q));
+}
+
+// an object-space vector (a tangent, a position derivative) in world space
+vec3 toWorldVector(GpuInstance instance, vec3 v)
+{
+	return vec3(dot(instance.toWorld[0].xyz, v), dot(instance.toWorld[1].xyz, v), dot(instance.toWorld[2].xyz, v));
+}
+
+// an object-space normal in world space, unnormalised: by the inverse transpose of object-to-world,
+// which is the transpose of the world-to-object rows. It keeps a normal perpendicular to the surface
+// under a non-uniform scale, a stretched sphere's as much as a mesh's. Normal derivatives transform
+// the same way
+vec3 toWorldNormal(GpuInstance instance, vec3 n)
+{
+	return n.x * instance.toObject[0].xyz + n.y * instance.toObject[1].xyz + n.z * instance.toObject[2].xyz;
+}
+
+// the unit world-space normal of an object-space one
+vec3 worldNormal(GpuInstance instance, vec3 objectNormal)
+{
+	return normalize(toWorldNormal(instance, objectNormal));
+}
+
+// 1 / d with each zero component replaced by a tiny signed one, so no box test multiplies 0 by
+// infinity: NaN compares false both ways and would admit or reject a box arbitrarily
+vec3 safeReciprocal(vec3 d)
+{
+	const vec3 signs = vec3(greaterThanEqual(d, vec3(0.0))) * 2.0 - 1.0;
+	return 1.0 / mix(d, signs * 1e-12, lessThan(abs(d), vec3(1e-12)));
+}
+
+// a point's uv from its triangle's attribute record and barycentrics
+vec2 triangleUv(GpuTriangleAttributes attributes, vec2 bary)
+{
+	const float w = 1.0 - bary.x - bary.y;
+	return w * vec2(attributes.n0.w, attributes.vAndSurface.x) + bary.x * vec2(attributes.n1.w, attributes.vAndSurface.y) + bary.y * vec2(attributes.n2.w, attributes.vAndSurface.z);
+}
 
 // Ray-triangle by Moller-Trumbore: solves for the barycentric coordinates and t directly,
 // without ever forming the triangle's plane. Two-sided - a glTF model's back faces are hit and

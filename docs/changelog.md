@@ -2,8 +2,18 @@
 
 ## 2026-10-18
 
+### New
+
+- **Raytrace Render** → **Debug view** has **shading vs geometric normal**: red where the normal a material shades with and the surface's own normal, both facing the ray, are more than 90 degrees apart, and grey with their cosine elsewhere.
+
 ### Internal
 
+- The hit record is 24 bytes: `t`, `instance`, `barycentrics`, `primitive` and `traversalCost`. Kernels 04 and 06 rebuild the point, normals, uv, derivatives, material and light record with `surfaceInteraction()` in `shaders/rt/include/crt_interaction.glsl`. The design and as-built record are `docs/plans/completed/pbrt-thin-hit-record.md`.
+- Normal maps are applied in kernel 06, by `materialShadingNormal()` in `crt_scatter.glsl`, instead of in kernel 02. Kernel 02 finds a triangle's material through its surface index in `BvhTriangle.e1.w`.
+- `ShadowRay` is 48 bytes and carries its origin, so kernel 08 no longer reads `hits[]`. `GpuInstance` is 128 bytes, with the world-to-object rows renamed `toObject[3]` and the object-to-world rows added as `toWorld[3]`. The path pool takes 176 bytes per path, down from 184.
+- A kernel that forms a hit point from `t` writes `fma(vec3(t), direction, origin)`. The shader compiler fused that expression in kernel 02 but not in kernel 04, and the two disagreed by an ulp.
+- Analytic shapes have uv coordinates and derivatives (`shapeUv()`, `shapeDerivatives()` in `crt_shape.glsl` and `shape.cpp`). Seen from outside, u runs right and v runs down, so an image will appear upright as it does on a glTF mesh. No material samples a texture on a shape yet.
+- `bin/bvh_bench` first checks the shapes' uvs and derivatives against finite differences, and their continuity across the sphere's seam and the box's edges.
 - The plans for features from the pbrt books are renamed `docs/plans/pbrt-*.md`, and their roadmap is `docs/plans/pbrt-roadmap.md`. The laser optics simulator is planned in `docs/plans/physoptics-*.md`, with `docs/plans/physoptics-laser-optics.md` as its overview and the build order for every plan.
 - The descriptions of the stub kernels 05 and 07 in **Windows** → **Raytracer Shaders** name the plan by its new path, `docs/plans/pbrt-participating-media.md`.
 

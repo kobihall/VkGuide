@@ -50,21 +50,36 @@ std::vector<CrtBinding> traversalBindings(bool usesAcceleration)
 	return bindings;
 }
 
-// The bindings of a kernel 06 variant: the surface queue's hits, the materials and their textures,
-// and the shadow rays it may emit towards the light list. `allLights` for a variant that samples
-// area lights and the environment as well as delta lights, which reads their geometry and textures
+// What shaders/rt/include/crt_interaction.glsl reads to rebuild a surface from a thin hit record:
+// the hit itself, the instance, the triangle and its attributes, the material table and the
+// triangle-light table. Every kernel that calls surfaceInteraction() declares these
+std::vector<CrtBinding> withInteraction(std::vector<CrtBinding> bindings)
+{
+	bindings.insert(bindings.end(), {
+		CrtBinding::Hits,
+		CrtBinding::Instances,
+		CrtBinding::BlasTriangles,
+		CrtBinding::TriangleAttributes,
+		CrtBinding::InstanceMaterials,
+		CrtBinding::TriangleLights,
+	});
+	return bindings;
+}
+
+// The bindings of a kernel 06 variant: the surface its hit record names, the materials and their
+// textures, and the shadow rays it may emit towards the light list. `allLights` for a variant that
+// samples area lights and the environment as well as delta lights, which reads their geometry and
+// textures
 std::vector<CrtBinding> scatterBindings(bool allLights)
 {
-	std::vector<CrtBinding> bindings = withCore({
-		CrtBinding::Hits,
+	std::vector<CrtBinding> bindings = withInteraction(withCore({
 		CrtBinding::Radiance,
 		CrtBinding::Materials,
 		CrtBinding::MaterialTextures,
 		CrtBinding::Lights,
 		CrtBinding::ShadowRays,
-	});
+	}));
 	if (allLights) {
-		bindings.push_back(CrtBinding::TriangleAttributes);
 		bindings.push_back(CrtBinding::EnvironmentMap);
 		bindings.push_back(CrtBinding::EnvironmentSampling);
 	}
@@ -102,9 +117,9 @@ const std::vector<KernelVariant>& registry()
 
 		//---------------------------------------------------------------- 02 intersect closest
 		//the search is the selected traversal's; what is listed here is what the body around it
-		//reads and writes: the ray queue, the hit records and classification queues, the materials it
-		//classifies emissive hits with, the attributes and textures its normal maps read, and the
-		//table that names an emitting triangle's light record
+		//reads and writes: the ray queue, the hit records and classification queues, and the
+		//materials it classifies emissive hits with, which a triangle names through its surface
+		//index and the instance's material table
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::IntersectClosest,
 			.id = "closest",
@@ -112,7 +127,7 @@ const std::vector<KernelVariant>& registry()
 			.description = "Finds each ray's nearest hit with the selected traversal and sorts it onto the escaped, emissive and surface queues.",
 			.shader = "rt/0201_intersect_closest.comp",
 			.domain = KernelDomain::CurrentRayQueue,
-			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Materials, CrtBinding::MaterialTextures, CrtBinding::TriangleAttributes, CrtBinding::TriangleLights, CrtBinding::TraversalStats }),
+			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Instances, CrtBinding::BlasTriangles, CrtBinding::Materials, CrtBinding::InstanceMaterials, CrtBinding::TraversalStats }),
 			.traces = true,
 		});
 
@@ -139,7 +154,7 @@ const std::vector<KernelVariant>& registry()
 			.shader = "rt/0401_handle_emissive.comp",
 			.domain = KernelDomain::FixedQueue,
 			.queue = QUEUE_EMISSIVE,
-			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::MaterialTextures, CrtBinding::Lights }),
+			.bindings = withInteraction(withCore({ CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::MaterialTextures, CrtBinding::Lights })),
 		});
 
 		//---------------------------------------------------------------- 05 sample medium interaction
@@ -218,8 +233,8 @@ const std::vector<KernelVariant>& registry()
 		});
 
 		//---------------------------------------------------------------- 08 trace shadow rays
-		//the shadow rays it drains, the hits they start from and the radiance they add to; the search
-		//is the selected traversal's, the same one kernel 02 walks
+		//the shadow rays it drains, which carry their own origins, and the radiance they add to; the
+		//search is the selected traversal's, the same one kernel 02 walks
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::TraceShadowRays,
 			.id = "occlusion",
@@ -228,7 +243,7 @@ const std::vector<KernelVariant>& registry()
 			.shader = "rt/0801_trace_shadow_rays.comp",
 			.domain = KernelDomain::FixedQueue,
 			.queue = QUEUE_SHADOW,
-			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Radiance, CrtBinding::ShadowRays, CrtBinding::TraversalStats }),
+			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::ShadowRays, CrtBinding::TraversalStats }),
 			.traces = true,
 		});
 

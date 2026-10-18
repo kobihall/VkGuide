@@ -15,9 +15,6 @@
 // adds what it emits and 06 carries the path on. src/rt_path_schedule.cpp puts a barrier between the two,
 // because 04 reads the throughput that 06 then overwrites.
 //
-// This is also where a normal map is applied: the tangent frame lives in the triangle's attribute
-// record, which only this kernel reads, so HitRecord.normal leaves here already perturbed.
-//
 // This is the split that makes each of those kernels start out CONVERGED: 06 runs only over
 // paths that really do need a BSDF sampled, not over a queue where two lanes in three are
 // missing or hitting a light. It is the whole reason the wavefront is worth its bandwidth
@@ -27,11 +24,14 @@
 // of the path's HitRecord, so a consumer reaches both the hit and the path from it, and the
 // hits[] array stays written once and read once with no indirection of its own.
 //
-// The HitRecord is deliberately geometry-agnostic: a shape and a triangle write the same
-// record, and nothing downstream of here can tell which it came from. Adding a primitive kind
-// changes this file and crt_shape.glsl; it changes no kernel after 02. What 02 does record for an
-// emitter is which light list entry it is (HitRecord.lightIndex), since that is what kernel 04
-// needs to weigh a BSDF sample that found it against light sampling (src/rt_lights.h).
+// THE RECORD IS THIN: the instance, the primitive, where on it, t and the traversal cost, nothing
+// derived. Kernels 04 and 06 rebuild the point, the normals, the uv, the material and the light
+// record from it with crt_interaction.glsl, and the material's normal map is applied there, in
+// material evaluation. Classifying needs only the material, which a triangle names through its
+// surface index in BvhTriangle.e1.w, so the closest hit's attribute record is not fetched here at
+// all. A shape's part and parameters (crt_shape.glsl shapePart(), shapeUv()) are solved here once,
+// since the point is at hand. Adding a primitive kind changes this file, crt_shape.glsl and
+// crt_interaction.glsl; it changes no kernel after 02.
 //
 // Requires crt_common.glsl and a traceScene() from one of the strategy headers.
 
@@ -40,54 +40,6 @@ layout (local_size_x = CRT_WORKGROUP) in;
 // the workgroup's share of the traversal counters, so the global ones take one atomic per group
 shared uint s_nodesVisited;
 shared uint s_primitivesTested;
-
-// crt_common.glsl GpuTriangleAttributes.tangents: one octahedral-encoded unit vector.
-// src/rt_accel.cpp packUnitVector
-vec3 unpackTangent(uint word)
-{
-	const vec2 e = unpackSnorm2x16(word);
-	vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y));
-	if (v.z < 0.0) {
-		v.xy = (1.0 - abs(v.yx)) * vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0);
-	}
-	return normalize(v);
-}
-
-// The object-space normal a material's normal map gives at this point, or false where there is
-// none to apply: no map, or a vertex without a tangent (a mesh with no uvs, or degenerate ones)
-bool normalMapped(GpuMaterial material, GpuTriangleAttributes attributes, vec2 bary, vec2 uv, vec3 objectNormal, out vec3 mapped)
-{
-	mapped = objectNormal;
-	if (material.normalLayer < 0 || (attributes.tangents.w & CRT_TANGENT_MISSING) != 0u) {
-		return false;
-	}
-	const float w = 1.0 - bary.x - bary.y;
-	const vec3 n = normalize(objectNormal);
-	vec3 t = w * unpackTangent(attributes.tangents.x) + bary.x * unpackTangent(attributes.tangents.y) + bary.y * unpackTangent(attributes.tangents.z);
-	t -= n * dot(n, t);
-	if (dot(t, t) < 1e-12) {
-		return false;
-	}
-	t = normalize(t);
-	// glTF: bitangent = cross(normal, tangent.xyz) * tangent.w. The first vertex's sign stands for
-	// the triangle's, since a mirrored uv seam never runs through a triangle's interior
-	const vec3 b = cross(n, t) * ((attributes.tangents.w & 1u) != 0u ? -1.0 : 1.0);
-	vec3 texel = textureLod(materialTextures, vec3(uv, float(material.normalLayer)), 0.0).xyz * 2.0 - 1.0;
-	texel.xy *= material.normalScale;
-	// built in object space and carried to world space like any normal below. Under a non-uniform
-	// scale that skews the tangent components slightly; every model in use is scaled uniformly
-	mapped = t * texel.x + b * texel.y + n * texel.z;
-	return dot(mapped, mapped) > 1e-12;
-}
-
-// a normal from an instance's object space to world space, by the inverse transpose of
-// object-to-world - which is the transpose of the world-to-object rows the instance stores. It
-// keeps the normal perpendicular to the surface under a non-uniform scale, a stretched sphere's as
-// much as a mesh's
-vec3 worldNormal(GpuInstance instance, vec3 objectNormal)
-{
-	return normalize(objectNormal.x * instance.row0.xyz + objectNormal.y * instance.row1.xyz + objectNormal.z * instance.row2.xyz);
-}
 
 // one queued path: trace it, write its HitRecord, and report which queues it belongs on, as a
 // mask of (1 << CRT_QUEUE_*) bits
@@ -103,80 +55,35 @@ uint intersectPath(uint queue, uint index)
 	const bool found = traceScene(origin, direction, CRT_T_MIN, CRT_INFINITY, trace);
 
 	HitRecord record;
-	record.uv = vec2(0.0);
+	record.instance = 0u;
+	record.primitive = 0u;
+	record.barycentrics = vec2(0.0);
 	// the traversal-cost debug view's input: this ray's node visits and primitive tests
 	record.traversalCost = float(g_nodesVisited) + float(g_primitivesTested);
-	record.lightIndex = CRT_NO_LIGHT;
 
 	if (!found) {
-		record.position = vec3(0.0);
 		record.t = -1.0;
-		record.normal = vec3(0.0);
-		record.materialAndFace = 0u;
 		hits[index] = record;
 		return 1u << CRT_QUEUE_ESCAPED;
 	}
 
 	const GpuInstance instance = instances[trace.instance];
-	record.position = origin + trace.t * direction;
 	record.t = trace.t;
+	record.instance = trace.instance;
 
-	vec3 objectNormal;
 	uint material;
-	bool hasMapped = false;
-	vec3 mappedObjectNormal;
 	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
-		// the hit point back in the unit primitive's space, where its normal is defined
-		const vec4 p = vec4(record.position, 1.0);
-		const vec3 objectPoint = vec3(dot(instance.row0, p), dot(instance.row1, p), dot(instance.row2, p));
-		objectNormal = shapeNormal(instance.triangleBase, objectPoint);
+		// the hit point back in the unit primitive's space, where its parts and parameters are
+		// defined. The same point crt_interaction.glsl rebuilds from the same ray, fused the same way
+		const vec3 objectPoint = toObjectPoint(instance, fma(vec3(trace.t), direction, origin));
+		record.primitive = shapePart(instance.triangleBase, objectPoint);
+		record.barycentrics = shapeUv(instance.triangleBase, record.primitive, objectPoint);
 		material = instance.materialBase;
-		// an emitting shape's light record; a box has one per face, in boxFace() order
-		if (instance.lightBase != CRT_NO_LIGHT) {
-			record.lightIndex = instance.lightBase + (instance.triangleBase == CRT_SHAPE_BOX ? boxFace(objectPoint) : 0u);
-		}
 	} else {
-		// only the closest hit fetches its shading data: the traversal touched positions alone
-		const BvhTriangle tri = blasTriangles[trace.triangle];
-		const GpuTriangleAttributes attributes = triangleAttributes[instance.attributeBase + (floatBitsToUint(tri.v0.w) & CRT_TRIANGLE_INDEX_MASK)];
-		const float u = trace.bary.x;
-		const float v = trace.bary.y;
-		const float w = 1.0 - u - v;
-
-		record.uv = triangleUv(attributes, trace.bary);
-
-		// the interpolated shading normal, which is what makes a low-poly mesh shade smoothly. A
-		// mesh with no NORMAL attribute loaded as (1,0,0) everywhere, so a degenerate result falls
-		// back to the geometric normal rather than producing NaN
-		objectNormal = w * attributes.n0.xyz + u * attributes.n1.xyz + v * attributes.n2.xyz;
-		if (dot(objectNormal, objectNormal) < 1e-12) {
-			objectNormal = cross(tri.e1.xyz, tri.e2.xyz);
-		}
-
-		material = instanceMaterials[instance.materialBase + floatBitsToUint(attributes.vAndSurface.w)];
-		hasMapped = normalMapped(materials[material], attributes, trace.bary, record.uv, objectNormal, mappedObjectNormal);
-		// an emitting triangle's light record, found through its mesh-local index
-		if (instance.lightBase != CRT_NO_LIGHT) {
-			record.lightIndex = triangleLights[instance.lightBase + (floatBitsToUint(tri.v0.w) & CRT_TRIANGLE_INDEX_MASK)];
-		}
+		record.primitive = trace.triangle;
+		record.barycentrics = trace.bary;
+		material = instanceMaterials[instance.materialBase + floatBitsToUint(blasTriangles[trace.triangle].e1.w)];
 	}
-	const vec3 normal = worldNormal(instance, objectNormal);
-
-	// the stored normal always faces the incoming ray, and the bit records which side was hit, so a
-	// two-sided triangle - and the inside of a glass shape - shades correctly. The side is decided
-	// by the unmapped normal: a normal map changes how a surface shades, not which side it is
-	const bool frontFace = dot(direction, normal) < 0.0;
-	record.normal = frontFace ? normal : -normal;
-	if (hasMapped) {
-		// flipped with the side, and kept only while it still faces the ray: a mapped normal tilted
-		// past the viewer would send the BSDF's continuation into the surface
-		vec3 mapped = worldNormal(instance, mappedObjectNormal);
-		mapped = frontFace ? mapped : -mapped;
-		if (dot(mapped, direction) < 0.0) {
-			record.normal = mapped;
-		}
-	}
-	record.materialAndFace = (material << 1u) | (frontFace ? 1u : 0u);
 	hits[index] = record;
 
 	// a light ends the path wherever it is hit, so it goes to its own kernel only. A glowing pbr
