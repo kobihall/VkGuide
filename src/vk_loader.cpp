@@ -311,6 +311,15 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 } };
 
+	// a primitive without a material uses glTF's default one (white, metallic 1, roughness 1), which
+	// is what a default-constructed fastgltf::Material holds. A file with no materials at all gets it
+	// as its only material, so the materials[0] a primitive falls back to below exists, and the
+	// descriptor pool and uniform buffer, sized by the material count, are never empty
+	if (gltf.materials.empty()) {
+		gltf.materials.emplace_back();
+		gltf.materials.back().name = "default";
+	}
+
 	file.descriptorPool.init(engine->m_device, gltf.materials.size(), sizes);
 
 	// load samplers
@@ -363,7 +372,10 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
 	for (fastgltf::Material& mat : gltf.materials) {
 		std::shared_ptr<GLTFMaterial> newMat = std::make_shared<GLTFMaterial>();
 		materials.push_back(newMat);
-		file.materials[uniqueKey(file.materials, mat.name, "material", materials.size() - 1)] = newMat;
+		const std::string materialKey = uniqueKey(file.materials, mat.name, "material", materials.size() - 1);
+		file.materials[materialKey] = newMat;
+		file.materialsByIndex.push_back(newMat);
+		file.materialNames.push_back(materialKey);
 
 		GLTFMetallic_Roughness::MaterialConstants constants;
 		constants.colorFactors.x = mat.pbrData.baseColorFactor[0];

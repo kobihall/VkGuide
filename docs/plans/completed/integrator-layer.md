@@ -117,7 +117,7 @@ Where an integrator weighs a contribution differently from the path tracer (`lvc
 Resources and pipelines:
 
 - **The resource table.** Each owner publishes its resources into a table indexed by `CrtBinding` when it allocates or uploads them, and `writeSet()` reads the table. A binding that no owner published stops the program with its name, where a missing `switch` case used to leave the descriptor silently unwritten.
-- **The pipeline cache.** Pipelines are keyed by variant and traversal, and built for the active integrator's stages when a render starts, with the default selection's built at startup. The lane-count families of [pbrt-spectral-rendering.md](../pbrt-spectral-rendering.md) and the material classes of [pbrt-material-system.md](../pbrt-material-system.md) extend the key.
+- **The pipeline cache.** Pipelines are keyed by variant and traversal, and built for the active integrator's stages when a render starts, with the default selection's built at startup. The lane-count families of [pbrt-spectral-rendering.md](../pbrt-spectral-rendering.md) and the material classes of [pbrt-material-system.md](pbrt-material-system.md) extend the key.
 - **Push constants.** Every kernel takes the one `Params` block, since a shared kernel is compiled once. An integrator that needs values of its own appends fields to it.
 
 The render guard's policy (the budget, the refusal and **Render anyway**) stays in `RaytraceRenderer`. The estimate comes from the active schedule, and the cost of one ray from the traversal.

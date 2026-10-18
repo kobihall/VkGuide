@@ -20,6 +20,8 @@
 //
 // Requires crt_common.glsl, crt_interaction.glsl and crt_random.glsl.
 
+#include "crt_material.glsl"
+
 float schlick(float cosine, float refIdx)
 {
 	float r0 = (1.0 - refIdx) / (1.0 + refIdx);
@@ -77,7 +79,7 @@ vec3 sampleGgxVisibleNormal(vec3 wo, float alpha, vec2 u)
 // Specular weight under visible-normal sampling with separable Smith masking is F x G1(wi).
 // The diffuse lobe takes what the Fresnel term at the viewing angle leaves, the usual cheap
 // layering; it does not conserve energy exactly at grazing angles on rough surfaces
-bool scatterPbr(GpuMaterial m, vec3 inDir, vec3 normal, inout uint rng, out vec3 attenuation, out vec3 outDir)
+bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, inout uint rng, out vec3 attenuation, out vec3 outDir)
 {
 	const vec3 wo = -inDir;
 	const float cosO = max(dot(normal, wo), 1e-4);
@@ -124,7 +126,7 @@ bool scatterPbr(GpuMaterial m, vec3 inDir, vec3 normal, inout uint rng, out vec3
 
 // the materials, by type. `inDir` is the unit incoming direction. Returns false when the path is
 // absorbed
-bool scatterSurface(GpuMaterial m, vec3 inDir, vec3 normal, bool frontFace, inout uint rng, out vec3 attenuation, out vec3 outDir)
+bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, inout uint rng, out vec3 attenuation, out vec3 outDir)
 {
 	switch (m.type) {
 	case CRT_MATERIAL_LAMBERTIAN: {
@@ -179,7 +181,7 @@ bool scatterSurface(GpuMaterial m, vec3 inDir, vec3 normal, bool frontFace, inou
 
 // true for a material whose scattering is a delta distribution: no light sample can land in it, so
 // a vertex on one samples no light and the next hit counts at full weight
-bool isSpecularMaterial(GpuMaterial m)
+bool isSpecularMaterial(ClassicMaterial m)
 {
 	return m.type == CRT_MATERIAL_DIELECTRIC || (m.type == CRT_MATERIAL_METAL && m.param < CRT_SPECULAR_FUZZ);
 }
@@ -226,7 +228,7 @@ float ggxD(float cosine, float alpha)
 // scatterPbr()'s choice between its lobes, which depends on the viewing direction alone: the
 // Fresnel term there, the diffuse albedo it leaves, and the chance of sampling the specular lobe.
 // Must match scatterPbr() expression for expression. False when neither lobe reflects anything
-bool pbrLobes(GpuMaterial m, vec3 inDir, vec3 normal, out vec3 f0, out vec3 diffuse, out vec3 fresnelView, out float specularChance)
+bool pbrLobes(ClassicMaterial m, vec3 inDir, vec3 normal, out vec3 f0, out vec3 diffuse, out vec3 fresnelView, out float specularChance)
 {
 	const vec3 wo = -inDir;
 	const float cosO = max(dot(normal, wo), 1e-4);
@@ -245,7 +247,7 @@ bool pbrLobes(GpuMaterial m, vec3 inDir, vec3 normal, out vec3 f0, out vec3 diff
 
 // f cos for pbr: the GGX lobe F D G1(wo) G1(wi) / (4 cos_o), which visible-normal sampling divided
 // by its density leaves as the F G1(wi) scatterPbr() weighs by, plus the diffuse lobe
-vec3 evalPbr(GpuMaterial m, vec3 inDir, vec3 normal, vec3 wi)
+vec3 evalPbr(ClassicMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 {
 	vec3 f0;
 	vec3 diffuse;
@@ -268,7 +270,7 @@ vec3 evalPbr(GpuMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 
 // the density scatterPbr() picks wi with: its lobe choice times each lobe's own density - the
 // visible-normal density G1(wo) D / (4 cos_o) for the specular lobe, cos / pi for the diffuse one
-float pdfPbr(GpuMaterial m, vec3 inDir, vec3 normal, vec3 wi)
+float pdfPbr(ClassicMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 {
 	vec3 f0;
 	vec3 diffuse;
@@ -292,7 +294,7 @@ float pdfPbr(GpuMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 // f(wo, wi) |cos theta_i| of the material for a direction someone else chose. `inDir` is the unit
 // incoming direction, `normal` the shading normal facing it, `wi` the unit direction towards the
 // light. Zero for a specular material and for a direction below the surface
-vec3 evalSurface(GpuMaterial m, vec3 inDir, vec3 normal, vec3 wi)
+vec3 evalSurface(ClassicMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 {
 	if (dot(normal, wi) <= 0.0) {
 		return vec3(0.0);
@@ -313,7 +315,7 @@ vec3 evalSurface(GpuMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 // The solid-angle density with which scatterSurface() picks wi: the sampling routine's own density,
 // not renormalised over the directions it keeps, since a lobe that absorbs the samples it sends below
 // the surface still picks each direction above it with this density
-float pdfSurface(GpuMaterial m, vec3 inDir, vec3 normal, vec3 wi)
+float pdfSurface(ClassicMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 {
 	if (dot(normal, wi) <= 0.0) {
 		return 0.0;
@@ -334,7 +336,7 @@ float pdfSurface(GpuMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 // The object-space normal a material's normal map gives at this point of a triangle, or false where
 // there is none to apply: no map, or a vertex without a tangent (a mesh with no uvs, or degenerate
 // ones). `objectNormal` is the interpolated vertex normal (triangleObjectNormal())
-bool normalMapped(GpuMaterial material, GpuTriangleAttributes attributes, vec2 bary, vec2 uv, vec3 objectNormal, out vec3 mapped)
+bool normalMapped(ClassicMaterial material, GpuTriangleAttributes attributes, vec2 bary, vec2 uv, vec3 objectNormal, out vec3 mapped)
 {
 	mapped = objectNormal;
 	if (material.normalLayer < 0 || (attributes.tangents.w & CRT_TANGENT_MISSING) != 0u) {
@@ -364,7 +366,7 @@ bool normalMapped(GpuMaterial material, GpuTriangleAttributes attributes, vec2 b
 // while it still faces the ray: one tilted past the viewer would send the BSDF's continuation into
 // the surface. `frontFace` is the side of the unmapped normal the ray arrived on, since a normal map
 // changes how a surface shades, not which side it is. Only a glTF material, on a triangle, has a map
-vec3 materialShadingNormal(GpuMaterial material, HitRecord hit, SurfaceInteraction si, vec3 inDir, out bool frontFace)
+vec3 materialShadingNormal(ClassicMaterial material, HitRecord hit, SurfaceInteraction si, vec3 inDir, out bool frontFace)
 {
 	vec3 normal = facingShadingNormal(si, inDir, frontFace);
 	const GpuInstance instance = instances[hit.instance];
@@ -387,9 +389,9 @@ vec3 materialShadingNormal(GpuMaterial material, HitRecord hit, SurfaceInteracti
 // a textured material's factors modulated by its textures, exactly as glTF defines them: base
 // colour by the sRGB base colour texel, roughness and metallic by the metal/rough texel's g and b.
 // textureLod: compute has no derivatives to pick a level with, and the array has no mips
-GpuMaterial resolveMaterial(uint materialIndex, vec2 uv)
+ClassicMaterial resolveMaterial(uint materialIndex, vec2 uv)
 {
-	GpuMaterial material = materials[materialIndex];
+	ClassicMaterial material = classicMaterial(materialIndex);
 	if (material.albedoLayer >= 0) {
 		const vec3 texel = textureLod(materialTextures, vec3(uv, float(material.albedoLayer)), 0.0).rgb;
 		material.albedo *= srgbToLinear(texel);

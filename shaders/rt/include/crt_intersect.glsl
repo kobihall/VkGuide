@@ -9,7 +9,12 @@
 //     miss                         -> CRT_QUEUE_ESCAPED   -> 03 Handle Escaped
 //     hit, material is emissive    -> CRT_QUEUE_EMISSIVE  -> 04 Handle Emissive Geometry
 //     hit, pbr with emission       -> CRT_QUEUE_EMISSIVE and CRT_QUEUE_SURFACE
-//     hit, anything else           -> CRT_QUEUE_SURFACE   -> 06 Sample Surface Scattering
+//     hit, anything else           -> CRT_QUEUE_SURFACE   -> 06 Sample Surface Scattering, basic build
+//     hit, a complex material      -> CRT_QUEUE_SURFACE_COMPLEX -> 06, complex build
+//
+// Basic or complex is the material's CRT_MATERIAL_FLAG_COMPLEX: a large or branchy evaluation gets
+// a build of 06 of its own, so the common materials' build allocates registers for them alone
+// (PBR 4ed 15.3.9). None of the six original types is complex, so today the complex queue is empty.
 //
 // A glowing pbr surface is the one case on two queues, as in pbrt-v4's wavefront integrator: 04
 // adds what it emits and 06 carries the path on. src/rt_path_schedule.cpp puts a barrier between the two,
@@ -87,11 +92,13 @@ uint intersectPath(uint queue, uint index)
 	hits[index] = record;
 
 	// a light ends the path wherever it is hit, so it goes to its own kernel only. A glowing pbr
-	// surface goes to both: 04 collects the glow, 06 scatters
-	const GpuMaterial hitMaterial = materials[material];
-	const bool emits = hitMaterial.type == CRT_MATERIAL_EMISSIVE || (hitMaterial.type == CRT_MATERIAL_PBR && any(greaterThan(hitMaterial.emission, vec3(0.0))));
-	const bool scatters = hitMaterial.type != CRT_MATERIAL_EMISSIVE;
-	return (emits ? 1u << CRT_QUEUE_EMISSIVE : 0u) | (scatters ? 1u << CRT_QUEUE_SURFACE : 0u);
+	// surface goes to both: 04 collects the glow, 06 scatters. The header's flags say which, so the
+	// material's parameters are not read here at all
+	const uint flags = materials[material].flags;
+	const bool emits = (flags & CRT_MATERIAL_FLAG_EMITS) != 0u;
+	const bool scatters = (flags & CRT_MATERIAL_FLAG_SCATTERS) != 0u;
+	const uint surfaceQueue = (flags & CRT_MATERIAL_FLAG_COMPLEX) != 0u ? CRT_QUEUE_SURFACE_COMPLEX : CRT_QUEUE_SURFACE;
+	return (emits ? 1u << CRT_QUEUE_EMISSIVE : 0u) | (scatters ? 1u << surfaceQueue : 0u);
 }
 
 void main()
@@ -123,10 +130,11 @@ void main()
 		atomicAdd(traversalStats[2u * pc.bounce + 1u], s_primitivesTested);
 	}
 
-	// three appends rather than one, because queueAppend() takes a single queue and must be
-	// reached by every invocation of the workgroup in uniform control flow. A lane pushes to one
-	// of them, or to emissive and surface both, and passes survives = false to the rest
+	// four appends rather than one, because queueAppend() takes a single queue and must be reached
+	// by every invocation of the workgroup in uniform control flow. A lane pushes to one of them, or
+	// to emissive and a surface queue both, and passes survives = false to the rest
 	queueAppend(CRT_QUEUE_ESCAPED, (targets & (1u << CRT_QUEUE_ESCAPED)) != 0u, index);
 	queueAppend(CRT_QUEUE_EMISSIVE, (targets & (1u << CRT_QUEUE_EMISSIVE)) != 0u, index);
 	queueAppend(CRT_QUEUE_SURFACE, (targets & (1u << CRT_QUEUE_SURFACE)) != 0u, index);
+	queueAppend(CRT_QUEUE_SURFACE_COMPLEX, (targets & (1u << CRT_QUEUE_SURFACE_COMPLEX)) != 0u, index);
 }

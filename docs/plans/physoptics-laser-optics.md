@@ -55,7 +55,7 @@ Technical defaults the plans state and the user can object to:
 - The world unit is the meter, as in glTF. Every optics panel shows millimeters, degrees and microradians.
 - The CPU side of the optics is a Vulkan-free static library, `rt_optics`, built at `-O2` like `rt_bvh` and `rt_light`. Its geometry is templated on the scalar type: the beam solver runs in `double`, and the `float` instantiation is the line-for-line mirror of the GLSL.
 - In exact RGB mode a glass's index is read at the scene's **Design wavelength** (587.6 nm by default, or the laser's wavelength when the scene has one laser), not at 550 nm. [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) records the change.
-- An optic's materials are library entries the optic owns, the way a glTF model owns its imported materials in [pbrt-material-system.md](pbrt-material-system.md).
+- An optic's materials are library entries the optic owns, the way a glTF model owns its imported materials in [pbrt-material-system.md](completed/pbrt-material-system.md).
 - Ports on beam-axis nodes are general (any number of outputs), so beamsplitters, acousto-optic modulators and nonlinear crystals fit the graph. Only the linear optics of the element list get physics in these plans.
 
 ## How the parts fit together
@@ -110,7 +110,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 1. [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md). Implemented 2026-10-18.
 2. [pbrt-robust-intersections.md](pbrt-robust-intersections.md)
 3. [pbrt-verification-harness.md](pbrt-verification-harness.md)
-4. [pbrt-material-system.md](pbrt-material-system.md)
+4. [pbrt-material-system.md](completed/pbrt-material-system.md). Implemented 2026-10-19, ahead of items 2 and 3, which it does not depend on.
 5. [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)
 6. [pbrt-sample-generation.md](pbrt-sample-generation.md)
 7. [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md)

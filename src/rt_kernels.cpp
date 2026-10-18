@@ -37,6 +37,7 @@ std::vector<CrtBinding> traversalBindings(bool usesAcceleration)
 	std::vector<CrtBinding> bindings {
 		CrtBinding::Instances,
 		CrtBinding::Materials,
+		CrtBinding::MaterialParams,
 		CrtBinding::BlasTriangles,
 		CrtBinding::MaterialTextures,
 		CrtBinding::TriangleAttributes,
@@ -75,6 +76,7 @@ std::vector<CrtBinding> scatterBindings(bool allLights)
 	std::vector<CrtBinding> bindings = withInteraction(withCore({
 		CrtBinding::Radiance,
 		CrtBinding::Materials,
+		CrtBinding::MaterialParams,
 		CrtBinding::MaterialTextures,
 		CrtBinding::Lights,
 		CrtBinding::ShadowRays,
@@ -154,7 +156,7 @@ const std::vector<KernelVariant>& registry()
 			.shader = "rt/0401_handle_emissive.comp",
 			.domain = KernelDomain::FixedQueue,
 			.queue = QUEUE_EMISSIVE,
-			.bindings = withInteraction(withCore({ CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::MaterialTextures, CrtBinding::Lights })),
+			.bindings = withInteraction(withCore({ CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::MaterialParams, CrtBinding::MaterialTextures, CrtBinding::Lights })),
 		});
 
 		//---------------------------------------------------------------- 05 sample medium interaction
@@ -179,9 +181,10 @@ const std::vector<KernelVariant>& registry()
 			.name = "BSDF sampling",
 			.description = "Sample the material's own lobe; a light counts only when a sample hits it. Delta lights still get shadow rays.",
 			.shader = "rt/0601_surface_scatter_bsdf.comp",
-			.domain = KernelDomain::FixedQueue,
+			.domain = KernelDomain::SurfaceQueues,
 			.queue = QUEUE_SURFACE,
 			.bindings = scatterBindings(false),
+			.perMaterialClass = true,
 			.nextEvent = NextEvent::DeltaLights,
 		});
 		v.push_back(KernelVariant {
@@ -190,9 +193,10 @@ const std::vector<KernelVariant>& registry()
 			.name = "Light sampling",
 			.description = "A shadow ray to one light per bounce, picked by power; the BSDF sample only continues the path.",
 			.shader = "rt/0602_surface_scatter_light.comp",
-			.domain = KernelDomain::FixedQueue,
+			.domain = KernelDomain::SurfaceQueues,
 			.queue = QUEUE_SURFACE,
 			.bindings = scatterBindings(true),
+			.perMaterialClass = true,
 			.nextEvent = NextEvent::AllLights,
 		});
 		v.push_back(KernelVariant {
@@ -201,9 +205,10 @@ const std::vector<KernelVariant>& registry()
 			.name = "MIS (balance heuristic)",
 			.description = "A light sample and a BSDF sample, each weighted by its share of the two densities.",
 			.shader = "rt/0603_surface_scatter_mis_balance.comp",
-			.domain = KernelDomain::FixedQueue,
+			.domain = KernelDomain::SurfaceQueues,
 			.queue = QUEUE_SURFACE,
 			.bindings = scatterBindings(true),
+			.perMaterialClass = true,
 			.nextEvent = NextEvent::AllLights,
 		});
 		v.push_back(KernelVariant {
@@ -212,10 +217,11 @@ const std::vector<KernelVariant>& registry()
 			.name = "MIS (power heuristic)",
 			.description = "A light sample and a BSDF sample, weighted by their squared densities: pbrt-v4's choice.",
 			.shader = "rt/0604_surface_scatter_mis_power.comp",
-			.domain = KernelDomain::FixedQueue,
+			.domain = KernelDomain::SurfaceQueues,
 			.queue = QUEUE_SURFACE,
 			.bindings = scatterBindings(true),
 			.isDefault = true,
+			.perMaterialClass = true,
 			.nextEvent = NextEvent::AllLights,
 		});
 
@@ -345,6 +351,11 @@ const std::vector<IntegratorInfo>& integratorRegistry()
 	return integrators;
 }
 
+}
+
+const char* materialClassId(MaterialClass materialClass)
+{
+	return materialClass == MaterialClass::Complex ? "complex" : "basic";
 }
 
 const char* kernelSlotNumber(KernelSlot slot)

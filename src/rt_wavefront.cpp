@@ -61,7 +61,7 @@ void WavefrontPool::destroy(VulkanEngine* engine, CrtResourceTable& resources)
 	m_allocated = false;
 }
 
-DispatchSize WavefrontPool::dispatchSize(const KernelVariant& variant, uint32_t bounce) const
+DispatchSize WavefrontPool::dispatchSize(const KernelVariant& variant, uint32_t bounce, MaterialClass materialClass) const
 {
 	switch (variant.domain) {
 	case KernelDomain::Pool:
@@ -72,6 +72,10 @@ DispatchSize WavefrontPool::dispatchSize(const KernelVariant& variant, uint32_t 
 		return { .indirectBuffer = m_headers.buffer, .indirectOffset = (bounce & 1u) * sizeof(CrtQueueHeader) };
 	case KernelDomain::FixedQueue:
 		return { .indirectBuffer = m_headers.buffer, .indirectOffset = variant.queue * sizeof(CrtQueueHeader) };
+	case KernelDomain::SurfaceQueues: {
+		const uint32_t queue = materialClass == MaterialClass::Complex ? CRT_QUEUE_SURFACE_COMPLEX : CRT_QUEUE_SURFACE;
+		return { .indirectBuffer = m_headers.buffer, .indirectOffset = queue * sizeof(CrtQueueHeader) };
+	}
 	}
 	return {};
 }

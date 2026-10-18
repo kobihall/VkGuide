@@ -315,7 +315,12 @@ shaders/rt/
     crt_linear.glsl      traceScene()/occluded() via brute force
     crt_shape.glsl       hitShape(), shapePart(), shapeNormal(), shapeUv(), shapeDerivatives();
                          mirrors src/shape.cpp
-    crt_intersect.glsl   kernel 02's body: write the thin HitRecord, classify, push the three queues
+    crt_intersect.glsl   kernel 02's body: write the thin HitRecord, classify by material flags,
+                         push the four classification queues
+    crt_material.glsl    each material type's parameter record, read from binding 26: ClassicMaterial
+                         for the six original types; mirrors the pack functions in src/rt_material.cpp
+    crt_material_class.glsl  the material class a kernel 06 build is for: one CRT_MATERIAL_CLASS_<ID>
+                         branch per class, which CMake reads to compile the permutations
     crt_interaction.glsl surfaceInteraction(): the surface rebuilt from a HitRecord and its ray;
                          facingShadingNormal(), shadingFrame()
     crt_scatter.glsl     the BSDFs + resolveMaterial() + materialShadingNormal() (the normal map)
@@ -373,10 +378,11 @@ Consequence: the linear traversal never binds `BlasNodes`/`TlasNodes` at all; ke
 | 0, 1 | `CRT_QUEUE_RAY_A` / `_B` | **path indices**, ping-pong per bounce | 00, 06 | 01, 02 |
 | 2 | `CRT_QUEUE_ESCAPED` | **ray-queue positions** | 02 | 03 |
 | 3 | `CRT_QUEUE_EMISSIVE` | ray-queue positions | 02 | 04 |
-| 4 | `CRT_QUEUE_SURFACE` | ray-queue positions | 02 | 06 |
+| 4 | `CRT_QUEUE_SURFACE` | ray-queue positions of hits on basic materials | 02 | 06, basic build |
 | 5 | `CRT_QUEUE_SHADOW` | ray-queue positions, which also index `shadowRays[]` | 06 | 08 |
+| 6 | `CRT_QUEUE_SURFACE_COMPLEX` | ray-queue positions of hits on complex materials | 02 | 06, complex build |
 
-`CRT_QUEUE_COUNT = 6`; `m_queues` is `4 × CRT_QUEUE_COUNT × poolSize` bytes and `m_headers` is `CRT_QUEUE_COUNT` headers. The C++ mirrors are `constexpr` in `rt_gpu.cpp`'s anonymous namespace — **change both together**.
+`CRT_QUEUE_COUNT = 7`; `m_queues` is `4 × CRT_QUEUE_COUNT × poolSize` bytes and `m_headers` is `CRT_QUEUE_COUNT` headers. The C++ mirrors are `constexpr` in `rt_wavefront.h` — **change both together**.
 
 **Two indexing conventions coexist.** `paths[]`/`radiance[]` are by pool slot (stable for a path's life); `hits[]` and `shadowRays[]` are by ray-queue position (compacted, different every bounce). The classification queues store the ray-queue position *because it is also the hit index*, so a consumer reaches both hit and path from one number. `PathState.radianceSlot` maps back to the pixel.
 
@@ -391,18 +397,21 @@ fillBuffer(sampleBudget) on a render's first frame; resetHeader(RAY_A); barrier
 00 Generate camera rays        direct over poolSize
 barrier; copyHeader(RAY_A, 0)
 for bounce in [0, rayDepth):
-    resetHeader(next, ESCAPED, EMISSIVE, SURFACE, SHADOW); barrier
+    resetHeader(next, ESCAPED, EMISSIVE, SURFACE, SURFACE_COMPLEX, SHADOW); barrier
     01 Generate samples        indirect over rayQueueFor(bounce)   [+ barrier]
     02 Intersect closest       indirect over rayQueueFor(bounce)
-    barrier                                     <-- hits[], 3 queues, 3 headers
+    barrier                                     <-- hits[], 4 queues, 4 headers
     03 Handle escaped          indirect over ESCAPED     no barrier: a miss is on no other queue
     04 Handle emissive         indirect over EMISSIVE
     barrier                                     <-- a glowing pbr hit is on EMISSIVE and SURFACE;
                                                     04 reads the throughput 06 overwrites
-    06 Surface scattering      indirect over SURFACE     only 06 writes paths[] and the next ray queue
+    06 Surface scattering      indirect over SURFACE, basic build; then over SURFACE_COMPLEX,
+                               complex build. Only 06 writes paths[] and the next ray queue; the
+                               two builds touch disjoint paths and need no barrier between them
     barrier
     08 Trace shadow rays       indirect over SHADOW      each shadow ray carries its own origin
-    barrier; copyHeader(next, bounce + 1); copyHeader(SHADOW, CRT_MAX_DEPTH + 1 + bounce)
+    barrier; copyHeader(next, bounce + 1); copyHeader(SHADOW, CRT_MAX_DEPTH + 1 + bounce);
+    copyHeader(SURFACE, 2 * CRT_MAX_DEPTH + 1 + bounce); copyHeader(SURFACE_COMPLEX, 3 * CRT_MAX_DEPTH + 1 + bounce)
 09 Update film                 direct over width × height
 barrier; copy the frame's counters to readback, 09's dropped-sample count last
 image_error.comp against the reference, when one is captured; tonemap
@@ -442,9 +451,9 @@ Both strategy files implement `occluded()` with the same walk as `traceScene()` 
 - **Readouts**: the per-bounce lines (paths alive, shadow rays) are the active schedule's `counters()`, printed by label.
 - **"Compare to reference"** (`drawReference()`): "Use this render as reference" copies the accumulation into `m_reference`; from then on each frame's RMSE and relative MSE against it are read back and shown.
 
-### 8.10 Scene file, payload versions 8 to 11
+### 8.10 Scene file, payload versions 8 to 12
 
-Version 9 adds one material type, `"pbr"` (`"albedo"`, `"metallic"`, `"roughness"`, `"emission"`, `"strength"`). Nothing else changed, so a version 8 file reads unchanged. Version 10 adds `"lights"` (§8.14). Version 11 adds `"integrator"` and `"traversal"` (§8.16).
+Version 9 adds one material type, `"pbr"` (`"albedo"`, `"metallic"`, `"roughness"`, `"emission"`, `"strength"`). Nothing else changed, so a version 8 file reads unchanged. Version 10 adds `"lights"` (§8.14). Version 11 adds `"integrator"` and `"traversal"` (§8.16). Version 12 replaces inline materials with the material library (§8.18). `readQuat()` normalizes an orientation only when its squared length is more than 1e-5 from 1, and reads a zero one as no rotation: re-normalizing a unit quaternion can move it by an ulp, which made orientations alternate between two floats on every save before 2026-10-19.
 
 ```json
 "integrator": "path",
@@ -474,9 +483,9 @@ The bit-identical comparison is the regression test to repeat after any change i
 
 ### 8.12 glTF materials (2026-09-25)
 
-Every glTF material now becomes the `pbr` `SceneMaterial` type (`gltfTriMaterial()` in `rt_accel.cpp`) with its textures as layers of `RaytraceTextureArray`, which holds base colour, normal, metal/rough and emissive textures alike (up to 256 layers of 512 x 512).
+Every glTF material now becomes the `pbr` material type (since §8.18 a library entry made by `gltfMaterialDef()` in `rt_accel.cpp`) with its textures as layers of `RaytraceTextureArray`, which holds base colour, normal, metal/rough and emissive textures alike (up to 256 layers of 512 x 512).
 
-- **`CrtMaterial` / `GpuMaterial` is 64 bytes**: adds the alpha cutoff, metallic, roughness, emission and the normal, metal/rough and emissive layers.
+- **`CrtMaterial` / `GpuMaterial` was 64 bytes**: adds the alpha cutoff, metallic, roughness, emission and the normal, metal/rough and emissive layers. Since §8.18 that record is `CrtClassicMaterial` in binding 26, behind a 16-byte header.
 - **`GpuTriangleAttributes` is 80 bytes**: adds `uvec4 tangents`, three octahedral-packed vertex tangents plus handedness and missing-tangent bits. `MeshAsset::cpuTangents` holds the source, from the file's `TANGENT` or generated from the uvs. It never reaches the raster vertex buffer.
 - **`BvhTriangle::v0.w`'s top bit** (`BVH_TRIANGLE_CUTOUT`) marks a triangle whose glTF material is `alphaMode` `MASK`. Mask the index with `BVH_TRIANGLE_INDEX_MASK` / `CRT_TRIANGLE_INDEX_MASK` before using it. The CPU traversals ignore the bit.
 - **Binding 12 is `materialTextures`** (`CrtBinding::MaterialTextures`). The traversal (alpha test), kernel 04 (emissive texture) and kernel 06 (base colour, metal/rough, normal maps) declare it.
@@ -520,6 +529,8 @@ Design and verification: `docs/plans/completed/shadow-rays-nee.md` (§9 is the a
 - A new kernel 06 variant must write `misPdf` for every path it continues. Leaving the value kernel 00 or the last bounce wrote counts a light found by the BSDF sample at the wrong weight, which shows as a wrong mean, not as noise.
 - A tracing kernel must include `include/crt_trace.glsl` **directly** in its `.comp` (CMake looks for that line) and set `KernelVariant::traces`. Adding the include to an existing `.comp` needs a manual `cmake ..`; editing `crt_trace.glsl` re-runs the configure step by itself.
 - A variant of a stage must work in every integrator that runs the stage. A kernel that only makes sense in one integrator is a new stage (numbers reserved in `docs/plans/pbrt-roadmap.md`), not a variant.
+- A kernel that evaluates surface materials includes `include/crt_material_class.glsl` **directly** in its `.comp`, as a tracing kernel does `crt_trace.glsl`, and sets `KernelVariant::perMaterialClass`. CMake compiles it once per class (and per traversal, if it also traces) to `<name>.comp[.<traversal>].<class>.spv`; adding the include to an existing `.comp` needs a manual `cmake ..`.
+- A material type's pack function in `rt_material.cpp` and its reader in `crt_material.glsl` agree on the record's layout by hand; change both together. Kernel 02 and the traversal read only the header's flags, so a flag the pack function forgets to set (`CRT_MATERIAL_FLAG_EMITS`, `SCATTERS`, `COMPLEX`, `CUTOUT`) misroutes hits silently.
 - Every kernel that forms a hit point from `t` writes it as `fma(vec3(t), direction, origin)`. The shader compiler fuses `origin + t * direction` in some kernels and not others, and a point one ulp off changes kernel 04's MIS weight for a cylinder light (§8.17).
 - A kernel that calls `surfaceInteraction()` declares the bindings it reads (`withInteraction()` in `rt_kernels.cpp`), even if it never uses the field that needs one: the SPIR-V still references the buffer, and the validation layer reports `VUID-VkComputePipelineCreateInfo-layout-07988`.
 - A degenerate box face keeps its record at zero power, so the six faces stay in the order kernel 02 names them. A zero-power record prices at pmf 0, which gives a BSDF sample full weight.
@@ -548,5 +559,19 @@ Design and as-built record: `docs/plans/completed/pbrt-thin-hit-record.md`.
 - **`GpuInstance` is 128 bytes**: `toObject[3]` (the former `row0`..`row2`) and `toWorld[3]`, the object-to-world rows, which carry derivatives out of the instance.
 - **Shapes have uvs and derivatives** in `crt_shape.glsl` and `shape.cpp`, in glTF's orientation: seen from outside, u runs right and v runs down, so `cross(dpdu, dpdv)` points into the surface. `bvh_bench` checks them against finite differences, and their continuity across the sphere seam and the box edges, before its BVH tests.
 - **Debug view 8**, "shading vs geometric normal", is red where the shading normal the materials use and the geometric normal, both facing the ray, are more than 90 degrees apart. Cornell box: 0 pixels. Sponza at 320 × 180: 264 of 57,446 hit pixels.
-- **Pool memory** is 176 bytes per path, down from 184.
+- **Pool memory** is 176 bytes per path, down from 184 (180 since §8.18 adds a queue).
 - **Verified**: 22 fixed-seed renders matched byte for byte. 17 compared against the commit before: the Cornell box under all four kernel 06 variants and all three traversals, the sphere scene, the Veach scene, Sponza under both BVH layouts, and the normal, MIS-weight and traversal-cost views. 5 were of a scratch scene with every shape kind, emissive boxes and cylinders, and glass boxes and cylinders, against a build of the old sources. The validation layer reported nothing across five configurations. The traversal-cost view of Sponza has two possible outcomes even on unchanged code (49 of 57,600 floats differ between runs), and the new build matched one of them.
+
+### 8.18 The material system (2026-10-19)
+
+Design and as-built record: `docs/plans/completed/pbrt-material-system.md`.
+
+- **The library.** `RaytraceSceneEditor::materials()` holds every `MaterialDef` (`rt_material.h`): a type, its parameters by name in a `ParamSet`, an optional `GltfMaterialOrigin` (model key and glTF material index), and for a glTF entry the set of `edited` parameter names. Ids share the editor's id space. `SceneShape::materialId` and an override `SceneMeshObject::materialId` reference entries; a glTF-mode mesh object's surfaces use the entries its model's import made. Unreferenced user materials are kept; the **Materials** window has **Delete** (refused while referenced) and **Remove unused**.
+- **`MATERIAL_TRAITS`** (`materialTraits()`) is the only per-type knowledge outside the shaders: name, label, `MaterialParam`s (name, label, `ParamKind`, default, range, flags, tooltip), type flags, and the pack, emission and preview-color functions. `SpectrumRef` is RGB and `TexRef` a texture-array layer until the spectral and texture plans. Texture parameters and the alpha cutoff are `PARAM_READ_ONLY`: derived from the glTF file, re-resolved by `refreshGltfMaterials()` after every texture-array rebuild, and never saved.
+- **Import and removal.** `importGltf()` adds one entry per glTF material (`LoadedGLTF::materialsByIndex` and `materialNames` keep the file's order). `removeGltf()` drops them, except one a shape or override still references, which becomes a user material without its textures, named in the status line.
+- **Shapes and duplicates.** A new shape gets a new user material named after it; **Duplicate** copies the material too. A material on a shape is packed without texture layers (`PackContext::textures`), so a textured glTF material on a shape shows its factors.
+- **GPU records.** Binding 7 is a 16-byte `GpuMaterial` header (`type`, `flags`, `paramOffset`, `paramCount`); binding 26, `MaterialParams`, holds each record as vec4s. The six original types pack the former 64-byte record unchanged as `CrtClassicMaterial`, read by `classicMaterial()` in `crt_material.glsl`. `buildSceneAccel()` packs one record per (library id, textures) pair.
+- **Flags.** `CRT_MATERIAL_FLAG_EMITS`, `SCATTERS`, `COMPLEX`, `CUTOUT` and `NORMAL_MAP` are set by `packClassic()`. Kernel 02 classifies from them alone, and the traversal's alpha test reads parameters only for a `CUTOUT` material.
+- **Two surface queues.** Kernel 02 sends a hit on a `COMPLEX` material to queue 6. Every kernel 06 variant is `perMaterialClass` with domain `KernelDomain::SurfaceQueues`, built as `.basic.spv` and `.complex.spv`, and dispatched basic first, then complex. The basic build evaluates basic types only; the complex build is pbrt's universal evaluator, every type. No existing type is complex, so queue 6 is empty and its counter is hidden. `GpuRenderer`'s pipeline cache key is (variant, traversal, class).
+- **Scene file.** Payload version 12 writes `"materials"` (user materials in full), `"materialOverrides"` (`model`, `material`, and the edited parameters) and a reference per shape and override object: an index into `"materials"`, or `{"model":m,"material":i}`. An older file's inline material becomes a user material named after its object; a glTF-mode mesh object's stored override material is dropped.
+- **Verified** (seed 12345, rgba32f accumulation): the 22 renders of the thin hit record's checks matched the commit before byte for byte after the GPU records, after the library, and after the two queues. With `pbr` temporarily marked complex, all of Sponza's hits and a third of Veach's went through queue 6 and every render still matched, and the two queues' counts added up to the single queue's at every bounce. Every scene in `assets/scenes/` and the shape scene saved as version 12 and reopened with the same library. Sponza's edits saved as overrides, re-applied on reopen, and left the file after a revert. Zero validation messages across five configurations.

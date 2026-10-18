@@ -2,7 +2,7 @@
 
 // The raytracer's scene model and render settings, as plain data.
 //
-// Everything here is what a scene *is* to the raytracer - analytic shapes with tagged materials, the
+// Everything here is what a scene *is* to the raytracer - analytic shapes and their materials, the
 // cameras it can be rendered from, the loaded glTF geometry, how to render it - with no
 // behaviour attached. The GPU path tracer builds its BVHs from it (rt_accel.h); the editor, the gizmo
 // adapters, the scene file and the raster preview all work on these structs directly. Every
@@ -19,93 +19,8 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <rt_material.h>
 #include <shape.h>
-
-//---------------------------------------------------------------- materials
-
-enum class MaterialType : uint8_t {
-	Lambertian,
-	Metal,
-	Phong,
-	Dielectric,
-	// a light: every path that reaches it ends there, carrying albedo x strength home. From either
-	// side, as RTNW's diffuse_light
-	Emissive,
-	// glTF 2.0's metallic-roughness model: a GGX specular lobe over a Lambertian base, blended by
-	// metallic, plus an emission that does not end the path. What every glTF material becomes
-	Pbr
-};
-
-inline constexpr MaterialType MATERIAL_TYPES[] = {
-	MaterialType::Lambertian,
-	MaterialType::Metal,
-	MaterialType::Phong,
-	MaterialType::Dielectric,
-	MaterialType::Emissive,
-	MaterialType::Pbr,
-};
-
-inline const char* materialTypeName(MaterialType type)
-{
-	switch (type) {
-	case MaterialType::Lambertian:
-		return "lambertian";
-	case MaterialType::Metal:
-		return "metal";
-	case MaterialType::Phong:
-		return "phong";
-	case MaterialType::Dielectric:
-		return "dielectric";
-	case MaterialType::Emissive:
-		return "emissive";
-	case MaterialType::Pbr:
-		return "pbr";
-	}
-	return "unknown";
-}
-
-// The raytracer's own material, used by every shape and by a mesh object that overrides its glTF
-// material. Every type's parameters are stored, whichever type is selected, so switching an
-// object's material type and back keeps its values
-struct SceneMaterial {
-	MaterialType type { MaterialType::Lambertian };
-	// lambertian, metal, phong; pbr: the base colour; emissive: the emitted colour
-	glm::vec3 albedo { 0.7f };
-	// metal: radius of the perturbation ball around the mirror direction, 0..1
-	float fuzz { 0.3f };
-	// phong: 0..1, mapped to a lobe exponent of 1..1000 by the scatter
-	float smoothness { 0.5f };
-	// dielectric: index of refraction. 1.0 vacuum, 1.33 water, 1.5 glass, 2.42 diamond
-	float ir { 1.5f };
-	// emissive: the radiance is albedo x strength, so a light can be far brighter than white.
-	// pbr: the radiance is emission x strength
-	float strength { 1.f };
-	// pbr: 0 dielectric, 1 metal
-	float metallic { 0.f };
-	// pbr: perceptual roughness, 0 mirror to 1 fully rough (GGX alpha is its square)
-	float roughness { 0.5f };
-	// pbr: the emitted colour, black for a surface that does not glow
-	glm::vec3 emission { 0.f };
-
-	bool operator==(const SceneMaterial&) const = default;
-};
-
-inline SceneMaterial makeSceneMaterial(MaterialType type, const glm::vec3& albedo = glm::vec3(0.7f))
-{
-	SceneMaterial material;
-	material.type = type;
-	material.albedo = albedo;
-	return material;
-}
-
-// the single flat colour a material is best shown as outside the raytracer - used by the raster
-// preview shapes, which have no path tracer to resolve a real appearance with. A dielectric has
-// no albedo of its own (it attenuates by white), so a pale tint reads as glass rather than as a
-// plain white diffuse surface
-inline glm::vec3 materialPreviewColor(const SceneMaterial& material)
-{
-	return material.type == MaterialType::Dielectric ? glm::vec3(0.75f, 0.85f, 1.f) : material.albedo;
-}
 
 //---------------------------------------------------------------- shapes
 
@@ -171,7 +86,9 @@ struct SceneShape {
 	// the unit primitive's scale along its own axes. What each axis means is the kind's params; an
 	// axis none of them drives stays 1
 	glm::vec3 size { 1.f };
-	SceneMaterial material;
+	// the library entry it is shaded with (RaytraceSceneEditor::materials()). On a shape a material is
+	// packed without its textures, which shapes cannot carry until docs/plans/pbrt-textures.md
+	uint64_t materialId { 0 };
 
 	// the unit primitive -> world
 	glm::mat4 objectToWorld() const
@@ -391,11 +308,9 @@ struct RaytraceMeshData {
 
 // How the raytracer shades a placed mesh object
 enum class MeshMaterialMode : uint8_t {
-	// the glTF material each of its surfaces was authored with: the base-colour factor modulated
-	// by the base-colour texture, scattered as a diffuse surface
+	// the library entry each of its surfaces' glTF materials became when the model was imported
 	Gltf,
-	// one raytracer material (the same four a shape offers) for the whole object, replacing the
-	// glTF material and its texture entirely
+	// one library material for the whole object, in place of every surface's glTF material
 	Override
 };
 
@@ -418,32 +333,10 @@ struct SceneMeshObject {
 	glm::mat4 transform { 1.f };
 	bool visible { true };
 	MeshMaterialMode materialMode { MeshMaterialMode::Gltf };
-	SceneMaterial material;
+	// the override's library entry; 0 until the object is first switched to override
+	uint64_t materialId { 0 };
 
 	bool operator==(const SceneMeshObject&) const = default;
-};
-
-//---------------------------------------------------------------- mesh materials
-
-// A material a triangle is shaded with: the same tagged material a shape uses, plus the glTF
-// textures that modulate it, each a layer of the raytracer's texture array or -1 for none. A
-// shape's and an override's are all -1 with no cutout
-struct RaytraceTriMaterial {
-	SceneMaterial material;
-	// base colour (rgb, sRGB) and coverage (a)
-	int albedoLayer { -1 };
-	// tangent-space normal, linear
-	int normalLayer { -1 };
-	// g roughness, b metallic, linear
-	int metalRoughLayer { -1 };
-	// emitted colour, sRGB
-	int emissiveLayer { -1 };
-	// glTF alphaCutoff divided by the base colour factor's alpha, so the traversal compares the
-	// texel's alpha alone. 0 for a surface that is never cut out
-	float alphaCutoff { 0.f };
-	float normalScale { 1.f };
-
-	bool operator==(const RaytraceTriMaterial&) const = default;
 };
 
 //---------------------------------------------------------------- camera snapshot

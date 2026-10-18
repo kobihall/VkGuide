@@ -66,6 +66,18 @@ foreach(LINE ${CRT_TRAVERSAL_LINES})
   list(APPEND CRT_TRAVERSALS ${DEFINE})
 endforeach()
 
+## the material classes, read the same way from the defined(CRT_MATERIAL_CLASS_<ID>) lines of the file
+## that lists them. A kernel that includes it is compiled once per class, to <name>.comp.<id>.spv, or
+## <name>.comp.<traversal>.<id>.spv for one that also traces; src/rt_kernels.cpp names the same ids
+set(CRT_MATERIAL_CLASS_FILE "${PROJECT_SOURCE_DIR}/shaders/rt/include/crt_material_class.glsl")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CRT_MATERIAL_CLASS_FILE})
+file(STRINGS ${CRT_MATERIAL_CLASS_FILE} CRT_MATERIAL_CLASS_LINES REGEX "defined\\(CRT_MATERIAL_CLASS_[A-Z0-9_]+\\)")
+set(CRT_MATERIAL_CLASSES "")
+foreach(LINE ${CRT_MATERIAL_CLASS_LINES})
+  string(REGEX MATCH "CRT_MATERIAL_CLASS_[A-Z0-9_]+" DEFINE ${LINE})
+  list(APPEND CRT_MATERIAL_CLASSES ${DEFINE})
+endforeach()
+
 ## iterate each shader
 foreach(GLSL ${GLSL_SOURCE_FILES})
   message(STATUS "BUILDING SHADER")
@@ -76,27 +88,46 @@ foreach(GLSL ${GLSL_SOURCE_FILES})
   file(MAKE_DIRECTORY ${SPIRV_DIR})
   message(STATUS ${GLSL})
   file(STRINGS ${GLSL} TRACES REGEX "#include \"include/crt_trace.glsl\"")
+  file(STRINGS ${GLSL} PER_CLASS REGEX "#include \"include/crt_material_class.glsl\"")
+  ## the permutations: one per traversal for a kernel that traces, times one per material class for
+  ## a kernel that evaluates materials. Each entry is "<suffix>|<defines>"; a plain shader has one
+  ## empty entry
+  set(VARIANTS "|")
   if (TRACES)
-    ## a kernel that traces: one build per traversal
+    set(TRAVERSAL_VARIANTS "")
     foreach(DEFINE ${CRT_TRAVERSALS})
       string(REPLACE "CRT_TRAVERSAL_" "" TRAVERSAL ${DEFINE})
       string(TOLOWER ${TRAVERSAL} TRAVERSAL)
-      set(SPIRV "${PROJECT_SOURCE_DIR}/shaders/${REL_NAME}.${TRAVERSAL}.spv")
-      add_custom_command(
-        OUTPUT ${SPIRV}
-        COMMAND ${GLSL_VALIDATOR} -V -I${PROJECT_SOURCE_DIR}/shaders -D${DEFINE}=1 ${GLSL} -o ${SPIRV}
-        DEPENDS ${GLSL} ${GLSL_INCLUDE_FILES})
-      list(APPEND SPIRV_BINARY_FILES ${SPIRV})
+      list(APPEND TRAVERSAL_VARIANTS ".${TRAVERSAL}|-D${DEFINE}=1")
     endforeach()
-  else()
-    set(SPIRV "${PROJECT_SOURCE_DIR}/shaders/${REL_NAME}.spv")
-    ##execute glslang command to compile that specific shader
+    set(VARIANTS ${TRAVERSAL_VARIANTS})
+  endif()
+  if (PER_CLASS)
+    set(CLASS_VARIANTS "")
+    foreach(VARIANT ${VARIANTS})
+      string(REPLACE "|" ";" PARTS "${VARIANT}|")
+      list(GET PARTS 0 SUFFIX)
+      list(GET PARTS 1 DEFINES)
+      foreach(DEFINE ${CRT_MATERIAL_CLASSES})
+        string(REPLACE "CRT_MATERIAL_CLASS_" "" CLASS ${DEFINE})
+        string(TOLOWER ${CLASS} CLASS)
+        list(APPEND CLASS_VARIANTS "${SUFFIX}.${CLASS}|${DEFINES} -D${DEFINE}=1")
+      endforeach()
+    endforeach()
+    set(VARIANTS ${CLASS_VARIANTS})
+  endif()
+  foreach(VARIANT ${VARIANTS})
+    string(REPLACE "|" ";" PARTS "${VARIANT}|")
+    list(GET PARTS 0 SUFFIX)
+    list(GET PARTS 1 DEFINES)
+    separate_arguments(DEFINE_ARGS UNIX_COMMAND "${DEFINES}")
+    set(SPIRV "${PROJECT_SOURCE_DIR}/shaders/${REL_NAME}${SUFFIX}.spv")
     add_custom_command(
       OUTPUT ${SPIRV}
-      COMMAND ${GLSL_VALIDATOR} -V -I${PROJECT_SOURCE_DIR}/shaders ${GLSL} -o ${SPIRV}
+      COMMAND ${GLSL_VALIDATOR} -V -I${PROJECT_SOURCE_DIR}/shaders ${DEFINE_ARGS} ${GLSL} -o ${SPIRV}
       DEPENDS ${GLSL} ${GLSL_INCLUDE_FILES})
     list(APPEND SPIRV_BINARY_FILES ${SPIRV})
-  endif()
+  endforeach()
 endforeach(GLSL)
 
 add_custom_target(

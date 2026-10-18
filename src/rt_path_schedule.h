@@ -38,6 +38,9 @@ private:
 
 	TraversalWork m_traversalWork;
 	// paths alive entering each bounce, [0] being what generate spawned - the proof the compaction
-	// works - and the shadow rays kernel 06 emitted at each bounce, empty when there were none
-	std::array<ScheduleCounter, 2> m_counters { { { "Paths alive per bounce", {} }, { "Shadow rays per bounce", {} } } };
+	// works - the shadow rays kernel 06 emitted at each bounce, empty when there were none, and the
+	// surface hits each material class's build of kernel 06 scattered, the complex one shown only
+	// when it had any
+	std::array<ScheduleCounter, 4> m_counters { { { "Paths alive per bounce", {} }, { "Shadow rays per bounce", {} },
+		{ "Surface hits per bounce (basic)", {} }, { "Surface hits per bounce (complex)", {} } } };
 };

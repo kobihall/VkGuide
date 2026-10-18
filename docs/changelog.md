@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-10-19
+
+### New
+
+- **Windows** → **Materials** shows the material library: a **User** folder and one folder per imported model. Selecting a material shows an editor built from its type's parameters. **+ New**, **Duplicate**, **Delete** (refused while an object uses the material) and **Remove unused** manage the list.
+- An edited parameter of a glTF material is marked, with a **revert** button beside it, and **Revert all** restores the whole material as the file defines it.
+- **Raytrace Render** shows **Surface hits per bounce (basic)**, and a complex line beside it once the scene has a complex material.
+
+### Changed
+
+- Materials are a named library. A shape or a mesh object's override picks one from a **material** combo in the **Scene** panel, with **Edit** to open it in the **Materials** window and **New from this** to give the object its own copy. Editing a material changes every object that uses it.
+- A material's parameters are edited in the **Materials** window. The **Scene** panel no longer shows them.
+- A new shape gets its own material, named after the shape, and **Duplicate** copies the material along with the object, so objects stay independent until you pick a shared material.
+- An imported model's glTF materials are library entries you can edit in place; a mesh object shaded with its glTF materials lists them with an **Edit** button each. The edits change the raytracer's render only, not the raster viewport.
+- A material on a shape leaves out its textures, which shapes cannot carry yet: a glTF material on a sphere shows its factors.
+- Removing a model removes its materials. One a shape or an override still uses becomes a user material without its textures, and the status line names it.
+- Scene files are payload version 12, which saves the user materials in full, each glTF material only as the parameters you changed, and every object's material by reference. An older file opens with one user material per object, named after the object. A mesh object in glTF mode drops the override material older files stored for it.
+
+### Fixed
+
+- Fixed orientations changing on every save. Opening a scene re-normalized each saved orientation, which moved it to a neighboring float and back on alternate saves, so a scene rendered slightly differently after each save and reopen. An orientation already unit length to float precision now loads exactly as saved. A scene whose stored orientations are not exact, such as `veach_mis.gltf`, renders differently by float rounding the first time it opens after this fix.
+- Fixed importing a glTF file that has no materials: a primitive without a material read past the end of the file's empty material list, and the descriptor pool and uniform buffer were sized for zero materials. Such a file now gets glTF's default material, white with metallic and roughness 1, as its only material, and it appears in the **Materials** window as `default`.
+
+### Internal
+
+- `src/rt_material.h/.cpp` holds the material model: `MaterialDef` with its parameters in a `ParamSet` by name, and `MATERIAL_TRAITS`, the only per-type knowledge outside the shaders. A new type is a traits row, its parameters, its pack function, and its record reader in `shaders/rt/include/crt_material.glsl`.
+- Binding 7 is a 16-byte `GpuMaterial` header (type, flags, parameter offset and count), and binding 26, `MaterialParams`, holds each material's parameter record. The six existing types pack their former 64-byte record unchanged, as `CrtClassicMaterial`.
+- Kernel 02 classifies a hit from its material's flags, and the traversal's alpha test reads a material's parameters only when it has `CRT_MATERIAL_FLAG_CUTOUT`.
+- Kernel 02 sends hits on complex materials to queue 6, `CRT_QUEUE_SURFACE_COMPLEX`. Every kernel 06 variant includes `include/crt_material_class.glsl`, sets `KernelVariant::perMaterialClass`, and is built and dispatched once per class over `KernelDomain::SurfaceQueues`. The path pool takes 180 bytes per path.
+- `LoadedGLTF::materialsByIndex` and `materialNames` keep a file's materials in its own order, which a library entry's origin names them by.
+
 ## 2026-10-18
 
 ### New

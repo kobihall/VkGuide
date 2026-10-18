@@ -2,7 +2,7 @@
 
 Skin, marble, milk, wax and jade look soft because light enters them, scatters beneath the surface and leaves somewhere else. The tracer's materials all scatter at the point of entry. The sources describe two ways to model it: a BSSRDF, a tabulated profile of where light exits relative to where it entered (PBR 3ed §11.4 and §15.4 to §15.5; pbrt-v4's `SubsurfaceMaterial`), and a volumetric random walk through the object's interior, which production renderers adopted (Chiang et al. 2016, cited in PBR 4ed chapter 14's "Further Reading"). The user chose both, selected per material. This plan adds a `subsurface` material with the two methods, a subsurface kernel, and pbrt's table of measured scattering coefficients.
 
-*Not implemented. Depends on [pbrt-participating-media.md](pbrt-participating-media.md) (homogeneous media, chromatic MIS, the named-media table), [pbrt-material-system.md](pbrt-material-system.md) and [pbrt-bsdf-library.md](pbrt-bsdf-library.md) (the dielectric boundary). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-participating-media.md](pbrt-participating-media.md) (homogeneous media, chromatic MIS, the named-media table), [pbrt-material-system.md](completed/pbrt-material-system.md) and [pbrt-bsdf-library.md](pbrt-bsdf-library.md) (the dielectric boundary). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decision already made
 
@@ -17,7 +17,7 @@ On 2026-09-26 the user chose to plan both a volumetric random walk and a BSSRDF,
 
 ### The material
 
-A `subsurface` material ([pbrt-material-system.md](pbrt-material-system.md)) with:
+A `subsurface` material ([pbrt-material-system.md](completed/pbrt-material-system.md)) with:
 
 - **Method**, random walk or BSSRDF.
 - The interior's scattering, specified one of three ways, as pbrt allows: σa and σs directly; a surface albedo (reflectance) and a mean free path per channel, inverted to σa and σs; or a named measured material.

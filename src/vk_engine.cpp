@@ -518,6 +518,7 @@ void VulkanEngine::run()
 				ImGui::MenuItem("background", nullptr, &m_showBackgroundWindow);
 				ImGui::MenuItem("Stats", nullptr, &m_showStatsWindow);
 				ImGui::MenuItem("Scene", nullptr, m_raytraceScene.visibilityFlag());
+				ImGui::MenuItem("Materials", nullptr, m_raytraceScene.materialsVisibilityFlag());
 				ImGui::MenuItem("Raytrace Render", nullptr, m_raytracer.visibilityFlag());
 				ImGui::MenuItem("Raytracer Shaders", nullptr, m_raytracer.kernelPanelVisibilityFlag());
 				ImGui::MenuItem("ImGui Demo", nullptr, &m_showDemoWindow);
@@ -556,6 +557,7 @@ void VulkanEngine::run()
 		}
 
 		m_raytraceScene.drawPanel(this);
+		m_raytraceScene.drawMaterialsWindow(this);
 		m_raytracer.drawPanel(this, m_raytraceScene);
 		m_raytracer.drawKernelPanel(this);
 
@@ -934,6 +936,16 @@ void VulkanEngine::rebuildSceneDerivedData()
 	//the path tracer's base-colour textures, from the same models, so a triangle's material layer
 	//and the array it indexes are always built together
 	m_raytraceTextures.rebuild(this);
+	//and the glTF materials' library entries, whose texture layers just moved
+	m_raytraceScene.refreshGltfMaterials([this](MaterialDef& material) {
+		const auto model = m_models.find(material.origin->modelKey);
+		if (model == m_models.end() || model->second == nullptr || material.origin->index >= model->second->materialsByIndex.size()) {
+			return false;
+		}
+		const MaterialDef before = material;
+		refreshGltfMaterialDef(material, *model->second->materialsByIndex[material.origin->index], m_raytraceTextures);
+		return !(before == material);
+	});
 
 	//the path tracer's BLASes, one per mesh not already built: the BVH work belongs to loading, not
 	//to the first render
@@ -960,6 +972,16 @@ IoResult VulkanEngine::importGltf(const std::filesystem::path& path)
 	m_models[key] = *loaded;
 
 	rebuildSceneDerivedData();
+
+	//one library entry per glTF material, named as the file names it, which is what its objects are
+	//shaded with and what the Materials window edits in place
+	const LoadedGLTF& model = *m_models[key];
+	for (uint32_t i = 0; i < model.materialsByIndex.size(); i++) {
+		MaterialDef material = gltfMaterialDef(*model.materialsByIndex[i], m_raytraceTextures);
+		material.name = i < model.materialNames.size() ? model.materialNames[i] : fmt::format("material{}", i);
+		material.origin = GltfMaterialOrigin { key, i };
+		m_raytraceScene.addMaterial(std::move(material));
+	}
 
 	//a freshly imported model places one scene object per mesh node, at the transform it was
 	//authored with, so importing looks exactly as it always did - the objects are what makes each
@@ -995,7 +1017,12 @@ void VulkanEngine::removeGltf(const std::string& name)
 	//So do the lights it brought, which belong to it the same way
 	m_raytraceScene.removeMeshObjectsOf(name);
 	m_raytraceScene.removeLightsOf(name);
+	//and its materials, except the ones a shape or an override still uses, which become the user's
+	const std::vector<std::string> kept = m_raytraceScene.removeMaterialsOf(name);
 	rebuildSceneDerivedData();
+	if (!kept.empty()) {
+		m_lastFileResult = IoResult::success(fmt::format("Removed '{}'. Its material(s) {} are still in use and are now user materials, without their textures", name, fmt::join(kept, ", ")));
+	}
 }
 
 void VulkanEngine::clearModels()
@@ -1006,6 +1033,7 @@ void VulkanEngine::clearModels()
 	vkDeviceWaitIdle(m_device);
 	for (const auto& [name, model] : m_models) {
 		m_raytraceScene.removeLightsOf(name);
+		m_raytraceScene.removeMaterialsOf(name);
 	}
 	m_models.clear();
 	m_raytraceScene.replaceMeshObjects({});
@@ -1019,6 +1047,7 @@ void VulkanEngine::newScene()
 	m_firstPersonCameraId = 0;
 	m_raytraceScene.replaceShapes({});
 	m_raytraceScene.replaceLights({});
+	m_raytraceScene.replaceMaterials({});
 	//an empty scene still has somewhere to render from
 	SceneCamera camera;
 	camera.name = "render_camera";
@@ -1044,6 +1073,42 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 		scene.modelPaths.push_back(model->sourcePath);
 	}
 
+	//the library: every user material in full, referenced by its position in the file's list, and
+	//each glTF material only as the parameters the user changed
+	std::map<uint64_t, int> userIndices;
+	for (const MaterialDef& material : m_raytraceScene.materials()) {
+		if (!material.origin.has_value()) {
+			userIndices[material.id] = (int)scene.materials.size();
+			scene.materials.push_back(material);
+			continue;
+		}
+		const auto model = modelIndices.find(material.origin->modelKey);
+		if (material.edited.empty() || model == modelIndices.end()) {
+			continue;
+		}
+		SceneMaterialOverride edit;
+		edit.model = model->second;
+		edit.gltfIndex = material.origin->index;
+		for (const std::string& name : material.edited) {
+			edit.params[name] = materialValue(material, name);
+		}
+		scene.materialOverrides.push_back(std::move(edit));
+	}
+	auto materialRef = [&](uint64_t id) {
+		SceneMaterialRef ref;
+		const MaterialDef* material = m_raytraceScene.findMaterial(id);
+		if (material == nullptr) {
+			return ref;
+		}
+		if (!material->origin.has_value()) {
+			ref.user = userIndices[id];
+		} else if (const auto model = modelIndices.find(material->origin->modelKey); model != modelIndices.end()) {
+			ref.model = model->second;
+			ref.gltfIndex = material->origin->index;
+		}
+		return ref;
+	};
+
 	scene.hasMeshObjects = true;
 	for (const SceneMeshObject& object : m_raytraceScene.meshObjects()) {
 		const auto found = modelIndices.find(object.modelKey);
@@ -1058,12 +1123,16 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 		record.transform = object.transform;
 		record.visible = object.visible;
 		record.materialMode = object.materialMode;
-		record.material = object.material;
+		if (object.materialMode == MeshMaterialMode::Override) {
+			record.material = materialRef(object.materialId);
+		}
 		scene.meshObjects.push_back(std::move(record));
 	}
 
 	scene.environmentMapPath = m_environmentMapPath;
-	scene.shapes = m_raytraceScene.shapes();
+	for (const SceneShape& shape : m_raytraceScene.shapes()) {
+		scene.shapes.push_back(SceneShapeRecord { shape, materialRef(shape.materialId) });
+	}
 	scene.cameras = m_raytraceScene.cameras();
 	scene.hasLights = true;
 	for (const SceneLight& light : m_raytraceScene.lights()) {
@@ -1112,8 +1181,10 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	//problems are reported together
 	clearModels();
 	clearEnvironmentMap();
-	//the previous scene's lights go too: a file older than lights has only what its models bring
+	//the previous scene's lights go too: a file older than lights has only what its models bring.
+	//So do its user materials; each import below brings its model's
 	m_raytraceScene.replaceLights({});
+	m_raytraceScene.replaceMaterials({});
 	std::vector<std::string> problems;
 	//the key each model actually got, by its position in the file's list: importGltf() derives a
 	//key from the file stem and uniquifies it, so the same file twice is two different keys
@@ -1139,6 +1210,38 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 		modelKeys.push_back(std::move(key));
 	}
 
+	//the library: the edits to the glTF materials the imports just made, then the user materials
+	for (const SceneMaterialOverride& edit : scene.materialOverrides) {
+		const std::string& key = edit.model < (int)modelKeys.size() ? modelKeys[edit.model] : std::string();
+		MaterialDef* material = key.empty() ? nullptr : m_raytraceScene.findGltfMaterial(key, edit.gltfIndex);
+		if (material == nullptr) {
+			continue;
+		}
+		for (const auto& [name, value] : edit.params) {
+			material->params[name] = value;
+			material->edited.insert(name);
+		}
+	}
+	std::vector<uint64_t> userIds;
+	for (MaterialDef& material : scene.materials) {
+		userIds.push_back(m_raytraceScene.addMaterial(std::move(material)));
+	}
+	//a reference the file holds, as a library id; an object whose material went missing gets a new
+	//one of its own
+	auto resolveMaterial = [&](const SceneMaterialRef& ref, const std::string& ownerName) -> uint64_t {
+		if (ref.user >= 0 && ref.user < (int)userIds.size()) {
+			return userIds[ref.user];
+		}
+		if (ref.model >= 0 && ref.model < (int)modelKeys.size() && !modelKeys[ref.model].empty()) {
+			if (const MaterialDef* material = m_raytraceScene.findGltfMaterial(modelKeys[ref.model], ref.gltfIndex)) {
+				return material->id;
+			}
+		}
+		MaterialDef material = makeMaterial(MaterialType::Lambertian);
+		material.name = ownerName;
+		return m_raytraceScene.addMaterial(std::move(material));
+	};
+
 	//the placed objects the file recorded replace the defaults every import just added. A
 	//version-4 file has none, and its models keep those defaults - every node at its authored
 	//transform, which is what that file meant
@@ -1156,7 +1259,9 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 			object.transform = record.transform;
 			object.visible = record.visible;
 			object.materialMode = record.materialMode;
-			object.material = record.material;
+			if (record.materialMode == MeshMaterialMode::Override) {
+				object.materialId = resolveMaterial(record.material, record.name);
+			}
 			objects.push_back(std::move(object));
 		}
 		m_raytraceScene.replaceMeshObjects(std::move(objects));
@@ -1179,7 +1284,12 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 		m_raytraceScene.replaceLights(std::move(lights));
 	}
 	m_firstPersonCameraId = 0;
-	m_raytraceScene.replaceShapes(std::move(scene.shapes));
+	std::vector<SceneShape> shapes;
+	for (SceneShapeRecord& record : scene.shapes) {
+		record.shape.materialId = resolveMaterial(record.material, record.shape.name);
+		shapes.push_back(std::move(record.shape));
+	}
+	m_raytraceScene.replaceShapes(std::move(shapes));
 	m_raytraceScene.replaceCameras(std::move(scene.cameras));
 	m_raytracer.setSettings(scene.render);
 	//the kernel selection first: it is what decides the BLAS node layout, so setAccelSettings()
@@ -2217,7 +2327,8 @@ void VulkanEngine::drawRaytraceShapes()
 		slot.materials.resize(shapes.size());
 
 		for (size_t i = 0; i < shapes.size(); i++) {
-			constants[i].colorFactors = glm::vec4(materialPreviewColor(shapes[i].material), 1.f);
+			const MaterialDef* material = m_raytraceScene.findMaterial(shapes[i].materialId);
+			constants[i].colorFactors = glm::vec4(material != nullptr ? materialPreviewColor(*material) : glm::vec3(0.7f), 1.f);
 			constants[i].metalRoughFactors = glm::vec4(1.f, 0.5f, 0.f, 0.f);
 
 			GLTFMetallic_Roughness::MaterialResources resources;

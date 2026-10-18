@@ -14,14 +14,14 @@ The tracer applies glTF normal maps and nothing else: no material can perturb it
 
 ### Bump mapping
 
-A material may carry a scalar `displacement` texture reference ([pbrt-material-system.md](pbrt-material-system.md)). The displaced surface is `p' = p + d(p) n(p)`, and its normal follows from finite differences of the displacement in u and v (PBR 4ed §10.5.4):
+A material may carry a scalar `displacement` texture reference ([pbrt-material-system.md](completed/pbrt-material-system.md)). The displaced surface is `p' = p + d(p) n(p)`, and its normal follows from finite differences of the displacement in u and v (PBR 4ed §10.5.4):
 
 ```text
 du = 0.5 × (|∂u/∂x| + |∂u/∂y|), or 0.0005 when the footprint gives nothing
 ∂p'/∂u ≈ ∂p/∂u + (d(u + du, v) − d(u, v)) / du × n + d(u, v) × ∂n/∂u
 ```
 
-and the same in v. The shading normal becomes their cross product, flipped to the side of the original. Three texture evaluations per hit, so a material with a displacement texture is complex ([pbrt-material-system.md](pbrt-material-system.md)).
+and the same in v. The shading normal becomes their cross product, flipped to the side of the original. Three texture evaluations per hit, so a material with a displacement texture is complex ([pbrt-material-system.md](completed/pbrt-material-system.md)).
 
 The step `du` comes from the ray-cone footprint ([pbrt-textures.md](pbrt-textures.md)) when there is one, so bump detail filters away with distance like texture detail does.
 

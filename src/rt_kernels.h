@@ -89,6 +89,8 @@ enum class CrtBinding : uint32_t {
 	ShadowRays = 19,
 	TriangleLights = 20,
 	EnvironmentSampling = 21,
+	// 22 to 25 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+	MaterialParams = 26,
 	Count
 };
 
@@ -104,8 +106,22 @@ enum class KernelDomain : uint32_t {
 	// indirect over whichever ray queue this bounce is reading
 	CurrentRayQueue,
 	// indirect over the fixed queue named by KernelVariant::queue
-	FixedQueue
+	FixedQueue,
+	// indirect over a surface queue: the basic material class's build over CRT_QUEUE_SURFACE, the
+	// complex class's over CRT_QUEUE_SURFACE_COMPLEX (a KernelVariant::perMaterialClass kernel)
+	SurfaceQueues
 };
+
+// The material classes a kernel that evaluates materials is built for, in dispatch order. The ids are
+// the CRT_MATERIAL_CLASS_<ID> branches of shaders/rt/include/crt_material_class.glsl, lower-cased,
+// and the suffix of each build's .spv. Complex is pbrt's universal evaluator, every type
+enum class MaterialClass : uint32_t {
+	Basic,
+	Complex,
+	Count
+};
+
+const char* materialClassId(MaterialClass materialClass);
 
 // Which extra section the Raytrace Render panel should show while this variant or traversal is
 // selected. The selection owns the question "are these settings relevant?", so switching strategy
@@ -150,7 +166,7 @@ struct KernelVariant {
 	// one line under it
 	const char* description { "" };
 	// relative to shaders/, without the .spv. A kernel that traces has one build per traversal,
-	// at <shader>.<traversal id>.spv
+	// at <shader>.<traversal id>.spv, and one built per material class adds .<class id>
 	const char* shader { "" };
 
 	KernelDomain domain { KernelDomain::Pool };
@@ -169,6 +185,9 @@ struct KernelVariant {
 
 	// includes crt_trace.glsl: built once per traversal, and run as the build of the selected one
 	bool traces { false };
+	// includes crt_material_class.glsl: built once per MaterialClass, and dispatched once per class,
+	// over that class's surface queue (KernelDomain::SurfaceQueues). Every kernel 06 variant
+	bool perMaterialClass { false };
 
 	KernelSettings settings { KernelSettings::None };
 

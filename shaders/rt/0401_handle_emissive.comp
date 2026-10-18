@@ -34,7 +34,7 @@ layout (local_size_x = CRT_WORKGROUP) in;
 
 // what the surface emits towards the ray: an emissive material's colour times its strength, a pbr
 // material's emission times its sRGB emissive texel
-vec3 emittedRadiance(GpuMaterial light, SurfaceInteraction si)
+vec3 emittedRadiance(ClassicMaterial light, SurfaceInteraction si)
 {
 	vec3 emitted = light.albedo * light.param;
 	if (light.type == CRT_MATERIAL_PBR) {
@@ -65,7 +65,7 @@ void main()
 	const HitRecord hit = hits[entry];
 	const vec3 inDir = normalize(path.direction);
 	const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
-	const GpuMaterial light = materials[si.material];
+	const ClassicMaterial light = classicMaterial(si.material);
 
 	// the MIS weight of a light found by the BSDF sample, against light sampling from the vertex the
 	// ray left (the path's origin, which 06 has not yet moved on)

@@ -44,7 +44,78 @@ bool drawOrientation(glm::quat& orientation)
 
 const char* meshMaterialModeName(MeshMaterialMode mode)
 {
-	return mode == MeshMaterialMode::Gltf ? "glTF material" : "override";
+	return mode == MeshMaterialMode::Gltf ? "glTF materials" : "override";
+}
+
+// one parameter's widget, by its kind. Returns whether the value changed
+bool drawMaterialParam(MaterialDef& material, const MaterialParam& param)
+{
+	ParamValue value = materialValue(material, param.name);
+	bool changed = false;
+	if ((param.flags & PARAM_READ_ONLY) != 0) {
+		if (const TexRef* texture = std::get_if<TexRef>(&value)) {
+			if (texture->layer >= 0) {
+				ImGui::TextDisabled("%s: layer %d", param.label, texture->layer);
+			} else {
+				ImGui::TextDisabled("%s: none", param.label);
+			}
+		} else if (const float* f = std::get_if<float>(&value)) {
+			ImGui::TextDisabled("%s: %.3f", param.label, *f);
+		}
+	} else if (float* f = std::get_if<float>(&value)) {
+		const ImGuiSliderFlags flags = (param.flags & PARAM_LOGARITHMIC) != 0 ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None;
+		changed = ImGui::SliderFloat(param.label, f, param.min, param.max, "%.3f", flags);
+	} else if (SpectrumRef* spectrum = std::get_if<SpectrumRef>(&value)) {
+		changed = ImGui::ColorEdit3(param.label, &spectrum->rgb.x, ImGuiColorEditFlags_Float);
+	} else if (bool* b = std::get_if<bool>(&value)) {
+		changed = ImGui::Checkbox(param.label, b);
+	} else if (int* i = std::get_if<int>(&value)) {
+		changed = ImGui::InputInt(param.label, i);
+	}
+	if (param.tooltip != nullptr && ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("%s", param.tooltip);
+	}
+	if (changed) {
+		material.params[param.name] = value;
+	}
+	return changed;
+}
+
+// The generic, traits-driven editor: one widget per parameter of the material's type, in the order
+// the traits list them. For a glTF material, `imported` is the entry as its file defines it: a
+// parameter the user changed is marked, recorded in `edited`, and can be reverted to the import
+bool drawMaterialParams(MaterialDef& material, const MaterialDef* imported)
+{
+	bool changed = false;
+	for (const MaterialParam& param : materialTraits(material.type).params) {
+		ImGui::PushID(param.name);
+		const bool edited = material.edited.count(param.name) != 0;
+		if (imported != nullptr && edited) {
+			if (ImGui::SmallButton("revert")) {
+				material.params[param.name] = materialValue(*imported, param.name);
+				material.edited.erase(material.edited.find(param.name));
+				changed = true;
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("Back to the value the glTF file gives; the next save drops the override");
+			}
+			ImGui::SameLine();
+		}
+		if (drawMaterialParam(material, param)) {
+			changed = true;
+			if (imported != nullptr) {
+				material.edited.insert(param.name);
+			}
+		}
+		ImGui::PopID();
+	}
+	return changed;
+}
+
+// what the material combo calls an entry: a glTF material by its model too
+std::string materialLabel(const MaterialDef& material)
+{
+	return material.origin.has_value() ? fmt::format("{} / {}", material.origin->modelKey, material.name) : material.name;
 }
 
 }
@@ -70,55 +141,6 @@ bool drawShapeParams(SceneShape& shape)
 			changed = true;
 		}
 	}
-	return changed;
-}
-
-bool drawMaterialParams(SceneMaterial& material)
-{
-	bool changed = false;
-
-	if (ImGui::BeginCombo("material", materialTypeName(material.type))) {
-		for (MaterialType type : MATERIAL_TYPES) {
-			if (ImGui::Selectable(materialTypeName(type), type == material.type) && type != material.type) {
-				//every type's parameters are stored, so nothing is lost switching away and back
-				material.type = type;
-				changed = true;
-			}
-		}
-		ImGui::EndCombo();
-	}
-
-	switch (material.type) {
-	case MaterialType::Lambertian:
-		changed |= ImGui::ColorEdit3("albedo", &material.albedo.x);
-		break;
-	case MaterialType::Metal:
-		changed |= ImGui::ColorEdit3("albedo", &material.albedo.x);
-		//the scatter clamps fuzz to at most 1, so the slider stops there too
-		changed |= ImGui::SliderFloat("fuzz", &material.fuzz, 0.f, 1.f, "%.3f");
-		break;
-	case MaterialType::Phong:
-		changed |= ImGui::ColorEdit3("albedo", &material.albedo.x);
-		//smoothness 0-1 maps to a lobe exponent of 1-1000 in the scatter
-		changed |= ImGui::SliderFloat("smoothness", &material.smoothness, 0.f, 1.f, "%.3f");
-		break;
-	case MaterialType::Dielectric:
-		//1.0 is vacuum; 1.33 water, 1.5 glass, 2.42 diamond
-		changed |= ImGui::SliderFloat("index of refraction", &material.ir, 1.f, 3.f, "%.3f");
-		break;
-	case MaterialType::Emissive:
-		changed |= ImGui::ColorEdit3("colour", &material.albedo.x);
-		changed |= ImGui::SliderFloat("strength", &material.strength, 0.f, 1000.f, "%.2f", ImGuiSliderFlags_Logarithmic);
-		break;
-	case MaterialType::Pbr:
-		changed |= ImGui::ColorEdit3("base colour", &material.albedo.x);
-		changed |= ImGui::SliderFloat("metallic", &material.metallic, 0.f, 1.f, "%.3f");
-		changed |= ImGui::SliderFloat("roughness", &material.roughness, 0.f, 1.f, "%.3f");
-		changed |= ImGui::ColorEdit3("emission", &material.emission.x);
-		changed |= ImGui::SliderFloat("emission strength", &material.strength, 0.f, 1000.f, "%.2f", ImGuiSliderFlags_Logarithmic);
-		break;
-	}
-
 	return changed;
 }
 
@@ -200,25 +222,6 @@ bool drawMeshObjectParams(SceneMeshObject& object)
 	changed |= ImGui::Checkbox("visible", &object.visible);
 	if (ImGui::IsItemHovered()) {
 		ImGui::SetTooltip("Hidden objects are drawn by neither the viewport nor the raytracer");
-	}
-
-	ImGui::Spacing();
-
-	if (ImGui::BeginCombo("shading", meshMaterialModeName(object.materialMode))) {
-		for (MeshMaterialMode mode : { MeshMaterialMode::Gltf, MeshMaterialMode::Override }) {
-			if (ImGui::Selectable(meshMaterialModeName(mode), mode == object.materialMode) && mode != object.materialMode) {
-				object.materialMode = mode;
-				changed = true;
-			}
-		}
-		ImGui::EndCombo();
-	}
-
-	if (object.materialMode == MeshMaterialMode::Gltf) {
-		ImGui::TextDisabled("base colour and texture, as authored");
-	} else {
-		//an override replaces the glTF material outright, texture included
-		changed |= drawMaterialParams(object.material);
 	}
 
 	return changed;
@@ -357,6 +360,117 @@ const SceneMeshObject* RaytraceSceneEditor::findMeshObject(uint64_t id) const
 	return found == m_meshObjects.end() ? nullptr : &(*found);
 }
 
+MaterialDef* RaytraceSceneEditor::findMaterial(uint64_t id)
+{
+	auto found = std::find_if(m_materials.begin(), m_materials.end(), [id](const MaterialDef& m) { return m.id == id; });
+	return found == m_materials.end() ? nullptr : &(*found);
+}
+
+const MaterialDef* RaytraceSceneEditor::findMaterial(uint64_t id) const
+{
+	auto found = std::find_if(m_materials.begin(), m_materials.end(), [id](const MaterialDef& m) { return m.id == id; });
+	return found == m_materials.end() ? nullptr : &(*found);
+}
+
+MaterialDef* RaytraceSceneEditor::findGltfMaterial(std::string_view modelKey, uint32_t index)
+{
+	auto found = std::find_if(m_materials.begin(), m_materials.end(), [&](const MaterialDef& m) {
+		return m.origin.has_value() && m.origin->index == index && m.origin->modelKey == modelKey;
+	});
+	return found == m_materials.end() ? nullptr : &(*found);
+}
+
+const MaterialDef* RaytraceSceneEditor::findGltfMaterial(std::string_view modelKey, uint32_t index) const
+{
+	return const_cast<RaytraceSceneEditor*>(this)->findGltfMaterial(modelKey, index);
+}
+
+uint64_t RaytraceSceneEditor::addMaterial(MaterialDef material)
+{
+	material.id = m_nextId++;
+	if (material.name.empty()) {
+		material.name = fmt::format("material_{}", material.id);
+	}
+	const uint64_t id = material.id;
+	m_materials.push_back(std::move(material));
+	markChanged();
+	return id;
+}
+
+uint64_t RaytraceSceneEditor::addMaterialFor(const std::string& ownerName)
+{
+	MaterialDef material = makeMaterial(MaterialType::Lambertian);
+	material.name = ownerName;
+	return addMaterial(std::move(material));
+}
+
+MaterialDef RaytraceSceneEditor::userCopyOf(const MaterialDef& source, std::string name) const
+{
+	MaterialDef copy = source;
+	copy.id = 0;
+	copy.name = std::move(name);
+	copy.origin.reset();
+	copy.edited.clear();
+	//a texture layer means something only for as long as the array is not rebuilt, and nothing in a
+	//scene file: a user material keeps none until texture references exist (pbrt-textures.md)
+	for (const MaterialParam& param : materialTraits(copy.type).params) {
+		if ((param.flags & PARAM_READ_ONLY) != 0) {
+			copy.params.erase(param.name);
+		}
+	}
+	return copy;
+}
+
+std::vector<std::string> RaytraceSceneEditor::removeMaterialsOf(const std::string& modelKey)
+{
+	std::vector<std::string> converted;
+	for (MaterialDef& material : m_materials) {
+		if (!material.origin.has_value() || material.origin->modelKey != modelKey || materialUsers(material.id) == 0) {
+			continue;
+		}
+		//still referenced by a shape or an override: it stays, as the user's own
+		MaterialDef copy = userCopyOf(material, material.name);
+		copy.id = material.id;
+		material = std::move(copy);
+		converted.push_back(material.name);
+	}
+	const size_t before = m_materials.size();
+	std::erase_if(m_materials, [&modelKey](const MaterialDef& m) { return m.origin.has_value() && m.origin->modelKey == modelKey; });
+	if (m_materials.size() != before || !converted.empty()) {
+		markChanged();
+	}
+	return converted;
+}
+
+void RaytraceSceneEditor::refreshGltfMaterials(const std::function<bool(MaterialDef&)>& refresh)
+{
+	bool changed = false;
+	for (MaterialDef& material : m_materials) {
+		if (material.origin.has_value()) {
+			changed |= refresh(material);
+		}
+	}
+	if (changed) {
+		markChanged();
+	}
+}
+
+size_t RaytraceSceneEditor::materialUsers(uint64_t id) const
+{
+	size_t users = (size_t)std::count_if(m_shapes.begin(), m_shapes.end(), [id](const SceneShape& s) { return s.materialId == id; });
+	users += (size_t)std::count_if(m_meshObjects.begin(), m_meshObjects.end(), [id](const SceneMeshObject& o) {
+		return o.materialMode == MeshMaterialMode::Override && o.materialId == id;
+	});
+	return users;
+}
+
+void RaytraceSceneEditor::openMaterial(uint64_t id)
+{
+	m_selectedMaterialId = id;
+	m_showMaterials = true;
+	ImGui::SetWindowFocus("Materials");
+}
+
 void RaytraceSceneEditor::replaceShapes(std::vector<SceneShape>&& shapes)
 {
 	//the old shapes' ids die here. If the gizmo was editing one of them its lookup fails and it
@@ -404,6 +518,17 @@ void RaytraceSceneEditor::replaceMeshObjects(std::vector<SceneMeshObject>&& obje
 	markChanged();
 }
 
+void RaytraceSceneEditor::replaceMaterials(std::vector<MaterialDef>&& materials)
+{
+	m_materials.clear();
+	for (MaterialDef& material : materials) {
+		material.id = m_nextId++;
+		m_materials.push_back(std::move(material));
+	}
+	m_selectedMaterialId = 0;
+	markChanged();
+}
+
 void RaytraceSceneEditor::setCameraPose(uint64_t id, const glm::vec3& position, const glm::quat& orientation)
 {
 	SceneCamera* camera = findCamera(id);
@@ -432,6 +557,9 @@ void RaytraceSceneEditor::createShape(ShapeKind kind)
 {
 	SceneShape shape = makeShape(kind);
 	shape.name = fmt::format("{}_{}", shapeTraits(kind).name, m_nextShapeNumber[(size_t)kind]++);
+	//its own material, as every shape had before materials were a library: editing it touches
+	//nothing else until the user picks a shared one
+	shape.materialId = addMaterialFor(shape.name);
 	addShape(std::move(shape));
 	markChanged();
 	select(SelectionKind::Shape, m_shapes.back().id);
@@ -469,6 +597,10 @@ void RaytraceSceneEditor::duplicateSelection()
 		}
 		SceneShape copy = *source;
 		copy.name = fmt::format("{}_copy", source->name);
+		//the copy gets a copy of the material too, so editing one never changes the other
+		if (const MaterialDef* material = findMaterial(source->materialId)) {
+			copy.materialId = addMaterial(userCopyOf(*material, fmt::format("{}_copy", material->name)));
+		}
 		addShape(std::move(copy));
 		markChanged();
 		select(SelectionKind::Shape, m_shapes.back().id);
@@ -483,6 +615,9 @@ void RaytraceSceneEditor::duplicateSelection()
 		}
 		SceneMeshObject copy = *source;
 		copy.name = fmt::format("{}_copy", source->name);
+		if (const MaterialDef* material = findMaterial(source->materialId); material != nullptr && copy.materialMode == MeshMaterialMode::Override) {
+			copy.materialId = addMaterial(userCopyOf(*material, fmt::format("{}_copy", material->name)));
+		}
 		std::vector<SceneMeshObject> one { std::move(copy) };
 		addMeshObjects(std::move(one));
 		select(SelectionKind::MeshObject, m_meshObjects.back().id);
@@ -962,7 +1097,9 @@ void RaytraceSceneEditor::drawSelectedShape(VulkanEngine* engine, SceneShape& sh
 
 	ImGui::Spacing();
 
-	changed |= drawMaterialParams(shape.material);
+	//a reference into the library: what the material is, is edited in the Materials window
+	changed |= drawMaterialReference(shape.materialId, shape.name);
+	ImGui::TextDisabled("on a shape, a material's textures are left out");
 
 	if (changed) {
 		markChanged();
@@ -1069,6 +1206,47 @@ void RaytraceSceneEditor::drawSelectedMeshObject(VulkanEngine* engine, SceneMesh
 
 	bool changed = drawMeshObjectParams(object);
 
+	ImGui::Spacing();
+	if (ImGui::BeginCombo("shading", meshMaterialModeName(object.materialMode))) {
+		for (MeshMaterialMode mode : { MeshMaterialMode::Gltf, MeshMaterialMode::Override }) {
+			if (ImGui::Selectable(meshMaterialModeName(mode), mode == object.materialMode) && mode != object.materialMode) {
+				object.materialMode = mode;
+				//the first switch to an override gives the object a material of its own
+				if (mode == MeshMaterialMode::Override && findMaterial(object.materialId) == nullptr) {
+					object.materialId = addMaterialFor(object.name);
+				}
+				changed = true;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	if (object.materialMode == MeshMaterialMode::Override) {
+		changed |= drawMaterialReference(object.materialId, object.name);
+	} else if (engine->m_raytraceMeshData != nullptr) {
+		//the library entries this object's surfaces use: its model's glTF materials, edited in place
+		const RTMeshNode* node = engine->m_raytraceMeshData->findNode(object.modelKey, object.nodeIndex);
+		const auto model = engine->m_models.find(object.modelKey);
+		if (node != nullptr && model != engine->m_models.end() && model->second != nullptr) {
+			std::vector<uint64_t> listed;
+			for (const RTMeshSurface& surface : node->surfaces) {
+				const auto& byIndex = model->second->materialsByIndex;
+				const auto index = std::find(byIndex.begin(), byIndex.end(), surface.material);
+				const MaterialDef* material = index != byIndex.end() ? findGltfMaterial(object.modelKey, (uint32_t)(index - byIndex.begin())) : nullptr;
+				if (material == nullptr || std::find(listed.begin(), listed.end(), material->id) != listed.end()) {
+					continue;
+				}
+				listed.push_back(material->id);
+				ImGui::PushID((int)material->id);
+				if (ImGui::SmallButton("Edit")) {
+					openMaterial(material->id);
+				}
+				ImGui::SameLine();
+				ImGui::TextUnformatted(material->name.c_str());
+				ImGui::PopID();
+			}
+		}
+	}
+
 	//the same opt-in gizmo a shape gets, with the full operation set a mesh object can use
 	TransformGizmo& gizmo = engine->m_transformGizmo;
 	const bool editing = gizmo.isEditing(gizmoTargetId(object.id));
@@ -1088,6 +1266,216 @@ void RaytraceSceneEditor::drawSelectedMeshObject(VulkanEngine* engine, SceneMesh
 		markChanged();
 	}
 
+	ImGui::PopID();
+}
+
+bool RaytraceSceneEditor::drawMaterialReference(uint64_t& materialId, const std::string& ownerName)
+{
+	bool changed = false;
+	const MaterialDef* current = findMaterial(materialId);
+	const std::string preview = current != nullptr ? materialLabel(*current) : std::string("(none)");
+	if (ImGui::BeginCombo("material", preview.c_str())) {
+		//the user's materials, then each model's
+		for (const bool user : { true, false }) {
+			for (const MaterialDef& material : m_materials) {
+				if (material.origin.has_value() == user) {
+					continue;
+				}
+				ImGui::PushID((int)material.id);
+				if (ImGui::Selectable(materialLabel(material).c_str(), material.id == materialId) && material.id != materialId) {
+					materialId = material.id;
+					changed = true;
+				}
+				ImGui::PopID();
+			}
+		}
+		ImGui::EndCombo();
+	}
+	if (current != nullptr) {
+		const size_t users = materialUsers(materialId);
+		if (users > 1) {
+			ImGui::SameLine();
+			ImGui::TextDisabled("(shared by %zu)", users);
+		}
+	}
+
+	ImGui::BeginDisabled(current == nullptr);
+	if (ImGui::Button("Edit")) {
+		openMaterial(materialId);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("New from this")) {
+		materialId = addMaterial(userCopyOf(*current, ownerName));
+		openMaterial(materialId);
+		changed = true;
+	}
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+		ImGui::SetTooltip("A new user material copying this one, used by this object alone");
+	}
+	ImGui::EndDisabled();
+	return changed;
+}
+
+//---------------------------------------------------------------- the Materials window
+
+void RaytraceSceneEditor::drawMaterialsWindow(VulkanEngine* engine)
+{
+	if (!m_showMaterials) {
+		return;
+	}
+	if (!ImGui::Begin("Materials", &m_showMaterials)) {
+		ImGui::End();
+		return;
+	}
+
+	MaterialDef* selected = findMaterial(m_selectedMaterialId);
+
+	if (ImGui::Button("+ New")) {
+		MaterialDef material = makeMaterial(MaterialType::Lambertian);
+		material.name = fmt::format("material_{}", m_nextId);
+		m_selectedMaterialId = addMaterial(std::move(material));
+		selected = findMaterial(m_selectedMaterialId);
+	}
+	ImGui::SameLine();
+	ImGui::BeginDisabled(selected == nullptr);
+	if (ImGui::Button("Duplicate")) {
+		m_selectedMaterialId = addMaterial(userCopyOf(*selected, fmt::format("{}_copy", selected->name)));
+		selected = findMaterial(m_selectedMaterialId);
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	//a glTF material belongs to its model, and one in use would leave its objects pointing at nothing
+	const bool deletable = selected != nullptr && !selected->origin.has_value() && materialUsers(selected->id) == 0;
+	ImGui::BeginDisabled(!deletable);
+	if (ImGui::Button("Delete")) {
+		const uint64_t id = selected->id;
+		std::erase_if(m_materials, [id](const MaterialDef& m) { return m.id == id; });
+		m_selectedMaterialId = 0;
+		selected = nullptr;
+		markChanged();
+	}
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && selected != nullptr && !deletable) {
+		ImGui::SetTooltip(selected->origin.has_value() ? "A glTF material goes when its model is removed" : "Still used by an object");
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Remove unused")) {
+		std::erase_if(m_materials, [this](const MaterialDef& m) { return !m.origin.has_value() && materialUsers(m.id) == 0; });
+		markChanged();
+		selected = findMaterial(m_selectedMaterialId);
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Deletes every user material no shape or override uses");
+	}
+
+	drawMaterialTree();
+	selected = findMaterial(m_selectedMaterialId);
+	if (selected != nullptr) {
+		drawMaterialDetails(engine, *selected);
+	}
+
+	ImGui::End();
+}
+
+void RaytraceSceneEditor::drawMaterialTree()
+{
+	const float height = 12 * ImGui::GetTextLineHeightWithSpacing();
+	if (ImGui::BeginChild("##materials", ImVec2(0, height), ImGuiChildFlags_Borders)) {
+		auto row = [this](const MaterialDef& material) {
+			ImGui::PushID((int)material.id);
+			const size_t users = materialUsers(material.id);
+			const std::string label = users > 0 ? fmt::format("{}  ({})", material.name, users) : material.name;
+			if (ImGui::Selectable(label.c_str(), material.id == m_selectedMaterialId)) {
+				m_selectedMaterialId = material.id;
+			}
+			ImGui::PopID();
+		};
+		if (ImGui::TreeNodeEx("User", ImGuiTreeNodeFlags_DefaultOpen)) {
+			for (const MaterialDef& material : m_materials) {
+				if (!material.origin.has_value()) {
+					row(material);
+				}
+			}
+			ImGui::TreePop();
+		}
+		//a folder per model, in the order the entries were imported
+		std::vector<std::string> models;
+		for (const MaterialDef& material : m_materials) {
+			if (material.origin.has_value() && std::find(models.begin(), models.end(), material.origin->modelKey) == models.end()) {
+				models.push_back(material.origin->modelKey);
+			}
+		}
+		for (const std::string& model : models) {
+			if (ImGui::TreeNodeEx(model.c_str())) {
+				for (const MaterialDef& material : m_materials) {
+					if (material.origin.has_value() && material.origin->modelKey == model) {
+						row(material);
+					}
+				}
+				ImGui::TreePop();
+			}
+		}
+	}
+	ImGui::EndChild();
+}
+
+void RaytraceSceneEditor::drawMaterialDetails(VulkanEngine* engine, MaterialDef& material)
+{
+	ImGui::PushID((int)material.id);
+	bool changed = false;
+
+	//the entry as its glTF file defines it, which edits are marked against and reverted to
+	std::optional<MaterialDef> imported;
+	if (material.origin.has_value()) {
+		const auto model = engine->m_models.find(material.origin->modelKey);
+		if (model != engine->m_models.end() && model->second != nullptr && material.origin->index < model->second->materialsByIndex.size()) {
+			imported = gltfMaterialDef(*model->second->materialsByIndex[material.origin->index], engine->m_raytraceTextures);
+		}
+	}
+
+	if (material.origin.has_value()) {
+		ImGui::SeparatorText(material.name.c_str());
+		ImGui::TextDisabled("glTF material %u of %s, edited in place", material.origin->index, material.origin->modelKey.c_str());
+		if (!material.edited.empty() && imported.has_value()) {
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Revert all")) {
+				for (const std::string& name : material.edited) {
+					material.params[name] = materialValue(*imported, name);
+				}
+				material.edited.clear();
+				changed = true;
+			}
+		}
+	} else {
+		char name[128];
+		std::snprintf(name, sizeof(name), "%s", material.name.c_str());
+		if (ImGui::InputText("name", name, sizeof(name), ImGuiInputTextFlags_EnterReturnsTrue) && name[0] != '\0') {
+			material.name = name;
+			changed = true;
+		}
+	}
+	const size_t users = materialUsers(material.id);
+	ImGui::TextDisabled(material.origin.has_value() ? "its model's objects, and %zu shape(s) or override(s)" : "used by %zu shape(s) or override(s)", users);
+
+	//a glTF material is the glTF model: its type is not the user's to change
+	ImGui::BeginDisabled(material.origin.has_value());
+	if (ImGui::BeginCombo("type", materialTraits(material.type).label)) {
+		for (const MaterialType type : MATERIAL_TYPES) {
+			if (ImGui::Selectable(materialTraits(type).label, type == material.type) && type != material.type) {
+				//every parameter ever set is kept by name, so nothing is lost switching away and back
+				material.type = type;
+				changed = true;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::EndDisabled();
+
+	changed |= drawMaterialParams(material, imported.has_value() ? &*imported : nullptr);
+
+	if (changed) {
+		markChanged();
+	}
 	ImGui::PopID();
 }
 

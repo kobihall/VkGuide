@@ -2,7 +2,7 @@
 
 An optic is defined as much by what it is made of as by its shape. A lens focuses because N-BK7's index is 1.5168 at 587.6 nm and changes with wavelength; a 50:50 beamsplitter splits because a dielectric stack on its front reflects half of the s and p light at 45°; a neutral density filter dims because its glass absorbs. The renderer has a scalar index of refraction on the legacy dielectric and, after [pbrt-bsdf-library.md](pbrt-bsdf-library.md), exact Fresnel terms for a dielectric or a conductor. This plan adds what an optical bench needs on top of that: glass catalogs with dispersion formulas and internal transmittance, the surrounding air, coatings from ideal splitters to thin-film stacks and protected metals, and the material that every surface of an optical body uses.
 
-*Not implemented. Depends on [pbrt-material-system.md](pbrt-material-system.md) (material types and the library), [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) (`SpectrumRef`, dispersion, lane termination), [pbrt-bsdf-library.md](pbrt-bsdf-library.md) (exact Fresnel, the dielectric BxDF, transport modes) and [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md) (surfaces and their media). Polarizing coatings are fully used only with [pbrt-polarization.md](pbrt-polarization.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [pbrt-material-system.md](completed/pbrt-material-system.md) (material types and the library), [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) (`SpectrumRef`, dispersion, lane termination), [pbrt-bsdf-library.md](pbrt-bsdf-library.md) (exact Fresnel, the dielectric BxDF, transport modes) and [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md) (surfaces and their media). Polarizing coatings are fully used only with [pbrt-polarization.md](pbrt-polarization.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer does today
 
@@ -77,7 +77,7 @@ A polished optic scatters about 0.1 % of what hits it, enough to matter for stra
 
 ### The scene model
 
-- Glasses and coatings are entries of the material library ([pbrt-material-system.md](pbrt-material-system.md)), in two new folders of the **Materials** window, **Glasses** and **Coatings**, with the bundled entries read-only and duplicable.
+- Glasses and coatings are entries of the material library ([pbrt-material-system.md](completed/pbrt-material-system.md)), in two new folders of the **Materials** window, **Glasses** and **Coatings**, with the bundled entries read-only and duplicable.
 - An optical element owns one material per material slot, created from its catalog kind's defaults ([physoptics-optical-elements.md](physoptics-optical-elements.md)). The library's `origin` field gains an optic origin, the element's id and the slot, the way a glTF material's records its model and index, so editing an element's coating is an edit to its own entry and the scene file saves only what was changed.
 - Presets for Thorlabs' common coatings: `-E02` broadband dielectric (400 to 750 nm), `-P01` protected silver, `-G01` protected gold, `-F01` protected aluminum, `-A`, `-B` and `-C` broadband AR (350 to 700, 650 to 1050 and 1050 to 1700 nm), and the BSW and BSN beamsplitter coatings. Each preset is a thin-film or metal design that approximates the published curve. Loading Thorlabs' own data file for the part, as a tabulated coating, replaces the approximation with the measurement, and the panel names which one is in use.
 

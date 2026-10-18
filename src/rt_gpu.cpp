@@ -22,45 +22,6 @@ VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment)
 	return (value + alignment - 1) / alignment * alignment;
 }
 
-//the tagged-union form the shader scatters with. The texture layers are the triangle material's,
-//since only a glTF material has any
-CrtMaterial gpuMaterial(const RaytraceTriMaterial& entry)
-{
-	const SceneMaterial& material = entry.material;
-	CrtMaterial out {};
-	out.albedo = material.albedo;
-	out.type = (uint32_t)material.type;
-	out.albedoLayer = entry.albedoLayer;
-	out.normalLayer = entry.normalLayer;
-	out.metalRoughLayer = entry.metalRoughLayer;
-	out.emissiveLayer = entry.emissiveLayer;
-	out.alphaCutoff = entry.alphaCutoff;
-	out.normalScale = entry.normalScale;
-	out.emission = glm::vec3(0.f);
-	switch (material.type) {
-	case MaterialType::Lambertian:
-		out.param = 0.f;
-		break;
-	case MaterialType::Metal:
-		out.param = std::min(material.fuzz, 1.f);
-		break;
-	case MaterialType::Phong:
-		out.param = material.smoothness;
-		break;
-	case MaterialType::Dielectric:
-		out.param = material.ir;
-		break;
-	case MaterialType::Emissive:
-		out.param = material.strength;
-		break;
-	case MaterialType::Pbr:
-		out.metallic = std::clamp(material.metallic, 0.f, 1.f);
-		out.roughness = std::clamp(material.roughness, 0.f, 1.f);
-		out.emission = glm::max(material.emission, glm::vec3(0.f)) * std::max(material.strength, 0.f);
-		break;
-	}
-	return out;
-}
 
 }
 
@@ -263,10 +224,11 @@ std::vector<CrtBinding> GpuRenderer::bindingsOf(const KernelVariant& variant, ui
 	return bindings;
 }
 
-const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal)
+const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal, MaterialClass materialClass)
 {
 	const uint32_t key = variant.traces ? traversal : NO_TRAVERSAL;
-	const auto found = m_passes.find({ &variant, key });
+	const uint32_t classKey = variant.perMaterialClass ? (uint32_t)materialClass : NO_CLASS;
+	const auto found = m_passes.find({ &variant, key, classKey });
 	if (found != m_passes.end()) {
 		return found->second;
 	}
@@ -283,38 +245,46 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 		const TraversalVariant* search = traversalVariant(traversal);
 		shader += std::string(".") + (search != nullptr ? search->id : "none");
 	}
+	if (variant.perMaterialClass) {
+		shader += std::string(".") + materialClassId(materialClass);
+	}
 	shader += ".spv";
 
 	ComputePassBuilder builder(shader);
 	for (const CrtBinding binding : bindingsOf(variant, traversal)) {
 		builder.addBinding((uint32_t)binding, crtBindingType(binding));
 	}
-	const auto inserted = m_passes.emplace(std::make_pair(&variant, key), builder
+	const auto inserted = m_passes.emplace(std::make_tuple(&variant, key, classKey), builder
 		.setPushConstants<CrtParams>()
 		.setWorkgroupSize(CRT_WORKGROUP)
 		.build(engine->m_device));
 	return inserted.first->second;
 }
 
-const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& variant)
+const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& variant, MaterialClass materialClass)
 {
-	return pass(engine, variant, m_snapshot.kernels.traversal);
+	return pass(engine, variant, m_snapshot.kernels.traversal, materialClass);
 }
 
 void GpuRenderer::preparePipelines(VulkanEngine* engine, const KernelSelection& selection)
 {
 	for (const KernelSlot slot : selection.selectedIntegrator().stages) {
 		const KernelVariant* variant = selection.selected(slot);
-		if (variant != nullptr && variant->implemented) {
-			pass(engine, *variant, selection.traversal);
+		if (variant == nullptr || !variant->implemented) {
+			continue;
+		}
+		const uint32_t classes = variant->perMaterialClass ? (uint32_t)MaterialClass::Count : 1u;
+		for (uint32_t materialClass = 0; materialClass < classes; materialClass++) {
+			pass(engine, *variant, selection.traversal, (MaterialClass)materialClass);
 		}
 	}
 }
 
-void GpuRenderer::dispatch(VkCommandBuffer cmd, VulkanEngine* engine, const KernelVariant& variant, const CrtParams& params, const DispatchSize& size)
+void GpuRenderer::dispatch(VkCommandBuffer cmd, VulkanEngine* engine, const KernelVariant& variant, const CrtParams& params, const DispatchSize& size,
+	MaterialClass materialClass)
 {
 	const uint32_t traversal = m_snapshot.kernels.traversal;
-	const ComputePass& computePass = pass(engine, variant, traversal);
+	const ComputePass& computePass = pass(engine, variant, traversal, materialClass);
 	const VkDescriptorSet set = engine->getCurrentFrame().frameDescriptors.allocate(engine->m_device, computePass.setLayout);
 
 	//a kernel gets only the bindings it declared, written from whatever their owners published
@@ -450,6 +420,12 @@ void GpuRenderer::uploadScene(VulkanEngine* engine)
 
 	const size_t instances = scene != nullptr ? scene->instances.size() : 0;
 	const size_t materials = scene != nullptr ? scene->materials.size() : 0;
+	size_t materialWords = 0;
+	if (scene != nullptr) {
+		for (const PackedMaterial& material : scene->materials) {
+			materialWords += material.params.size();
+		}
+	}
 	const size_t instanceMaterials = scene != nullptr ? scene->instanceMaterials.size() : 0;
 	const size_t tlasWords = scene != nullptr ? scene->tlas.bvh.nodes.size() : 0;
 	//nothing is traced through a TLAS that failed to pack; the instance count is what the shader
@@ -466,8 +442,10 @@ void GpuRenderer::uploadScene(VulkanEngine* engine)
 	const VkDeviceSize alignment = std::max<VkDeviceSize>(engine->m_gpuProperties.limits.minStorageBufferOffsetAlignment, 16);
 	const VkDeviceSize instancesBytes = sizeof(GpuInstance) * std::max<size_t>(instances, 1);
 	const VkDeviceSize materialsOffset = alignUp(instancesBytes, alignment);
-	const VkDeviceSize materialsBytes = sizeof(CrtMaterial) * std::max<size_t>(materials, 1);
-	const VkDeviceSize instanceMaterialsOffset = alignUp(materialsOffset + materialsBytes, alignment);
+	const VkDeviceSize materialsBytes = sizeof(CrtMaterialHeader) * std::max<size_t>(materials, 1);
+	const VkDeviceSize materialParamsOffset = alignUp(materialsOffset + materialsBytes, alignment);
+	const VkDeviceSize materialParamsBytes = sizeof(glm::vec4) * std::max<size_t>(materialWords, 1);
+	const VkDeviceSize instanceMaterialsOffset = alignUp(materialParamsOffset + materialParamsBytes, alignment);
 	const VkDeviceSize instanceMaterialsBytes = sizeof(uint32_t) * std::max<size_t>(instanceMaterials, 1);
 	const VkDeviceSize tlasOffset = alignUp(instanceMaterialsOffset + instanceMaterialsBytes, alignment);
 	const VkDeviceSize tlasBytes = sizeof(glm::uvec4) * std::max<size_t>(tlasWords, 4);
@@ -485,9 +463,15 @@ void GpuRenderer::uploadScene(VulkanEngine* engine)
 	memset(mapped, 0, totalBytes);
 	if (scene != nullptr) {
 		memcpy(mapped, scene->instances.data(), sizeof(GpuInstance) * instances);
-		CrtMaterial* gpuMaterials = (CrtMaterial*)(mapped + materialsOffset);
+		//each material's header in binding 7, its parameters one after the other in binding 26
+		CrtMaterialHeader* headers = (CrtMaterialHeader*)(mapped + materialsOffset);
+		glm::vec4* params = (glm::vec4*)(mapped + materialParamsOffset);
+		uint32_t paramOffset = 0;
 		for (size_t i = 0; i < materials; i++) {
-			gpuMaterials[i] = gpuMaterial(scene->materials[i]);
+			const PackedMaterial& material = scene->materials[i];
+			headers[i] = CrtMaterialHeader { material.type, material.flags, paramOffset, (uint32_t)material.params.size() };
+			std::copy(material.params.begin(), material.params.end(), params + paramOffset);
+			paramOffset += (uint32_t)material.params.size();
 		}
 		memcpy(mapped + instanceMaterialsOffset, scene->instanceMaterials.data(), sizeof(uint32_t) * instanceMaterials);
 		memcpy(mapped + tlasOffset, scene->tlas.bvh.nodes.data(), sizeof(glm::uvec4) * tlasWords);
@@ -503,6 +487,7 @@ void GpuRenderer::uploadScene(VulkanEngine* engine)
 
 	m_resources.setBuffer(CrtBinding::Instances, m_sceneBuffer.buffer, instancesBytes, 0);
 	m_resources.setBuffer(CrtBinding::Materials, m_sceneBuffer.buffer, materialsBytes, materialsOffset);
+	m_resources.setBuffer(CrtBinding::MaterialParams, m_sceneBuffer.buffer, materialParamsBytes, materialParamsOffset);
 	m_resources.setBuffer(CrtBinding::InstanceMaterials, m_sceneBuffer.buffer, instanceMaterialsBytes, instanceMaterialsOffset);
 	m_resources.setBuffer(CrtBinding::TlasNodes, m_sceneBuffer.buffer, tlasBytes, tlasOffset);
 	m_resources.setBuffer(CrtBinding::Lights, m_sceneBuffer.buffer, lightsBytes, lightsOffset);

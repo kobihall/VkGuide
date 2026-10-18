@@ -18,6 +18,8 @@
 // kinds that read them).
 
 // src/light_sampling.h LIGHT_MIN_SPHERICAL_SOLID_ANGLE / LIGHT_MAX_SPHERICAL_SOLID_ANGLE
+#include "crt_material.glsl"
+
 #define CRT_MIN_SPHERICAL_SOLID_ANGLE 1e-3
 #define CRT_MAX_SPHERICAL_SOLID_ANGLE 6.22
 // the largest float below 1
@@ -650,7 +652,7 @@ bool isDeltaLight(uint kind)
 vec3 triangleLightRadiance(GpuLight light, vec3 barycentrics)
 {
 	const int layer = floatBitsToInt(light.b.w);
-	const GpuMaterial material = materials[floatBitsToUint(light.c.w)];
+	const ClassicMaterial material = classicMaterial(floatBitsToUint(light.c.w));
 	const bool cutout = material.alphaCutoff > 0.0 && material.albedoLayer >= 0;
 	if (layer < 0 && !cutout) {
 		return light.radiance;

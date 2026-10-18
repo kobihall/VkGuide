@@ -42,7 +42,7 @@ struct SceneOptic {
 
 Positions are `double` because the beam solver, which places beams to a fraction of a micron over a meter of table, reads them directly ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)). The GPU instance rounds them to float when the scene is built.
 
-`OpticParams` stores values by name, as [pbrt-material-system.md](pbrt-material-system.md)'s `ParamSet` does for materials, so switching a lens from bi-convex to plano-convex and back keeps both radii.
+`OpticParams` stores values by name, as [pbrt-material-system.md](completed/pbrt-material-system.md)'s `ParamSet` does for materials, so switching a lens from bi-convex to plano-convex and back keeps both radii.
 
 ### The traits table
 

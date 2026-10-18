@@ -15,8 +15,9 @@
 
 class VulkanEngine;
 
-// shaders/rt/include/crt_common.glsl CRT_QUEUE_*: two ping-ponging ray queues, the three
-// classification queues kernel 02 sorts into, and the shadow queue kernel 06 fills. All six are
+// shaders/rt/include/crt_common.glsl CRT_QUEUE_*: two ping-ponging ray queues, the four
+// classification queues kernel 02 sorts into (escaped, emissive, and a surface queue per material
+// class), and the shadow queue kernel 06 fills. All seven are
 // allocated whether or not a selected variant uses them - the pool is sized once per render and a
 // queue is four bytes per path
 inline constexpr uint32_t CRT_QUEUE_RAY_A = 0;
@@ -24,7 +25,8 @@ inline constexpr uint32_t CRT_QUEUE_ESCAPED = 2;
 inline constexpr uint32_t CRT_QUEUE_EMISSIVE = 3;
 inline constexpr uint32_t CRT_QUEUE_SURFACE = 4;
 inline constexpr uint32_t CRT_QUEUE_SHADOW = 5;
-inline constexpr uint32_t CRT_QUEUE_COUNT = 6;
+inline constexpr uint32_t CRT_QUEUE_SURFACE_COMPLEX = 6;
+inline constexpr uint32_t CRT_QUEUE_COUNT = 7;
 
 // mirrors of the remaining GLSL structs, for buffer sizing only
 inline constexpr VkDeviceSize CRT_PATH_STATE_SIZE = 64;
@@ -51,8 +53,9 @@ public:
 	const AllocatedBuffer& sampleBudget() const { return m_sampleBudget; }
 
 	// the workgroups `variant` launches over its domain. Everything per-bounce is indirect, reading
-	// the header the previous kernel filled as its VkDispatchIndirectCommand
-	DispatchSize dispatchSize(const KernelVariant& variant, uint32_t bounce) const;
+	// the header the previous kernel filled as its VkDispatchIndirectCommand. `materialClass` picks
+	// the surface queue of a KernelDomain::SurfaceQueues kernel
+	DispatchSize dispatchSize(const KernelVariant& variant, uint32_t bounce, MaterialClass materialClass = MaterialClass::Basic) const;
 	// an empty header is a legal no-op dispatch. Reset from the command buffer, never by a shader,
 	// so an empty queue cannot leave a stale count behind
 	void resetHeader(VkCommandBuffer cmd, uint32_t queue) const;

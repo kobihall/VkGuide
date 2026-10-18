@@ -34,7 +34,7 @@ The light index and the material no longer live in the record. Kernel 04 finds t
 
 ### Classification in kernel 02
 
-Kernel 02 still sorts hits onto the escaped, emissive and surface queues, and after [pbrt-material-system.md](../pbrt-material-system.md) onto the basic or complex surface queue. It needs the material for that, but not the attribute record:
+Kernel 02 still sorts hits onto the escaped, emissive and surface queues, and after [pbrt-material-system.md](pbrt-material-system.md) onto the basic or complex surface queue. It needs the material for that, but not the attribute record:
 
 - A triangle's surface index moves into `BvhTriangle.e1.w`, which is unused today, so the material is `instanceMaterials[instance.materialBase + surface]` with no attribute fetch.
 - A shape's material is `instance.materialBase`, as now.
@@ -130,7 +130,7 @@ Pool memory at the 4M-path cap drops by 32 MB net: 96 MB saved on hits, 64 MB sp
 
 Implemented 2026-10-18. The user settled four questions the design left open:
 
-- Kernel 02 classifies from the material's `type` and `emission`, as before. The flag bits the design gives each material record arrive with the 16-byte material header of [pbrt-material-system.md](../pbrt-material-system.md), and `GpuMaterial` stays 64 bytes.
+- Kernel 02 classifies from the material's `type` and `emission`, as before. The flag bits the design gives each material record arrive with the 16-byte material header of [pbrt-material-system.md](pbrt-material-system.md), and `GpuMaterial` stays 64 bytes.
 - `dndu` and `dndv` are always computed (see "Open questions").
 - `dpdu` and `dpdv` are the geometric derivatives of the parameterization; a triangle's come from its uvs. `shadingFrame()` builds the material's tangent by making `dpdu` perpendicular to the shading normal. glTF vertex tangents stay with the normal map, and there is no separate shading block as in pbrt-v4.
 - The infinite plane's uv is object x and z rather than world x and z, so a texture turns with a rotated plane. The plane has no size, so it still tiles once per unit.

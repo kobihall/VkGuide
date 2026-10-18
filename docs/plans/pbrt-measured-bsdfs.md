@@ -31,7 +31,7 @@ The loader (`src/measured_bsdf.h/.cpp`, part of `rt_bsdf`) parses the tensor fil
 
 In spectral modes the table is interpolated in wavelength at each lane. In exact RGB it holds RGB: the loader projects spectral measurements to linear Rec. 709 once, at load.
 
-The material is complex: large tables and irregular memory access belong in the complex queue ([pbrt-material-system.md](pbrt-material-system.md)).
+The material is complex: large tables and irregular memory access belong in the complex queue ([pbrt-material-system.md](completed/pbrt-material-system.md)).
 
 ### Fourier BSDFs, optionally
 

@@ -2,7 +2,7 @@
 
 Everything the tracer renders is a surface: a ray crosses vacuum until it hits something. Participating media make the space between surfaces take part: fog, smoke, clouds, murky water, the inside of a glass of milk. A ray crossing one may be absorbed or scattered before it reaches the surface kernel 02 found. Kernels 05 and 07 of PBR 4ed Figure 15.2 exist for this and are stubs here. This plan fills them with pbrt-v4's volumetric path tracing: null-scattering delta tracking against majorants, ratio-tracked transmittance for shadow rays, chromatic media through spectral MIS, and homogeneous, grid and NanoVDB media. *Ray Tracing: The Next Week*'s constant-density medium is the homogeneous case.
 
-*Not implemented. `shaders/rt/0501_sample_medium_interaction.comp` and `0701_sample_medium_scattering.comp` are registered with `implemented = false`. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) and [pbrt-material-system.md](pbrt-material-system.md) (the `interface` material). Chromatic media use [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)'s lanes. This revision replaces the earlier draft of this file. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. `shaders/rt/0501_sample_medium_interaction.comp` and `0701_sample_medium_scattering.comp` are registered with `implemented = false`. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) and [pbrt-material-system.md](completed/pbrt-material-system.md) (the `interface` material). Chromatic media use [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)'s lanes. This revision replaces the earlier draft of this file. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decision already made
 
@@ -34,14 +34,14 @@ Nothing is undone, scenes without media pay nothing, and kernel 05 runs only ove
                                                   └─ scattered ─> queue 8 (MEDIUM_SCATTER) ─> 07 ─> next ray, shadow ray
 ```
 
-The per-bounce order becomes `02 → 05 → {03, 04, 06, 07} → 08`. The classification code moves from `crt_intersect.glsl` into `crt_classify.glsl`, which kernels 02 and 05 share, so both append to the queues the same way, including the basic and complex surface queues of [pbrt-material-system.md](pbrt-material-system.md). Queues 7 and 8 are the roadmap's `CRT_QUEUE_MEDIUM_SAMPLE` and `CRT_QUEUE_MEDIUM_SCATTER`.
+The per-bounce order becomes `02 → 05 → {03, 04, 06, 07} → 08`. The classification code moves from `crt_intersect.glsl` into `crt_classify.glsl`, which kernels 02 and 05 share, so both append to the queues the same way, including the basic and complex surface queues of [pbrt-material-system.md](completed/pbrt-material-system.md). Queues 7 and 8 are the roadmap's `CRT_QUEUE_MEDIUM_SAMPLE` and `CRT_QUEUE_MEDIUM_SCATTER`.
 
 ### Scene model
 
 - `SceneMedium` in a named list beside the materials: a kind, σa and σs as `SpectrumRef`s with a scale, a Henyey–Greenstein asymmetry `g`, and optional emission `Le` with a scale. Grid kinds add a file and a transform.
 - A `MediumInterface {inside, outside}` on every shape and mesh object, both "none" by default. `GpuInstance` packs the two indices into one of its padding words.
 - `SceneCamera.medium`, the medium the camera sits in. Kernel 00 starts paths in it.
-- The `interface` material type ([pbrt-material-system.md](pbrt-material-system.md)), pbrt's material-less surface: invisible, it only changes the medium a ray is in. Kernels 02 and 05 continue the ray through it into the next ray queue with the new medium, without a bounce. Such a crossing still takes one wavefront iteration, so a scene with interfaces records its bounce loop 4 iterations past the ray depth.
+- The `interface` material type ([pbrt-material-system.md](completed/pbrt-material-system.md)), pbrt's material-less surface: invisible, it only changes the medium a ray is in. Kernels 02 and 05 continue the ray through it into the next ray queue with the new medium, without a bounce. Such a crossing still takes one wavefront iteration, so a scene with interfaces records its bounce loop 4 iterations past the ray depth.
 
 *Ray Tracing: The Next Week*'s `constant_medium` with density `d` and albedo `a` inside a boundary shape is a homogeneous medium with σs = d·a and σa = d·(1 − a), isotropic, inside a shape whose material is `interface`. Its "Cornell box with smoke" scene becomes a test scene.
 

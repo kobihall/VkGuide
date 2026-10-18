@@ -18,7 +18,7 @@
 				"version":7,
 				"models":[
 					{
-						"path":"../Sponza/Sponza.gltf"
+						"path":"../models/Sponza/Sponza.gltf"
 					}
 				],
 				"environmentIntensity":1.0,

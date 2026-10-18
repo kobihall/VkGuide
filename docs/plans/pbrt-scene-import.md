@@ -42,7 +42,7 @@ Each pbrt feature maps to the plan that adds it. Until that plan lands, the impo
 | `path`, `volpath`, `bdpt`, `lightpath`, `sppm`, `mlt`, `ambientocclusion` | the integrators of the other plans; `ambientocclusion` is [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md)'s debug view | `path` |
 | `trianglemesh`, `plymesh` (with `displacement`), `loopsubdiv` | meshes; [pbrt-subdivision-and-displacement.md](pbrt-subdivision-and-displacement.md) | meshes without refinement |
 | `sphere`, `cylinder`, `disk`, `bilinearmesh`, `curve` | [pbrt-analytic-shapes.md](pbrt-analytic-shapes.md), [pbrt-curves-and-hair.md](pbrt-curves-and-hair.md) | full spheres; others skipped |
-| materials, `interface` | [pbrt-bsdf-library.md](pbrt-bsdf-library.md), [pbrt-layered-materials.md](pbrt-layered-materials.md), [pbrt-measured-bsdfs.md](pbrt-measured-bsdfs.md), [pbrt-curves-and-hair.md](pbrt-curves-and-hair.md), [pbrt-subsurface-scattering.md](pbrt-subsurface-scattering.md), [pbrt-material-system.md](pbrt-material-system.md) | a `pbr` material with the closest parameters, or gray Lambertian |
+| materials, `interface` | [pbrt-bsdf-library.md](pbrt-bsdf-library.md), [pbrt-layered-materials.md](pbrt-layered-materials.md), [pbrt-measured-bsdfs.md](pbrt-measured-bsdfs.md), [pbrt-curves-and-hair.md](pbrt-curves-and-hair.md), [pbrt-subsurface-scattering.md](pbrt-subsurface-scattering.md), [pbrt-material-system.md](completed/pbrt-material-system.md) | a `pbr` material with the closest parameters, or gray Lambertian |
 | `imagemap` and the other textures | [pbrt-textures.md](pbrt-textures.md), [pbrt-procedural-textures.md](pbrt-procedural-textures.md) | image maps only; procedural textures become their mean |
 | lights | [pbrt-light-types.md](pbrt-light-types.md), [pbrt-environment-lighting.md](pbrt-environment-lighting.md) | point, spot, distant, diffuse area, image infinite (converted to equirectangular) |
 | media | [pbrt-participating-media.md](pbrt-participating-media.md) | skipped |
@@ -59,7 +59,7 @@ Units: with pbrt's default sensor and imaging ratio, an emitter `"rgb L" [1 1 1]
 
 ### In the scene model
 
-A `.pbrt` file imports as a model, like a glTF file: **File** → **Import pbrt Scene...** reads it, its meshes become mesh objects, and its analytic shapes, cameras and lights become scene objects. The scene file records the `.pbrt` path and re-imports it on load, and edits to its materials are saved as overrides, as [pbrt-material-system.md](pbrt-material-system.md) does for glTF materials. Its render settings (resolution, samples, integrator, filter) are offered, not forced: **Use pbrt settings** applies them.
+A `.pbrt` file imports as a model, like a glTF file: **File** → **Import pbrt Scene...** reads it, its meshes become mesh objects, and its analytic shapes, cameras and lights become scene objects. The scene file records the `.pbrt` path and re-imports it on load, and edits to its materials are saved as overrides, as [pbrt-material-system.md](completed/pbrt-material-system.md) does for glTF materials. Its render settings (resolution, samples, integrator, filter) are offered, not forced: **Use pbrt settings** applies them.
 
 ### Comparing with pbrt
 

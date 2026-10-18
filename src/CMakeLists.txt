@@ -85,6 +85,8 @@ add_executable(vulkan_guide
     rt_accel.h
     rt_lights.cpp
     rt_lights.h
+    rt_material.cpp
+    rt_material.h
     rt_kernels.cpp
     rt_kernels.h
     camera.cpp

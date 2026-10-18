@@ -2,7 +2,7 @@
 
 The six materials the tracer has are Ray Tracing in One Weekend's lambertian, fuzzed metal, phong and Schlick dielectric, an emitter, and glTF's metallic-roughness model. None of them has an exact Fresnel term, a complex index of refraction, a rough dielectric, anisotropy, a thin window pane or diffuse transmission, and the dielectric does not scale radiance by η² when it refracts. This plan adds pbrt-v4's BxDFs as new material types beside the existing ones, which all stay.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md), [pbrt-material-system.md](pbrt-material-system.md) and [pbrt-verification-harness.md](pbrt-verification-harness.md). Dispersion also needs [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md), [pbrt-material-system.md](completed/pbrt-material-system.md) and [pbrt-verification-harness.md](pbrt-verification-harness.md). Dispersion also needs [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -16,7 +16,7 @@ The six materials the tracer has are Ray Tracing in One Weekend's lambertian, fu
 
 ### New material types
 
-Each is a `MATERIAL_TRAITS` entry ([pbrt-material-system.md](pbrt-material-system.md)). Names avoid the ones scene files already use: `dielectric` keeps meaning the Ray Tracing in One Weekend glass.
+Each is a `MATERIAL_TRAITS` entry ([pbrt-material-system.md](completed/pbrt-material-system.md)). Names avoid the ones scene files already use: `dielectric` keeps meaning the Ray Tracing in One Weekend glass.
 
 | Type | BxDF | Parameters |
 |---|---|---|

@@ -559,17 +559,31 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	const EnvironmentLight environment = environmentLight(engine);
 	if (m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
 		&& m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelShapes == editor.shapes() && m_sceneAccelLights == editor.lights()
-		&& m_sceneAccelEnvironment == environment) {
+		&& m_sceneAccelMaterials == editor.materials() && m_sceneAccelEnvironment == environment) {
 		return;
 	}
 
 	static const RaytraceMeshData noMeshes;
 	const RaytraceMeshData& meshData = engine->m_raytraceMeshData != nullptr ? *engine->m_raytraceMeshData : noMeshes;
-	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), editor.lights(), environment, engine->m_raytraceTextures);
+	//which library entry each loaded glTF material became, for the surfaces shaded with their own
+	GltfMaterialIds gltfMaterialIds;
+	for (const auto& [key, model] : engine->m_models) {
+		if (model == nullptr) {
+			continue;
+		}
+		for (uint32_t i = 0; i < model->materialsByIndex.size(); i++) {
+			if (const MaterialDef* material = editor.findGltfMaterial(key, i)) {
+				gltfMaterialIds[model->materialsByIndex[i].get()] = material->id;
+			}
+		}
+	}
+	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), editor.lights(), editor.materials(), gltfMaterialIds,
+		environment, engine->m_raytraceTextures);
 
 	m_sceneAccelObjects = editor.meshObjects();
 	m_sceneAccelShapes = editor.shapes();
 	m_sceneAccelLights = editor.lights();
+	m_sceneAccelMaterials = editor.materials();
 	m_sceneAccelEnvironment = environment;
 	m_sceneAccelModelRevision = engine->m_sceneRevision;
 	m_sceneAccelRevision = m_accelRevision;

@@ -60,7 +60,7 @@ Stokes vectors describe partially polarized, incoherent light: intensities add. 
 
 - `CRT_POLARIZED` builds of the lane-dependent kernels for the 4- and 8-lane families, named like `0604_surface_scatter_mis_power.lanes4.pol.comp.spv`.
 - `crt_mueller.glsl`, mirrored in `rt_bsdf` with its tests in `bin/bsdf_test`.
-- Materials `linear_polarizer` and `retarder` ([pbrt-material-system.md](pbrt-material-system.md)); the camera's **Polarizing filter**.
+- Materials `linear_polarizer` and `retarder` ([pbrt-material-system.md](completed/pbrt-material-system.md)); the camera's **Polarizing filter**.
 - A **Polarization** checkbox in the spectral settings, available in exact RGB too: each RGB channel is then polarized with its own Fresnel terms.
 - No new binding.
 

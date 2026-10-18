@@ -8,9 +8,12 @@
 namespace {
 
 //header slots per frame slot in the readback buffer: the ray queue after generate and after every
-//bounce, then the shadow queue after every bounce
-constexpr uint32_t READBACK_HEADERS_PER_SLOT = 2 * CRT_MAX_DEPTH + 1;
+//bounce, then the shadow queue after every bounce, then the basic and the complex surface queues
+//after every bounce
+constexpr uint32_t READBACK_HEADERS_PER_SLOT = 4 * CRT_MAX_DEPTH + 1;
 constexpr uint32_t READBACK_SHADOW_HEADERS = CRT_MAX_DEPTH + 1;
+constexpr uint32_t READBACK_SURFACE_HEADERS = 2 * CRT_MAX_DEPTH + 1;
+constexpr uint32_t READBACK_COMPLEX_HEADERS = 3 * CRT_MAX_DEPTH + 1;
 
 }
 
@@ -121,8 +124,8 @@ void PathSchedule::record(GpuRenderer& renderer, VulkanEngine* engine, VkCommand
 
 	//one kernel launch: its own descriptor set (written from the bindings it declared), its own
 	//domain over the pool
-	auto launch = [&](const KernelVariant& variant, uint32_t bounce) {
-		renderer.dispatch(cmd, engine, variant, params, pool.dispatchSize(variant, bounce));
+	auto launch = [&](const KernelVariant& variant, uint32_t bounce, MaterialClass materialClass = MaterialClass::Basic) {
+		renderer.dispatch(cmd, engine, variant, params, pool.dispatchSize(variant, bounce, materialClass), materialClass);
 	};
 
 	//---------------------------------------------------------------- 00 generate camera rays
@@ -144,6 +147,7 @@ void PathSchedule::record(GpuRenderer& renderer, VulkanEngine* engine, VkCommand
 		pool.resetHeader(cmd, CRT_QUEUE_ESCAPED);
 		pool.resetHeader(cmd, CRT_QUEUE_EMISSIVE);
 		pool.resetHeader(cmd, CRT_QUEUE_SURFACE);
+		pool.resetHeader(cmd, CRT_QUEUE_SURFACE_COMPLEX);
 		pool.resetHeader(cmd, CRT_QUEUE_SHADOW);
 		vkutil::memory_barrier(cmd, transferStage, transferAccess, computeStages, computeAccess);
 
@@ -177,8 +181,14 @@ void PathSchedule::record(GpuRenderer& renderer, VulkanEngine* engine, VkCommand
 			launch(*medium, bounce);
 			vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
 		}
+		//once per material class, each build over its own surface queue, basic first. The two touch
+		//disjoint paths and append to the next ray queue and the shadow queue through the allocator's
+		//atomics, so neither waits for the other, and an empty complex queue is a zero-group launch
 		if (const KernelVariant* surface = passFor(KernelSlot::SurfaceScattering)) {
-			launch(*surface, bounce);
+			const uint32_t classes = surface->perMaterialClass ? (uint32_t)MaterialClass::Count : 1u;
+			for (uint32_t materialClass = 0; materialClass < classes; materialClass++) {
+				launch(*surface, bounce, (MaterialClass)materialClass);
+			}
 		}
 		if (const KernelVariant* mediumScatter = passFor(KernelSlot::SampleMediumScattering)) {
 			vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
@@ -194,6 +204,8 @@ void PathSchedule::record(GpuRenderer& renderer, VulkanEngine* engine, VkCommand
 		vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages | transferStage, computeAccess | transferAccess);
 		copyHeader(next, bounce + 1);
 		copyHeader(CRT_QUEUE_SHADOW, READBACK_SHADOW_HEADERS + bounce);
+		copyHeader(CRT_QUEUE_SURFACE, READBACK_SURFACE_HEADERS + bounce);
+		copyHeader(CRT_QUEUE_SURFACE_COMPLEX, READBACK_COMPLEX_HEADERS + bounce);
 	}
 
 	//---------------------------------------------------------------- 09 update film
@@ -246,6 +258,22 @@ void PathSchedule::collectReadbacks(VulkanEngine* engine, uint32_t frameSlot, co
 	//a scene without a light to sample has nothing to show there
 	if (work.shadowRays == 0) {
 		shadows.clear();
+	}
+
+	//the hits each build of kernel 06 scattered, per bounce; the complex queue only once a complex
+	//material is in the scene
+	std::vector<uint32_t>& basic = m_counters[2].values;
+	std::vector<uint32_t>& complex = m_counters[3].values;
+	basic.resize(headerCount - 1);
+	complex.resize(headerCount - 1);
+	uint64_t complexHits = 0;
+	for (uint32_t bounce = 0; bounce + 1 < headerCount; bounce++) {
+		basic[bounce] = headers[READBACK_SURFACE_HEADERS + bounce].rayCount;
+		complex[bounce] = headers[READBACK_COMPLEX_HEADERS + bounce].rayCount;
+		complexHits += complex[bounce];
+	}
+	if (complexHits == 0) {
+		complex.clear();
 	}
 	m_traversalWork = work;
 }

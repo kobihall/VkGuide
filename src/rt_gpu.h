@@ -18,6 +18,7 @@
 // image, the BVH settings and the panels.
 
 #include <map>
+#include <tuple>
 #include <memory>
 #include <span>
 #include <vector>
@@ -163,15 +164,18 @@ public:
 	CrtResourceTable& resources() { return m_resources; }
 	WavefrontPool& wavefrontPool() { return m_pool; }
 	// the pipeline of `variant`, built on first use. A kernel that traces is built for the
-	// snapshot's traversal, with the traversal's bindings added to its own
-	const ComputePass& pass(VulkanEngine* engine, const KernelVariant& variant);
+	// snapshot's traversal, with the traversal's bindings added to its own; a kernel built per
+	// material class, for `materialClass`
+	const ComputePass& pass(VulkanEngine* engine, const KernelVariant& variant, MaterialClass materialClass = MaterialClass::Basic);
 	// one launch of `variant`: its descriptor set written from the resource table for exactly the
 	// bindings it declared (and its traversal's), its push constants, its size
-	void dispatch(VkCommandBuffer cmd, VulkanEngine* engine, const KernelVariant& variant, const CrtParams& params, const DispatchSize& size);
+	void dispatch(VkCommandBuffer cmd, VulkanEngine* engine, const KernelVariant& variant, const CrtParams& params, const DispatchSize& size,
+		MaterialClass materialClass = MaterialClass::Basic);
 
 private:
 	// the pipeline of `variant` for traversal `traversal` (ignored for a kernel that does not trace)
-	const ComputePass& pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal);
+	// and `materialClass` (ignored for a kernel not built per class)
+	const ComputePass& pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal, MaterialClass materialClass);
 	// builds every pipeline the selection's integrator runs
 	void preparePipelines(VulkanEngine* engine, const KernelSelection& selection);
 	// the bindings `variant` is built and written with under `traversal`: its own, plus the
@@ -199,11 +203,13 @@ private:
 
 	CrtResourceTable m_resources;
 
-	// ONE PIPELINE PER (VARIANT, TRAVERSAL), built on first use: a kernel that traces is built once
-	// per traversal, one that does not once, keyed with NO_TRAVERSAL. The registry's entries never
+	// ONE PIPELINE PER (VARIANT, TRAVERSAL, MATERIAL CLASS), built on first use: a kernel that traces
+	// is built once per traversal, one that does not once, keyed with NO_TRAVERSAL; a kernel built
+	// per material class once per class, any other keyed with NO_CLASS. The registry's entries never
 	// move, so a variant's address is its identity
 	static constexpr uint32_t NO_TRAVERSAL = ~0u;
-	std::map<std::pair<const KernelVariant*, uint32_t>, ComputePass> m_passes;
+	static constexpr uint32_t NO_CLASS = ~0u;
+	std::map<std::tuple<const KernelVariant*, uint32_t, uint32_t>, ComputePass> m_passes;
 
 	// one schedule per integrator, IntegratorId order, created in the constructor; the active one
 	// is the snapshot's integrator. m_scheduleActive says whether it has buffers to release

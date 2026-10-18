@@ -2,7 +2,7 @@
 
 This roadmap covers every feature that *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* describe and this renderer lacks or implements weakly. Each feature has a plan in `docs/plans/`, named `pbrt-*.md` since 2026-10-18. This file records the decisions that shape all of them and reserves the resources they share, so that the plans can be implemented in any order without colliding.
 
-*Written 2026-09-26. The integrator layer was implemented on 2026-09-29 and the thin hit record on 2026-10-18; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
+*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18 and the material system on 2026-10-19; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
 
 *Revised 2026-10-18 for the [laser optics plan](physoptics-laser-optics.md), whose `physoptics-*.md` plans build on these. That plan's roadmap gives one linear order for both sets of plans; it pulls several of these forward (the foundations, the BSDF library, light types, image output, the display transform, the light integrator of bidirectional path tracing, cameras and polarization). The reservations below gain the laser optics plan's rows, and every rule here applies to its plans too.*
 
@@ -52,7 +52,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 | [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) | Implemented: 24-byte hit record, `SurfaceInteraction` reconstruction, geometric normal, shading frame, shape uvs |
 | [pbrt-robust-intersections.md](pbrt-robust-intersections.md) | Error-bounded spawn points, watertight triangles, conservative box tests, camera-relative rendering space |
 | [pbrt-verification-harness.md](pbrt-verification-harness.md) | BSDF chi-square tests, white furnace scenes, image metrics, convergence curves |
-| [pbrt-material-system.md](pbrt-material-system.md) | Named material library, parameter records, material traits table, basic and complex surface queues |
+| [pbrt-material-system.md](completed/pbrt-material-system.md) | Implemented: named material library, parameter records, material traits table, basic and complex surface queues |
 | [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) | Lane-count families, spectral representations, `SpectrumRef`, uplifting, sensors, blackbody, dispersion |
 | [pbrt-sample-generation.md](pbrt-sample-generation.md) | Per-bounce sample record and kernel 01 variants: stratified, Halton, Sobol, padded Sobol, ZSobol, PMJ02BN |
 | [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) | Pixel filters by importance sampling, compensated accumulation, firefly handling, per-pixel variance |
@@ -170,7 +170,7 @@ alternative-accelerators ─> gpu-bvh-construction ─> wavefront-performance (r
 verification-harness ─> (every plan with a new BSDF, sampler or light)
 ```
 
-The foundations change the shape of every kernel, so do them first and in this order (the integrator layer and the thin hit record are done): robust intersections, verification harness, material system, spectral rendering, sample generation, film. After that the groups are largely independent.
+The foundations change the shape of every kernel, so do them first and in this order (the integrator layer, the thin hit record and the material system are done; the material system came ahead of the next two, which it does not need): robust intersections, verification harness, spectral rendering, sample generation, film. After that the groups are largely independent.
 
 ## Rules every plan follows
 

@@ -180,6 +180,7 @@ private:
 	std::vector<SceneMeshObject> m_sceneAccelObjects;
 	std::vector<SceneShape> m_sceneAccelShapes;
 	std::vector<SceneLight> m_sceneAccelLights;
+	std::vector<MaterialDef> m_sceneAccelMaterials;
 	EnvironmentLight m_sceneAccelEnvironment;
 	uint64_t m_sceneAccelModelRevision { 0 };
 	uint64_t m_sceneAccelRevision { 0 };

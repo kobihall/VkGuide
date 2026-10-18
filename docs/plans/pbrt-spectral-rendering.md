@@ -2,7 +2,7 @@
 
 The tracer multiplies RGB triples. PBR 4ed §4.6.4 shows why that is not physics: the same sRGB green, expressed in ACES2065-1 and multiplied by itself, comes out darker, more saturated and outside the gamut of real colors, because a product of tristimulus values depends on the color space. Dispersion, blackbody emitters, measured metal indices of refraction and chromatic media all need light carried per wavelength. This plan makes the quantity every path carries a spectrum whose size and meaning are chosen at runtime, while exact RGB stays available and bit-identical.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) and [pbrt-material-system.md](pbrt-material-system.md). The [laser optics plan](physoptics-laser-optics.md) builds its glasses, coatings, lasers and spectral goals on it; the additions marked 2026-10-18 below come from there. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) and [pbrt-material-system.md](completed/pbrt-material-system.md). The [laser optics plan](physoptics-laser-optics.md) builds its glasses, coatings, lasers and spectral goals on it; the additions marked 2026-10-18 below come from there. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Requirements and decisions
 

@@ -44,21 +44,24 @@ struct TraceHit {
 uint g_nodesVisited;
 uint g_primitivesTested;
 
-// the analytic shapes
+// the analytic shapes, and the material records the alpha test reads
 #include "crt_shape.glsl"
+#include "crt_material.glsl"
 
 // Whether a candidate hit on a CRT_TRIANGLE_CUTOUT triangle lands in one of its material's holes.
-// Only flagged triangles pay for this - an instance, an attribute record, a material and a texel -
-// and the flag is set only where the glTF material is alphaMode MASK. The material still decides:
-// an object that overrides its glTF material has alphaCutoff 0 and is never cut
+// Only flagged triangles pay for this - an instance, an attribute record, a material header and a
+// texel - and the flag is set only where the glTF material is alphaMode MASK. The material still
+// decides: an object that overrides its glTF material is not CRT_MATERIAL_FLAG_CUTOUT and is never
+// cut, and a material's parameters are read only when it is
 bool cutAway(uint instanceSlot, uint triangleBits, vec2 bary)
 {
 	const GpuInstance instance = instances[instanceSlot];
 	const GpuTriangleAttributes attributes = triangleAttributes[instance.attributeBase + (triangleBits & CRT_TRIANGLE_INDEX_MASK)];
-	const GpuMaterial material = materials[instanceMaterials[instance.materialBase + floatBitsToUint(attributes.vAndSurface.w)]];
-	if (material.alphaCutoff <= 0.0) {
+	const uint materialIndex = instanceMaterials[instance.materialBase + floatBitsToUint(attributes.vAndSurface.w)];
+	if ((materials[materialIndex].flags & CRT_MATERIAL_FLAG_CUTOUT) == 0u) {
 		return false;
 	}
+	const ClassicMaterial material = classicMaterial(materialIndex);
 	// textureLod: compute has no derivatives, and the array has no mips
 	const float alpha = material.albedoLayer >= 0 ? textureLod(materialTextures, vec3(triangleUv(attributes, bary), float(material.albedoLayer)), 0.0).a : 1.0;
 	return alpha < material.alphaCutoff;

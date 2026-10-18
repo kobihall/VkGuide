@@ -3,8 +3,8 @@
 // Scene file save/load.
 //
 // One file captures the whole scene: the glTF models it is composed of (by path - the model
-// files themselves are untouched), the environment map (by path), and the raytracer's shapes
-// (inline, materials included). The file is a minimal but valid glTF 2.0 document whose single
+// files themselves are untouched), the environment map (by path), the raytracer's shapes and the
+// material library they reference. The file is a minimal but valid glTF 2.0 document whose single
 // scene carries all of that in its spec-defined `extras` field, so any glTF tool can open it
 // without erroring - it just sees an empty scene - and the spec requires readers to preserve
 // extras they don't understand.
@@ -16,7 +16,8 @@
 // something to branch on; every older version still loads - 1 (spheres only), 2 (no render
 // settings), 3 (no cameras), 4 (no mesh objects), 5 (spheres rather than geometry) and 6 (no
 // emissive material or background colour), 7 (no kernel selection or BVH settings), 8 (no pbr
-// material), 9 (no punctual lights), 10 (no integrator or traversal).
+// material), 9 (no punctual lights), 10 (no integrator or traversal), 11 (inline materials rather
+// than a library: each object's becomes a user material named after it).
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -30,6 +31,28 @@
 #include <rt_scene_types.h>
 #include <vk_types.h>
 
+// A reference to a library entry as a file records it: a user material by its index in
+// SceneDescription::materials, or a glTF material by its model's index in modelPaths and its index
+// in that file. Neither set (both -1) for an object whose material went missing
+struct SceneMaterialRef {
+	int user { -1 };
+	int model { -1 };
+	uint32_t gltfIndex { 0 };
+};
+
+// one shape as a file records it: the shape, and its material by reference
+struct SceneShapeRecord {
+	SceneShape shape;
+	SceneMaterialRef material;
+};
+
+// the parameters the user changed on a glTF material: all a file records of one
+struct SceneMaterialOverride {
+	int model { 0 };
+	uint32_t gltfIndex { 0 };
+	ParamSet params;
+};
+
 // One placed mesh object as a file records it. Identical to SceneMeshObject except that the model
 // is an index into SceneDescription::modelPaths rather than a key: the keys are assigned by
 // VulkanEngine::importGltf() as it loads them and are not stable across a save and reload, while
@@ -41,7 +64,8 @@ struct SceneMeshObjectRecord {
 	glm::mat4 transform { 1.f };
 	bool visible { true };
 	MeshMaterialMode materialMode { MeshMaterialMode::Gltf };
-	SceneMaterial material;
+	// the override's material; unset in glTF mode
+	SceneMaterialRef material;
 };
 
 // One punctual light as a file records it: the light, and - for one a glTF import brought in - its
@@ -57,7 +81,12 @@ struct SceneDescription {
 	std::vector<std::filesystem::path> modelPaths;
 	// empty when the scene has no environment map
 	std::filesystem::path environmentMapPath;
-	std::vector<SceneShape> shapes;
+	std::vector<SceneShapeRecord> shapes;
+	// version 12: the user materials, in full, with unassigned ids (RaytraceSceneEditor::addMaterial()
+	// gives them theirs), and the edits to glTF materials. An older file's inline materials arrive
+	// here already converted, one user material per object, named after it
+	std::vector<MaterialDef> materials;
+	std::vector<SceneMaterialOverride> materialOverrides;
 	// the mesh objects placing the models' nodes. `hasMeshObjects` tells an absent list (a
 	// version-4 file, which predates them - the loader then places every node at its authored
 	// transform, as importing does) apart from a scene that genuinely has none because the user

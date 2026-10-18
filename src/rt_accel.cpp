@@ -4,6 +4,7 @@
 #include <bit>
 #include <chrono>
 #include <future>
+#include <map>
 #include <thread>
 
 #include <fmt/format.h>
@@ -222,50 +223,66 @@ RaytraceGeometry packGeometry(const RaytraceBlasSet& blases)
 	return geometry;
 }
 
-glm::vec3 materialEmission(const SceneMaterial& material)
-{
-	switch (material.type) {
-	case MaterialType::Emissive:
-		return material.albedo * material.strength;
-	case MaterialType::Pbr:
-		return glm::max(material.emission, glm::vec3(0.f)) * std::max(material.strength, 0.f);
-	case MaterialType::Lambertian:
-	case MaterialType::Metal:
-	case MaterialType::Phong:
-	case MaterialType::Dielectric:
-		break;
-	}
-	return glm::vec3(0.f);
-}
+namespace {
 
-RaytraceTriMaterial gltfTriMaterial(const GLTFMaterial& material, const RaytraceTextureArray& textures)
+// the glTF material's texture layers and alpha cutoff: what its library entry takes from the file
+// and never lets the user edit
+void setGltfReadOnlyParams(MaterialDef& entry, const GLTFMaterial& material, const RaytraceTextureArray& textures)
 {
-	RaytraceTriMaterial entry;
-	entry.material.type = MaterialType::Pbr;
-	entry.material.albedo = glm::vec3(material.colorFactors);
-	entry.material.metallic = material.metalRoughFactors.x;
-	entry.material.roughness = material.metalRoughFactors.y;
-	entry.material.emission = material.emissiveFactor;
-	entry.material.strength = 1.f;
-	entry.albedoLayer = textures.layerOf(material.baseColorImage.image);
-	entry.normalLayer = textures.layerOf(material.normalImage.image);
-	entry.metalRoughLayer = textures.layerOf(material.metalRoughImage.image);
-	entry.emissiveLayer = textures.layerOf(material.emissiveImage.image);
-	entry.normalScale = material.normalScale;
+	entry.params["baseColorTexture"] = TexRef { textures.layerOf(material.baseColorImage.image) };
+	entry.params["normalTexture"] = TexRef { textures.layerOf(material.normalImage.image) };
+	entry.params["metallicRoughnessTexture"] = TexRef { textures.layerOf(material.metalRoughImage.image) };
+	entry.params["emissiveTexture"] = TexRef { textures.layerOf(material.emissiveImage.image) };
+	float alphaCutoff = 0.f;
 	if (material.alphaMode == GltfAlphaMode::Mask) {
 		//coverage is texel alpha x factor alpha; folding the factor into the threshold leaves the
 		//traversal one compare. A zero factor cuts the whole surface away, which is what glTF says
 		const float factor = material.colorFactors.a;
-		entry.alphaCutoff = factor > 0.f ? material.alphaCutoff / factor : 2.f;
+		alphaCutoff = factor > 0.f ? material.alphaCutoff / factor : 2.f;
 	}
+	entry.params["alphaCutoff"] = alphaCutoff;
+}
+
+}
+
+MaterialDef gltfMaterialDef(const GLTFMaterial& material, const RaytraceTextureArray& textures)
+{
+	MaterialDef entry;
+	entry.type = MaterialType::Pbr;
+	entry.params["albedo"] = SpectrumRef { glm::vec3(material.colorFactors) };
+	entry.params["metallic"] = material.metalRoughFactors.x;
+	entry.params["roughness"] = material.metalRoughFactors.y;
+	entry.params["emission"] = SpectrumRef { material.emissiveFactor };
+	entry.params["strength"] = 1.f;
+	entry.params["normalScale"] = material.normalScale;
+	setGltfReadOnlyParams(entry, material, textures);
 	return entry;
+}
+
+void refreshGltfMaterialDef(MaterialDef& entry, const GLTFMaterial& material, const RaytraceTextureArray& textures)
+{
+	setGltfReadOnlyParams(entry, material, textures);
 }
 
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
-	const EnvironmentLight& environment, const RaytraceTextureArray& textures)
+	const std::vector<MaterialDef>& materials, const GltfMaterialIds& gltfMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures)
 {
 	auto accel = std::make_shared<RaytraceSceneAccel>();
+
+	//every library entry an instance references, packed once per way it is packed: with textures for
+	//a mesh, without them for a shape. Id 0 is a glTF surface with no material at all, white
+	//lambertian as the tracer has always shaded it
+	std::map<std::pair<uint64_t, bool>, uint32_t> packedIndex;
+	auto materialIndex = [&](uint64_t id, bool textures) -> uint32_t {
+		const auto [it, inserted] = packedIndex.try_emplace({ id, textures }, (uint32_t)accel->materials.size());
+		if (inserted) {
+			const auto found = std::find_if(materials.begin(), materials.end(), [id](const MaterialDef& m) { return m.id == id; });
+			const MaterialDef fallback = makeMaterial(MaterialType::Lambertian, id == 0 ? glm::vec3(1.f) : glm::vec3(0.7f));
+			accel->materials.push_back(packMaterial(found != materials.end() ? *found : fallback, PackContext { .textures = textures }));
+		}
+		return it->second;
+	};
 	accel->blases = blases;
 	accel->geometry = geometry;
 
@@ -281,21 +298,18 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		lightList.addPunctual(light);
 	}
 
-	//shapes first, so a shape's material index is its index in the list
 	for (uint32_t i = 0; i < shapes.size(); i++) {
-		accel->materials.push_back(RaytraceTriMaterial { shapes[i].material, -1 });
+		const uint32_t material = materialIndex(shapes[i].materialId, false);
 		SceneInstance instance;
 		instance.kind = SceneInstanceKind::Shape;
 		instance.shape = shapes[i].kind;
 		instance.objectToWorld = shapes[i].objectToWorld();
 		instances.push_back(instance);
-		materialBase.push_back(i);
-		lightBase.push_back(lightList.addShape(shapes[i].kind, instance.objectToWorld, materialEmission(shapes[i].material)));
+		materialBase.push_back(material);
+		lightBase.push_back(lightList.addShape(shapes[i].kind, instance.objectToWorld, accel->materials[material].emission));
 	}
 	accel->shapeCount = (uint32_t)shapes.size();
 
-	//one material per distinct glTF material, and one per object that overrides its own
-	std::unordered_map<const GLTFMaterial*, uint32_t> gltfMaterials;
 	for (const SceneMeshObject& object : objects) {
 		if (!object.visible || blases == nullptr) {
 			continue;
@@ -310,12 +324,8 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		}
 		const MeshAsset& mesh = *meshData.meshes[meshIndex];
 
-		uint32_t overrideMaterial = 0;
-		if (object.materialMode == MeshMaterialMode::Override) {
-			//an override replaces the glTF material outright, texture included
-			overrideMaterial = (uint32_t)accel->materials.size();
-			accel->materials.push_back(RaytraceTriMaterial { object.material, -1 });
-		}
+		//an override replaces every surface's glTF material with one library entry
+		const uint32_t overrideMaterial = object.materialMode == MeshMaterialMode::Override ? materialIndex(object.materialId, true) : 0;
 
 		//the instance's material table: one entry per GeoSurface of its mesh
 		const uint32_t tableBase = (uint32_t)accel->instanceMaterials.size();
@@ -325,14 +335,11 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 			if (object.materialMode == MeshMaterialMode::Override) {
 				accel->instanceMaterials.push_back(overrideMaterial);
 			} else {
-				const GLTFMaterial* material = surface.material.get();
-				auto [it, inserted] = gltfMaterials.try_emplace(material, (uint32_t)accel->materials.size());
-				if (inserted) {
-					accel->materials.push_back(material != nullptr ? gltfTriMaterial(*material, textures) : RaytraceTriMaterial { makeSceneMaterial(MaterialType::Lambertian, glm::vec3(1.f)) });
-				}
-				accel->instanceMaterials.push_back(it->second);
+				//the library entry the glTF material's import made
+				const auto entry = gltfMaterialIds.find(surface.material.get());
+				accel->instanceMaterials.push_back(materialIndex(entry != gltfMaterialIds.end() ? entry->second : 0, true));
 			}
-			const glm::vec3 emission = materialEmission(accel->materials[accel->instanceMaterials.back()].material);
+			const glm::vec3 emission = accel->materials[accel->instanceMaterials.back()].emission;
 			anyEmits |= emission.r > 0.f || emission.g > 0.f || emission.b > 0.f;
 		}
 
@@ -344,8 +351,8 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 			const uint32_t attributeBase = geometry->placements[meshIndex].attributeBase;
 			meshLightBase = lightList.beginTriangleRun((uint32_t)blas.attributes.size());
 			forEachMeshTriangle(mesh, [&](uint32_t surfaceIndex, uint32_t triangle, uint32_t ia, uint32_t ib, uint32_t ic) {
-				const RaytraceTriMaterial& material = accel->materials[accel->instanceMaterials[tableBase + surfaceIndex]];
-				const glm::vec3 emission = materialEmission(material.material);
+				const PackedMaterial& material = accel->materials[accel->instanceMaterials[tableBase + surfaceIndex]];
+				const glm::vec3 emission = material.emission;
 				if (!(emission.r > 0.f || emission.g > 0.f || emission.b > 0.f)) {
 					return;
 				}
@@ -413,6 +420,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	if (!accel->tlas.bvh.error.empty()) {
 		fmt::println("buildSceneAccel: the TLAS is not traced - {}", accel->tlas.bvh.error);
 	}
+
 
 	//the environment last, then every light priced: a directional light and the environment by the
 	//scene's size, a sphere around its bounded geometry (1 for a scene with none)

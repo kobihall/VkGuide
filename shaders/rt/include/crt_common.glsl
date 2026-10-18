@@ -153,30 +153,28 @@ struct GpuInstance {
 
 #define CRT_INSTANCE_SHAPE 0xFFFFFFFFu
 
-// 64 bytes. src/rt_gpu_types.h CrtMaterial
+// 16 bytes, one per material in binding 7: what kind it is, what kernel 02 and the traversal need
+// to know of it without reading its parameters, and where those are in binding 26. Each type's
+// parameter record is read by crt_material.glsl. src/rt_gpu_types.h CrtMaterialHeader
 struct GpuMaterial {
-	// the base colour or the emitted colour, by type
-	vec3 albedo;
-	// fuzz | smoothness | ir | strength, by type; unused by pbr
-	float param;
+	// CRT_MATERIAL_*
 	uint type;
-	// layers of materialTextures, or -1 for none. Shapes' are always -1. albedo: rgb base colour
-	// (sRGB), a coverage
-	int albedoLayer;
-	// the base colour texel's alpha below which the traversal cuts the surface away; 0 for never
-	float alphaCutoff;
-	float metallic;
-	// pbr: emitted radiance (colour x strength), linear. Zero for a surface that does not glow
-	vec3 emission;
-	float roughness;
-	// tangent-space normal, linear
-	int normalLayer;
-	// g roughness, b metallic, linear
-	int metalRoughLayer;
-	// emitted colour, sRGB
-	int emissiveLayer;
-	float normalScale;
+	// CRT_MATERIAL_FLAG_*, decided on the CPU when the material is packed (src/rt_material.cpp)
+	uint flags;
+	// into materialParams[], in vec4s
+	uint paramOffset;
+	uint paramCount;
 };
+
+// it emits: kernel 02 queues it for 04
+#define CRT_MATERIAL_FLAG_EMITS 1u
+// it scatters: kernel 02 queues it for 06
+#define CRT_MATERIAL_FLAG_SCATTERS 2u
+// kernel 02 queues it for the complex build of 06 rather than the basic one
+#define CRT_MATERIAL_FLAG_COMPLEX 4u
+// the traversal alpha-tests a triangle flagged CRT_TRIANGLE_CUTOUT against it
+#define CRT_MATERIAL_FLAG_CUTOUT 8u
+#define CRT_MATERIAL_FLAG_NORMAL_MAP 16u
 
 // the kinds of light (GpuLight.kind); src/light_sampling.h AreaLightKind for the first four
 #define CRT_LIGHT_SPHERE 0u
@@ -266,14 +264,18 @@ struct QueueHeader {
 
 #define CRT_QUEUE_RAY_A 0u
 #define CRT_QUEUE_RAY_B 1u
-// written by 02 Intersect Closest, drained by 03 / 04 / 06 respectively
+// written by 02 Intersect Closest, drained by 03 / 04 / 06 respectively. The surface queue holds the
+// hits on basic materials, which the basic build of 06 drains
 #define CRT_QUEUE_ESCAPED 2u
 #define CRT_QUEUE_EMISSIVE 3u
 #define CRT_QUEUE_SURFACE 4u
 // written by 06 (and later 07) with the RAY QUEUE POSITION of each path that emitted a shadow
 // ray, drained by 08 Trace Shadow Rays
 #define CRT_QUEUE_SHADOW 5u
-#define CRT_QUEUE_COUNT 6u
+// written by 02 with the hits on complex materials (CRT_MATERIAL_FLAG_COMPLEX), drained by the
+// complex build of 06 (crt_material_class.glsl)
+#define CRT_QUEUE_SURFACE_COMPLEX 6u
+#define CRT_QUEUE_COUNT 7u
 
 // src/rt_gpu_types.h CRT_MAX_DEPTH: traversalStats holds the extend counters for this many bounces, then
 // the shadow-ray counters for as many again
@@ -300,7 +302,9 @@ layout (std430, set = 0, binding = 4) buffer RadianceBuffer { vec4 radiance[]; }
 layout (std430, set = 0, binding = 5) readonly buffer BudgetBuffer { uint sampleBudget[]; };
 // every placed mesh and shape: the unbounded shapes, then TLAS slot order
 layout (std430, set = 0, binding = 6) readonly buffer InstanceBuffer { GpuInstance instances[]; };
-// shapes' materials first (materials[i] belongs to shape i), then the meshes'
+// every material the scene uses, as headers: each material's parameter record is in binding 26.
+// A material a shape uses and one a mesh uses are separate records even when they are the same
+// library entry, since a shape's is packed without textures
 layout (std430, set = 0, binding = 7) readonly buffer MaterialBuffer { GpuMaterial materials[]; };
 // the running mean per pixel
 layout (rgba32f, set = 0, binding = 8) uniform image2D accumulation;
@@ -349,6 +353,10 @@ layout (std430, set = 0, binding = 21) readonly buffer EnvironmentSamplingBuffer
 	float envCompensatedIntegral;
 	float envData[];
 };
+// 22 to 25: reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+// every material's parameter record, back to back: GpuMaterial.paramOffset finds its own, and
+// crt_material.glsl reads it in the order src/rt_material.cpp packed it
+layout (std430, set = 0, binding = 26) readonly buffer MaterialParamBuffer { vec4 materialParams[]; };
 
 // src/rt_gpu_types.h CrtParams
 layout (push_constant) uniform Params {

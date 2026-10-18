@@ -10,7 +10,7 @@ The GPU path tracer is a **wavefront** tracer, in the sense Laine, Karras & Aila
 
 The alternative is the megakernel, one thread per pixel running the whole algorithm. It is the obvious design, and the project's first raytracer, on the CPU, worked that way. It falls apart on a GPU because threads execute in lockstep groups. After one bounce, the threads in a group have diverged completely: some rays left the scene, some hit glass, some hit a textured floor. Every branch any of them takes costs *all* of them, so a group of 64 threads can end up doing 64 times the necessary work.
 
-The wavefront fixes this by sorting. Kernel 02 finds each ray's hit and then pushes it onto one of three queues by what it found. Kernel 06 then runs over *only* the rays that hit a scattering surface — so it starts out converged, with every lane genuinely having a BSDF to sample. That is the whole trade: you pay bandwidth (each kernel reads its inputs from memory and writes its outputs back, where a megakernel would keep them in registers) and you buy execution coherence.
+The wavefront fixes this by sorting. Kernel 02 finds each ray's hit and then pushes it onto a queue by what it found. Kernel 06 then runs over *only* the rays that hit a scattering surface — so it starts out converged, with every lane genuinely having a BSDF to sample. That is the whole trade: you pay bandwidth (each kernel reads its inputs from memory and writes its outputs back, where a megakernel would keep them in registers) and you buy execution coherence.
 
 ```
 one frame = 00 → [ 01 → 02 → {03, 04, 06} → 08 ] × rayDepth → 09 → tonemap
@@ -50,10 +50,10 @@ shaders/rt/
 |---|---|---|---|
 | 00 | Generate camera rays | the whole path pool, once per frame | One primary ray per (pixel, sample) slot, jittered in the pixel and across the aperture |
 | 01 | Generate samples | the live ray queue, per bounce | Prepares each path's randomness for this bounce. Where a Sobol sampler would go |
-| 02 | Intersect closest | the live ray queue, per bounce | Finds the nearest hit, applies alpha cutouts, writes a 24-byte hit record, and **sorts** the paths into three queues |
+| 02 | Intersect closest | the live ray queue, per bounce | Finds the nearest hit, applies alpha cutouts, writes a 24-byte hit record, and **sorts** the paths into four queues: escaped, emissive, and basic or complex surface |
 | 03 | Handle escaped | the escaped queue | A ray that left the scene collects the background, weighted by the path's MIS record, and ends |
 | 04 | Handle emissive geometry | the emissive queue | A ray that hit a light collects its emission, weighted by the path's MIS record, and ends. A ray that hit a glowing `pbr` surface collects its emission and carries on through 06 |
-| 06 | Sample surface scattering | the surface queue | Samples a light and pushes a shadow ray towards it, then scatters the path off the surface, or ends it |
+| 06 | Sample surface scattering | each surface queue, by its own build | Samples a light and pushes a shadow ray towards it, then scatters the path off the surface, or ends it |
 | 08 | Trace shadow rays | the shadow queue | Traces each shadow ray with the selected traversal and adds its light where nothing is in the way |
 | 09 | Update film | the pixels, once per frame | Folds the frame's samples into the running mean |
 
@@ -66,7 +66,7 @@ Two indexing conventions coexist, and this is the one thing worth holding in you
 - **`paths[]` and `radiance[]` are indexed by pool slot** — stable for a path's whole life.
 - **`hits[]` and `shadowRays[]` are indexed by ray-queue position** — compacted, and different every bounce.
 
-The two ray queues (ping-ponging between bounces) hold **path indices**. The three classification queues hold **ray-queue positions**, because that single number is *also* the index of the path's hit record. So kernel 06 pulls one number off its queue and reaches both the hit and the path from it, with no extra indirection. The shadow queue holds ray-queue positions too: kernel 06 writes a path's shadow ray at the position of its hit, with the point it leaves from, and kernel 08 traces it from there. `PathState.radianceSlot` is the bridge back to the pixel.
+The two ray queues (ping-ponging between bounces) hold **path indices**. The four classification queues hold **ray-queue positions**, because that single number is *also* the index of the path's hit record. So kernel 06 pulls one number off its queue and reaches both the hit and the path from it, with no extra indirection. The shadow queue holds ray-queue positions too: kernel 06 writes a path's shadow ray at the position of its hit, with the point it leaves from, and kernel 08 traces it from there. `PathState.radianceSlot` is the bridge back to the pixel.
 
 ### How a kernel knows how many threads to launch
 
@@ -194,6 +194,8 @@ Payload version 10 adds `"lights"`, the punctual lights, each with its `"type"` 
 
 Payload version 11 adds `"integrator"` and `"traversal"`. Kernels 02 and 08 become one variant each, `"closest"` and `"occlusion"`. An older file named its traversal as kernel 02's variant, and opens with that as its traversal.
 
+Payload version 12 saves the material library. `"materials"` holds each user material in full, and each shape or override mesh object names its material by index, or a glTF model's material as `{"model":0,"material":12}`. A glTF material is saved only as what you changed of it, in `"materialOverrides"`. An older file's inline materials open as one user material per object, named after it.
+
 ---
 
 ## 4. The maths, kernel by kernel
@@ -252,7 +254,9 @@ The weight $w_b$ is what keeps a light from being counted twice. Under BSDF samp
 
 $$\beta_{n+1} = \beta_n \cdot f(\omega_o, \omega_i)$$
 
-Four scattering materials carried over from the project's first, CPU, raytracer, and glTF's metallic-roughness model:
+Kernel 06 is built twice, once per material class. Kernel 02 reads each hit's material header and sends a hit on a *complex* material, one with a large or branchy evaluation, to a queue of its own. The basic build evaluates only the basic types, so it allocates registers for them alone; the complex build evaluates every type, as pbrt-v4's universal evaluator does (PBR 4ed 15.3.9). All of today's materials are basic, so the complex queue stays empty until a plan adds a complex type.
+
+A material is a library entry: a type from the traits table in `src/rt_material.cpp`, with its parameters stored by name. The GPU gets a 16-byte header per material, with the type, flags kernel 02 and the alpha test read, and where its parameters sit in a second buffer, which `shaders/rt/include/crt_material.glsl` reads back. Four scattering types carry over from the project's first, CPU, raytracer, and the fifth is glTF's metallic-roughness model:
 
 - **Lambertian** — `normal + randomUnitVector()`. Adding a uniform-sphere point to the normal gives a *true* cosine-weighted distribution, so the sampled direction's weight is the albedo alone: the $\cos\theta/\pi$ in the BSDF and in the density cancel.
 - **Metal** — `reflect(d, n) + fuzz · randomInBall()`, absorbed if it goes below the surface.
@@ -388,6 +392,9 @@ The MIS weights view works differently: it lets a path run to its second vertex 
 | Shared shader code | `shaders/rt/include/` |
 | The registry — **edit this to add a variant, a traversal or an integrator** | `src/rt_kernels.h/.cpp` |
 | Which traversal a tracing kernel is built for | `shaders/rt/include/crt_trace.glsl` |
+| Which material class a kernel 06 build evaluates | `shaders/rt/include/crt_material_class.glsl` |
+| The material types and their parameters — **edit this to add a material type** | `src/rt_material.h/.cpp`, with its shader record in `shaders/rt/include/crt_material.glsl` |
+| The material library and the **Materials** window | `src/rt_scene_editor.h/.cpp` |
 | What every integrator shares: uploads, film, reference, pipelines, resource table | `src/rt_gpu.h/.cpp`, `src/rt_gpu_types.h` |
 | The per-path buffers | `src/rt_wavefront.h/.cpp` |
 | The path tracer's schedule, and the interface a schedule implements | `src/rt_path_schedule.h/.cpp`, `src/rt_schedule.h/.cpp` |

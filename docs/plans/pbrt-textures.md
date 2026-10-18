@@ -2,7 +2,7 @@
 
 Every texture the path tracer reads is resampled to 512 × 512, stored as one layer of a 2D array image with no mip levels, and read with `textureLod(..., 0)`. Distant textured surfaces alias into noise that only more samples can average out, high-resolution textures lose their detail, textures cannot repeat or clamp as their glTF sampler says, and shapes cannot be textured at all. This plan stores textures at their own size with mip chains, estimates each hit's footprint with ray cones, introduces the texture reference that material parameters use, and lets any material on any shape or mesh use an image.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (shape uvs, derivatives) and [pbrt-material-system.md](pbrt-material-system.md) (parameters). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (shape uvs, derivatives) and [pbrt-material-system.md](completed/pbrt-material-system.md) (parameters). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decision already made
 
@@ -33,7 +33,7 @@ The array path (binding 12) stays as a **Texture storage** setting, legacy array
 
 ### Texture references
 
-A material parameter that can be textured holds a `TexRef` ([pbrt-material-system.md](pbrt-material-system.md)):
+A material parameter that can be textured holds a `TexRef` ([pbrt-material-system.md](completed/pbrt-material-system.md)):
 
 ```glsl
 struct TexRef {          // 32 bytes in the material's parameter block

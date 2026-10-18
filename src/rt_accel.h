@@ -159,9 +159,9 @@ struct RaytraceSceneAccel {
 	std::vector<GpuInstance> instances;
 	uint32_t unboundedCount { 0 };
 	std::vector<uint32_t> instanceMaterials;
-	// every material: the shapes' first (a shape's material index is its index in the list), then
-	// the mesh objects'
-	std::vector<RaytraceTriMaterial> materials;
+	// every material an instance uses, packed for the GPU: one record per library entry and per way
+	// it is packed, since a shape's leaves out the textures a mesh's carries
+	std::vector<PackedMaterial> materials;
 	uint32_t shapeCount { 0 };
 	uint32_t meshInstanceCount { 0 };
 	// triangles the placed instances add up to, counting every placement
@@ -170,11 +170,6 @@ struct RaytraceSceneAccel {
 	// triangles, and the environment map when it is the background
 	RaytraceLightList lights;
 };
-
-// the radiance a material emits before any texture, as the emissive kernel computes it: an emissive
-// material's colour times its strength, a pbr material's emission times its strength, and black
-// for everything else
-glm::vec3 materialEmission(const SceneMaterial& material);
 
 // What the light list needs of the background: the environment map's tables when the map is what a
 // missed ray sees (not a solid colour, not the sky gradient), and its intensity
@@ -187,12 +182,21 @@ struct EnvironmentLight {
 
 struct GLTFMaterial;
 
-// a glTF material as the tracer shades it: the pbr type with the file's factors and texture layers
-RaytraceTriMaterial gltfTriMaterial(const GLTFMaterial& material, const RaytraceTextureArray& textures);
+// A glTF material as a library entry: the pbr type with the file's factors and its textures' layers.
+// The caller names it and sets its origin
+MaterialDef gltfMaterialDef(const GLTFMaterial& material, const RaytraceTextureArray& textures);
+// re-derives the parameters a glTF entry takes from its file and never lets the user edit (its
+// texture layers and its alpha cutoff), after the texture array was rebuilt and the layers moved
+void refreshGltfMaterialDef(MaterialDef& entry, const GLTFMaterial& material, const RaytraceTextureArray& textures);
+
+// which library entry each glTF material of the loaded models became, for the surfaces of mesh
+// objects shaded with their glTF materials
+using GltfMaterialIds = std::unordered_map<const GLTFMaterial*, uint64_t>;
 
 // Builds the top level over the visible mesh objects and the shapes, and the light list over them,
-// the punctual lights and the environment. `geometry` must be packGeometry(*blases); it is passed in
-// so it is packed once per BLAS set, not per edit
+// the punctual lights and the environment, with every material they reference packed from the
+// library. `geometry` must be packGeometry(*blases); it is passed in so it is packed once per BLAS
+// set, not per edit
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
-	const EnvironmentLight& environment, const RaytraceTextureArray& textures);
+	const std::vector<MaterialDef>& materials, const GltfMaterialIds& gltfMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures);

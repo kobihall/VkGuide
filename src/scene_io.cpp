@@ -37,7 +37,14 @@ namespace {
 //   traversal every kernel that traces is built for. Kernels 02 and 08 become one variant each,
 //   "closest" and "occlusion"; an older file's kernel 02 entry names the traversal instead, and its
 //   kernel 08 entry is not read
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 11;
+//12: adds the material library. "materials" holds the user materials in full: a "name", a "type",
+//   and the type's parameters under their MATERIAL_TRAITS names. "materialOverrides" holds the
+//   edits to glTF materials, each a "model" index, a "material" index in that file and the changed
+//   parameters. A shape's and an override mesh object's "material" is a reference: an index into
+//   "materials", or {"model":m,"material":i} for a glTF material. An older file's inline material
+//   becomes one user material per object, named after it; a mesh object in glTF mode drops the
+//   override material older files wrote for it anyway
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 12;
 
 //---------------------------------------------------------------- writing
 
@@ -89,30 +96,37 @@ std::string jsonQuat(const glm::quat& q)
 	return fmt::format("[{},{},{},{}]", jsonNumber(q.x), jsonNumber(q.y), jsonNumber(q.z), jsonNumber(q.w));
 }
 
-//every material carries its complete parameters inline - the selected type's only, since that is
-//what the material *is*; the other types' stored values are editing convenience, not scene data.
-//The field names are the source fields'
-std::string materialJson(const SceneMaterial& mat)
+//a material's parameters as json fields, by the names MATERIAL_TRAITS gives them: those of its
+//type that are in `names` (every one, for a user material), never a read-only one, which is derived
+//rather than authored
+std::string materialParamsJson(const MaterialDef& material, const std::set<std::string, std::less<>>* names)
 {
-	const char* typeName = materialTypeName(mat.type);
-
-	switch (mat.type) {
-	case MaterialType::Lambertian:
-		return fmt::format(R"({{"type":"{}","albedo":{}}})", typeName, jsonVec3(mat.albedo));
-	case MaterialType::Metal:
-		return fmt::format(R"({{"type":"{}","albedo":{},"fuzz":{}}})", typeName, jsonVec3(mat.albedo), jsonNumber(mat.fuzz));
-	case MaterialType::Phong:
-		return fmt::format(R"({{"type":"{}","albedo":{},"smoothness":{}}})", typeName, jsonVec3(mat.albedo), jsonNumber(mat.smoothness));
-	case MaterialType::Dielectric:
-		return fmt::format(R"({{"type":"{}","ir":{}}})", typeName, jsonNumber(mat.ir));
-	case MaterialType::Emissive:
-		return fmt::format(R"({{"type":"{}","color":{},"strength":{}}})", typeName, jsonVec3(mat.albedo), jsonNumber(mat.strength));
-	case MaterialType::Pbr:
-		return fmt::format(R"({{"type":"{}","albedo":{},"metallic":{},"roughness":{},"emission":{},"strength":{}}})", typeName, jsonVec3(mat.albedo),
-			jsonNumber(mat.metallic), jsonNumber(mat.roughness), jsonVec3(mat.emission), jsonNumber(mat.strength));
+	std::string json;
+	for (const MaterialParam& param : materialTraits(material.type).params) {
+		if ((param.flags & PARAM_READ_ONLY) != 0 || (names != nullptr && names->count(param.name) == 0)) {
+			continue;
+		}
+		const ParamValue value = materialValue(material, param.name);
+		if (const float* f = std::get_if<float>(&value)) {
+			json += fmt::format(R"(,"{}":{})", param.name, jsonNumber(*f));
+		} else if (const SpectrumRef* spectrum = std::get_if<SpectrumRef>(&value)) {
+			json += fmt::format(R"(,"{}":{})", param.name, jsonVec3(spectrum->rgb));
+		} else if (const int* i = std::get_if<int>(&value)) {
+			json += fmt::format(R"(,"{}":{})", param.name, *i);
+		} else if (const bool* b = std::get_if<bool>(&value)) {
+			json += fmt::format(R"(,"{}":{})", param.name, *b);
+		}
+		//a texture reference is never saved until pbrt-textures.md gives textures a stable identity
 	}
+	return json;
+}
 
-	return fmt::format(R"({{"type":"{}"}})", typeName);
+std::string materialRefJson(const SceneMaterialRef& ref)
+{
+	if (ref.model >= 0) {
+		return fmt::format(R"({{"model":{},"material":{}}})", ref.model, ref.gltfIndex);
+	}
+	return fmt::format("{}", ref.user);
 }
 
 //relative to the scene file when the target sits inside the scene's folder or its parent (the
@@ -220,11 +234,38 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	}
 	json += ']';
 
+	//version 12: the library. User materials in full, kept whether or not anything references them;
+	//glTF materials only as what the user changed of them
+	json += R"(,"materials":[)";
+	for (size_t i = 0; i < scene.materials.size(); i++) {
+		const MaterialDef& material = scene.materials[i];
+		if (i > 0) {
+			json += ',';
+		}
+		json += fmt::format(R"({{"name":{},"type":"{}"{}}})", jsonString(material.name), materialTypeName(material.type), materialParamsJson(material, nullptr));
+	}
+	json += R"(],"materialOverrides":[)";
+	for (size_t i = 0; i < scene.materialOverrides.size(); i++) {
+		const SceneMaterialOverride& edit = scene.materialOverrides[i];
+		if (i > 0) {
+			json += ',';
+		}
+		MaterialDef edited;
+		edited.type = MaterialType::Pbr;
+		edited.params = edit.params;
+		std::set<std::string, std::less<>> names;
+		for (const auto& [name, value] : edit.params) {
+			names.insert(name);
+		}
+		json += fmt::format(R"({{"model":{},"material":{}{}}})", edit.model, edit.gltfIndex, materialParamsJson(edited, &names));
+	}
+	json += ']';
+
 	//every kind through its traits: the sizes go out under the names the editor shows, so a
 	//cylinder reads {"radius":0.5,"height":2} rather than as a raw scale vector
 	json += R"(,"geometry":[)";
 	for (size_t i = 0; i < scene.shapes.size(); i++) {
-		const SceneShape& shape = scene.shapes[i];
+		const SceneShape& shape = scene.shapes[i].shape;
 		const ShapeTraits& traits = shapeTraits(shape.kind);
 		if (i > 0) {
 			json += ',';
@@ -236,7 +277,7 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		for (const ShapeParam& param : traits.params) {
 			json += fmt::format(R"(,"{}":{})", param.name, jsonNumber(shapeParamValue(shape, param)));
 		}
-		json += fmt::format(R"(,"material":{}}})", materialJson(shape.material));
+		json += fmt::format(R"(,"material":{}}})", materialRefJson(scene.shapes[i].material));
 	}
 
 	json += ']';
@@ -257,9 +298,13 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 			}
 			matrix += jsonNumber((&object.transform[0][0])[element]);
 		}
-		json += fmt::format(R"({{"name":{},"model":{},"node":{},"transform":[{}],"visible":{},"shading":"{}","material":{}}})",
+		json += fmt::format(R"({{"name":{},"model":{},"node":{},"transform":[{}],"visible":{},"shading":"{}")",
 			jsonString(object.name), object.model, object.nodeIndex, matrix, object.visible,
-			object.materialMode == MeshMaterialMode::Override ? "override" : "gltf", materialJson(object.material));
+			object.materialMode == MeshMaterialMode::Override ? "override" : "gltf");
+		if (object.materialMode == MeshMaterialMode::Override) {
+			json += fmt::format(R"(,"material":{})", materialRefJson(object.material));
+		}
+		json += '}';
 	}
 
 	json += "]}";
@@ -336,11 +381,26 @@ bool readQuat(JsonElement element, glm::quat& out)
 		}
 		q[i++] = (float)value;
 	}
-	out = glm::normalize(glm::quat(q[3], q[0], q[1], q[2]));
+	//normalized only when it is not unit length already. Normalizing a quaternion that is unit to
+	//float precision can move it by an ulp, and normalizing that result moves it back, so a file
+	//saved and reopened alternated between two orientations on every save. jsonNumber() writes the
+	//shortest text that reads back as the same float, so a value saved unit stays exactly as saved
+	const glm::quat read(q[3], q[0], q[1], q[2]);
+	const float lengthSquared = glm::dot(read, read);
+	if (!(lengthSquared > 1e-12f)) {
+		//no rotation can be recovered from a zero quaternion; it reads as none
+		out = glm::quat(1.f, 0.f, 0.f, 0.f);
+	} else if (std::abs(lengthSquared - 1.f) > 1e-5f) {
+		out = glm::normalize(read);
+	} else {
+		out = read;
+	}
 	return true;
 }
 
-bool readMaterial(JsonElement element, SceneMaterial& out, std::string& error)
+//an inline material of a file before version 12, as a user material: the selected type's fields, by
+//the names the parameters still have
+bool readLegacyMaterial(JsonElement element, MaterialDef& out, std::string& error)
 {
 	simdjson::dom::object object;
 	if (element.get_object().get(object) != simdjson::SUCCESS) {
@@ -354,25 +414,25 @@ bool readMaterial(JsonElement element, SceneMaterial& out, std::string& error)
 		return false;
 	}
 
-	std::optional<MaterialType> type;
-	for (MaterialType candidate : MATERIAL_TYPES) {
-		if (typeName == materialTypeName(candidate)) {
-			type = candidate;
-		}
-	}
+	const std::optional<MaterialType> type = findMaterialType(typeName);
 	if (!type.has_value()) {
 		error = fmt::format("unknown material type \"{}\"", typeName);
 		return false;
 	}
 
-	//defaults for every field the file does not carry (the unselected types' parameters)
-	out = makeSceneMaterial(*type);
+	//the defaults stand for every field the file does not carry (the unselected types' parameters)
+	out = MaterialDef {};
+	out.type = *type;
 
-	//a light's colour is what it emits, not an albedo, and the file says so
+	//a light's colour is what it emits, not an albedo, and the file said so
 	const char* colorKey = *type == MaterialType::Emissive ? "color" : "albedo";
-	if (*type != MaterialType::Dielectric && !readVec3(object[colorKey], out.albedo)) {
-		error = fmt::format("{} material has no valid \"{}\"", typeName, colorKey);
-		return false;
+	glm::vec3 albedo(0.f);
+	if (*type != MaterialType::Dielectric) {
+		if (!readVec3(object[colorKey], albedo)) {
+			error = fmt::format("{} material has no valid \"{}\"", typeName, colorKey);
+			return false;
+		}
+		out.params["albedo"] = SpectrumRef { albedo };
 	}
 
 	double value = 0.0;
@@ -382,49 +442,50 @@ bool readMaterial(JsonElement element, SceneMaterial& out, std::string& error)
 			error = "metal material has no valid \"fuzz\"";
 			return false;
 		}
-		out.fuzz = std::clamp((float)value, 0.f, 1.f);
+		out.params["fuzz"] = std::clamp((float)value, 0.f, 1.f);
 		break;
 	case MaterialType::Phong:
 		if (!readDouble(object["smoothness"], value)) {
 			error = "phong material has no valid \"smoothness\"";
 			return false;
 		}
-		out.smoothness = (float)value;
+		out.params["smoothness"] = (float)value;
 		break;
 	case MaterialType::Dielectric:
 		if (!readDouble(object["ir"], value)) {
 			error = "dielectric material has no valid \"ir\"";
 			return false;
 		}
-		out.ir = (float)value;
+		out.params["ir"] = (float)value;
 		break;
 	case MaterialType::Emissive:
 		if (!readDouble(object["strength"], value) || value < 0.0) {
 			error = "emissive material has no valid \"strength\"";
 			return false;
 		}
-		out.strength = (float)value;
+		out.params["strength"] = (float)value;
 		break;
 	case MaterialType::Pbr:
 		if (!readDouble(object["metallic"], value)) {
 			error = "pbr material has no valid \"metallic\"";
 			return false;
 		}
-		out.metallic = std::clamp((float)value, 0.f, 1.f);
+		out.params["metallic"] = std::clamp((float)value, 0.f, 1.f);
 		if (!readDouble(object["roughness"], value)) {
 			error = "pbr material has no valid \"roughness\"";
 			return false;
 		}
-		out.roughness = std::clamp((float)value, 0.f, 1.f);
-		if (!readVec3(object["emission"], out.emission)) {
+		out.params["roughness"] = std::clamp((float)value, 0.f, 1.f);
+		if (!readVec3(object["emission"], albedo)) {
 			error = "pbr material has no valid \"emission\"";
 			return false;
 		}
+		out.params["emission"] = SpectrumRef { albedo };
 		if (!readDouble(object["strength"], value) || value < 0.0) {
 			error = "pbr material has no valid \"strength\"";
 			return false;
 		}
-		out.strength = (float)value;
+		out.params["strength"] = (float)value;
 		break;
 	case MaterialType::Lambertian:
 		break;
@@ -707,11 +768,113 @@ bool readShape(simdjson::dom::object object, bool legacySphere, size_t index, Sc
 		setShapeParam(out, param, (float)value);
 	}
 
-	std::string materialError;
-	if (!readMaterial(object["material"], out.material, materialError)) {
-		error = fmt::format("{} \"{}\": {}", traits.name, out.name, materialError);
+	return true;
+}
+
+//the parameters of `type` a version-12 record carries, by name, into `params`. One the record lacks
+//keeps its default, and one of the wrong kind is skipped; a read-only one is never in a file
+void readMaterialParams(simdjson::dom::object object, MaterialType type, ParamSet& params)
+{
+	for (const MaterialParam& param : materialTraits(type).params) {
+		if ((param.flags & PARAM_READ_ONLY) != 0) {
+			continue;
+		}
+		simdjson::dom::element element;
+		if (object[param.name].get(element) != simdjson::SUCCESS) {
+			continue;
+		}
+		switch (param.kind) {
+		case ParamKind::Float: {
+			double value = 0.0;
+			if (readDouble(element, value)) {
+				params[param.name] = (float)value;
+			}
+			break;
+		}
+		case ParamKind::Spectrum: {
+			glm::vec3 value(0.f);
+			if (readVec3(object[param.name], value)) {
+				params[param.name] = SpectrumRef { value };
+			}
+			break;
+		}
+		case ParamKind::Enum: {
+			int64_t value = 0;
+			if (element.get_int64().get(value) == simdjson::SUCCESS) {
+				params[param.name] = (int)value;
+			}
+			break;
+		}
+		case ParamKind::Bool: {
+			bool value = false;
+			if (element.get_bool().get(value) == simdjson::SUCCESS) {
+				params[param.name] = value;
+			}
+			break;
+		}
+		case ParamKind::Texture:
+			break;
+		}
+	}
+}
+
+//one "materials" record: a user material
+bool readMaterialDef(simdjson::dom::object object, size_t index, MaterialDef& out, std::string& error)
+{
+	std::string_view name;
+	out.name = object["name"].get_string().get(name) == simdjson::SUCCESS ? std::string(name) : fmt::format("material_{}", index + 1);
+	std::string_view typeName;
+	if (object["type"].get_string().get(typeName) != simdjson::SUCCESS) {
+		error = fmt::format("material \"{}\" has no \"type\"", out.name);
 		return false;
 	}
+	const std::optional<MaterialType> type = findMaterialType(typeName);
+	if (!type.has_value()) {
+		error = fmt::format("material \"{}\" has unknown type \"{}\"", out.name, typeName);
+		return false;
+	}
+	out.type = *type;
+	readMaterialParams(object, out.type, out.params);
+	return true;
+}
+
+//a version-12 material reference: an index into "materials", or {"model":m,"material":i}. One that
+//names nothing the file has reads as unset, and the loader gives its object a default material
+SceneMaterialRef readMaterialRef(JsonElement element, size_t materialCount, size_t modelCount)
+{
+	SceneMaterialRef ref;
+	int64_t user = -1;
+	if (element.get_int64().get(user) == simdjson::SUCCESS) {
+		if (user >= 0 && user < (int64_t)materialCount) {
+			ref.user = (int)user;
+		}
+		return ref;
+	}
+	int64_t model = -1;
+	uint64_t index = 0;
+	if (element["model"].get_int64().get(model) == simdjson::SUCCESS && element["material"].get_uint64().get(index) == simdjson::SUCCESS
+		&& model >= 0 && model < (int64_t)modelCount) {
+		ref.model = (int)model;
+		ref.gltfIndex = (uint32_t)index;
+	}
+	return ref;
+}
+
+//An object's material in either format: a reference from version 12, or an older file's inline
+//material, which becomes a user material named after the object
+bool readObjectMaterial(JsonElement element, int64_t version, const std::string& ownerName, SceneDescription& scene, SceneMaterialRef& out, std::string& error)
+{
+	if (version >= 12) {
+		out = readMaterialRef(element, scene.materials.size(), scene.modelPaths.size());
+		return true;
+	}
+	MaterialDef material;
+	if (!readLegacyMaterial(element, material, error)) {
+		return false;
+	}
+	material.name = ownerName;
+	out.user = (int)scene.materials.size();
+	scene.materials.push_back(std::move(material));
 	return true;
 }
 
@@ -855,6 +1018,43 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 		}
 	}
 
+	//version 12: the library, before the objects that reference it
+	simdjson::dom::array materials;
+	if (version >= 12 && root["materials"].get_array().get(materials) == simdjson::SUCCESS) {
+		size_t materialIndex = 0;
+		for (simdjson::dom::element entry : materials) {
+			simdjson::dom::object materialObject;
+			if (entry.get_object().get(materialObject) != simdjson::SUCCESS) {
+				ctx.error = fmt::format("material {} is not an object", materialIndex);
+				return;
+			}
+			MaterialDef material;
+			if (!readMaterialDef(materialObject, materialIndex, material, ctx.error)) {
+				return;
+			}
+			ctx.scene.materials.push_back(std::move(material));
+			materialIndex++;
+		}
+	}
+	simdjson::dom::array overrides;
+	if (version >= 12 && root["materialOverrides"].get_array().get(overrides) == simdjson::SUCCESS) {
+		for (simdjson::dom::element entry : overrides) {
+			simdjson::dom::object overrideObject;
+			int64_t model = -1;
+			uint64_t gltfIndex = 0;
+			if (entry.get_object().get(overrideObject) != simdjson::SUCCESS || overrideObject["model"].get_int64().get(model) != simdjson::SUCCESS
+				|| overrideObject["material"].get_uint64().get(gltfIndex) != simdjson::SUCCESS || model < 0 || model >= (int64_t)ctx.scene.modelPaths.size()) {
+				//an override of a model the file does not list has nothing to apply to
+				continue;
+			}
+			SceneMaterialOverride edit;
+			edit.model = (int)model;
+			edit.gltfIndex = (uint32_t)gltfIndex;
+			readMaterialParams(overrideObject, MaterialType::Pbr, edit.params);
+			ctx.scene.materialOverrides.push_back(std::move(edit));
+		}
+	}
+
 	size_t index = 0;
 	for (simdjson::dom::element entry : geometry) {
 		simdjson::dom::object shapeObject;
@@ -863,11 +1063,16 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			return;
 		}
 		//ids are the editor's to assign; a loaded shape has none yet
-		SceneShape shape;
-		if (!readShape(shapeObject, legacySpheres, index, shape, ctx.error)) {
+		SceneShapeRecord record;
+		if (!readShape(shapeObject, legacySpheres, index, record.shape, ctx.error)) {
 			return;
 		}
-		ctx.scene.shapes.push_back(std::move(shape));
+		std::string materialError;
+		if (!readObjectMaterial(shapeObject["material"], version, record.shape.name, ctx.scene, record.material, materialError)) {
+			ctx.error = fmt::format("{} \"{}\": {}", shapeTraits(record.shape.kind).name, record.shape.name, materialError);
+			return;
+		}
+		ctx.scene.shapes.push_back(std::move(record));
 		index++;
 	}
 
@@ -923,10 +1128,15 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			if (object["shading"].get_string().get(shading) == simdjson::SUCCESS && shading == "override") {
 				record.materialMode = MeshMaterialMode::Override;
 			}
-			//the override's parameters are written whichever mode is selected, so switching a saved
-			//object back to "override" finds what it had. A file without them keeps the defaults
-			std::string materialError;
-			readMaterial(object["material"], record.material, materialError);
+			//an override's material. Older files wrote one whichever mode was selected; only an object
+			//in override mode keeps it, as a user material named after the object
+			if (record.materialMode == MeshMaterialMode::Override) {
+				std::string materialError;
+				if (!readObjectMaterial(object["material"], version, record.name, ctx.scene, record.material, materialError)) {
+					//a file without one gets a default, as it always did
+					record.material = {};
+				}
+			}
 
 			ctx.scene.meshObjects.push_back(std::move(record));
 			objectIndex++;

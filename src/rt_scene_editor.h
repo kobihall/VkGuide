@@ -1,9 +1,10 @@
 #pragma once
 
 // The live, persistent list of scene objects the raytracer owns - analytic shapes, cameras, punctual
-// lights and the placed glTF mesh objects - and the "Scene" panel that browses and edits them.
+// lights and the placed glTF mesh objects - the material library they are shaded with, the "Scene"
+// panel that browses and edits the objects, and the "Materials" window that edits the library.
 //
-// All four kinds are plain data (rt_scene_types.h) owned outright here; a render copies what it
+// All of it is plain data (rt_scene_types.h, rt_material.h) owned outright here; a render copies what it
 // needs when it starts, and compares later to know when to start over. A mesh object does not own
 // its geometry: it names a node of one of VulkanEngine::m_models, which the engine loads and
 // unloads, and carries only what the user can edit about the placed instance. Deleting the
@@ -11,6 +12,8 @@
 // (VulkanEngine::openScene()/saveScene(), driven from the File menu).
 
 #include <array>
+#include <functional>
+#include <string_view>
 
 #include <rt_scene_types.h>
 #include <vk_types.h>
@@ -22,7 +25,6 @@ class TransformGizmo;
 // whether anything the render depends on changed; drawCameraParams() also reports a change to
 // a display-only setting (exposure), which does not warrant restarting a render
 bool drawShapeParams(SceneShape& shape);
-bool drawMaterialParams(SceneMaterial& material);
 bool drawCameraParams(SceneCamera& camera, bool& displayChanged);
 bool drawLightParams(SceneLight& light);
 bool drawMeshObjectParams(SceneMeshObject& object);
@@ -39,6 +41,8 @@ public:
 	const std::vector<SceneCamera>& cameras() const { return m_cameras; }
 	const std::vector<SceneLight>& lights() const { return m_lights; }
 	const std::vector<SceneMeshObject>& meshObjects() const { return m_meshObjects; }
+	// THE MATERIAL LIBRARY: user materials, and one entry per glTF material of every loaded model
+	const std::vector<MaterialDef>& materials() const { return m_materials; }
 
 	// by stable id; null once the object has been deleted or the list replaced. The pointer
 	// is only good until the next mutation - do not keep it across frames
@@ -50,6 +54,11 @@ public:
 	const SceneLight* findLight(uint64_t id) const;
 	SceneMeshObject* findMeshObject(uint64_t id);
 	const SceneMeshObject* findMeshObject(uint64_t id) const;
+	MaterialDef* findMaterial(uint64_t id);
+	const MaterialDef* findMaterial(uint64_t id) const;
+	// the entry a model's import made for its glTF material at `index`, or null
+	MaterialDef* findGltfMaterial(std::string_view modelKey, uint32_t index);
+	const MaterialDef* findGltfMaterial(std::string_view modelKey, uint32_t index) const;
 
 	// the load path: swaps in whole new lists. Every object gets a fresh id, and both go
 	// through the same change tracking every manual edit uses, so consumers cannot miss it
@@ -57,6 +66,20 @@ public:
 	void replaceCameras(std::vector<SceneCamera>&& cameras);
 	void replaceLights(std::vector<SceneLight>&& lights);
 	void replaceMeshObjects(std::vector<SceneMeshObject>&& objects);
+	void replaceMaterials(std::vector<MaterialDef>&& materials);
+
+	// appends a library entry, gives it an id and returns the id
+	uint64_t addMaterial(MaterialDef material);
+	// the model-removal path: drops the entries that model's import made. One an object still
+	// references becomes a user material instead, without its textures, and its name is returned
+	std::vector<std::string> removeMaterialsOf(const std::string& modelKey);
+	// the texture-array rebuild path: `refresh` re-derives a glTF entry's read-only parameters and
+	// says whether it changed anything
+	void refreshGltfMaterials(const std::function<bool(MaterialDef&)>& refresh);
+	// the shapes and override mesh objects that reference the entry
+	size_t materialUsers(uint64_t id) const;
+	// shows the Materials window with the entry selected
+	void openMaterial(uint64_t id);
 
 	// appends and returns the new id
 	uint64_t addCamera(SceneCamera camera);
@@ -83,6 +106,10 @@ public:
 	uint64_t revision() const { return m_revision; }
 
 	bool* visibilityFlag() { return &m_showPanel; }
+
+	// the "Materials" window, under Windows
+	void drawMaterialsWindow(VulkanEngine* engine);
+	bool* materialsVisibilityFlag() { return &m_showMaterials; }
 
 private:
 	// which row of the object tree is selected. Rows come from three separately owned lists, so a
@@ -112,6 +139,17 @@ private:
 	void drawSelectedCamera(VulkanEngine* engine, SceneCamera& camera);
 	void drawSelectedLight(VulkanEngine* engine, SceneLight& light);
 	void drawSelectedMeshObject(VulkanEngine* engine, SceneMeshObject& object);
+	// a material combo over the whole library, with Edit and New from this. Returns whether the
+	// reference changed
+	bool drawMaterialReference(uint64_t& materialId, const std::string& ownerName);
+	// the Materials window's parts
+	void drawMaterialTree();
+	void drawMaterialDetails(VulkanEngine* engine, MaterialDef& material);
+	// a user material that copies `source`: its parameters, without the origin, the edits or the
+	// textures a user material cannot keep yet
+	MaterialDef userCopyOf(const MaterialDef& source, std::string name) const;
+	// a new user material for a new object, named after it
+	uint64_t addMaterialFor(const std::string& ownerName);
 	void beginShapeGizmo(TransformGizmo& gizmo, uint64_t id);
 	void beginCameraGizmo(TransformGizmo& gizmo, uint64_t id);
 	void beginLightGizmo(TransformGizmo& gizmo, uint64_t id);
@@ -133,6 +171,7 @@ private:
 	std::vector<SceneCamera> m_cameras;
 	std::vector<SceneLight> m_lights;
 	std::vector<SceneMeshObject> m_meshObjects;
+	std::vector<MaterialDef> m_materials;
 
 	SelectionKind m_selectionKind { SelectionKind::None };
 	uint64_t m_selectionId { 0 };
@@ -144,8 +183,12 @@ private:
 	std::array<int, SHAPE_KIND_COUNT> m_nextShapeNumber {};
 	int m_nextCameraNumber { 1 };
 	int m_nextLightNumber { 1 };
-	// shapes, cameras, lights and mesh objects share one id space, so the gizmo's opaque target id
-	// cannot collide
+	// the Materials window's selection, 0 for none
+	uint64_t m_selectedMaterialId { 0 };
+	bool m_showMaterials { false };
+
+	// shapes, cameras, lights, mesh objects and materials share one id space, so the gizmo's opaque
+	// target id cannot collide
 	uint64_t m_nextId { 1 };
 	uint64_t m_revision { 1 };
 	bool m_showPanel { true };

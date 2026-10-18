@@ -1,6 +1,6 @@
 // Kernel 06 Sample Surface Scattering - the body every variant shares.
 //
-// The paths kernel 02 pushed onto CRT_QUEUE_SURFACE: rays that hit a surface that scatters. Each
+// The paths kernel 02 pushed onto a surface queue: rays that hit a surface that scatters. Each
 // one does up to two things here, in the order pbrt-v4's PathIntegrator does them:
 //
 //  - NEXT-EVENT ESTIMATION. Sample a light and push a shadow ray towards it onto CRT_QUEUE_SHADOW,
@@ -44,6 +44,10 @@
 #error "define CRT_DIRECT_LIGHTING before including crt_surface.glsl"
 #endif
 
+#ifndef CRT_MATERIAL_CLASS
+#error "a kernel 06 variant includes include/crt_material_class.glsl, and is built once per material class"
+#endif
+
 #if CRT_DIRECT_LIGHTING == CRT_DIRECT_MIS && !defined(CRT_MIS_EXPONENT)
 #error "an MIS variant of kernel 06 must define CRT_MIS_EXPONENT"
 #endif
@@ -54,7 +58,7 @@ layout (local_size_x = CRT_WORKGROUP) in;
 // shadowRays[entry] if it would add anything. `position` is the vertex and the shadow ray's origin,
 // `normal` the shading normal the material takes. Draws its random numbers after the BSDF sample's,
 // so a strategy that samples nothing here leaves the path's random stream exactly as it was
-bool nextEvent(GpuMaterial material, vec3 inDir, vec3 position, vec3 normal, PathState path, inout uint rng, uint entry)
+bool nextEvent(ClassicMaterial material, vec3 inDir, vec3 position, vec3 normal, PathState path, inout uint rng, uint entry)
 {
 	vec3 direction;
 	float distance;
@@ -128,7 +132,7 @@ void main()
 	const uint nextQueue = rayQueueFor(pc.bounce + 1u);
 	const uint index = gl_GlobalInvocationID.x;
 	// no early return: the queueAppend() calls below have barriers every invocation must reach
-	const bool isActive = index < headers[CRT_QUEUE_SURFACE].rayCount;
+	const bool isActive = index < headers[CRT_SURFACE_QUEUE].rayCount;
 
 	bool survives = false;
 	bool shadow = false;
@@ -138,7 +142,7 @@ void main()
 	if (isActive) {
 		// the queue holds the RAY QUEUE POSITION, which is also the index of the path's hit record
 		// and of its shadow ray
-		entry = queues[queueSlot(CRT_QUEUE_SURFACE, index)];
+		entry = queues[queueSlot(CRT_SURFACE_QUEUE, index)];
 		pathIndex = queues[queueSlot(rayQueueFor(pc.bounce), entry)];
 		PathState path = paths[pathIndex];
 		const HitRecord hit = hits[entry];
@@ -146,7 +150,7 @@ void main()
 		// the path's origin has not moved since kernel 02 traced from it
 		const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
 		bool frontFace;
-		const vec3 normal = materialShadingNormal(materials[si.material], hit, si, inDir, frontFace);
+		const vec3 normal = materialShadingNormal(classicMaterial(si.material), hit, si, inDir, frontFace);
 
 		vec3 debugValue;
 		if (debugTerminalValue(normal, si.frontFace ? si.n : -si.n, hit.traversalCost, inDir, true, debugValue)) {
@@ -154,7 +158,7 @@ void main()
 			// and ends the path, so they accumulate (and average under jitter) like radiance
 			radiance[path.radianceSlot] = vec4(debugValue, 1.0);
 		} else {
-			const GpuMaterial material = resolveMaterial(si.material, si.uv);
+			const ClassicMaterial material = resolveMaterial(si.material, si.uv);
 			uint rng = path.rngState;
 
 			vec3 attenuation;
