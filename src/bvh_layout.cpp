@@ -24,8 +24,8 @@ BvhTriangle makeBvhTriangle(const glm::vec3& a, const glm::vec3& b, const glm::v
 {
 	BvhTriangle triangle;
 	triangle.v0 = glm::vec4(a, std::bit_cast<float>(index));
-	triangle.e1 = glm::vec4(b - a, 0.f);
-	triangle.e2 = glm::vec4(c - a, 0.f);
+	triangle.v1 = glm::vec4(b, 0.f);
+	triangle.v2 = glm::vec4(c, 0.f);
 	return triangle;
 }
 
@@ -377,13 +377,15 @@ PackedBvh packBvh(Bvh bvh, const BvhBuildInput& input, BvhLayout layout)
 namespace {
 
 // true when an any-hit ray has found its hit and the traversal can stop
-bool testTriangles(std::span<const BvhTriangle> triangles, uint32_t first, uint32_t count, const BvhRay& ray, float& tMax, BvhHit& hit)
+bool testTriangles(std::span<const BvhTriangle> triangles, uint32_t first, uint32_t count, const BvhRay& ray, const WatertightRay& watertight, float& tMax, BvhHit& hit)
 {
 	for (uint32_t i = first; i < first + count; i++) {
 		hit.trianglesTested++;
 		float t;
 		glm::vec2 barycentrics;
-		if (intersectBvhTriangle(triangles[i], ray.origin, ray.direction, ray.tMin, tMax, t, barycentrics)) {
+		const bool found = ray.watertight ? intersectBvhTriangleWatertight(triangles[i], ray.origin, watertight, ray.tMin, tMax, t, barycentrics)
+										  : intersectBvhTriangle(triangles[i], ray.origin, ray.direction, ray.tMin, tMax, t, barycentrics);
+		if (found) {
 			tMax = t;
 			hit.hit = true;
 			hit.t = t;
@@ -401,7 +403,8 @@ BvhHit traceBinary(const PackedBvh& bvh, std::span<const BvhTriangle> triangles,
 {
 	BvhHit hit;
 	float tMax = ray.tMax;
-	traverseBinaryBvh(bvh, ray, tMax, [&](uint32_t first, uint32_t count, float& t) { return testTriangles(triangles, first, count, ray, t, hit); }, hit.nodesVisited, hit.stackOverflow);
+	const WatertightRay watertight = ray.watertight ? prepareWatertightRay(ray.direction) : WatertightRay {};
+	traverseBinaryBvh(bvh, ray, tMax, [&](uint32_t first, uint32_t count, float& t) { return testTriangles(triangles, first, count, ray, watertight, t, hit); }, hit.nodesVisited, hit.stackOverflow);
 	return hit;
 }
 
@@ -419,6 +422,7 @@ BvhHit traceCwbvh(const PackedBvh& bvh, std::span<const BvhTriangle> triangles, 
 {
 	BvhHit hit;
 	const glm::vec3 reciprocal = bvhSafeReciprocal(ray.direction);
+	const WatertightRay watertight = ray.watertight ? prepareWatertightRay(ray.direction) : WatertightRay {};
 	float tMax = ray.tMax;
 
 	//the octant's inverse: XORed into an interior child's slot so that popping the highest hit bit
@@ -464,6 +468,8 @@ BvhHit traceCwbvh(const PackedBvh& bvh, std::span<const BvhTriangle> triangles, 
 			const glm::vec3 scaled = step3 * reciprocal;
 			const glm::vec3 offset = (nodeOrigin - ray.origin) * reciprocal;
 			const uint32_t interiorMask = n0.w >> 24;
+			//the slack that stands for crt_bvh.glsl's boxSlack: each axis's own bound on the rounding of its distances
+			const glm::vec3 boxSlack = ray.watertight ? (gammaBound(4)) * (glm::abs(offset) + 255.f * glm::abs(scaled)) : glm::vec3(0.f);
 
 			nodeGroup.x = n1.x;
 			triangleGroup = glm::uvec2(n1.y, 0u);
@@ -476,8 +482,8 @@ BvhHit traceCwbvh(const PackedBvh& bvh, std::span<const BvhTriangle> triangles, 
 				const glm::vec3 hi((float)byteOf(half ? n3.w : n3.z, i), (float)byteOf(half ? n4.y : n4.x, i), (float)byteOf(half ? n4.w : n4.z, i));
 				const glm::vec3 t0 = offset + lo * scaled;
 				const glm::vec3 t1 = offset + hi * scaled;
-				const glm::vec3 near = glm::min(t0, t1);
-				const glm::vec3 far = glm::max(t0, t1);
+				const glm::vec3 near = glm::min(t0, t1) - boxSlack;
+				const glm::vec3 far = glm::max(t0, t1) + boxSlack;
 				const float tNear = std::max(std::max(near.x, near.y), std::max(near.z, ray.tMin));
 				const float tFar = std::min(std::min(far.x, far.y), std::min(far.z, tMax));
 				if (tNear <= tFar) {
@@ -499,7 +505,7 @@ BvhHit traceCwbvh(const PackedBvh& bvh, std::span<const BvhTriangle> triangles, 
 		while (triangleGroup.y != 0u) {
 			const uint32_t index = findMsb(triangleGroup.y);
 			triangleGroup.y &= ~(1u << index);
-			if (testTriangles(triangles, triangleGroup.x + index, 1, ray, tMax, hit)) {
+			if (testTriangles(triangles, triangleGroup.x + index, 1, ray, watertight, tMax, hit)) {
 				return hit;
 			}
 		}
@@ -518,8 +524,8 @@ BvhHit traceCwbvh(const PackedBvh& bvh, std::span<const BvhTriangle> triangles, 
 
 bool intersectBvhTriangle(const BvhTriangle& triangle, const glm::vec3& origin, const glm::vec3& direction, float tMin, float tMax, float& t, glm::vec2& barycentrics)
 {
-	const glm::vec3 edge1(triangle.e1);
-	const glm::vec3 edge2(triangle.e2);
+	const glm::vec3 edge1 = glm::vec3(triangle.v1) - glm::vec3(triangle.v0);
+	const glm::vec3 edge2 = glm::vec3(triangle.v2) - glm::vec3(triangle.v0);
 	const glm::vec3 pvec = glm::cross(direction, edge2);
 	const float det = glm::dot(edge1, pvec);
 	//only an exactly parallel ray or a zero-area triangle; direction is not normalised in object
@@ -553,4 +559,82 @@ BvhHit traceBvh(const PackedBvh& bvh, std::span<const BvhTriangle> triangles, co
 		return {};
 	}
 	return bvh.layout == BvhLayout::Cwbvh8 ? traceCwbvh(bvh, triangles, ray) : traceBinary(bvh, triangles, ray);
+}
+
+WatertightRay prepareWatertightRay(const glm::vec3& direction)
+{
+	const glm::vec3 a = glm::abs(direction);
+	const int kz = a.x > a.y ? (a.x > a.z ? 0 : 2) : (a.y > a.z ? 1 : 2);
+	const int kx = kz == 2 ? 0 : kz + 1;
+	const int ky = kx == 2 ? 0 : kx + 1;
+	WatertightRay ray;
+	ray.axes = glm::ivec3(kx, ky, kz);
+	const float dz = direction[kz];
+	ray.shear = glm::vec3(-direction[kx] / dz, -direction[ky] / dz, 1.f / dz);
+	return ray;
+}
+
+bool intersectBvhTriangleWatertight(const BvhTriangle& triangle, const glm::vec3& origin, const WatertightRay& ray, float tMin, float tMax, float& t, glm::vec2& barycentrics)
+{
+	glm::vec3 p0 = glm::vec3(triangle.v0) - origin;
+	glm::vec3 p1 = glm::vec3(triangle.v1) - origin;
+	glm::vec3 p2 = glm::vec3(triangle.v2) - origin;
+	const glm::ivec3 axes = ray.axes;
+	p0 = glm::vec3(p0[axes.x], p0[axes.y], p0[axes.z]);
+	p1 = glm::vec3(p1[axes.x], p1[axes.y], p1[axes.z]);
+	p2 = glm::vec3(p2[axes.x], p2[axes.y], p2[axes.z]);
+	const glm::vec3 shear = ray.shear;
+	p0.x = std::fma(shear.x, p0.z, p0.x);
+	p0.y = std::fma(shear.y, p0.z, p0.y);
+	p1.x = std::fma(shear.x, p1.z, p1.x);
+	p1.y = std::fma(shear.y, p1.z, p1.y);
+	p2.x = std::fma(shear.x, p2.z, p2.x);
+	p2.y = std::fma(shear.y, p2.z, p2.y);
+
+	const float e0 = differenceOfProducts(p1.x, p2.y, p1.y, p2.x);
+	const float e1 = differenceOfProducts(p2.x, p0.y, p2.y, p0.x);
+	const float e2 = differenceOfProducts(p0.x, p1.y, p0.y, p1.x);
+	if ((e0 < 0.f || e1 < 0.f || e2 < 0.f) && (e0 > 0.f || e1 > 0.f || e2 > 0.f)) {
+		return false;
+	}
+	const float det = e0 + e1 + e2;
+	if (det == 0.f) {
+		return false;
+	}
+
+	p0.z *= shear.z;
+	p1.z *= shear.z;
+	p2.z *= shear.z;
+	const float tScaled = e0 * p0.z + e1 * p1.z + e2 * p2.z;
+	if (det < 0.f && (tScaled >= 0.f || tScaled < tMax * det)) {
+		return false;
+	}
+	if (det > 0.f && (tScaled <= 0.f || tScaled > tMax * det)) {
+		return false;
+	}
+
+	const float invDet = 1.f / det;
+	const float b0 = e0 * invDet;
+	const float b1 = e1 * invDet;
+	const float b2 = e2 * invDet;
+	(void)b0;
+	const float hitT = tScaled * invDet;
+
+	//t conservatively above zero: the error of every term t is made of (PBR 4ed 6.8.4)
+	const float maxZ = std::max(std::max(std::abs(p0.z), std::abs(p1.z)), std::abs(p2.z));
+	const float deltaZ = gammaBound(3) * maxZ;
+	const float maxX = std::max(std::max(std::abs(p0.x), std::abs(p1.x)), std::abs(p2.x));
+	const float maxY = std::max(std::max(std::abs(p0.y), std::abs(p1.y)), std::abs(p2.y));
+	const float deltaX = gammaBound(5) * (maxX + maxZ);
+	const float deltaY = gammaBound(5) * (maxY + maxZ);
+	const float deltaE = 2.f * (gammaBound(2) * maxX * maxY + deltaY * maxX + deltaX * maxY);
+	const float maxE = std::max(std::max(std::abs(e0), std::abs(e1)), std::abs(e2));
+	const float deltaT = 3.f * (gammaBound(3) * maxE * maxZ + deltaE * maxZ + deltaZ * maxE) * std::abs(invDet);
+	if (hitT <= deltaT || hitT < tMin) {
+		return false;
+	}
+
+	t = hitT;
+	barycentrics = glm::vec2(b1, b2);
+	return true;
 }

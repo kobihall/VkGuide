@@ -78,7 +78,7 @@ Aabb shapeObjectBounds(ShapeKind kind)
 	return box;
 }
 
-bool intersectShape(ShapeKind kind, const glm::vec3& origin, const glm::vec3& direction, float tMin, float tMax, float& t)
+bool intersectShape(ShapeKind kind, const glm::vec3& origin, const glm::vec3& direction, float tMin, float tMax, float& t, float boxFarScale)
 {
 	const float tLimit = tMax;
 
@@ -111,7 +111,7 @@ bool intersectShape(ShapeKind kind, const glm::vec3& origin, const glm::vec3& di
 		const glm::vec3 t0 = (glm::vec3(-0.5f) - origin) * reciprocal;
 		const glm::vec3 t1 = (glm::vec3(0.5f) - origin) * reciprocal;
 		const glm::vec3 near = glm::min(t0, t1);
-		const glm::vec3 far = glm::max(t0, t1);
+		const glm::vec3 far = glm::max(t0, t1) * boxFarScale;
 		const float tNear = std::max(std::max(near.x, near.y), near.z);
 		const float tFar = std::min(std::min(far.x, far.y), far.z);
 		if (tNear <= tFar && !accept(tNear, tMin, tMax)) {
@@ -205,6 +205,43 @@ glm::vec3 shapeNormal(ShapeKind kind, const glm::vec3& point)
 	}
 	}
 	return glm::vec3(0.f, 1.f, 0.f);
+}
+
+glm::vec3 shapeHitPoint(ShapeKind kind, glm::vec3 p, glm::vec3& pError)
+{
+	switch (kind) {
+	case ShapeKind::Sphere:
+		p *= 1.f / glm::length(p);
+		pError = gammaBound(5) * glm::abs(p);
+		break;
+	case ShapeKind::Plane:
+	case ShapeKind::Quad:
+		p.y = 0.f;
+		pError = gammaBound(5) * glm::abs(p);
+		break;
+	case ShapeKind::Box: {
+		const uint32_t face = shapePart(kind, p);
+		p[face >> 1] = (face & 1u) != 0 ? 0.5f : -0.5f;
+		pError = gammaBound(5) * glm::abs(p);
+		pError[face >> 1] = 0.f;
+		break;
+	}
+	case ShapeKind::Cylinder: {
+		const uint32_t part = shapePart(kind, p);
+		if (part == SHAPE_CYLINDER_SIDE) {
+			const float scale = 1.f / glm::length(glm::vec2(p.x, p.z));
+			p.x *= scale;
+			p.z *= scale;
+			pError = gammaBound(5) * glm::abs(p);
+		} else {
+			p.y = part == SHAPE_CYLINDER_TOP ? 0.5f : -0.5f;
+			pError = gammaBound(5) * glm::abs(p);
+			pError.y = 0.f;
+		}
+		break;
+	}
+	}
+	return p;
 }
 
 namespace {

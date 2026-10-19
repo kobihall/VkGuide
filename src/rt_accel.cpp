@@ -123,7 +123,7 @@ std::shared_ptr<const RaytraceBlas> buildMeshBlas(const MeshAsset& mesh, const A
 		if (cutout[index] != 0) {
 			triangle.v0.w = std::bit_cast<float>(index | BVH_TRIANGLE_CUTOUT);
 		}
-		triangle.e1.w = std::bit_cast<float>(surfaceOf[index]);
+		triangle.v1.w = std::bit_cast<float>(surfaceOf[index]);
 	}
 	return out;
 }

@@ -44,7 +44,10 @@ namespace {
 //   "materials", or {"model":m,"material":i} for a glTF material. An older file's inline material
 //   becomes one user material per object, named after it; a mesh object in glTF mode drops the
 //   override material older files wrote for it anyway
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 12;
+//13: adds "errorBoundedOffsets" and "watertightTriangles" to "render", the intersection precision
+//   settings. Absent in an older file, which reads with both on: its render differs from the one it
+//   was saved with by what the old 0.001 ray epsilon and Moller-Trumbore got wrong, and by nothing else
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 13;
 
 //---------------------------------------------------------------- writing
 
@@ -173,8 +176,9 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	//every setting, defaults on read, so a scene shared between machines loses nothing and an
 	//older build ignores the block
 	const RenderSettings& r = scene.render;
-	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"unlimitedSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"restartOnChange":{}}})",
-		r.width, r.height, r.matchViewport, r.antialiasing, r.maxSamples, r.unlimitedSamples, r.rayDepth, r.useFixedSeed, r.seed, r.samplesPerFrame, r.russianRoulette, r.minBouncesBeforeRoulette, r.restartOnChange);
+	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"unlimitedSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"restartOnChange":{},"errorBoundedOffsets":{},"watertightTriangles":{}}})",
+		r.width, r.height, r.matchViewport, r.antialiasing, r.maxSamples, r.unlimitedSamples, r.rayDepth, r.useFixedSeed, r.seed, r.samplesPerFrame, r.russianRoulette, r.minBouncesBeforeRoulette, r.restartOnChange,
+		r.errorBoundedOffsets, r.watertightTriangles);
 
 	//version 11: the integrator and the traversal; version 8: the variant of each stage, by slot
 	//number and variant id. Ids rather than indices so that registering a new variant, or reordering
@@ -608,6 +612,8 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 	readOptionalBool(object["russianRoulette"], out.russianRoulette);
 	readOptionalInt(object["minBouncesBeforeRoulette"], out.minBouncesBeforeRoulette);
 	readOptionalBool(object["restartOnChange"], out.restartOnChange);
+	readOptionalBool(object["errorBoundedOffsets"], out.errorBoundedOffsets);
+	readOptionalBool(object["watertightTriangles"], out.watertightTriangles);
 
 	//a hand-edited file cannot land on something the ui could not: the custom-resolution fields
 	//hold to the same bounds

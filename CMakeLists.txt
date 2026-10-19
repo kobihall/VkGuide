@@ -27,7 +27,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin")
 add_subdirectory(src)
 
 # CPU-only verification and comparison of the BVH builders and layouts: ./bin/bvh_bench <file.glb>
-add_executable(bvh_bench tests/bvh_bench.cpp)
+add_executable(bvh_bench tests/bvh_bench.cpp tests/bvh_robust.cpp)
 target_link_libraries(bvh_bench PRIVATE rt_bvh fastgltf::fastgltf)
 if (NOT MSVC)
     target_compile_options(bvh_bench PRIVATE -O2)

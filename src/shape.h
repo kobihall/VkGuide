@@ -56,7 +56,9 @@ Aabb shapeObjectBounds(ShapeKind kind);
 // the nearest hit in [tMin, tMax] of an object-space ray. `direction` need not be unit length -
 // under a scaled instance it is not - and t is the parameter along it, so it carries unchanged to
 // the world-space ray it came from
-bool intersectShape(ShapeKind kind, const glm::vec3& origin, const glm::vec3& direction, float tMin, float tMax, float& t);
+// `boxFarScale` is BOX_FAR_SCALE for a watertight ray, which widens the box's slab test so rounding
+// cannot lose a grazing hit, and 1 otherwise
+bool intersectShape(ShapeKind kind, const glm::vec3& origin, const glm::vec3& direction, float tMin, float tMax, float& t, float boxFarScale = 1.f);
 
 // the parts of a cylinder (shapePart())
 inline constexpr uint32_t SHAPE_CYLINDER_SIDE = 0;
@@ -70,6 +72,12 @@ uint32_t shapePart(ShapeKind kind, const glm::vec3& point);
 
 // the outward object-space normal at a point on the unit primitive, not normalised
 glm::vec3 shapeNormal(ShapeKind kind, const glm::vec3& point);
+
+// A hit point `p` on the unit primitive as the ray computed it in float, brought exactly onto the
+// primitive, with the absolute error its coordinates then have (PBR 4ed 6.8.5; shapeReproject() in
+// crt_shape.glsl). A coordinate the primitive fixes (a quad's y, a box face's axis, a cap's y) is
+// set to its value and has no error
+glm::vec3 shapeHitPoint(ShapeKind kind, glm::vec3 p, glm::vec3& pError);
 
 // the (u, v) of a point on `part` of the unit primitive
 glm::vec2 shapeUv(ShapeKind kind, uint32_t part, const glm::vec3& point);

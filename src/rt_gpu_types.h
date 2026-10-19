@@ -118,6 +118,9 @@ inline constexpr uint32_t CRT_FLAG_JITTER = 1u << 0;
 inline constexpr uint32_t CRT_FLAG_ROULETTE = 1u << 1;
 inline constexpr uint32_t CRT_FLAG_ENVIRONMENT_MAP = 1u << 2;
 inline constexpr uint32_t CRT_FLAG_SOLID_BACKGROUND = 1u << 3;
+// RenderSettings::errorBoundedOffsets and watertightTriangles (crt_common.glsl)
+inline constexpr uint32_t CRT_FLAG_ERROR_BOUNDS = 1u << 4;
+inline constexpr uint32_t CRT_FLAG_WATERTIGHT = 1u << 5;
 
 // crt_common.glsl CRT_WORKGROUP; every kernel is 1-D at this size
 inline constexpr uint32_t CRT_WORKGROUP = 64;

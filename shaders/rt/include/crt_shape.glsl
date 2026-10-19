@@ -95,7 +95,7 @@ bool hitShape(uint kind, vec3 origin, vec3 direction, float tMin, float tMax, ou
 		const vec3 t0 = (vec3(-0.5) - origin) * reciprocal;
 		const vec3 t1 = (vec3(0.5) - origin) * reciprocal;
 		const vec3 near = min(t0, t1);
-		const vec3 far = max(t0, t1);
+		const vec3 far = max(t0, t1) * boxFarScale();
 		const float tNear = max(max(near.x, near.y), near.z);
 		const float tFar = min(min(far.x, far.y), far.z);
 		if (tNear <= tFar && !acceptRoot(tNear, tMin, tMax)) {
@@ -189,6 +189,61 @@ vec3 shapeNormal(uint kind, vec3 p)
 	}
 	// plane and quad
 	return vec3(0.0, 1.0, 0.0);
+}
+
+// A hit point `p` on the unit primitive, as the ray computed it in float, brought exactly onto the
+// primitive, with the absolute error its coordinates then have (PBR 4ed 6.8.5). A sphere's point is
+// scaled back to the radius, a cylinder's side to its rim, and a coordinate the primitive fixes (a
+// quad's y, a box face's axis, a cap's y) is set to it and has no error: the bound along the
+// normal, which is the one the spawn offset reads, is then zero for the flat parts. The rest are
+// bounded by gamma(5), the error of o + t d with a t that is itself only known that well.
+// src/shape.cpp shapeHitPoint
+vec3 shapeReproject(uint kind, vec3 p, out vec3 pError)
+{
+	if (kind == CRT_SHAPE_SPHERE) {
+		p *= 1.0 / length(p);
+		pError = CRT_GAMMA(5) * abs(p);
+	} else if (kind == CRT_SHAPE_PLANE || kind == CRT_SHAPE_QUAD) {
+		p.y = 0.0;
+		pError = CRT_GAMMA(5) * abs(p);
+	} else if (kind == CRT_SHAPE_BOX) {
+		const uint face = boxFace(p);
+		p[face >> 1u] = (face & 1u) != 0u ? 0.5 : -0.5;
+		pError = CRT_GAMMA(5) * abs(p);
+		pError[face >> 1u] = 0.0;
+	} else if (kind == CRT_SHAPE_CYLINDER) {
+		const uint part = shapePart(kind, p);
+		if (part == CRT_CYLINDER_SIDE) {
+			p.xz *= 1.0 / length(p.xz);
+			pError = CRT_GAMMA(5) * abs(p);
+		} else {
+			p.y = part == CRT_CYLINDER_TOP ? 0.5 : -0.5;
+			pError = CRT_GAMMA(5) * abs(p);
+			pError.y = 0.0;
+		}
+	} else {
+		// a kind this function does not know: the point as it is, with the error of o + t d
+		pError = CRT_GAMMA(5) * abs(p);
+	}
+	return p;
+}
+
+// The point a shape hit landed on, in the unit primitive's object space, and the error of its
+// coordinates. Kernel 02 (for the part and the uv) and crt_interaction.glsl both call this with the
+// ray that found the hit, so they agree on the point, and on the part and uv derived from it.
+// Without error-bounded offsets it is the ray's point carried into object space, as the tracer has
+// always taken it, with no error to report. With them it is the object-space ray's point, put on
+// the primitive by shapeReproject()
+vec3 shapeObjectHit(GpuInstance instance, vec3 origin, vec3 direction, float t, out vec3 pError)
+{
+	if ((pc.flags & CRT_FLAG_ERROR_BOUNDS) == 0u) {
+		pError = vec3(0.0);
+		return toObjectPoint(instance, fma(vec3(t), direction, origin));
+	}
+	vec3 localOrigin;
+	vec3 localDirection;
+	toObjectRay(instance, origin, direction, localOrigin, localDirection);
+	return shapeReproject(instance.triangleBase, fma(vec3(t), localDirection, localOrigin), pError);
 }
 
 // an angle about +y in [0, 1), measured from +x towards `towardsZ` (-1 or 1) times +z

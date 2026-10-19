@@ -108,7 +108,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 ### Milestone 0: foundations
 
 1. [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md). Implemented 2026-10-18.
-2. [pbrt-robust-intersections.md](pbrt-robust-intersections.md)
+2. [pbrt-robust-intersections.md](completed/pbrt-robust-intersections.md). Implemented 2026-10-19. Its camera-relative space is split off to [pbrt-camera-relative-space.md](pbrt-camera-relative-space.md), which no laser optics plan needs.
 3. [pbrt-verification-harness.md](pbrt-verification-harness.md)
 4. [pbrt-material-system.md](completed/pbrt-material-system.md). Implemented 2026-10-19, ahead of items 2 and 3, which it does not depend on.
 5. [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)
@@ -190,6 +190,8 @@ In the order below, which respects the [pbrt roadmap](pbrt-roadmap.md)'s depende
 58. [pbrt-path-guiding.md](pbrt-path-guiding.md)
 59. [pbrt-resampled-direct-lighting.md](pbrt-resampled-direct-lighting.md)
 60. [pbrt-scene-import.md](pbrt-scene-import.md)
+
+[pbrt-camera-relative-space.md](pbrt-camera-relative-space.md) is not in this order. It starts when a scene has coordinates beyond about 10 km, which no laser optics goal does.
 
 ### Milestone 8: the wave backend, by the user
 

@@ -194,6 +194,8 @@ Payload version 10 adds `"lights"`, the punctual lights, each with its `"type"` 
 
 Payload version 11 adds `"integrator"` and `"traversal"`. Kernels 02 and 08 become one variant each, `"closest"` and `"occlusion"`. An older file named its traversal as kernel 02's variant, and opens with that as its traversal.
 
+Payload version 13 adds `"errorBoundedOffsets"` and `"watertightTriangles"` to `"render"`; an older file opens with both on.
+
 Payload version 12 saves the material library. `"materials"` holds each user material in full, and each shape or override mesh object names its material by index, or a glTF model's material as `{"model":0,"material":12}`. A glTF material is saved only as what you changed of it, in `"materialOverrides"`. An older file's inline materials open as one user material per object, named after it.
 
 ---
@@ -221,6 +223,10 @@ Reciprocals replace near-zero components with a signed $10^{-12}$, so no box tes
 **Möller–Trumbore** for triangles, two-sided, never forming the plane:
 
 $$\begin{bmatrix}t\\u\\v\end{bmatrix} = \frac{1}{(\vec d \times \vec e_2)\cdot \vec e_1}\begin{bmatrix}(\vec t \times \vec e_1)\cdot \vec e_2\\ (\vec d \times \vec e_2)\cdot \vec t\\ (\vec t \times \vec e_1)\cdot \vec d\end{bmatrix}, \quad \vec t = O - v_0$$
+
+**Watertight triangles** (Woop, Benthin and Wald 2013) are the default instead. The triangle is translated to the ray origin, its axes permuted so the ray's largest component is $z$, and sheared so the ray runs down $+z$. Three edge functions, computed as $a b - c d$ with the error of the result rather than of the products, decide the hit by their signs. Two triangles that share an edge compute that edge from the same two vertices, so a ray through it cannot miss both. The triangle record holds the three vertices for this: rebuilt from a vertex and two edges, a shared vertex would differ by an ulp between triangles. **Watertight triangles** off restores Möller–Trumbore.
+
+**Spawn points** carry an error bound. Each hit has a point, rebuilt from its barycentrics (a triangle) or from the object-space ray (a shape, put back exactly on the primitive), and the absolute error $p_{err}$ of its coordinates (PBR 4ed 6.8.5). A ray leaving the surface starts at $p$ moved along the geometric normal by $|n| \cdot p_{err}$, to the side it leaves through, and rounded one float further out. Every trace then accepts any $t > 0$ instead of skipping the first $0.001$. **Error-bounded ray offsets** off restores the epsilon.
 
 **Analytic shapes** (sphere, plane, quad, box, capped cylinder) as unit primitives in object space, with the numerically stable quadratic from *Ray Tracing Gems* ch. 7 — the discriminant taken from the closest-approach vector rather than $|o|^2 - r^2$, which cancels catastrophically for a large sphere seen from close by.
 

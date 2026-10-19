@@ -10,6 +10,7 @@ add_library(rt_bvh STATIC
     bvh_layout.h
     bvh_scene.cpp
     bvh_scene.h
+    robust.h
     shape.cpp
     shape.h)
 target_include_directories(rt_bvh PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

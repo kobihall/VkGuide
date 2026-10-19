@@ -42,7 +42,7 @@ The CSG object's bounds for the TLAS: for a union, the union of the operands' bo
 
 ### Accuracy
 
-Where two operands' surfaces coincide, such as two boxes unioned face to face, their interval ends are equal up to rounding, and the combination can leave a sliver of wrong inside or outside along the seam. Amanatides and Mitchell 1990 discuss this regularization problem. The interval combination treats ends within the intersection's error bound ([pbrt-robust-intersections.md](pbrt-robust-intersections.md)) as equal, which removes the seams.
+Where two operands' surfaces coincide, such as two boxes unioned face to face, their interval ends are equal up to rounding, and the combination can leave a sliver of wrong inside or outside along the seam. Amanatides and Mitchell 1990 discuss this regularization problem. The interval combination treats ends within the intersection's error bound ([pbrt-robust-intersections.md](completed/pbrt-robust-intersections.md)) as equal, which removes the seams.
 
 ### Editing and lights
 

@@ -136,6 +136,9 @@ private:
 	void ensureSceneAccel(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	// the "Acceleration structure" section: builder and layout, and what they produced
 	void drawAccelSettings(VulkanEngine* engine);
+	// the "Intersection precision" section: error-bounded ray offsets and watertight triangles. Apart
+	// from the acceleration structure's, since every traversal takes both
+	void drawIntersectionSettings();
 	// the "Integrator" combo, shared by both panels: true when the selection changed
 	bool drawIntegratorCombo();
 	// the "Direct lighting" combo over kernel 06's variants and what the light list holds

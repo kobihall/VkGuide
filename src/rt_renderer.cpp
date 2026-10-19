@@ -303,6 +303,7 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 	drawSettings(engine);
 
 	drawAccelSettings(engine);
+	drawIntersectionSettings();
 
 	if (m_hasDisplayImage) {
 		ImGui::SeparatorText("Output");
@@ -919,6 +920,21 @@ void RaytraceRenderer::drawAccelSettings(VulkanEngine* engine)
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Expected node visits + primitive tests for a random ray through the whole scene.\nLower is faster; compare builders and layouts by this and by the GPU time per frame.\nThe \"BVH traversal cost\" debug view shows the real cost per pixel.");
 		}
+	}
+}
+
+void RaytraceRenderer::drawIntersectionSettings()
+{
+	if (!ImGui::CollapsingHeader("Intersection precision")) {
+		return;
+	}
+	ImGui::Checkbox("Error-bounded ray offsets", &m_settings.errorBoundedOffsets);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("A ray leaving a surface starts just past the rounding error of its hit point, so it cannot hit the\nsurface it left. Off, every ray skips the first 0.001 of its length instead: too much for small\nthings (a leaf 1 mm thick loses its back face), too little for large ones (a surface at 10 km\nshadows itself). Saved with the scene.");
+	}
+	ImGui::Checkbox("Watertight triangles", &m_settings.watertightTriangles);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("A triangle test that cannot let a ray through the edge or vertex two triangles share, and box\ntests widened so rounding cannot cull a ray grazing one. Off, Moller-Trumbore and plain box\ntests: a little faster, with rare pinholes along edges. Saved with the scene.");
 	}
 }
 

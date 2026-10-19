@@ -33,7 +33,7 @@
 // derived. Kernels 04 and 06 rebuild the point, the normals, the uv, the material and the light
 // record from it with crt_interaction.glsl, and the material's normal map is applied there, in
 // material evaluation. Classifying needs only the material, which a triangle names through its
-// surface index in BvhTriangle.e1.w, so the closest hit's attribute record is not fetched here at
+// surface index in BvhTriangle.v1.w, so the closest hit's attribute record is not fetched here at
 // all. A shape's part and parameters (crt_shape.glsl shapePart(), shapeUv()) are solved here once,
 // since the point is at hand. Adding a primitive kind changes this file, crt_shape.glsl and
 // crt_interaction.glsl; it changes no kernel after 02.
@@ -57,7 +57,7 @@ uint intersectPath(uint queue, uint index)
 	const vec3 direction = normalize(path.direction);
 
 	TraceHit trace;
-	const bool found = traceScene(origin, direction, CRT_T_MIN, CRT_INFINITY, trace);
+	const bool found = traceScene(origin, direction, traceTMin(), CRT_INFINITY, trace);
 
 	HitRecord record;
 	record.instance = 0u;
@@ -80,14 +80,15 @@ uint intersectPath(uint queue, uint index)
 	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
 		// the hit point back in the unit primitive's space, where its parts and parameters are
 		// defined. The same point crt_interaction.glsl rebuilds from the same ray, fused the same way
-		const vec3 objectPoint = toObjectPoint(instance, fma(vec3(trace.t), direction, origin));
+		vec3 objectError;
+		const vec3 objectPoint = shapeObjectHit(instance, origin, direction, trace.t, objectError);
 		record.primitive = shapePart(instance.triangleBase, objectPoint);
 		record.barycentrics = shapeUv(instance.triangleBase, record.primitive, objectPoint);
 		material = instance.materialBase;
 	} else {
 		record.primitive = trace.triangle;
 		record.barycentrics = trace.bary;
-		material = instanceMaterials[instance.materialBase + floatBitsToUint(blasTriangles[trace.triangle].e1.w)];
+		material = instanceMaterials[instance.materialBase + floatBitsToUint(blasTriangles[trace.triangle].v1.w)];
 	}
 	hits[index] = record;
 

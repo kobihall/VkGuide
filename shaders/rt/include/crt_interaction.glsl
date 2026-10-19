@@ -17,8 +17,9 @@
 // fma(). Kernel 02 is compiled to fuse that expression and kernel 04 is not, so without the fma the
 // two kernels rebuild points an ulp apart and kernel 04's MIS weight for a cylinder light, whose pdf
 // depends on the exact point, drifts. Every kernel that forms a hit point from t spells the fusion
-// out. The error bound `pError` stays zero until docs/plans/pbrt-robust-intersections.md rebuilds a
-// triangle's point from its barycentrics and bounds the error of both.
+// out. Under CRT_FLAG_ERROR_BOUNDS the point is instead rebuilt from the hit itself, a triangle's from
+// its barycentrics and a shape's from the object-space ray, and `pError` bounds it (PBR 4ed 6.8.5):
+// the spawn point of every ray leaving the surface is offset by it (offsetRayOrigin()).
 //
 // Requires crt_common.glsl.
 
@@ -27,7 +28,8 @@
 struct SurfaceInteraction {
 	// world space
 	vec3 p;
-	// the absolute error bound of p; zero until error-bounded intersections land
+	// the absolute error bound of p, per coordinate: what a ray spawned here is offset past. Zero
+	// unless CRT_FLAG_ERROR_BOUNDS is set
 	vec3 pError;
 	// the geometric normal, unit, pointing out of the surface as authored
 	vec3 n;
@@ -71,7 +73,7 @@ vec3 triangleObjectNormal(GpuTriangleAttributes attributes, BvhTriangle tri, vec
 	const float w = 1.0 - bary.x - bary.y;
 	vec3 normal = w * attributes.n0.xyz + bary.x * attributes.n1.xyz + bary.y * attributes.n2.xyz;
 	if (dot(normal, normal) < 1e-12) {
-		normal = cross(tri.e1.xyz, tri.e2.xyz);
+		normal = cross(tri.v1.xyz - tri.v0.xyz, tri.v2.xyz - tri.v0.xyz);
 	}
 	return normal;
 }
@@ -99,8 +101,10 @@ void triangleDerivatives(GpuTriangleAttributes attributes, BvhTriangle tri, out 
 	const vec2 duv02 = uv0 - uv2;
 	const vec2 duv12 = uv1 - uv2;
 	// p0 - p2 and p1 - p2 from the stored edges p1 - p0 and p2 - p0
-	const vec3 dp02 = -tri.e2.xyz;
-	const vec3 dp12 = tri.e1.xyz - tri.e2.xyz;
+	const vec3 e1 = tri.v1.xyz - tri.v0.xyz;
+	const vec3 e2 = tri.v2.xyz - tri.v0.xyz;
+	const vec3 dp02 = -e2;
+	const vec3 dp12 = e1 - e2;
 	const float determinant = duv02.x * duv12.y - duv02.y * duv12.x;
 
 	bool degenerate = abs(determinant) < 1e-9;
@@ -112,7 +116,7 @@ void triangleDerivatives(GpuTriangleAttributes attributes, BvhTriangle tri, out 
 		degenerate = !(dot(c, c) > 0.0);
 	}
 	if (degenerate) {
-		interactionFrame(normalize(cross(tri.e2.xyz, tri.e1.xyz)), dpdu, dpdv);
+		interactionFrame(normalize(cross(e2, e1)), dpdu, dpdv);
 	}
 
 	const vec3 dn1 = attributes.n0.xyz - attributes.n2.xyz;
@@ -144,6 +148,7 @@ SurfaceInteraction surfaceInteraction(HitRecord hit, vec3 rayOrigin, vec3 rayDir
 	si.p = fma(vec3(hit.t), rayDirection, rayOrigin);
 	si.pError = vec3(0.0);
 	si.lightIndex = CRT_NO_LIGHT;
+	const bool robust = (pc.flags & CRT_FLAG_ERROR_BOUNDS) != 0u;
 
 	vec3 objectN;
 	vec3 objectNs;
@@ -153,8 +158,13 @@ SurfaceInteraction surfaceInteraction(HitRecord hit, vec3 rayOrigin, vec3 rayDir
 	vec3 dndv;
 	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
 		const uint kind = instance.triangleBase;
-		// the hit point back in the unit primitive's space, where the shape is defined
-		const vec3 objectPoint = toObjectPoint(instance, si.p);
+		// the hit point back in the unit primitive's space, where the shape is defined (the same
+		// point kernel 02 took the part and uv from)
+		vec3 objectError;
+		const vec3 objectPoint = shapeObjectHit(instance, rayOrigin, rayDirection, hit.t, objectError);
+		if (robust) {
+			si.p = toWorldPoint(instance, objectPoint, objectError, si.pError);
+		}
 		objectN = shapeNormal(kind, objectPoint);
 		objectNs = objectN;
 		shapeDerivatives(kind, hit.primitive, objectPoint, dpdu, dpdv, dndu, dndv);
@@ -168,11 +178,26 @@ SurfaceInteraction surfaceInteraction(HitRecord hit, vec3 rayOrigin, vec3 rayDir
 		const BvhTriangle tri = blasTriangles[hit.primitive];
 		const uint triangle = floatBitsToUint(tri.v0.w) & CRT_TRIANGLE_INDEX_MASK;
 		const GpuTriangleAttributes attributes = triangleAttributes[instance.attributeBase + triangle];
+		if (robust) {
+			// the point rebuilt from its barycentrics in object space, where it is as accurate as the
+			// vertices: b0 p0 + b1 p1 + b2 p2 has an error of gamma(7) (|b0 p0| + |b1 p1| + |b2 p2|)
+			// (PBR 4ed 6.8.5). b0 is 1 - b1 - b2, which is not itself exact: gamma(2) of the three
+			// vertices' magnitude covers that rounding as well
+			const float b1 = hit.barycentrics.x;
+			const float b2 = hit.barycentrics.y;
+			const float b0 = 1.0 - b1 - b2;
+			const vec3 weighted0 = b0 * tri.v0.xyz;
+			const vec3 weighted1 = b1 * tri.v1.xyz;
+			const vec3 weighted2 = b2 * tri.v2.xyz;
+			const vec3 objectPoint = fma(vec3(b2), tri.v2.xyz, fma(vec3(b1), tri.v1.xyz, weighted0));
+			const vec3 objectError = CRT_GAMMA(7) * (abs(weighted0) + abs(weighted1) + abs(weighted2)) + CRT_GAMMA(2) * (abs(tri.v0.xyz) + abs(tri.v1.xyz) + abs(tri.v2.xyz));
+			si.p = toWorldPoint(instance, objectPoint, objectError, si.pError);
+		}
 		objectNs = triangleObjectNormal(attributes, tri, hit.barycentrics);
-		objectN = cross(tri.e1.xyz, tri.e2.xyz);
+		objectN = cross(tri.v1.xyz - tri.v0.xyz, tri.v2.xyz - tri.v0.xyz);
 		triangleDerivatives(attributes, tri, dpdu, dpdv, dndu, dndv);
 		si.uv = triangleUv(attributes, hit.barycentrics);
-		si.material = instanceMaterials[instance.materialBase + floatBitsToUint(tri.e1.w)];
+		si.material = instanceMaterials[instance.materialBase + floatBitsToUint(tri.v1.w)];
 		// an emitting triangle's light record, found through its mesh-local index
 		if (instance.lightBase != CRT_NO_LIGHT) {
 			si.lightIndex = triangleLights[instance.lightBase + triangle];

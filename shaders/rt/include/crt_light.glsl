@@ -51,21 +51,7 @@ float lightAngleBetween(vec3 a, vec3 b)
 	return 2.0 * asin(clamp(length(b - a) / 2.0, -1.0, 1.0));
 }
 
-float differenceOfProducts(float a, float b, float c, float d)
-{
-	const float cd = c * d;
-	const float difference = fma(a, b, -cd);
-	const float error = fma(-c, d, cd);
-	return difference + error;
-}
-
-float sumOfProducts(float a, float b, float c, float d)
-{
-	const float cd = c * d;
-	const float sum = fma(a, b, cd);
-	const float error = fma(c, d, -cd);
-	return sum + error;
-}
+// differenceOfProducts() and sumOfProducts() are in crt_common.glsl, which the watertight triangle test shares
 
 void lightFrameFromZ(vec3 z, out vec3 x, out vec3 y)
 {
@@ -667,12 +653,14 @@ vec3 triangleLightRadiance(GpuLight light, vec3 barycentrics)
 
 // The one direction from `ref` towards a point, spot or directional light, how far away it is and
 // what arrives along it - a delta distribution, so there is no density to report. Kept apart from
-// sampleLight() so a kernel that samples delta lights alone reads no other light's resources
-bool sampleDeltaLight(GpuLight light, vec3 ref, out vec3 direction, out float distance, out vec3 radiance)
+// sampleLight() so a kernel that samples delta lights alone reads no other light's resources.
+// `lightNormal` is the surface normal at the light, which a delta light does not have: zero
+bool sampleDeltaLight(GpuLight light, vec3 ref, out vec3 direction, out float distance, out vec3 radiance, out vec3 lightNormal)
 {
 	direction = vec3(0.0, 1.0, 0.0);
 	distance = 0.0;
 	radiance = vec3(0.0);
+	lightNormal = vec3(0.0);
 	if (light.kind == CRT_LIGHT_DIRECTIONAL) {
 		direction = -light.a.xyz;
 		distance = CRT_INFINITY;
@@ -695,17 +683,20 @@ bool sampleDeltaLight(GpuLight light, vec3 ref, out vec3 direction, out float di
 
 // A direction from `ref` towards light `index`, what arrives along it, its solid-angle density
 // (1 for a delta light) and how far the shadow ray may travel before it would reach the light.
-// `environmentTable` is 1 under MIS (the compensated table), 0 otherwise. False for no sample
-bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 direction, out float distance, out vec3 radiance, out float pdf)
+// `lightNormal` is the surface normal at the point sampled on it, which the shadow ray's far end is
+// offset by (zero for every light that has no surface: delta lights, the environment). `environmentTable` is 1 under MIS (the compensated table), 0 otherwise. False for
+// no sample
+bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 direction, out float distance, out vec3 radiance, out float pdf, out vec3 lightNormal)
 {
 	const GpuLight light = lights[index];
 	direction = vec3(0.0, 1.0, 0.0);
 	distance = 0.0;
 	radiance = vec3(0.0);
 	pdf = 0.0;
+	lightNormal = vec3(0.0);
 	if (isDeltaLight(light.kind)) {
 		pdf = 1.0;
-		return sampleDeltaLight(light, ref, direction, distance, radiance);
+		return sampleDeltaLight(light, ref, direction, distance, radiance, lightNormal);
 	}
 
 	LightSample s;
@@ -744,6 +735,7 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 	direction = s.direction;
 	distance = s.distance;
 	pdf = s.pdf;
+	lightNormal = s.normal;
 	return pdf > 0.0;
 }
 

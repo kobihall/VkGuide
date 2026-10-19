@@ -2,7 +2,7 @@
 
 This roadmap covers every feature that *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* describe and this renderer lacks or implements weakly. Each feature has a plan in `docs/plans/`, named `pbrt-*.md` since 2026-10-18. This file records the decisions that shape all of them and reserves the resources they share, so that the plans can be implemented in any order without colliding.
 
-*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18 and the material system on 2026-10-19; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
+*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, and the material system and robust intersections on 2026-10-19; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
 
 *Revised 2026-10-18 for the [laser optics plan](physoptics-laser-optics.md), whose `physoptics-*.md` plans build on these. That plan's roadmap gives one linear order for both sets of plans; it pulls several of these forward (the foundations, the BSDF library, light types, image output, the display transform, the light integrator of bidirectional path tracing, cameras and polarization). The reservations below gain the laser optics plan's rows, and every rule here applies to its plans too.*
 
@@ -50,7 +50,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 |---|---|
 | [integrator-layer.md](completed/integrator-layer.md) | Implemented: the stage library every integrator shares, traversals built into every tracing kernel, per-integrator schedules |
 | [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) | Implemented: 24-byte hit record, `SurfaceInteraction` reconstruction, geometric normal, shading frame, shape uvs |
-| [pbrt-robust-intersections.md](pbrt-robust-intersections.md) | Error-bounded spawn points, watertight triangles, conservative box tests, camera-relative rendering space |
+| [pbrt-robust-intersections.md](completed/pbrt-robust-intersections.md) | Implemented: error-bounded spawn points, watertight triangles, conservative box tests |
 | [pbrt-verification-harness.md](pbrt-verification-harness.md) | BSDF chi-square tests, white furnace scenes, image metrics, convergence curves |
 | [pbrt-material-system.md](completed/pbrt-material-system.md) | Implemented: named material library, parameter records, material traits table, basic and complex surface queues |
 | [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) | Lane-count families, spectral representations, `SpectrumRef`, uplifting, sensors, blackbody, dispersion |
@@ -103,6 +103,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 
 | Plan | What it adds |
 |---|---|
+| [pbrt-camera-relative-space.md](pbrt-camera-relative-space.md) | Double-precision scene positions and a render origin, for scenes far from the origin. Not planned to start until a scene needs it |
 | [pbrt-analytic-shapes.md](pbrt-analytic-shapes.md) | Disks, annuli, partial quadrics, cones, paraboloids, hyperboloids, bilinear patches |
 | [pbrt-motion-blur.md](pbrt-motion-blur.md) | Shutter times, two-pose instances and cameras, motion bounds |
 | [pbrt-curves-and-hair.md](pbrt-curves-and-hair.md) | Bézier curve primitive and the hair BSDF |
@@ -143,7 +144,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 integrator-layer (implemented) ─> bidirectional-path-tracing ─┬─> photon-mapping
                                                               └─> metropolis-light-transport
 
-thin-hit-record ─┬─> robust-intersections
+thin-hit-record ─┬─> robust-intersections ─> camera-relative-space
                  ├─> material-system ─┬─> bsdf-library ─┬─> layered-materials
                  │                    │                 ├─> measured-bsdfs
                  │                    │                 ├─> appearance-extras

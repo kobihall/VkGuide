@@ -43,7 +43,7 @@ void main()
 		// the queue holds the RAY QUEUE POSITION: the index of the shadow ray
 		const uint entry = queues[queueSlot(CRT_QUEUE_SHADOW, index)];
 		const ShadowRay ray = shadowRays[entry];
-		if (!occluded(ray.origin, ray.direction, CRT_T_MIN, ray.tMax)) {
+		if (!occluded(ray.origin, ray.direction, traceTMin(), ray.tMax)) {
 			// added, not written: one path sends at most one shadow ray a bounce, and 03 and 04 have
 			// already added this bounce's emission
 			radiance[ray.radianceSlot].rgb += ray.contribution;

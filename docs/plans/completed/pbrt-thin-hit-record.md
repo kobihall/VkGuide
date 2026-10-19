@@ -49,7 +49,7 @@ One include rebuilds what a kernel needs from a hit and the ray that made it:
 ```glsl
 struct SurfaceInteraction {
     vec3 p;             // world space
-    vec3 pError;        // absolute error bound (pbrt-robust-intersections.md fills it; zero until then)
+    vec3 pError;        // absolute error bound (pbrt-robust-intersections.md filled it; zero until then)
     vec3 n;             // geometric normal, unit, pointing out of the surface as authored
     vec3 ns;            // shading normal, interpolated, unit, same side as n
     vec3 dpdu, dpdv;    // position derivatives; dpdu is the tangent of the shading frame

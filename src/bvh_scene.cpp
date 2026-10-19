@@ -187,12 +187,13 @@ SceneHit traceScene(const Tlas& tlas, std::span<const Blas* const> blases, std::
 		local.tMin = ray.tMin;
 		local.tMax = t;
 		local.anyHit = ray.anyHit;
+		local.watertight = ray.watertight;
 
 		const SceneInstance& instance = instances[index];
 		if (instance.kind == SceneInstanceKind::Shape) {
 			hit.trianglesTested++;
 			float shapeT;
-			if (intersectShape(instance.shape, local.origin, local.direction, local.tMin, local.tMax, shapeT)) {
+			if (intersectShape(instance.shape, local.origin, local.direction, local.tMin, local.tMax, shapeT, ray.watertight ? BOX_FAR_SCALE : 1.f)) {
 				t = shapeT;
 				hit.hit = true;
 				hit.t = shapeT;
@@ -243,4 +244,66 @@ bool occludedScene(const Tlas& tlas, std::span<const Blas* const> blases, std::s
 	BvhRay shadow = ray;
 	shadow.anyHit = true;
 	return traceScene(tlas, blases, instances, shadow).hit;
+}
+
+glm::vec3 transformPointWithError(const glm::mat4& objectToWorld, const glm::mat4& worldToObject, const glm::vec3& p, const glm::vec3& pError, glm::vec3& worldError)
+{
+	auto apply = [](const glm::mat4& matrix, const glm::vec3& v) {
+		glm::vec3 out;
+		for (int row = 0; row < 3; row++) {
+			out[row] = (((matrix[0][row] * v.x + matrix[1][row] * v.y) + matrix[2][row] * v.z) + matrix[3][row]);
+		}
+		return out;
+	};
+	const float g = gammaBound(3);
+	for (int row = 0; row < 3; row++) {
+		const glm::vec3 m(objectToWorld[0][row], objectToWorld[1][row], objectToWorld[2][row]);
+		const float w = objectToWorld[3][row];
+		worldError[row] = (g + 1.f) * glm::dot(glm::abs(m), pError) + g * (std::abs(m.x * p.x) + std::abs(m.y * p.y) + std::abs(m.z * p.z) + std::abs(w));
+	}
+	const glm::vec3 world = apply(objectToWorld, p);
+	worldError += 2.f * glm::abs(apply(objectToWorld, apply(worldToObject, world)) - world);
+	return world;
+}
+
+SceneHitPoint sceneHitPoint(const Tlas& tlas, std::span<const Blas* const> blases, std::span<const SceneInstance> instances, const SceneHit& hit, const BvhRay& ray)
+{
+	SceneHitPoint out;
+	const SceneInstance& instance = instances[hit.instance];
+	const glm::mat4& worldToObject = tlas.worldToObject[hit.instance];
+	glm::vec3 objectNormal;
+	glm::vec3 objectPoint;
+	glm::vec3 objectError;
+	if (instance.kind == SceneInstanceKind::Shape) {
+		const glm::vec3 localOrigin = glm::vec3(worldToObject * glm::vec4(ray.origin, 1.f));
+		const glm::vec3 localDirection = glm::mat3(worldToObject) * ray.direction;
+		glm::vec3 point;
+		for (int i = 0; i < 3; i++) {
+			point[i] = std::fma(hit.t, localDirection[i], localOrigin[i]);
+		}
+		objectPoint = shapeHitPoint(instance.shape, point, objectError);
+		out.part = shapePart(instance.shape, objectPoint);
+		out.objectPoint = objectPoint;
+		objectNormal = shapeNormal(instance.shape, objectPoint);
+	} else {
+		const BvhTriangle& tri = blases[instance.blas]->triangles[hit.slot];
+		const glm::vec3 v0(tri.v0);
+		const glm::vec3 v1(tri.v1);
+		const glm::vec3 v2(tri.v2);
+		const float b1 = hit.barycentrics.x;
+		const float b2 = hit.barycentrics.y;
+		const float b0 = 1.f - b1 - b2;
+		const glm::vec3 weighted0 = b0 * v0;
+		const glm::vec3 weighted1 = b1 * v1;
+		const glm::vec3 weighted2 = b2 * v2;
+		for (int i = 0; i < 3; i++) {
+			objectPoint[i] = std::fma(b2, v2[i], std::fma(b1, v1[i], weighted0[i]));
+		}
+		objectError = gammaBound(7) * (glm::abs(weighted0) + glm::abs(weighted1) + glm::abs(weighted2)) + gammaBound(2) * (glm::abs(v0) + glm::abs(v1) + glm::abs(v2));
+		objectNormal = glm::cross(v1 - v0, v2 - v0);
+	}
+	out.p = transformPointWithError(instance.objectToWorld, worldToObject, objectPoint, objectError, out.pError);
+	//the inverse transpose of the object-to-world transform, which is the transpose of the world-to-object one
+	out.n = glm::normalize(glm::transpose(glm::mat3(worldToObject)) * objectNormal);
+	return out;
 }

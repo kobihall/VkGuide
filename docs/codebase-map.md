@@ -305,7 +305,8 @@ shaders/rt/
   0901_update_film.comp                 09 Update film (not a PBR figure box)
   include/
     crt_common.glsl      buffer structs, GLOBAL BINDING NUMBERS, push constants, queue set,
-                         queueAppend(), hitTriangle(), the instance transforms, srgbToLinear()
+                         queueAppend(), hitTriangle(), the robust section (offsetRayOrigin(),
+                         hitTriangleWatertight(), toWorldPoint()), the instance transforms, srgbToLinear()
     crt_random.glsl      PCG hash + sampling
     crt_trace.glsl       the traversal a tracing kernel is built for: one CRT_TRAVERSAL_<ID> branch
                          per traversal, which CMake reads to compile the permutations
@@ -552,8 +553,8 @@ Design and as-built record: `docs/plans/completed/integrator-layer.md`.
 Design and as-built record: `docs/plans/completed/pbrt-thin-hit-record.md`.
 
 - **`HitRecord` is 24 bytes**: `t`, `instance`, `barycentrics`, `primitive`, `traversalCost`, in that order so the `vec2` sits at an 8-byte offset. For a mesh `primitive` is the global `blasTriangles[]` index; for a shape it is the part hit (`shapePart()`: a box face in `boxFace()` order, a cylinder's side, bottom or top), and `barycentrics` holds the shape's uv.
-- **`crt_interaction.glsl`** rebuilds a `SurfaceInteraction` from a hit and its ray: the point, a zero `pError`, the geometric normal `n` and the shading normal `ns` (both outward as authored; a triangle's `n` is turned to its vertex normals' side), `dpdu`/`dpdv` and `dndu`/`dndv` in world space, the uv, the material and the light record, and `frontFace` against `n`. Kernels 04 and 06 call it. `facingShadingNormal()` turns `ns` to face the ray the way kernel 02 used to, for the existing materials.
-- **Kernel 02** writes the record and classifies from the material alone: a triangle's surface index is in `BvhTriangle.e1.w` (set in `buildMeshBlas()`), so it no longer fetches the attribute record or the triangle-light table.
+- **`crt_interaction.glsl`** rebuilds a `SurfaceInteraction` from a hit and its ray: the point, `pError` (zero unless `CRT_FLAG_ERROR_BOUNDS`, §8.19), the geometric normal `n` and the shading normal `ns` (both outward as authored; a triangle's `n` is turned to its vertex normals' side), `dpdu`/`dpdv` and `dndu`/`dndv` in world space, the uv, the material and the light record, and `frontFace` against `n`. Kernels 04 and 06 call it. `facingShadingNormal()` turns `ns` to face the ray the way kernel 02 used to, for the existing materials.
+- **Kernel 02** writes the record and classifies from the material alone: a triangle's surface index is in `BvhTriangle.v1.w` (set in `buildMeshBlas()`; it was `e1.w` before §8.19), so it no longer fetches the attribute record or the triangle-light table.
 - **Normal maps** are applied by `materialShadingNormal()` in `crt_scatter.glsl`, with kernel 02's arithmetic unchanged. Kernel 04 uses the unmapped normal for its debug views, because only `pbr` materials carry maps and 06 writes their debug views.
 - **`ShadowRay` is 48 bytes** with `origin` and a reserved `mediumAndGroup` word first. Kernel 08 no longer declares `Hits`.
 - **`GpuInstance` is 128 bytes**: `toObject[3]` (the former `row0`..`row2`) and `toWorld[3]`, the object-to-world rows, which carry derivatives out of the instance.
@@ -575,3 +576,17 @@ Design and as-built record: `docs/plans/completed/pbrt-material-system.md`.
 - **Two surface queues.** Kernel 02 sends a hit on a `COMPLEX` material to queue 6. Every kernel 06 variant is `perMaterialClass` with domain `KernelDomain::SurfaceQueues`, built as `.basic.spv` and `.complex.spv`, and dispatched basic first, then complex. The basic build evaluates basic types only; the complex build is pbrt's universal evaluator, every type. No existing type is complex, so queue 6 is empty and its counter is hidden. `GpuRenderer`'s pipeline cache key is (variant, traversal, class).
 - **Scene file.** Payload version 12 writes `"materials"` (user materials in full), `"materialOverrides"` (`model`, `material`, and the edited parameters) and a reference per shape and override object: an index into `"materials"`, or `{"model":m,"material":i}`. An older file's inline material becomes a user material named after its object; a glTF-mode mesh object's stored override material is dropped.
 - **Verified** (seed 12345, rgba32f accumulation): the 22 renders of the thin hit record's checks matched the commit before byte for byte after the GPU records, after the library, and after the two queues. With `pbr` temporarily marked complex, all of Sponza's hits and a third of Veach's went through queue 6 and every render still matched, and the two queues' counts added up to the single queue's at every bounce. Every scene in `assets/scenes/` and the shape scene saved as version 12 and reopened with the same library. Sponza's edits saved as overrides, re-applied on reopen, and left the file after a revert. Zero validation messages across five configurations.
+
+### 8.19 Robust intersections (2026-10-19)
+
+Design and as-built record: `docs/plans/completed/pbrt-robust-intersections.md`. Camera-relative space was split off to `docs/plans/pbrt-camera-relative-space.md` and is not built.
+
+- **Two flags**, `RenderSettings::errorBoundedOffsets` and `watertightTriangles`, become `CRT_FLAG_ERROR_BOUNDS` (16) and `CRT_FLAG_WATERTIGHT` (32) in `CrtParams.flags`. Both default on, including for an older file (payload version 13 saves them in `"render"`). Both off renders bit-identical to the commit before. The panel section is **Intersection precision**, apart from **Acceleration structure** since the linear traversal takes both.
+- **`BvhTriangle` is three vertices** (`v0`, `v1`, `v2`; `v0.w` index and cutout bit, `v1.w` surface). Triangles that share a vertex hold identical copies, which the watertight test needs. Möller–Trumbore takes `v1 - v0` and `v2 - v0`, the floats the old layout stored.
+- **`traceTMin()`** is 1e-30 under error-bounded offsets and `CRT_T_MIN` otherwise; kernels 02 and 08 trace with it. Strictly above zero, so a ray spawned exactly on a plane does not hit it at `t = ±0`.
+- **Hit point and error.** `surfaceInteraction()` rebuilds `p` and `pError` under the flag: a triangle's from its barycentrics, a shape's from the object-space ray reprojected by `shapeReproject()` (`shapeObjectHit()` is shared with kernel 02). `toWorldPoint()` adds the instance transform's rounding and twice the round trip `toWorld (toObject p) - p`. `src/bvh_scene.cpp` `sceneHitPoint()` mirrors it for the tests.
+- **Spawn.** Kernel 06 offsets the continuation and the shadow ray start with `offsetRayOrigin()`, and the shadow ray's end by the light normal that `sampleLight()` now returns (`CRT_LIGHT_END_GAMMA` 16). `sampleLight()` returns no point.
+- **Watertight test.** `hitTriangleWatertight()` and `intersectBvhTriangleWatertight()`, with the axis permutation and shear computed in `instanceRay()` (`prepareWatertightRay()`). No double-precision fallback; a ray exactly through an edge is accepted by both triangles.
+- **Box tests.** Slabs widen their far distance by `1 + 2 gamma(3)`. The CWBVH node test pads each axis's near and far distance by `gamma(4) (|offset| + 255 |scaled|)` (`boxSlack`).
+- **Trap: exposing an intermediate changes the bits.** Returning `s.point` from `sampleLight()` changed how MoltenVK fused the sampling arithmetic, shifting renders by about 1e-6 with identical hits. Hand kernel 06 only what it needs, and re-run the flags-off comparison after any change to a sampler.
+- **Verified**: see the plan. Flags off, eight renders and their counters match the commit before. `bin/bvh_bench` runs the checks before the file-based ones (**--robust N**).

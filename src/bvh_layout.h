@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <bvh.h>
+#include <robust.h>
 
 enum class BvhLayout : uint32_t {
 	Binary,
@@ -41,17 +42,21 @@ inline constexpr uint32_t BVH_CWBVH_STACK_SIZE = 32;
 // the most primitives one CWBVH leaf child can hold: its three-bit unary count in the node's meta byte
 inline constexpr uint32_t BVH_CWBVH_MAX_LEAF_SIZE = 3;
 
-// One triangle as the traversal intersects it: the first vertex and the two edges from it, which
-// is exactly what Moller-Trumbore consumes. 48 bytes; the shading attributes are fetched separately
-// and only for the closest hit. v0.w carries the triangle's own index (as float bits) so the hit
-// can find those attributes even though leaves re-order and spatial splits duplicate triangles.
-// e1.w is the engine's: a mesh's triangle carries the index (as float bits) of the surface it
-// belongs to, which names its material, and makeBvhTriangle() leaves it 0. Only xyz of e1 and e2
-// are edges.
+// One triangle as the traversal intersects it: its three vertices, exactly as the mesh holds them.
+// 48 bytes; the shading attributes are fetched separately and only for the closest hit. Triangles
+// that share a vertex hold bit-identical copies of it, which is what lets the watertight test
+// (docs/plans/completed/pbrt-robust-intersections.md) agree with itself across a shared edge:
+// stored as a vertex and two edges, the other two vertices would be rebuilt as v0 + e1 and v0 + e2,
+// which round differently for every triangle that shares them. Moller-Trumbore takes its edges as
+// v1 - v0 and v2 - v0, the same floats the old layout stored. v0.w carries the triangle's own index
+// (as float bits) so the hit can find those attributes even though leaves re-order and spatial
+// splits duplicate triangles. v1.w is the engine's: a mesh's triangle carries the index (as float
+// bits) of the surface it belongs to, which names its material, and makeBvhTriangle() leaves it 0.
+// v2.w is unused. Only xyz of v0, v1 and v2 are positions.
 struct BvhTriangle {
 	glm::vec4 v0;
-	glm::vec4 e1;
-	glm::vec4 e2;
+	glm::vec4 v1;
+	glm::vec4 v2;
 };
 static_assert(sizeof(BvhTriangle) == 48);
 
@@ -106,6 +111,9 @@ struct BvhRay {
 	// question (shaders/rt/include/crt_traverse.glsl occluded()). The hit returned is then some hit,
 	// not necessarily the nearest
 	bool anyHit { false };
+	// the watertight triangle test and the widened box tests (CRT_FLAG_WATERTIGHT on the GPU),
+	// instead of Moller-Trumbore and the plain slabs
+	bool watertight { false };
 };
 
 struct BvhHit {
@@ -123,6 +131,20 @@ struct BvhHit {
 
 // the shader's Moller-Trumbore; two-sided, t in [tMin, tMax]
 bool intersectBvhTriangle(const BvhTriangle& triangle, const glm::vec3& origin, const glm::vec3& direction, float tMin, float tMax, float& t, glm::vec2& barycentrics);
+
+// The watertight test's per-ray constants (Woop, Benthin and Wald 2013; PBR 4ed 6.8.4): the axis
+// permutation that makes the ray's largest component z, and the shear that turns it into +z. Computed
+// once per object-space ray and shared by every triangle tested under it
+struct WatertightRay {
+	glm::ivec3 axes { 0, 1, 2 };
+	glm::vec3 shear { 0.f };
+};
+WatertightRay prepareWatertightRay(const glm::vec3& direction);
+
+// the shader's hitTriangleWatertight(): two-sided, t in [tMin, tMax] and conservatively above zero,
+// never missing a ray through an edge or vertex that triangles share. Its barycentrics are the
+// second and third vertices' weights, as Moller-Trumbore's are
+bool intersectBvhTriangleWatertight(const BvhTriangle& triangle, const glm::vec3& origin, const WatertightRay& ray, float tMin, float tMax, float& t, glm::vec2& barycentrics);
 
 // the closest hit along the ray, `triangles` being in primOrder's slot order
 BvhHit traceBvh(const PackedBvh& bvh, std::span<const BvhTriangle> triangles, const BvhRay& ray);
@@ -144,13 +166,15 @@ inline glm::vec3 bvhSafeReciprocal(const glm::vec3& d)
 	return out;
 }
 
-// near distance of a hit box, or 1e30 for a miss (Bikker part 2's IntersectAABB)
-inline float bvhSlab(const glm::vec3& bmin, const glm::vec3& bmax, const glm::vec3& origin, const glm::vec3& reciprocal, float tMin, float tMax)
+// near distance of a hit box, or 1e30 for a miss (Bikker part 2's IntersectAABB). farScale is
+// BOX_FAR_SCALE for a watertight ray, so one grazing an edge is not culled by rounding (Ize 2013),
+// and exactly 1 otherwise
+inline float bvhSlab(const glm::vec3& bmin, const glm::vec3& bmax, const glm::vec3& origin, const glm::vec3& reciprocal, float tMin, float tMax, float farScale = 1.f)
 {
 	const glm::vec3 t0 = (bmin - origin) * reciprocal;
 	const glm::vec3 t1 = (bmax - origin) * reciprocal;
 	const glm::vec3 near = glm::min(t0, t1);
-	const glm::vec3 far = glm::max(t0, t1);
+	const glm::vec3 far = glm::max(t0, t1) * farScale;
 	const float tNear = std::max(std::max(near.x, near.y), std::max(near.z, tMin));
 	const float tFar = std::min(std::min(far.x, far.y), std::min(far.z, tMax));
 	return tNear <= tFar ? tNear : 1e30f;
@@ -167,6 +191,7 @@ void traverseBinaryBvh(const PackedBvh& bvh, const BvhRay& ray, float& tMax, Lea
 		return;
 	}
 	const glm::vec3 reciprocal = bvhSafeReciprocal(ray.direction);
+	const float farScale = ray.watertight ? BOX_FAR_SCALE : 1.f;
 	uint32_t stack[BVH_BINARY_STACK_SIZE];
 	uint32_t stackSize = 0;
 	uint32_t node = 0;
@@ -180,8 +205,8 @@ void traverseBinaryBvh(const PackedBvh& bvh, const BvhRay& ray, float& tMax, Lea
 		const uint32_t leftCount = words[2].w;
 		const uint32_t rightCount = words[3].w;
 
-		float tLeft = bvhSlab(vec(words[0]), vec(words[1]), ray.origin, reciprocal, ray.tMin, tMax);
-		float tRight = bvhSlab(vec(words[2]), vec(words[3]), ray.origin, reciprocal, ray.tMin, tMax);
+		float tLeft = bvhSlab(vec(words[0]), vec(words[1]), ray.origin, reciprocal, ray.tMin, tMax, farScale);
+		float tRight = bvhSlab(vec(words[2]), vec(words[3]), ray.origin, reciprocal, ray.tMin, tMax, farScale);
 
 		//leaves are folded into the parent: intersect their contents now, and only interior
 		//children remain to be ordered

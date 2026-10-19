@@ -105,3 +105,26 @@ SceneHit traceScene(const Tlas& tlas, std::span<const Blas* const> blases, std::
 // whether anything lies on the ray within [tMin, tMax]: a shadow ray, answered by the first hit found
 // (shaders/rt/include/crt_bvh.glsl occluded())
 bool occludedScene(const Tlas& tlas, std::span<const Blas* const> blases, std::span<const SceneInstance> instances, const BvhRay& ray);
+
+// The point a hit landed on, as the GPU's surfaceInteraction() computes it under
+// CRT_FLAG_ERROR_BOUNDS (shaders/rt/include/crt_interaction.glsl): in world space, with the absolute
+// error of each coordinate (PBR 4ed 6.8.5) and the geometric normal (unit, in no particular
+// orientation). A triangle's point is rebuilt from its barycentrics, a shape's from the object-space
+// ray and put exactly on the primitive. For tests: nothing in the renderer calls it
+struct SceneHitPoint {
+	glm::vec3 p { 0.f };
+	glm::vec3 pError { 0.f };
+	glm::vec3 n { 0.f, 1.f, 0.f };
+	// a shape: the point in the unit primitive's space and the part of it hit (shapePart())
+	glm::vec3 objectPoint { 0.f };
+	uint32_t part { 0 };
+};
+
+// `ray` is the world-space ray that found `hit` (direction normalised)
+SceneHitPoint sceneHitPoint(const Tlas& tlas, std::span<const Blas* const> blases, std::span<const SceneInstance> instances, const SceneHit& hit, const BvhRay& ray);
+
+// a point of an object's space in world space under `objectToWorld`, with the error of its
+// coordinates: `pError` carried through the transform plus the transform's own rounding (PBR 4ed
+// 6.8.5), and the round trip through `worldToObject` and back, which measures how far the two
+// matrices are from inverting each other. As toWorldPoint() in crt_common.glsl
+glm::vec3 transformPointWithError(const glm::mat4& objectToWorld, const glm::mat4& worldToObject, const glm::vec3& p, const glm::vec3& pError, glm::vec3& worldError);

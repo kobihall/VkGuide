@@ -800,7 +800,9 @@ CrtParams GpuRenderer::baseParams(VulkanEngine* engine) const
 	params.flags = (settings.antialiasing ? CRT_FLAG_JITTER : 0u)
 		| (settings.russianRoulette ? CRT_FLAG_ROULETTE : 0u)
 		| ((m_snapshot.useEnvironmentMap && engine->m_environmentMap.image != VK_NULL_HANDLE) ? CRT_FLAG_ENVIRONMENT_MAP : 0u)
-		| (m_snapshot.solidBackground ? CRT_FLAG_SOLID_BACKGROUND : 0u);
+		| (m_snapshot.solidBackground ? CRT_FLAG_SOLID_BACKGROUND : 0u)
+		| (settings.errorBoundedOffsets ? CRT_FLAG_ERROR_BOUNDS : 0u)
+		| (settings.watertightTriangles ? CRT_FLAG_WATERTIGHT : 0u);
 	params.background = glm::vec4(m_snapshot.backgroundColor, 0.f);
 	params.minBouncesBeforeRoulette = (uint32_t)std::max(settings.minBouncesBeforeRoulette, 0);
 	params.debugView = (uint32_t)debugView;

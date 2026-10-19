@@ -21,6 +21,15 @@
 #define CRT_FLAG_ROULETTE 2u
 #define CRT_FLAG_ENVIRONMENT_MAP 4u
 #define CRT_FLAG_SOLID_BACKGROUND 8u
+// docs/plans/completed/pbrt-robust-intersections.md. Off, every trace skips the first CRT_T_MIN of its
+// ray and spawns from the exact hit point, as the tracer always did; with the other two off too the
+// render is bit-identical to one from before the plan
+// spawn points are offset past the error of the hit point (offsetRayOrigin()) and traces accept any
+// t above zero
+#define CRT_FLAG_ERROR_BOUNDS 16u
+// triangles are tested with the watertight algorithm, and a box test widens its far distance by
+// CRT_BOX_FAR_SCALE: neither can lose a hit through rounding
+#define CRT_FLAG_WATERTIGHT 32u
 
 #define CRT_DEBUG_NONE 0u
 #define CRT_DEBUG_PRIMARY_DIRECTION 1u
@@ -95,16 +104,17 @@ struct HitRecord {
 };
 
 // 48 bytes: one triangle of one BLAS, in its mesh's object space, as the traversal intersects it -
-// the first vertex and the two edges from it. v0.w's bits: the triangle's index within its mesh
-// (CRT_TRIANGLE_INDEX_MASK), which finds its GpuTriangleAttributes after leaves re-ordered it and
-// spatial splits duplicated it, and CRT_TRIANGLE_CUTOUT for a triangle the traversal alpha-tests.
-// e1.w's bits: the surface it belongs to within its mesh, which indexes the instance's material
-// table, so kernel 02 finds a hit's material without fetching the attribute record.
+// its three vertices, bit-identical to the copies the neighbouring triangles hold (the watertight
+// test relies on it). v0.w's bits: the triangle's index within its mesh (CRT_TRIANGLE_INDEX_MASK),
+// which finds its GpuTriangleAttributes after leaves re-ordered it and spatial splits duplicated
+// it, and CRT_TRIANGLE_CUTOUT for a triangle the traversal alpha-tests. v1.w's bits: the surface
+// it belongs to within its mesh, which indexes the instance's material table, so kernel 02 finds a
+// hit's material without fetching the attribute record. v2.w is unused.
 // src/bvh_layout.h BvhTriangle
 struct BvhTriangle {
 	vec4 v0;
-	vec4 e1;
-	vec4 e2;
+	vec4 v1;
+	vec4 v2;
 };
 
 #define CRT_TRIANGLE_INDEX_MASK 0x7FFFFFFFu
@@ -448,6 +458,16 @@ vec3 toObjectPoint(GpuInstance instance, vec3 p)
 	return vec3(dot(instance.toObject[0], q), dot(instance.toObject[1], q), dot(instance.toObject[2], q));
 }
 
+// A world-space ray in an instance's object space. The direction is deliberately NOT renormalised
+// there: origin + t * direction is then the same point in both spaces, so t, tMin and the running
+// closest hit carry across the transform unchanged, with no rescaling anywhere
+void toObjectRay(GpuInstance instance, vec3 origin, vec3 direction, out vec3 localOrigin, out vec3 localDirection)
+{
+	const vec4 o = vec4(origin, 1.0);
+	localOrigin = vec3(dot(instance.toObject[0], o), dot(instance.toObject[1], o), dot(instance.toObject[2], o));
+	localDirection = vec3(dot(instance.toObject[0].xyz, direction), dot(instance.toObject[1].xyz, direction), dot(instance.toObject[2].xyz, direction));
+}
+
 // an object-space vector (a tangent, a position derivative) in world space
 vec3 toWorldVector(GpuInstance instance, vec3 v)
 {
@@ -484,6 +504,215 @@ vec2 triangleUv(GpuTriangleAttributes attributes, vec2 bary)
 	return w * vec2(attributes.n0.w, attributes.vAndSurface.x) + bary.x * vec2(attributes.n1.w, attributes.vAndSurface.y) + bary.y * vec2(attributes.n2.w, attributes.vAndSurface.z);
 }
 
+//---------------------------------------------------------------- robust spawn points and triangles
+//
+// Error-bounded intersections (PBR 4ed 6.8), mirrored line for line by src/robust.h and the CPU
+// traversal in src/bvh_layout.cpp. Every point the tracer computes in float is accompanied by an
+// absolute error bound, and a ray spawned at it starts just beyond that bound: it cannot hit the
+// surface it left, so no trace needs an epsilon.
+
+// 2^-24: the largest relative error of one rounded operation
+#define CRT_MACHINE_EPSILON 5.9604644775390625e-8
+// the bound on the relative error of n chained operations (PBR 4ed eq. 6.4)
+#define CRT_GAMMA(n) ((float(n) * CRT_MACHINE_EPSILON) / (1.0 - float(n) * CRT_MACHINE_EPSILON))
+// how far a box's slab test widens its far distance: 1 + 2 gamma(3) (Ize 2013, PBR 4ed 6.8.2)
+#define CRT_BOX_FAR_SCALE (1.0 + 2.0 * CRT_GAMMA(3))
+
+// a*b - c*d with the rounding error of about one ulp of the RESULT rather than of the products
+// (Kahan's algorithm on fma), and exactly zero when the true value is
+float differenceOfProducts(float a, float b, float c, float d)
+{
+	const float cd = c * d;
+	const float difference = fma(a, b, -cd);
+	const float error = fma(-c, d, cd);
+	return difference + error;
+}
+
+float sumOfProducts(float a, float b, float c, float d)
+{
+	const float cd = c * d;
+	const float sum = fma(a, b, cd);
+	const float error = fma(c, d, -cd);
+	return sum + error;
+}
+
+// the smallest float above v, and the largest below it (pbrt's NextFloatUp and NextFloatDown). On
+// the bits throughout, and with no infinity test: a position is finite, and the compiler is free to
+// treat -0 as +0 and to assume nothing is infinite
+float nextFloatUp(float v)
+{
+	uint bits = floatBitsToUint(v);
+	if (bits == 0x80000000u) {
+		bits = 0u;
+	}
+	bits = (bits >> 31) == 0u ? bits + 1u : bits - 1u;
+	return uintBitsToFloat(bits);
+}
+
+float nextFloatDown(float v)
+{
+	uint bits = floatBitsToUint(v);
+	if (bits == 0u) {
+		bits = 0x80000000u;
+	}
+	bits = (bits >> 31) == 0u ? bits - 1u : bits + 1u;
+	return uintBitsToFloat(bits);
+}
+
+// The point p, each coordinate within pError of the truth, moved along n by more than that error to
+// the side w points to, then each coordinate rounded one float further from the surface (PBR 4ed
+// 6.8.6, pbrt's OffsetRayOrigin). n need not be unit length
+vec3 offsetRayOrigin(vec3 p, vec3 pError, vec3 n, vec3 w)
+{
+	const float d = dot(abs(n), pError);
+	vec3 offset = d * n;
+	if (dot(w, n) < 0.0) {
+		offset = -offset;
+	}
+	vec3 po = p + offset;
+	for (int i = 0; i < 3; i++) {
+		if (offset[i] > 0.0) {
+			po[i] = nextFloatUp(po[i]);
+		} else if (offset[i] < 0.0) {
+			po[i] = nextFloatDown(po[i]);
+		}
+	}
+	return po;
+}
+
+// The nearest t a trace accepts. Without error-bounded offsets a ray spawned on a surface would hit
+// it again at a t of a few ulps, so every trace skips the first CRT_T_MIN. With them the spawn point
+// is already clear of the surface and any t above zero will do. Strictly above: a ray spawned
+// exactly on a plane (the infinite plane at y = 0 under an identity transform has no error along its
+// normal) computes t = -0 or +0 for it, and must not hit it
+float traceTMin()
+{
+	return (pc.flags & CRT_FLAG_ERROR_BOUNDS) != 0u ? 1e-30 : CRT_T_MIN;
+}
+
+// the factor a box test multiplies its far distance by
+float boxFarScale()
+{
+	return (pc.flags & CRT_FLAG_WATERTIGHT) != 0u ? CRT_BOX_FAR_SCALE : 1.0;
+}
+
+// A point p of an instance's object space in world space, with the error of its coordinates: pError
+// carried through the transform (PBR 4ed 6.8.5, "transformations") plus the rounding of the
+// transform's own arithmetic. And one more term, the one pbrt gets from transforming the ray with
+// an error bound: the next trace from the spawn point carries it back into object space with the
+// toObject rows, which are the inverse of the toWorld rows only to rounding, and the more so the
+// more the transform stretches one axis against another (a rotated 40:1 scale puts the two a few
+// thousand ulps apart). Going out and back measures that disagreement, in world units
+vec3 toWorldPoint(GpuInstance instance, vec3 p, vec3 pError, out vec3 worldError)
+{
+	const vec4 q = vec4(p, 1.0);
+	const float g = CRT_GAMMA(3);
+	vec3 world;
+	for (int row = 0; row < 3; row++) {
+		const vec4 m = instance.toWorld[row];
+		world[row] = dot(m, q);
+		worldError[row] = (g + 1.0) * dot(abs(m.xyz), pError) + g * (abs(m.x * p.x) + abs(m.y * p.y) + abs(m.z * p.z) + abs(m.w));
+	}
+	const vec4 w = vec4(world, 1.0);
+	const vec4 back = vec4(dot(instance.toObject[0], w), dot(instance.toObject[1], w), dot(instance.toObject[2], w), 1.0);
+	const vec3 again = vec3(dot(instance.toWorld[0], back), dot(instance.toWorld[1], back), dot(instance.toWorld[2], back));
+	worldError += 2.0 * abs(again - world);
+	return world;
+}
+
+// THE WATERTIGHT TEST'S RAY (Woop, Benthin and Wald 2013; PBR 4ed 6.8.4): the permutation that makes
+// the ray's largest component z, and the shear that turns the ray into +z. Computed once per
+// object-space ray, by prepareWatertightRay(), and read by every triangle test under it
+ivec3 g_watertightAxes;
+vec3 g_watertightShear;
+
+void prepareWatertightRay(vec3 direction)
+{
+	const vec3 a = abs(direction);
+	const int kz = a.x > a.y ? (a.x > a.z ? 0 : 2) : (a.y > a.z ? 1 : 2);
+	const int kx = kz == 2 ? 0 : kz + 1;
+	const int ky = kx == 2 ? 0 : kx + 1;
+	g_watertightAxes = ivec3(kx, ky, kz);
+	const float dz = direction[kz];
+	g_watertightShear = vec3(-direction[kx] / dz, -direction[ky] / dz, 1.0 / dz);
+}
+
+// Ray-triangle that never misses a ray through a shared edge or vertex: the triangle is translated
+// to the ray origin, permuted and sheared so the ray runs down +z, and the signs of three edge
+// functions decide the hit. Triangles that share an edge compute that edge's function from the same
+// two translated, permuted, sheared vertices, so they cannot both reject a ray that passes through it.
+// pbrt falls back to double precision where an edge function is exactly zero; this GPU has none, so
+// a ray exactly through an edge or vertex is accepted by every triangle that owns it. That may count
+// a hit twice and never loses one. The shear is applied with fma so the vertex arithmetic is
+// the same whichever of the three slots a vertex sits in. Two-sided, like the Moller-Trumbore test.
+// t must exceed the error bound of its own computation as well as tMin (PBR 4ed 6.8.4). t is in the
+// parameter of `direction`, which is not unit length in object space.
+// src/bvh_layout.cpp intersectBvhTriangleWatertight
+bool hitTriangleWatertight(BvhTriangle tri, vec3 origin, vec3 direction, float tMin, float tMax, out float tHit, out vec2 bary)
+{
+	vec3 p0 = tri.v0.xyz - origin;
+	vec3 p1 = tri.v1.xyz - origin;
+	vec3 p2 = tri.v2.xyz - origin;
+	const ivec3 axes = g_watertightAxes;
+	p0 = vec3(p0[axes.x], p0[axes.y], p0[axes.z]);
+	p1 = vec3(p1[axes.x], p1[axes.y], p1[axes.z]);
+	p2 = vec3(p2[axes.x], p2[axes.y], p2[axes.z]);
+	const vec3 shear = g_watertightShear;
+	p0.x = fma(shear.x, p0.z, p0.x);
+	p0.y = fma(shear.y, p0.z, p0.y);
+	p1.x = fma(shear.x, p1.z, p1.x);
+	p1.y = fma(shear.y, p1.z, p1.y);
+	p2.x = fma(shear.x, p2.z, p2.x);
+	p2.y = fma(shear.y, p2.z, p2.y);
+
+	const float e0 = differenceOfProducts(p1.x, p2.y, p1.y, p2.x);
+	const float e1 = differenceOfProducts(p2.x, p0.y, p2.y, p0.x);
+	const float e2 = differenceOfProducts(p0.x, p1.y, p0.y, p1.x);
+	if ((e0 < 0.0 || e1 < 0.0 || e2 < 0.0) && (e0 > 0.0 || e1 > 0.0 || e2 > 0.0)) {
+		return false;
+	}
+	const float det = e0 + e1 + e2;
+	if (det == 0.0) {
+		return false;
+	}
+
+	p0.z *= shear.z;
+	p1.z *= shear.z;
+	p2.z *= shear.z;
+	const float tScaled = e0 * p0.z + e1 * p1.z + e2 * p2.z;
+	if (det < 0.0 && (tScaled >= 0.0 || tScaled < tMax * det)) {
+		return false;
+	}
+	if (det > 0.0 && (tScaled <= 0.0 || tScaled > tMax * det)) {
+		return false;
+	}
+
+	const float invDet = 1.0 / det;
+	const float b0 = e0 * invDet;
+	const float b1 = e1 * invDet;
+	const float b2 = e2 * invDet;
+	const float t = tScaled * invDet;
+
+	// t conservatively above zero: the error of every term t is made of (PBR 4ed 6.8.4)
+	const float maxZ = max(max(abs(p0.z), abs(p1.z)), abs(p2.z));
+	const float deltaZ = CRT_GAMMA(3) * maxZ;
+	const float maxX = max(max(abs(p0.x), abs(p1.x)), abs(p2.x));
+	const float maxY = max(max(abs(p0.y), abs(p1.y)), abs(p2.y));
+	const float deltaX = CRT_GAMMA(5) * (maxX + maxZ);
+	const float deltaY = CRT_GAMMA(5) * (maxY + maxZ);
+	const float deltaE = 2.0 * (CRT_GAMMA(2) * maxX * maxY + deltaY * maxX + deltaX * maxY);
+	const float maxE = max(max(abs(e0), abs(e1)), abs(e2));
+	const float deltaT = 3.0 * (CRT_GAMMA(3) * maxE * maxZ + deltaE * maxZ + deltaZ * maxE) * abs(invDet);
+	if (t <= deltaT || t < tMin) {
+		return false;
+	}
+
+	tHit = t;
+	// the weights of the second and third vertices: the same (u, v) Moller-Trumbore reports
+	bary = vec2(b1, b2);
+	return true;
+}
+
 // Ray-triangle by Moller-Trumbore: solves for the barycentric coordinates and t directly,
 // without ever forming the triangle's plane. Two-sided - a glTF model's back faces are hit and
 // shaded like its front faces, so an open mesh (a wall, a leaf) is visible from behind rather
@@ -492,8 +721,12 @@ vec2 triangleUv(GpuTriangleAttributes attributes, vec2 bary)
 // hit in [tMin, tMax] with its barycentrics. src/bvh_layout.cpp intersectBvhTriangle
 bool hitTriangle(BvhTriangle tri, vec3 origin, vec3 direction, float tMin, float tMax, out float tHit, out vec2 bary)
 {
-	vec3 edge1 = tri.e1.xyz;
-	vec3 edge2 = tri.e2.xyz;
+	if ((pc.flags & CRT_FLAG_WATERTIGHT) != 0u) {
+		return hitTriangleWatertight(tri, origin, direction, tMin, tMax, tHit, bary);
+	}
+
+	vec3 edge1 = tri.v1.xyz - tri.v0.xyz;
+	vec3 edge2 = tri.v2.xyz - tri.v0.xyz;
 	vec3 pvec = cross(direction, edge2);
 	float det = dot(edge1, pvec);
 

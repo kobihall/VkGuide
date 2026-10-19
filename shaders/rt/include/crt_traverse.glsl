@@ -19,6 +19,11 @@
 // shaders/rt/include/crt_bvh.glsl (two-level BVH) and crt_linear.glsl (brute force) for the two
 // that exist.
 //
+// A strategy takes its box and triangle tests as they are (slabNear's farScale, hitTriangle(), which
+// branch on the watertight flag), takes tMin from its caller, which gets it from traceTMin(), and
+// carries every ray into an instance through instanceRay(): that is where the watertight test's
+// per-ray constants are computed. A strategy that skipped it would test triangles with stale ones.
+//
 // This file holds what every strategy needs regardless of how it searches: the hit record, the
 // work counters that make strategies comparable, the primitive tests (alpha test included), and
 // the object-space transform. Requires crt_common.glsl.
@@ -93,14 +98,16 @@ void testTriangles(uint first, uint count, uint instance, vec3 origin, vec3 dire
 	}
 }
 
-// The ray in an instance's object space. The direction is deliberately NOT renormalised there:
-// origin + t * direction is then the same point in both spaces, so t, tMin and the running
-// closest hit carry across the transform unchanged, with no rescaling anywhere.
+// The ray in an instance's object space (toObjectRay(): the direction is deliberately NOT
+// renormalised there, so t, tMin and the running closest hit carry across the transform unchanged).
+// Every strategy goes through this for each instance it enters: it is also where the watertight
+// triangle test gets its per-ray constants, once for all the triangles the ray tests under it
 void instanceRay(GpuInstance instance, vec3 origin, vec3 direction, out vec3 localOrigin, out vec3 localDirection)
 {
-	const vec4 o = vec4(origin, 1.0);
-	localOrigin = vec3(dot(instance.toObject[0], o), dot(instance.toObject[1], o), dot(instance.toObject[2], o));
-	localDirection = vec3(dot(instance.toObject[0].xyz, direction), dot(instance.toObject[1].xyz, direction), dot(instance.toObject[2].xyz, direction));
+	toObjectRay(instance, origin, direction, localOrigin, localDirection);
+	if ((pc.flags & CRT_FLAG_WATERTIGHT) != 0u) {
+		prepareWatertightRay(localDirection);
+	}
 }
 
 // one placed shape, in its own object space

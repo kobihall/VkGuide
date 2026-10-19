@@ -27,13 +27,15 @@
 // on this machine takes the window server - and the whole desktop - down with it
 #define CRT_MAX_TRAVERSAL_STEPS 65536u
 
-// near distance of a hit box, or CRT_INFINITY for a miss (Bikker, "How to build a BVH" part 2)
-float slabNear(vec3 bmin, vec3 bmax, vec3 origin, vec3 reciprocal, float tMin, float tMax)
+// near distance of a hit box, or CRT_INFINITY for a miss (Bikker, "How to build a BVH" part 2).
+// farScale is boxFarScale(): 1 + 2 gamma(3) under the watertight flag, so a ray grazing an edge is
+// not culled by rounding (Ize 2013), and exactly 1 otherwise
+float slabNear(vec3 bmin, vec3 bmax, vec3 origin, vec3 reciprocal, float tMin, float tMax, float farScale)
 {
 	const vec3 t0 = (bmin - origin) * reciprocal;
 	const vec3 t1 = (bmax - origin) * reciprocal;
 	const vec3 near = min(t0, t1);
-	const vec3 far = max(t0, t1);
+	const vec3 far = max(t0, t1) * farScale;
 	const float tNear = max(max(near.x, near.y), max(near.z, tMin));
 	const float tFar = min(min(far.x, far.y), min(far.z, tMax));
 	return tNear <= tFar ? tNear : CRT_INFINITY;
@@ -49,6 +51,7 @@ float slabNear(vec3 bmin, vec3 bmax, vec3 origin, vec3 reciprocal, float tMin, f
 void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit, bool anyHit)
 {
 	const vec3 reciprocal = safeReciprocal(direction);
+	const float farScale = boxFarScale();
 	uint stack[CRT_BINARY_STACK_SIZE];
 	uint stackSize = 0u;
 	uint node = 0u;
@@ -61,8 +64,8 @@ void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 di
 		const uvec4 w2 = blasNodes[base + 2u];
 		const uvec4 w3 = blasNodes[base + 3u];
 
-		float tLeft = slabNear(uintBitsToFloat(w0.xyz), uintBitsToFloat(w1.xyz), origin, reciprocal, tMin, tMax);
-		float tRight = slabNear(uintBitsToFloat(w2.xyz), uintBitsToFloat(w3.xyz), origin, reciprocal, tMin, tMax);
+		float tLeft = slabNear(uintBitsToFloat(w0.xyz), uintBitsToFloat(w1.xyz), origin, reciprocal, tMin, tMax, farScale);
+		float tRight = slabNear(uintBitsToFloat(w2.xyz), uintBitsToFloat(w3.xyz), origin, reciprocal, tMin, tMax, farScale);
 
 		if (w2.w > 0u && tLeft < CRT_INFINITY) {
 			testTriangles(instance.triangleBase + w0.w, w2.w, instanceIndex, origin, direction, tMin, tMax, hit, anyHit);
@@ -114,6 +117,7 @@ uint byteOf(uint word, uint index)
 void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 direction, float tMin, inout float tMax, inout TraceHit hit, bool anyHit)
 {
 	const vec3 reciprocal = safeReciprocal(direction);
+	const bool paddedBoxes = (pc.flags & CRT_FLAG_WATERTIGHT) != 0u;
 	const uint octantInverse = 7u - ((direction.x < 0.0 ? 4u : 0u) | (direction.y < 0.0 ? 2u : 0u) | (direction.z < 0.0 ? 1u : 0u));
 
 	uvec2 stack[CRT_CWBVH_STACK_SIZE];
@@ -149,6 +153,14 @@ void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 di
 			const vec3 scaled = step3 * reciprocal;
 			const vec3 offset = (uintBitsToFloat(n0.xyz) - origin) * reciprocal;
 			const uint interiorMask = n0.w >> 24u;
+			// Ize's 1 + 2 gamma(3) (boxFarScale()) covers a slab distance with a relative error. A child's
+			// is offset + q * scaled, which cancels: its error is relative to the node's extent and not
+			// to the distance, so no factor of the distance bounds it. Each axis's near distance is
+			// lowered and its far distance raised by that axis's own bound instead, gamma(4) of the
+			// magnitudes the sum is made of (the four roundings), so a near distance on one axis and a
+			// far distance on another, which the test compares, are each given their own error. Zero
+			// without the watertight flag
+			const vec3 boxSlack = paddedBoxes ? CRT_GAMMA(4) * (abs(offset) + 255.0 * abs(scaled)) : vec3(0.0);
 
 			nodeGroup.x = n1.x;
 			triangleGroup = uvec2(n1.y, 0u);
@@ -168,8 +180,8 @@ void traverseBlas(GpuInstance instance, uint instanceIndex, vec3 origin, vec3 di
 					const vec3 hi = vec3(float(byteOf(hiX, j)), float(byteOf(hiY, j)), float(byteOf(hiZ, j)));
 					const vec3 t0 = offset + lo * scaled;
 					const vec3 t1 = offset + hi * scaled;
-					const vec3 near = min(t0, t1);
-					const vec3 far = max(t0, t1);
+					const vec3 near = min(t0, t1) - boxSlack;
+					const vec3 far = max(t0, t1) + boxSlack;
 					const float tNear = max(max(near.x, near.y), max(near.z, tMin));
 					const float tFar = min(min(far.x, far.y), min(far.z, tMax));
 					if (tNear <= tFar) {
@@ -245,6 +257,7 @@ void walkScene(vec3 origin, vec3 direction, float tMin, float tMax, bool anyHit,
 	}
 
 	const vec3 reciprocal = safeReciprocal(direction);
+	const float farScale = boxFarScale();
 	uint stack[CRT_BINARY_STACK_SIZE];
 	uint stackSize = 0u;
 	uint node = 0u;
@@ -256,8 +269,8 @@ void walkScene(vec3 origin, vec3 direction, float tMin, float tMax, bool anyHit,
 		const uvec4 w2 = tlasNodes[node * 4u + 2u];
 		const uvec4 w3 = tlasNodes[node * 4u + 3u];
 
-		float tLeft = slabNear(uintBitsToFloat(w0.xyz), uintBitsToFloat(w1.xyz), origin, reciprocal, tMin, tMax);
-		float tRight = slabNear(uintBitsToFloat(w2.xyz), uintBitsToFloat(w3.xyz), origin, reciprocal, tMin, tMax);
+		float tLeft = slabNear(uintBitsToFloat(w0.xyz), uintBitsToFloat(w1.xyz), origin, reciprocal, tMin, tMax, farScale);
+		float tRight = slabNear(uintBitsToFloat(w2.xyz), uintBitsToFloat(w3.xyz), origin, reciprocal, tMin, tMax, farScale);
 
 		if (w2.w > 0u && tLeft < CRT_INFINITY) {
 			for (uint i = w0.w; i < w0.w + w2.w; i++) {

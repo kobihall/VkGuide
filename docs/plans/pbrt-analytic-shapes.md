@@ -38,7 +38,7 @@ The bilinear patch uses Reshetov's intersection (2019), which pbrt-v4 adopted. I
 
 Each kind gets:
 
-- `intersectShape()` and `shapeNormal()` cases in C++ and GLSL, with the rounding-error bounds of [pbrt-robust-intersections.md](pbrt-robust-intersections.md) once that plan lands (PBR 4ed §6.8.5 gives them for every quadric).
+- `intersectShape()` and `shapeNormal()` cases in C++ and GLSL, with the rounding-error bounds of [pbrt-robust-intersections.md](completed/pbrt-robust-intersections.md) once that plan lands (PBR 4ed §6.8.5 gives them for every quadric).
 - A row in [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md)'s parameterization table: pbrt's (u, v), which for partial shapes span only the kept range, and dp/du, dp/dv, dn/du and dn/dv.
 - A bounding box for the TLAS, tightened to the kept range for partial shapes.
 - A preview mesh in `shape_mesh.cpp`.

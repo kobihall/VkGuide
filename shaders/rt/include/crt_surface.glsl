@@ -54,16 +54,66 @@
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
-// The next-event estimate at this vertex: sample one light, evaluate the BSDF towards it, and write
-// shadowRays[entry] if it would add anything. `position` is the vertex and the shadow ray's origin,
-// `normal` the shading normal the material takes. Draws its random numbers after the BSDF sample's,
-// so a strategy that samples nothing here leaves the path's random stream exactly as it was
-bool nextEvent(ClassicMaterial material, vec3 inDir, vec3 position, vec3 normal, PathState path, inout uint rng, uint entry)
+// How far a sampled point on an area light may be from the truth, per coordinate, in units of its
+// magnitude and the shadow ray origin's: the sample's own arithmetic, the light list's world-space
+// copy of the surface (built on the CPU from the instance's transform) against the object-space copy
+// the traversal tests, and the transform that carries the ray there. Generous: a ray that ends this
+// much short of a light costs nothing measurable, and one that ends past it would shadow itself
+#define CRT_LIGHT_END_GAMMA 16
+
+// The shadow ray from the vertex `si` towards a light sample, written to `ray`: false when the ray
+// would have no length. Without error-bounded offsets it starts at the vertex and stops a fraction
+// short of the light, as it always did. With them it starts past the vertex's error bound on the
+// side it leaves through, and ends past the light point's on the side it arrives from (pbrt's
+// SpawnRayTo, PBR 4ed 6.8.6), so nothing fixed to an epsilon is left in it. A point or spot light is
+// a point: only its start is offset. A directional light or the environment has no end at all
+bool spawnShadowRay(SurfaceInteraction si, vec3 direction, float distance, vec3 lightNormal, out ShadowRay ray)
 {
+	ray.mediumAndGroup = 0u;
+	if ((pc.flags & CRT_FLAG_ERROR_BOUNDS) == 0u) {
+		ray.origin = si.p;
+		ray.direction = direction;
+		// short of the light itself, so the shadow ray cannot be stopped by the surface it is aimed at
+		ray.tMax = distance >= CRT_INFINITY ? CRT_INFINITY : distance * (1.0 - 1e-4);
+		return true;
+	}
+	ray.origin = offsetRayOrigin(si.p, si.pError, si.n, direction);
+	if (distance >= CRT_INFINITY) {
+		ray.direction = direction;
+		ray.tMax = CRT_INFINITY;
+		return true;
+	}
+	// the light point as the sample's own direction and distance give it: the sampler hands over no
+	// point, so that exposing one cannot change how the compiler fuses the sampling arithmetic (and
+	// with it the bits of a render made without error-bounded offsets)
+	vec3 end = fma(vec3(distance), direction, si.p);
+	if (dot(lightNormal, lightNormal) > 0.0) {
+		const vec3 lightPoint = end;
+		const vec3 endError = CRT_GAMMA(CRT_LIGHT_END_GAMMA) * (abs(lightPoint) + abs(ray.origin));
+		end = offsetRayOrigin(lightPoint, endError, lightNormal, ray.origin - lightPoint);
+	}
+	const vec3 toEnd = end - ray.origin;
+	const float length = sqrt(dot(toEnd, toEnd));
+	if (!(length > 0.0)) {
+		return false;
+	}
+	ray.direction = toEnd / length;
+	ray.tMax = length;
+	return true;
+}
+
+// The next-event estimate at this vertex: sample one light, evaluate the BSDF towards it, and write
+// shadowRays[entry] if it would add anything. `si` is the vertex, `normal` the shading normal the
+// material takes. Draws its random numbers after the BSDF sample's, so a strategy that samples
+// nothing here leaves the path's random stream exactly as it was
+bool nextEvent(ClassicMaterial material, vec3 inDir, SurfaceInteraction si, vec3 normal, PathState path, inout uint rng, uint entry)
+{
+	const vec3 position = si.p;
 	vec3 direction;
 	float distance;
 	vec3 emitted;
 	float lightPdf;
+	vec3 lightNormal;
 	float weight = 1.0;
 
 #if CRT_DIRECT_LIGHTING == CRT_DIRECT_BSDF
@@ -72,7 +122,7 @@ bool nextEvent(ClassicMaterial material, vec3 inDir, vec3 position, vec3 normal,
 		return false;
 	}
 	const uint index = sampleDeltaLightIndex(randomFloat(rng));
-	if (!sampleDeltaLight(lights[index], position, direction, distance, emitted)) {
+	if (!sampleDeltaLight(lights[index], position, direction, distance, emitted, lightNormal)) {
 		return false;
 	}
 	lightPdf = deltaLightPmf(index);
@@ -86,7 +136,7 @@ bool nextEvent(ClassicMaterial material, vec3 inDir, vec3 position, vec3 normal,
 	// (pbrt-v4's compensated distribution); on its own, light sampling has to cover everything
 	const uint environmentTable = CRT_DIRECT_LIGHTING == CRT_DIRECT_MIS ? 1u : 0u;
 	float directionPdf;
-	if (!sampleLight(index, position, u, environmentTable, direction, distance, emitted, directionPdf)) {
+	if (!sampleLight(index, position, u, environmentTable, direction, distance, emitted, directionPdf, lightNormal)) {
 		return false;
 	}
 	lightPdf = lightPmf(index) * directionPdf;
@@ -116,11 +166,9 @@ bool nextEvent(ClassicMaterial material, vec3 inDir, vec3 position, vec3 normal,
 	}
 
 	ShadowRay ray;
-	ray.origin = position;
-	ray.mediumAndGroup = 0u;
-	ray.direction = direction;
-	// short of the light itself, so the shadow ray cannot be stopped by the surface it is aimed at
-	ray.tMax = distance >= CRT_INFINITY ? CRT_INFINITY : distance * (1.0 - 1e-4);
+	if (!spawnShadowRay(si, direction, distance, lightNormal, ray)) {
+		return false;
+	}
 	ray.contribution = contribution;
 	ray.radianceSlot = path.radianceSlot;
 	shadowRays[entry] = ray;
@@ -188,11 +236,13 @@ void main()
 			// the continuation, and a BSDF it could land in
 			const bool specular = isSpecularMaterial(material);
 			if (nextBounce < pc.rayDepth && !specular && !pastFirstVertex) {
-				shadow = nextEvent(material, inDir, si.p, normal, path, rng, entry);
+				shadow = nextEvent(material, inDir, si, normal, path, rng, entry);
 			}
 
 			if (alive) {
-				path.origin = si.p;
+				// the continuation leaves through the side outDir points to: from past the hit
+				// point's error bound, or from the hit point itself without error-bounded offsets
+				path.origin = (pc.flags & CRT_FLAG_ERROR_BOUNDS) != 0u ? offsetRayOrigin(si.p, si.pError, si.n, outDir) : si.p;
 				path.direction = outDir;
 				path.rngState = rng;
 				path.throughput = throughput;

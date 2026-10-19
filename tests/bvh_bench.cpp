@@ -16,13 +16,20 @@
 // differences of shapeUv() and shapeNormal(); and the uvs are continuous, modulo 1, across the
 // sphere's seam, the box's side edges and its top's edge with the +z face.
 //
-// Run from anywhere:  ./bin/bvh_bench assets/structure.glb [--rays N] [--perturb] [--builders mbws] [--layouts bc]
+// Next, and also independent of the model, the robust-intersection checks (tests/bvh_robust.cpp,
+// docs/plans/completed/pbrt-robust-intersections.md): the crack test of the watertight triangle test
+// against Moller-Trumbore, hit-point error bounds against a double-precision reference, and
+// spawn offsets that must not re-hit the surface they leave. --robust N sets their ray count.
+//
+// Run from anywhere:  ./bin/bvh_bench assets/models/structure.glb [--rays N] [--perturb] [--builders mbws] [--layouts bc]
 // --perturb additionally rotates and non-uniformly scales every instance, to exercise transforms.
 
 #include <bvh.h>
 #include <bvh_layout.h>
 #include <bvh_scene.h>
 #include <shape.h>
+
+#include "bvh_robust.h"
 
 #include <algorithm>
 #include <chrono>
@@ -294,17 +301,21 @@ size_t checkShapeParameterization()
 int main(int argc, char* argv[])
 {
 	if (argc < 2) {
-		fmt::println("usage: bvh_bench <file.glb> [--rays N] [--perturb] [--builders mbws] [--layouts bc]");
+		fmt::println("usage: bvh_bench <file.glb> [--rays N] [--perturb] [--builders mbws] [--layouts bc] [--robust N]");
 		return 1;
 	}
 	const std::filesystem::path path = argv[1];
 	size_t rayCount = 20000;
+	//rays per check of the robust-intersection tests (tests/bvh_robust.cpp); 0 skips them
+	size_t robustRays = 200000;
 	bool perturb = false;
 	std::string builderLetters = "mbws";
 	std::string layoutLetters = "bc";
 	for (int i = 2; i < argc; i++) {
 		if (!strcmp(argv[i], "--rays") && i + 1 < argc) {
 			rayCount = std::stoul(argv[++i]);
+		} else if (!strcmp(argv[i], "--robust") && i + 1 < argc) {
+			robustRays = std::stoul(argv[++i]);
 		} else if (!strcmp(argv[i], "--perturb")) {
 			perturb = true;
 		} else if (!strcmp(argv[i], "--builders") && i + 1 < argc) {
@@ -315,6 +326,7 @@ int main(int argc, char* argv[])
 	}
 
 	const size_t shapeFailures = checkShapeParameterization();
+	const int robustFailures = robustRays > 0 ? checkRobustIntersections(robustRays) : 0;
 
 	LoadedScene loaded;
 	if (!loadScene(path, loaded)) {
@@ -356,8 +368,8 @@ int main(int argc, char* argv[])
 	Aabb sceneBounds;
 	for (const BvhTriangle& triangle : world) {
 		sceneBounds.grow(glm::vec3(triangle.v0));
-		sceneBounds.grow(glm::vec3(triangle.v0 + triangle.e1));
-		sceneBounds.grow(glm::vec3(triangle.v0 + triangle.e2));
+		sceneBounds.grow(glm::vec3(triangle.v1));
+		sceneBounds.grow(glm::vec3(triangle.v2));
 	}
 	const glm::vec3 center = sceneBounds.center();
 	const float radius = glm::length(sceneBounds.extent()) * 0.5f;
@@ -445,7 +457,7 @@ int main(int argc, char* argv[])
 	const std::pair<char, BvhBuilder> builderChoices[] = { { 'm', BvhBuilder::Midpoint }, { 'b', BvhBuilder::BinnedSah }, { 'w', BvhBuilder::SweepSah }, { 's', BvhBuilder::SpatialSah } };
 	const std::pair<char, BvhLayout> layoutChoices[] = { { 'b', BvhLayout::Binary }, { 'c', BvhLayout::Cwbvh8 } };
 
-	int failures = shapeFailures > 0 ? 1 : 0;
+	int failures = (shapeFailures > 0 ? 1 : 0) + (robustFailures > 0 ? 1 : 0);
 	for (const auto& [builderLetter, builder] : builderChoices) {
 		if (builderLetters.find(builderLetter) == std::string::npos) {
 			continue;

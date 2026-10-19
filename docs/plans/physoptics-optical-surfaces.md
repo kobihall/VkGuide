@@ -2,7 +2,7 @@
 
 A lens is two spherical caps cut to a diameter and joined by a ground edge. A cube beamsplitter is two prisms cemented along a diagonal that reflects. An off-axis parabola is an eccentric patch of a paraboloid. None of these is a unit primitive under a scale, which is all `ShapeKind` can express, and none survives tessellation: facets a few microns off the true sag smear a focus that should be diffraction limited. Optical design software describes such elements as lists of surfaces, each with a sag function, a semi-diameter and the media on either side. This plan adds that description as a new compound primitive, the optical body, with an exact intersector in GLSL and a line-for-line C++ mirror in a new library, `rt_optics`.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (the hit's primitive and surface coordinates) and [pbrt-robust-intersections.md](pbrt-robust-intersections.md) (spawn offsets). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (the hit's primitive and surface coordinates) and [pbrt-robust-intersections.md](completed/pbrt-robust-intersections.md) (spawn offsets). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
@@ -122,7 +122,7 @@ Every traversal declares binding 55, through `traversalBindings()` in `src/rt_ke
 
 A float carries about 7 digits. At 0.3 m from the origin its spacing is 30 nm, which locates a surface well enough for intensity transport. The solver, which differentiates rays and accumulates path lengths over meters of beam line, uses `double` on the CPU. The future wave backend needs optical path length to a fraction of a wavelength over a whole setup, which float cannot hold; the solver's double-precision path lengths per segment are kept for it ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)).
 
-[pbrt-robust-intersections.md](pbrt-robust-intersections.md) gains the optic surfaces in its error-bound table: a conic hit is reprojected onto its surface along the normal and bounded like a quadric, a plane's error is zero along its normal.
+[pbrt-robust-intersections.md](completed/pbrt-robust-intersections.md) gains the optic surfaces in its error-bound table: a conic hit is reprojected onto its surface along the normal and bounded like a quadric, a plane's error is zero along its normal.
 
 ## Registry, bindings and data
 

@@ -429,6 +429,13 @@ struct RenderSettings {
 	// the environment is edited, a setting is changed. With unlimited samples this is a live
 	// view of the scene
 	bool restartOnChange { true };
+	// INTERSECTION PRECISION (docs/plans/completed/pbrt-robust-intersections.md). Error-bounded ray
+	// offsets: a ray spawned on a surface starts just past the error of its hit point instead of
+	// skipping the first millimetre of its way (a fixed 0.001 epsilon). Off restores that epsilon
+	bool errorBoundedOffsets { true };
+	// the watertight triangle test, which cannot lose a ray through a shared edge, and box tests
+	// widened so rounding cannot cull a grazing ray. Off restores Moller-Trumbore and the plain slabs
+	bool watertightTriangles { true };
 
 	bool operator==(const RenderSettings&) const = default;
 };
