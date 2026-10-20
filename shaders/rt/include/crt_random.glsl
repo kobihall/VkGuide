@@ -13,13 +13,14 @@ uint pcgHash(uint v)
 	return (word >> 22u) ^ word;
 }
 
-// one draw in [0, 1)
+// one draw in [0, 1). float(word) rounds the top 128 of the 2^32 words up to 2^32, which would make the
+// draw exactly 1.0; the clamp to the largest float below 1 leaves every other draw as it was
 float randomFloat(inout uint state)
 {
 	state = state * 747796405u + 2891336453u;
 	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
 	word = (word >> 22u) ^ word;
-	return float(word) * (1.0 / 4294967296.0);
+	return min(float(word) * (1.0 / 4294967296.0), 0.99999994);
 }
 
 float randomFloat(inout uint state, float lo, float hi)

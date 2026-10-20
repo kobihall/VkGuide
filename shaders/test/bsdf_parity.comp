@@ -1,0 +1,78 @@
+#version 460
+
+// GPU SELF-TEST: the six original materials of crt_scatter.glsl run on a batch of fixed inputs, to be
+// compared with their C++ mirror (src/bsdf.cpp) on the CPU. Built twice by the self-test
+// (src/gpu_selftest_bsdf.cpp), with the specialization constant CRT_SAMPLE_RECORD off and on, so
+// both ways kernel 06 draws its random numbers are covered. Not part of any render.
+//
+// Binding 23 is the sample record the include files declare (RaySamples): the host fills one per case
+// with the case's fields, which the record-mode build reads. Bindings 90 and 91 are the test's own.
+
+#extension GL_GOOGLE_include_directive : require
+#include "rt/include/crt_common.glsl"
+#include "rt/include/crt_interaction.glsl"
+#include "rt/include/crt_random.glsl"
+#include "rt/include/crt_samples.glsl"
+#include "rt/include/crt_scatter.glsl"
+
+layout (local_size_x = 64) in;
+
+// src/gpu_selftest_bsdf.cpp ParityCase, 128 bytes
+struct ParityCase {
+	// the base colour, and the material's param
+	vec4 albedoParam;
+	vec4 inDir;
+	vec4 normal;
+	// the direction evalSurface() and pdfSurface() are asked about
+	vec4 wi;
+	// metallic, roughness, frontFace (0 or 1)
+	vec4 materialValues;
+	// type, the PCG state, two unused
+	uvec4 ids;
+	// the record's fields 0 to 3 and 4 to 7 (not an array: SPIRV-Cross cannot copy a struct holding
+	// one into Metal's address spaces)
+	vec4 fieldsA;
+	vec4 fieldsB;
+};
+
+// src/gpu_selftest_bsdf.cpp ParityResult, 64 bytes
+struct ParityResult {
+	// the attenuation, and 1 if the sample was kept
+	vec4 attenuationKept;
+	vec4 outDir;
+	// f cos, and the pdf
+	vec4 evalPdf;
+	// isSpecularMaterial(), the PCG state afterwards
+	uvec4 flags;
+};
+
+layout (std430, set = 0, binding = 90) readonly buffer ParityCaseBuffer { ParityCase parityCases[]; };
+layout (std430, set = 0, binding = 91) writeonly buffer ParityResultBuffer { ParityResult parityResults[]; };
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= parityCases.length()) {
+		return;
+	}
+	const ParityCase c = parityCases[index];
+
+	ClassicMaterial m;
+	m.albedo = c.albedoParam.xyz;
+	m.param = c.albedoParam.w;
+	m.type = c.ids.x;
+	m.metallic = c.materialValues.x;
+	m.roughness = c.materialValues.y;
+
+	uint rng = c.ids.y;
+	vec3 attenuation;
+	vec3 outDir;
+	const bool kept = scatterSurface(m, c.inDir.xyz, c.normal.xyz, c.materialValues.z > 0.5, index, rng, attenuation, outDir);
+
+	ParityResult r;
+	r.attenuationKept = vec4(attenuation, kept ? 1.0 : 0.0);
+	r.outDir = vec4(outDir, 0.0);
+	r.evalPdf = vec4(evalSurface(m, c.inDir.xyz, c.normal.xyz, c.wi.xyz), pdfSurface(m, c.inDir.xyz, c.normal.xyz, c.wi.xyz));
+	r.flags = uvec4(isSpecularMaterial(m) ? 1u : 0u, rng, 0u, 0u);
+	parityResults[index] = r;
+}

@@ -19,7 +19,7 @@ A render exists only on the GPU: nothing saves it, so every comparison with pbrt
 
 | Format | Content | Writer |
 |---|---|---|
-| `.exr` | linear, half or float, with every enabled output as named channels in one file | `tinyexr.h`, new in `../CPPLibraries` |
+| `.exr` | linear, half or float, with every enabled output as named channels in one file | `tinyexr` (in `../CPPLibraries/tinyexr/` since the verification harness) |
 | `.pfm` | linear float RGB | 30 lines in `src/image_io.cpp` |
 | `.hdr` | linear RGBE | `stb_image_write.h`, new in `../CPPLibraries` |
 | `.png` | the display image as shown, 8-bit sRGB | `stb_image_write.h` |
@@ -28,7 +28,7 @@ Export copies the accumulation (and the AOV images) into a host-visible staging 
 
 EXR metadata follows pbrt's `ImageMetadata` where it applies (render time, samples per pixel, `cameraFromWorld`, `NDCFromWorld`, color space, MSE when a reference is loaded), plus the scene path, the kernel selection and the render settings as a JSON string. Channel names follow `GBufferFilm` (`R`, `Albedo.R`, `P.X`, `dzdx`, `N.X`, `Ns.X`, `u`, `Variance.R`, `RelativeVariance.R`), so pbrt's `imgtool` reads the files.
 
-`tinyexr` also reads EXR, so two loaders gain it: environment maps (`loadEnvironmentMap()`), and the **Compare to reference** section, which gains **Save reference** and **Load reference**. [pbrt-verification-harness.md](pbrt-verification-harness.md) relies on the second.
+`tinyexr` also reads EXR, so two loaders gain it: environment maps (`loadEnvironmentMap()`), and the **Compare to reference** section. The second is done: [pbrt-verification-harness.md](completed/pbrt-verification-harness.md) added tinyexr (version 1.0.13, `../CPPLibraries/tinyexr/`, with the system zlib), `src/image_io.h/.cpp` with EXR and PFM, and **Save...** and **Load...** in that section. Export of every output as named channels and the environment map loader remain.
 
 **Save when finished** writes the image to a chosen path when the render reaches its sample target. A command-line batch mode builds on it:
 
@@ -95,7 +95,7 @@ With the hero-wavelength representation ([pbrt-spectral-rendering.md](pbrt-spect
 - `ShadowRay`: the light group in the high 8 bits of `mediumAndGroup`.
 - `CrtDebugView::AmbientOcclusion`.
 - Scene file: each light's, emissive material's and the environment's group, the group names, the enabled outputs, and the export options. Relight scales and tints are display settings and are saved with the camera, like exposure.
-- New dependencies in `../CPPLibraries`: `tinyexr.h` with its `miniz` (or the system zlib), and `stb_image_write.h`.
+- New dependency in `../CPPLibraries`: `stb_image_write.h`. tinyexr is already there.
 
 ## Verification
 
@@ -103,13 +103,13 @@ With the hero-wavelength representation ([pbrt-spectral-rendering.md](pbrt-spect
 - An exported EXR, loaded as the reference, gives **Compare to reference** an MSE of exactly 0.
 - A PNG export equals the display image byte for byte.
 - pbrt's `imgtool info` lists an exported EXR's channels and metadata.
-- The albedo of a white Lambertian plane is 1, and a smooth dielectric sphere's matches `bsdf_test`'s directional albedo at the same angle ([pbrt-verification-harness.md](pbrt-verification-harness.md)).
+- The albedo of a white Lambertian plane is 1, and a smooth dielectric sphere's matches `bsdf_test`'s directional albedo at the same angle ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md)).
 - On the Veach MIS scene with one group per light, the groups sum to the accumulation within 1e-4 relative at 256 spp.
 
 ## Order of work
 
 1. Readback, PFM and PNG export.
-2. `tinyexr`, EXR export with metadata, and EXR reference and environment loading.
+2. EXR export with metadata and named channels, and EXR environment loading (tinyexr and EXR references exist).
 3. Save when finished, and the batch mode.
 4. The ambient occlusion view.
 5. Auxiliary outputs.

@@ -68,8 +68,8 @@ pbrt-v4 does not sample curves as lights. An emissive curve set stays out of the
 
 - A scene without curves renders bit-identical.
 - `bin/bvh_bench` with a curve set: the traversal matches brute force with 0 mismatches over random rays, with `--perturb`, for all three curve types.
-- `bin/bsdf_test`: pbrt's hair tests pass against the mirror, and the GPU parity pass ([pbrt-verification-harness.md](pbrt-verification-harness.md)) matches the mirror.
-- A white furnace ([pbrt-verification-harness.md](pbrt-verification-harness.md)): a hair ball with zero absorption under a uniform white environment is invisible.
+- `bin/bsdf_test`: pbrt's hair tests pass against the mirror, and the GPU parity pass ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md)) matches the mirror.
+- A white furnace ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md)): a hair ball with zero absorption under a uniform white environment is invisible.
 - A hair model rendered with eumelanin concentrations of 0.3, 1.3 and 8, the values PBR 4ed §9.9.8 gives for blond, brown and black hair, matches the look of Figure 9.47. Blond hair at a ray depth of 3 and of 50 differs as Figure 9.55 shows, since light-colored hair depends on light scattered between many fibers.
 
 ## Order of work

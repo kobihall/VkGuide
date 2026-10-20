@@ -8,14 +8,18 @@
 //
 //     x = sum over pixels and channels of (render - reference)^2
 //     y = sum over pixels of the mean over channels of (render - reference)^2 / (reference^2 + 0.01)
+//     z = sum over pixels of the mean over channels of |render - reference| / max(|reference|, 0.01)
+//     w = sum over pixels and channels of (render - reference), signed: the bias
+//
+// src/image_io.cpp compareImages() computes the same measures on the CPU
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
 layout (rgba32f, set = 0, binding = 0) uniform readonly image2D render;
 layout (rgba32f, set = 0, binding = 1) uniform readonly image2D reference;
-layout (std430, set = 0, binding = 2) writeonly buffer PartialBuffer { vec2 partials[]; };
+layout (std430, set = 0, binding = 2) writeonly buffer PartialBuffer { vec4 partials[]; };
 
-shared vec2 s_sums[256];
+shared vec4 s_sums[256];
 
 void main()
 {
@@ -23,7 +27,7 @@ void main()
 	const ivec2 size = imageSize(render);
 	const uint local = gl_LocalInvocationIndex;
 
-	vec2 sums = vec2(0.0);
+	vec4 sums = vec4(0.0);
 	if (coord.x < size.x && coord.y < size.y) {
 		const vec3 value = imageLoad(render, coord).rgb;
 		const vec3 truth = imageLoad(reference, coord).rgb;
@@ -33,6 +37,8 @@ void main()
 		if (all(equal(squared, squared))) {
 			sums.x = squared.r + squared.g + squared.b;
 			sums.y = dot(squared / (truth * truth + 0.01), vec3(1.0 / 3.0));
+			sums.z = dot(abs(difference) / max(abs(truth), vec3(0.01)), vec3(1.0 / 3.0));
+			sums.w = difference.r + difference.g + difference.b;
 		}
 	}
 	s_sums[local] = sums;

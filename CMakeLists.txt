@@ -47,6 +47,20 @@ if (NOT MSVC)
     target_compile_options(sampler_test PRIVATE -O2)
 endif()
 
+# CPU-only verification of the surface scattering behind kernel 06: ./bin/bsdf_test
+add_executable(bsdf_test tests/bsdf_test.cpp)
+target_link_libraries(bsdf_test PRIVATE rt_bsdf fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(bsdf_test PRIVATE -O2)
+endif()
+
+# Compares two images (EXR or PFM) with the render panel's error measures: ./bin/image_diff
+add_executable(image_diff tests/image_diff.cpp)
+target_link_libraries(image_diff PRIVATE rt_image)
+if (NOT MSVC)
+    target_compile_options(image_diff PRIVATE -O2)
+endif()
+
 
 find_program(GLSL_VALIDATOR glslangValidator HINTS /usr/bin /usr/local/bin $ENV{VULKAN_SDK}/Bin/ $ENV{VULKAN_SDK}/Bin32/)
 

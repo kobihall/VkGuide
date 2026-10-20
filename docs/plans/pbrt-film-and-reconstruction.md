@@ -64,7 +64,7 @@ New variants: kernel 00 `filter_importance`; kernel 09 `compensated_mean`, `outl
 
 ## Order of work
 
-1. `0902_compensated_mean` with the box filter. Test the convergence plot of [pbrt-verification-harness.md](pbrt-verification-harness.md) out to 16k spp against `0901`: `0902`'s line must stay straight where `0901`'s bends.
+1. `0902_compensated_mean` with the box filter. Test the convergence plot of [pbrt-verification-harness.md](completed/pbrt-verification-harness.md) out to 16k spp against `0901`: `0902`'s line must stay straight where `0901`'s bends.
 2. `PixelState` and `0002_filter_importance` with box, triangle and Gaussian.
 3. Mitchell and Lanczos with the weighted estimator.
 4. Welford variance and its debug view.

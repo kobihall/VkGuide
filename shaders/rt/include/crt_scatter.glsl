@@ -6,10 +6,13 @@
 // f(wo, wi) cos(theta_i) its scattering estimates, for a direction a light sample chose; and
 // pdfSurface(), the density with which scatterSurface() would itself have picked that direction,
 // which is the BSDF half of every MIS weight. Both are derived from the sampling routine rather
-// than the other way round, so that the attenuation scatterSurface() returns is exactly
-// evalSurface() / pdfSurface() for the direction it picked - the condition for the strategies to
-// agree. A dielectric, and a metal with no fuzz, are specular: a delta distribution no light sample
-// can land in.
+// than the other way round. For lambertian, phong and the fuzzy metal the attenuation
+// scatterSurface() returns is exactly evalSurface() / pdfSurface() for the direction it picked. For
+// pbr it is the weight of the lobe it chose, f_lobe cos / (chance pdf_lobe), which equals that ratio
+// only in expectation: the expected weight of the samples in any region is the integral of
+// evalSurface() over it, and that - with MIS weights that depend on the direction alone - is the
+// condition for the strategies to agree (bin/bsdf_test checks it cell by cell). A dielectric, and a
+// metal with no fuzz, are specular: a delta distribution no light sample can land in.
 //
 // Used by kernel 06 Sample Surface Scattering and by nothing else. Every 06 variant calls
 // scatterSurface() for its BSDF lobe - it is the sampling STRATEGY that differs, not the material
@@ -96,7 +99,11 @@ bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, uint pathIndex, inou
 	}
 	const float specularChance = specularWeight / (specularWeight + diffuseWeight);
 
-	if (sampleDimension(pathIndex, rng, CRT_SAMPLE_INDIRECT_LOBE) < specularChance) {
+	// A material with no diffuse lobe (metallic 1) always takes the specular one: its diffuse branch
+	// below divides 0 by 1 - specularChance = 0, and a lobe draw at or above specularChance would reach
+	// it. The draw is made either way, so the path's stream does not change
+	const float lobeDraw = sampleDimension(pathIndex, rng, CRT_SAMPLE_INDIRECT_LOBE);
+	if (diffuseWeight <= 0.0 || lobeDraw < specularChance) {
 		// perceptual roughness squared is GGX's alpha; a floor keeps a "mirror" out of the
 		// singular limit the sampler divides by
 		const float alpha = max(m.roughness * m.roughness, 1e-3);

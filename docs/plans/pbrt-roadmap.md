@@ -2,7 +2,7 @@
 
 This roadmap covers every feature that *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* describe and this renderer lacks or implements weakly. Each feature has a plan in `docs/plans/`, named `pbrt-*.md` since 2026-10-18. This file records the decisions that shape all of them and reserves the resources they share, so that the plans can be implemented in any order without colliding.
 
-*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, and the material system, robust intersections and sample generation on 2026-10-19; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
+*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, the material system, robust intersections and sample generation on 2026-10-19, and the verification harness on 2026-10-20; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
 
 *Revised 2026-10-18 for the [laser optics plan](physoptics-laser-optics.md), whose `physoptics-*.md` plans build on these. That plan's roadmap gives one linear order for both sets of plans; it pulls several of these forward (the foundations, the BSDF library, light types, image output, the display transform, the light integrator of bidirectional path tracing, cameras and polarization). The reservations below gain the laser optics plan's rows, and every rule here applies to its plans too.*
 
@@ -51,7 +51,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 | [integrator-layer.md](completed/integrator-layer.md) | Implemented: the stage library every integrator shares, traversals built into every tracing kernel, per-integrator schedules |
 | [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) | Implemented: 24-byte hit record, `SurfaceInteraction` reconstruction, geometric normal, shading frame, shape uvs |
 | [pbrt-robust-intersections.md](completed/pbrt-robust-intersections.md) | Implemented: error-bounded spawn points, watertight triangles, conservative box tests |
-| [pbrt-verification-harness.md](pbrt-verification-harness.md) | BSDF chi-square tests, white furnace scenes, image metrics, convergence curves |
+| [pbrt-verification-harness.md](completed/pbrt-verification-harness.md) | Implemented: `rt_bsdf` and `bin/bsdf_test`, GPU self-tests, furnace and Cornell checks, reference images, convergence curves |
 | [pbrt-material-system.md](completed/pbrt-material-system.md) | Implemented: named material library, parameter records, material traits table, basic and complex surface queues |
 | [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) | Lane-count families, spectral representations, `SpectrumRef`, uplifting, sensors, blackbody, dispersion |
 | [pbrt-sample-generation.md](completed/pbrt-sample-generation.md) | Implemented: per-bounce sample record and kernel 01 variants: independent, stratified, Halton, Sobol, padded Sobol, ZSobol, PMJ02BN |
@@ -163,7 +163,7 @@ thin-hit-record ─┬─> robust-intersections ─> camera-relative-space
 spectral-rendering ─> (bsdf-library dispersion, light-types blackbody, polarization)
 sample-generation ─> motion-blur, metropolis-light-transport (and every kernel 06 and 07 variant reads its record)
 film-and-reconstruction ─> display-and-color, aovs-and-image-output, adaptive-sampling, path-guiding
-aovs-and-image-output ─> verification-harness (EXR references), pbrt-scene-import
+aovs-and-image-output ─> pbrt-scene-import (the harness already reads and writes EXR through tinyexr)
 light-shape-sampling ─ prevNormal ─ bvh-light-sampler ─┬─> direct-lighting-strategies
                                                         └─> resampled-direct-lighting
 path-guiding ─> russian-roulette (adjoint-driven rule)
@@ -171,7 +171,7 @@ alternative-accelerators ─> gpu-bvh-construction ─> wavefront-performance (r
 verification-harness ─> (every plan with a new BSDF, sampler or light)
 ```
 
-The foundations change the shape of every kernel, so do them first and in this order (the integrator layer, the thin hit record, the material system, robust intersections and sample generation are done; the material system and sample generation came ahead of plans they do not need): verification harness, spectral rendering, film. After that the groups are largely independent.
+The foundations change the shape of every kernel, so do them first and in this order (the integrator layer, the thin hit record, the material system, robust intersections, sample generation and the verification harness are done; the material system and sample generation came ahead of plans they do not need): spectral rendering, film. After that the groups are largely independent.
 
 ## Rules every plan follows
 
@@ -304,7 +304,7 @@ Every GLSL module that holds sampling or scattering mathematics gets a line-for-
 | Library | GLSL | Test | Plan |
 |---|---|---|---|
 | `rt_spectrum` | `crt_spectrum.glsl` | `bin/spectrum_test` | spectral-rendering |
-| `rt_bsdf` | `crt_bsdf_*.glsl`, `crt_microfacet.glsl` | `bin/bsdf_test` | verification-harness, bsdf-library |
+| `rt_bsdf` | `crt_scatter.glsl` now, then `crt_bsdf_*.glsl`, `crt_microfacet.glsl` | `bin/bsdf_test`, and the GPU self-test | verification-harness (implemented), bsdf-library |
 | `rt_sampler` | `crt_sampler.glsl` | `bin/sampler_test` | sample-generation (implemented) |
 | `rt_media` | `crt_medium.glsl` | `bin/media_test` | participating-media |
 | `rt_optics` | `crt_optic.glsl`, `crt_coating.glsl`, `crt_tmm.glsl`, `crt_birefringence.glsl` | `bin/optics_test`, `bin/beam_test` | the physoptics plans |

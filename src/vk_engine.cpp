@@ -467,6 +467,20 @@ void VulkanEngine::immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& fu
 
 void VulkanEngine::run()
 {
+	//VKGUIDE_SELFTEST=1 runs the GPU self-tests once, prints them and returns with the result in
+	//the exit code, for a script. Unset or 0, the tests run from the Windows menu
+	const char* selfTest = getenv("VKGUIDE_SELFTEST");
+	if (selfTest != nullptr && selfTest[0] != '\0' && strcmp(selfTest, "0") != 0) {
+		m_selfTests.runAll(this);
+		m_selfTests.print();
+		m_exitCode = m_selfTests.allPassed() ? 0 : 1;
+		return;
+	}
+
+	if (getenv("VKGUIDE_VERIFY") != nullptr && !beginVerify()) {
+		return;
+	}
+
 	bool bQuit = false;
 
 	//main loop
@@ -513,6 +527,10 @@ void VulkanEngine::run()
 		//its output on screen this frame rather than the next one
 		m_raytracer.update(this, m_raytraceScene);
 
+		if (m_verify) {
+			stepVerify();
+		}
+
 		if (ImGui::BeginMainMenuBar()) {
 			drawFileMenu();
 			if (ImGui::BeginMenu("Windows")) {
@@ -522,6 +540,7 @@ void VulkanEngine::run()
 				ImGui::MenuItem("Materials", nullptr, m_raytraceScene.materialsVisibilityFlag());
 				ImGui::MenuItem("Raytrace Render", nullptr, m_raytracer.visibilityFlag());
 				ImGui::MenuItem("Raytracer Shaders", nullptr, m_raytracer.kernelPanelVisibilityFlag());
+				ImGui::MenuItem("GPU self-tests", nullptr, m_selfTests.visibilityFlag());
 				ImGui::MenuItem("ImGui Demo", nullptr, &m_showDemoWindow);
 				ImGui::Separator();
 				m_displayRegistry.drawWindowsMenu();
@@ -561,6 +580,7 @@ void VulkanEngine::run()
 		m_raytraceScene.drawMaterialsWindow(this);
 		m_raytracer.drawPanel(this, m_raytraceScene);
 		m_raytracer.drawKernelPanel(this);
+		m_selfTests.drawWindow(this);
 
 		//some imgui UI to test
 		if (m_showDemoWindow) {
@@ -1442,6 +1462,100 @@ void VulkanEngine::drawFileMenu()
 	}
 }
 
+bool VulkanEngine::beginVerify()
+{
+	//<scene>:<samples>:<output>, split from the right so a scene path may hold a colon
+	const std::string spec = getenv("VKGUIDE_VERIFY");
+	const size_t second = spec.rfind(':');
+	const size_t first = second == std::string::npos || second == 0 ? std::string::npos : spec.rfind(':', second - 1);
+	if (first == std::string::npos) {
+		fmt::println("VKGUIDE_VERIFY must be <scene>:<samples>:<output.exr|pfm>, not '{}'", spec);
+		m_exitCode = 2;
+		return false;
+	}
+	VerifyRun run;
+	run.samples = (uint32_t)std::max(1, atoi(spec.substr(first + 1, second - first - 1).c_str()));
+	run.output = spec.substr(second + 1);
+	if (const char* timeout = getenv("VKGUIDE_VERIFY_TIMEOUT")) {
+		run.timeoutSeconds = atof(timeout);
+	}
+	std::filesystem::path scenePath = spec.substr(0, first);
+	if (scenePath.is_relative()) {
+		scenePath = absoluteNormalized(m_rootPath + "assets/scenes") / scenePath;
+	}
+	const IoResult opened = openScene(scenePath);
+	fmt::println("verify: {}", opened.message);
+	if (!opened.ok) {
+		m_exitCode = 2;
+		return false;
+	}
+
+	//the scene file's settings, with the sample target, a fixed seed and no restarts imposed
+	RenderSettings settings = m_raytracer.settings();
+	settings.maxSamples = (int)run.samples;
+	settings.unlimitedSamples = false;
+	settings.useFixedSeed = true;
+	settings.seed = 1;
+	settings.restartOnChange = false;
+	settings.matchViewport = false;
+	if (const char* seed = getenv("VKGUIDE_VERIFY_SEED")) {
+		settings.seed = (uint32_t)strtoul(seed, nullptr, 10);
+	}
+	if (const char* size = getenv("VKGUIDE_VERIFY_SIZE")) {
+		int w = 0;
+		int h = 0;
+		if (sscanf(size, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+			settings.width = w;
+			settings.height = h;
+		}
+	}
+	m_raytracer.setSettings(settings);
+	run.started = std::chrono::steady_clock::now();
+	m_verify = run;
+	return true;
+}
+
+void VulkanEngine::stepVerify()
+{
+	VerifyRun& run = *m_verify;
+	auto finish = [&](int code, const std::string& message) {
+		fmt::println("verify: {}", message);
+		m_exitCode = code;
+		glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+		m_verify.reset();
+	};
+	const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - run.started).count();
+	if (elapsed > run.timeoutSeconds) {
+		finish(3, fmt::format("timed out after {:.0f} s at {} of {} samples", elapsed, m_raytracer.samplesAccumulated(), run.samples));
+		return;
+	}
+	switch (run.phase) {
+	case VerifyRun::Phase::Start:
+		m_raytracer.render(this, m_raytraceScene);
+		if (!m_raytracer.renderRunning()) {
+			finish(2, "the render did not start: " + (m_raytracer.blockedReason().empty() ? std::string("no scene camera") : m_raytracer.blockedReason()));
+			return;
+		}
+		run.phase = VerifyRun::Phase::Rendering;
+		break;
+	case VerifyRun::Phase::Rendering:
+		if (!m_raytracer.renderRunning()) {
+			//the film's last frame and the counters it fed arrive FRAME_OVERLAP frames after it ends
+			run.phase = VerifyRun::Phase::Settling;
+			run.settleFrame = m_frameNumber + 4;
+		}
+		break;
+	case VerifyRun::Phase::Settling:
+		if (m_frameNumber < run.settleFrame) {
+			break;
+		}
+		const IoResult saved = m_raytracer.saveRender(this, run.output);
+		const std::string summary = fmt::format("{} samples, {} dropped, {:.0f} ms of GPU time, {:.1f} s wall", m_raytracer.samplesAccumulated(), m_raytracer.droppedSamples(), m_raytracer.totalGpuMs(), elapsed);
+		finish(saved.ok ? 0 : 2, saved.message + "; " + summary);
+		break;
+	}
+}
+
 void VulkanEngine::runPendingFileAction()
 {
 	const FileAction action = m_pendingFileAction;
@@ -1488,6 +1602,18 @@ void VulkanEngine::runPendingFileAction()
 	case FileAction::ClearEnvironmentMap:
 		clearEnvironmentMap();
 		m_lastFileResult = IoResult::success("Environment map cleared");
+		break;
+	case FileAction::SaveReference:
+		if (auto chosen = showSaveFileDialog("Save Reference", { "exr", "pfm" }, sceneDirectory, "reference.exr")) {
+			m_lastFileResult = m_raytracer.saveReference(this, *chosen);
+			m_raytracer.setReferenceIo(m_lastFileResult);
+		}
+		break;
+	case FileAction::LoadReference:
+		if (auto chosen = showOpenFileDialog("Load Reference", { "exr", "pfm" }, sceneDirectory)) {
+			m_lastFileResult = m_raytracer.loadReference(this, *chosen);
+			m_raytracer.setReferenceIo(m_lastFileResult);
+		}
 		break;
 	}
 

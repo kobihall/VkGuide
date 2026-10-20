@@ -14,8 +14,11 @@
 #include <rt_scene_editor.h>
 #include <rt_textures.h>
 #include <vk_gizmo.h>
+#include <gpu_selftest.h>
 
+#include <chrono>
 #include <filesystem>
+#include <optional>
 #include <map>
 
 struct DeletionQueue
@@ -221,6 +224,9 @@ public:
 	RaytraceSceneEditor m_raytraceScene;
 	// the raytracer: its panel, settings, the GPU path tracer and the output window
 	RaytraceRenderer m_raytracer;
+	// the shader-against-mirror checks of docs/plans/completed/pbrt-verification-harness.md: the
+	// Windows -> GPU self-tests window, and VKGUIDE_SELFTEST=1 for a run from a script
+	GpuSelfTestPanel m_selfTests;
 	// the scene camera the viewport is currently flying (first-person edit): every frame the
 	// viewport's pose is written into it. 0 = none, the viewport is a free camera
 	uint64_t m_firstPersonCameraId { 0 };
@@ -335,7 +341,9 @@ public:
 		SaveSceneAs,
 		ImportGltf,
 		SetEnvironmentMap,
-		ClearEnvironmentMap
+		ClearEnvironmentMap,
+		SaveReference,
+		LoadReference
 	};
 	FileAction m_pendingFileAction { FileAction::None };
 
@@ -393,8 +401,29 @@ public:
 
 	//run main loop
 	void run();
+	//what main() returns: nonzero when VKGUIDE_SELFTEST=1 ran and a self-test failed
+	int exitCode() const { return m_exitCode; }
 
 private:
+	int m_exitCode { 0 };
+
+	// VKGUIDE_VERIFY=<scene>:<samples>:<output.exr|pfm>: opens the scene, renders it to that many
+	// samples per pixel with a fixed seed, writes the accumulation and quits. For the verification
+	// scripts (tools/verify/); VKGUIDE_VERIFY_SEED, _SIZE (WxH) and _TIMEOUT (seconds) adjust it
+	struct VerifyRun {
+		std::filesystem::path output;
+		uint32_t samples { 1 };
+		enum class Phase { Start, Rendering, Settling } phase { Phase::Start };
+		uint64_t startFrame { 0 };
+		uint64_t settleFrame { 0 };
+		double timeoutSeconds { 1800.0 };
+		std::chrono::steady_clock::time_point started;
+	};
+	std::optional<VerifyRun> m_verify;
+	// reads VKGUIDE_VERIFY and opens the scene; false (with m_exitCode set) when it cannot run
+	bool beginVerify();
+	// once per frame while a verify run is active
+	void stepVerify();
 	void initGLFW();
 	void initVulkan();
 	void initSwapchain();

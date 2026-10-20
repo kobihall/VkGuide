@@ -196,7 +196,7 @@ Nothing here builds toward wave optics, but four choices keep the path open:
 
 - Exact RGB renders bit-identical to today after steps 1 and 2, and after every later step, for the Cornell box, sphere scene, Veach scene and Sponza with a fixed seed.
 - `bin/spectrum_test`: uplifting any sRGB color and projecting back gives the input to within 1e-3 (the table's identity goal, PBR 4ed §4.6.6); uplifted reflectances stay within [0, 1]; a 6504 K blackbody projects to within 0.005 of D65's chromaticity; the CIE tables integrate to their published values.
-- A white furnace ([pbrt-verification-harness.md](pbrt-verification-harness.md)) with gray materials under a D65 environment renders neutral gray in every representation.
+- A white furnace ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md)) with gray materials under a D65 environment renders neutral gray in every representation.
 - Hero wavelengths, spectral bands and RGB Gaussians converge to the same image on scenes with smooth spectra, within the tolerance the band count implies, measured with **Compare to reference**.
 - A prism scene (a triangular prism of dense flint under a narrow white spotlight) shows a spectrum on the floor in hero and band modes, and a white spot in exact RGB.
 

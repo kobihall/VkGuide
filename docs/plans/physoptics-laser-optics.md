@@ -109,7 +109,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 1. [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md). Implemented 2026-10-18.
 2. [pbrt-robust-intersections.md](completed/pbrt-robust-intersections.md). Implemented 2026-10-19. Its camera-relative space is split off to [pbrt-camera-relative-space.md](pbrt-camera-relative-space.md), which no laser optics plan needs.
-3. [pbrt-verification-harness.md](pbrt-verification-harness.md)
+3. [pbrt-verification-harness.md](completed/pbrt-verification-harness.md). Implemented 2026-10-20, ahead of items 4 and 6, which it does not depend on.
 4. [pbrt-material-system.md](completed/pbrt-material-system.md). Implemented 2026-10-19, ahead of items 2 and 3, which it does not depend on.
 5. [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)
 6. [pbrt-sample-generation.md](completed/pbrt-sample-generation.md). Implemented 2026-10-19, ahead of items 3 and 5, which it does not depend on.

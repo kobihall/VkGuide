@@ -10,5 +10,5 @@ int main(int argc, char* argv[])
 
 	engine.cleanup();	
 
-	return 0;
+	return engine.exitCode();
 }

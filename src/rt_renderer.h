@@ -83,6 +83,24 @@ public:
 	uint64_t renderCameraId() const { return m_renderCameraId; }
 	void setRenderCamera(uint64_t id) { m_renderCameraId = id; }
 
+	// Reference images and render dumps as files (.exr or .pfm). They wait for the device, so a
+	// running render stalls for the readback
+	IoResult saveReference(VulkanEngine* engine, const std::filesystem::path& path);
+	IoResult loadReference(VulkanEngine* engine, const std::filesystem::path& path);
+	IoResult saveRender(VulkanEngine* engine, const std::filesystem::path& path);
+	// the render, for a script (VKGUIDE_VERIFY): whether one is running, its samples, and the
+	// measurements the panel would show
+	// starts a render now, as the Render button does, with the reason it was refused (if it was)
+	void render(VulkanEngine* engine, const RaytraceSceneEditor& editor) { startRender(engine, editor); }
+	const std::string& blockedReason() const { return m_blockedReason; }
+	uint64_t droppedSamples() const { return m_gpu.droppedSamples(); }
+	float totalGpuMs() const { return m_gpu.totalGpuMs(); }
+	void setReferenceIo(const IoResult& result) { m_referenceIo = result; }
+	bool renderRunning() const { return m_gpu.isRunning(); }
+	bool hasRender() const { return m_hasRender; }
+	uint32_t samplesAccumulated() const { return m_gpu.samplesAccumulated(); }
+	uint32_t maxSamples() const { return m_gpu.maxSamples(); }
+
 	// the integrator, the traversal and the variant of each stage (src/rt_kernels.h). Saved with
 	// the scene; changing one restarts a running render, exactly like a setting
 	const KernelSelection& kernels() const { return m_kernels; }
@@ -148,8 +166,13 @@ private:
 	bool drawIntegratorCombo();
 	// the "Direct lighting" combo over kernel 06's variants and what the light list holds
 	void drawLightingSettings(VulkanEngine* engine);
-	// the "Compare to reference" section: capture, clear, and the running render's error
+	// the "Compare to reference" section: capture, save, load, clear, the running render's error and
+	// its convergence curve
 	void drawReference(VulkanEngine* engine);
+	// the label a render started now gets on the convergence plot: what sets it apart
+	std::string convergenceLabel() const;
+	// the finished or restarted render's curve joins the kept ones
+	void keepConvergenceCurve();
 	// the environment as the light list sees it: the map's tables when the map is the background
 	EnvironmentLight environmentLight(VulkanEngine* engine) const;
 	void ensureDisplayImage(VulkanEngine* engine, uint32_t width, uint32_t height);
@@ -173,6 +196,17 @@ private:
 	uint64_t m_renderCameraId { 0 };
 
 	GpuRenderer m_gpu;
+
+	// THE CONVERGENCE PLOT. Each render measured against the reference leaves a curve of relative
+	// MSE against samples per pixel; the ones before the running render are kept so strategies can
+	// be compared on one plot. All cleared when the reference changes
+	struct ConvergenceCurve {
+		std::string label;
+		std::vector<ReferenceError> points;
+	};
+	std::vector<ConvergenceCurve> m_curves;
+	std::string m_curveLabel;
+	IoResult m_referenceIo;
 
 	// the BVH settings, as applied (m_accelSettings) and as being edited in the panel
 	AccelSettings m_accelSettings { defaultAccelSettings() };

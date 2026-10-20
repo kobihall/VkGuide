@@ -66,7 +66,7 @@ Disks arrive with [pbrt-analytic-shapes.md](pbrt-analytic-shapes.md) and pbrt sa
 - With **Solid angle** selected, every scene renders bit-identical.
 - `bin/light_test`, per shape and family: the pdf integrates to 1 over the light's solid angle; samples pass a χ² test against the pdf; the inverses' round-trip error as above.
 - On the Cornell box and on a diffuse floor under a large rectangle, each family converges to the same image (**Compare to reference** against a 64k-spp render, within noise). This bounds the warp's inverse bias.
-- Equal-spp MSE for each family on those two scenes and the Veach scene, as convergence plots from [pbrt-verification-harness.md](pbrt-verification-harness.md), next to the kernel 06 timings from the render panel.
+- Equal-spp MSE for each family on those two scenes and the Veach scene, as convergence plots from [pbrt-verification-harness.md](completed/pbrt-verification-harness.md), next to the kernel 06 timings from the render panel.
 
 ## Order of work
 

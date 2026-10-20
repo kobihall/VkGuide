@@ -1,6 +1,7 @@
 #include <rt_renderer.h>
 
 #include <algorithm>
+#include <cmath>
 #include <random>
 
 #include <imgui.h>
@@ -10,6 +11,7 @@
 #include <rt_scene_editor.h>
 #include <vk_engine.h>
 #include <vk_images.h>
+#include <vk_ui.h>
 #include <vk_initializers.h>
 #include <vk_tonemap.h>
 
@@ -513,6 +515,9 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	snapshot.solidBackground = engine->m_solidBackground;
 	snapshot.backgroundColor = engine->m_backgroundColor;
 
+	keepConvergenceCurve();
+	m_curveLabel = convergenceLabel();
+
 	m_renderKey = currentKey(engine, editor, *camera);
 	m_hasRender = true;
 	m_renderStart = std::chrono::steady_clock::now();
@@ -665,31 +670,148 @@ void RaytraceRenderer::drawLightingSettings(VulkanEngine* engine)
 	(void)engine;
 }
 
+std::string RaytraceRenderer::convergenceLabel() const
+{
+	const KernelVariant* sampler = m_kernels.selected(KernelSlot::GenerateSamples);
+	const KernelVariant* lighting = m_kernels.selected(KernelSlot::SurfaceScattering);
+	return fmt::format("{} / {}", sampler != nullptr ? sampler->name : "?", lighting != nullptr ? lighting->name : "?");
+}
+
+void RaytraceRenderer::keepConvergenceCurve()
+{
+	//a render that got a few points against the reference is worth comparing with; one cut short is not
+	const std::vector<ReferenceError>& points = m_gpu.convergence();
+	if (m_gpu.hasReference() && points.size() >= 3 && !m_curveLabel.empty()) {
+		m_curves.push_back({ m_curveLabel, points });
+		constexpr size_t MAX_KEPT_CURVES = 8;
+		if (m_curves.size() > MAX_KEPT_CURVES) {
+			m_curves.erase(m_curves.begin());
+		}
+	}
+}
+
+IoResult RaytraceRenderer::saveReference(VulkanEngine* engine, const std::filesystem::path& path)
+{
+	Image image;
+	if (!m_gpu.readReference(engine, image)) {
+		return IoResult::failure("There is no reference to save");
+	}
+	const ImageIoStatus status = saveImage(path, image);
+	return status.ok ? IoResult::success(status.message) : IoResult::failure(status.message);
+}
+
+IoResult RaytraceRenderer::loadReference(VulkanEngine* engine, const std::filesystem::path& path)
+{
+	Image image;
+	const ImageIoStatus status = loadImage(path, image);
+	if (!status.ok) {
+		return IoResult::failure(status.message);
+	}
+	m_gpu.loadReference(engine, image);
+	m_curves.clear();
+	return IoResult::success(status.message + ", as the reference");
+}
+
+IoResult RaytraceRenderer::saveRender(VulkanEngine* engine, const std::filesystem::path& path)
+{
+	Image image;
+	if (!m_gpu.readAccumulation(engine, image)) {
+		return IoResult::failure("There is no render to save");
+	}
+	const ImageIoStatus status = saveImage(path, image);
+	return status.ok ? IoResult::success(status.message) : IoResult::failure(status.message);
+}
+
+namespace {
+
+//the slope of log10(relative MSE) against log10(samples) over the points from `lo` to `hi` samples, by
+//least squares on at most one point per eighth of an octave so the dense high end does not dominate.
+//An unbiased estimator draws -1. False with fewer than three points in the window
+bool convergenceSlope(const std::vector<ReferenceError>& points, double lo, double hi, double& slope)
+{
+	double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+	int n = 0;
+	double lastBucket = -1e9;
+	for (const ReferenceError& point : points) {
+		if (point.samples < lo || point.samples > hi || point.relativeMse <= 0.0) {
+			continue;
+		}
+		const double x = std::log10((double)point.samples);
+		const double bucket = std::floor(std::log2((double)point.samples) * 8.0);
+		if (bucket == lastBucket) {
+			continue;
+		}
+		lastBucket = bucket;
+		const double y = std::log10(point.relativeMse);
+		sx += x;
+		sy += y;
+		sxx += x * x;
+		sxy += x * y;
+		n++;
+	}
+	if (n < 3) {
+		return false;
+	}
+	const double denominator = n * sxx - sx * sx;
+	if (std::abs(denominator) < 1e-12) {
+		return false;
+	}
+	slope = (n * sxy - sx * sy) / denominator;
+	return true;
+}
+
+//the range a curve's slope is fitted over: the last two octaves of its first 3/4 range, where the
+//estimate has left its start-up and the reference's own noise has not yet bent it. For a curve that
+//ends at N samples that is N/8 to N/2... the window is chosen by the caller
+const ImU32 CURVE_COLORS[] = { IM_COL32(255, 200, 70, 255), IM_COL32(110, 200, 255, 255), IM_COL32(255, 120, 120, 255), IM_COL32(150, 230, 150, 255),
+	IM_COL32(220, 150, 255, 255), IM_COL32(255, 160, 80, 255), IM_COL32(180, 180, 180, 255), IM_COL32(120, 255, 220, 255), IM_COL32(255, 130, 200, 255) };
+
+}  // namespace
+
 void RaytraceRenderer::drawReference(VulkanEngine* engine)
 {
-	if (!m_gpu.hasImage()) {
+	if (!m_gpu.hasImage() && !m_gpu.hasReference()) {
 		return;
 	}
 	if (!ImGui::CollapsingHeader("Compare to reference")) {
 		return;
 	}
-	if (ImGui::Button("Use this render as reference")) {
-		m_gpu.captureReference();
+	if (m_gpu.hasImage()) {
+		if (ImGui::Button("Use this render as reference")) {
+			m_gpu.captureReference();
+			m_curves.clear();
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Copies the render as it stands. Converge one strategy far (thousands of samples),\ncapture it, then render the others: each shows its error against it as it goes.");
+		}
+		ImGui::SameLine();
+	}
+	if (ImGui::Button("Load...")) {
+		engine->m_pendingFileAction = VulkanEngine::FileAction::LoadReference;
 	}
 	if (ImGui::IsItemHovered()) {
-		ImGui::SetTooltip("Copies the render as it stands. Converge one strategy far (thousands of samples),\ncapture it, then render the others: each shows its error against it as it goes.");
+		ImGui::SetTooltip("Loads an .exr or .pfm file as the reference, such as a render from another renderer.\nIt is compared with renders of the same size, in linear radiance.");
 	}
+	drawIoResultLine(m_referenceIo);
 	if (!m_gpu.hasReference()) {
 		ImGui::TextDisabled("No reference yet");
 		return;
 	}
+	if (ImGui::Button("Save...")) {
+		engine->m_pendingFileAction = VulkanEngine::FileAction::SaveReference;
+	}
 	ImGui::SameLine();
 	if (ImGui::Button("Clear")) {
 		m_gpu.clearReference(engine);
+		m_curves.clear();
 		return;
 	}
 	const VkExtent2D extent = m_gpu.referenceExtent();
-	ImGui::Text("Reference: %u x %u, %u sample(s)/pixel", extent.width, extent.height, m_gpu.referenceSamples());
+	if (m_gpu.referenceSamples() > 0) {
+		ImGui::Text("Reference: %u x %u, %u sample(s)/pixel", extent.width, extent.height, m_gpu.referenceSamples());
+	} else {
+		ImGui::Text("Reference: %u x %u, from a file", extent.width, extent.height);
+	}
 	if (extent.width != m_gpu.width() || extent.height != m_gpu.height()) {
 		ImGui::TextDisabled("The render is %u x %u: not compared", m_gpu.width(), m_gpu.height());
 		return;
@@ -697,9 +819,113 @@ void RaytraceRenderer::drawReference(VulkanEngine* engine)
 	const ReferenceError& error = m_gpu.referenceError();
 	if (error.valid) {
 		ImGui::Text("At %u sample(s): RMSE %.4g, relative MSE %.4g", error.samples, error.rmse, error.relativeMse);
+		ImGui::Text("MAPE %.2f%%, mean difference %+.4g", error.mape * 100.0, error.meanDifference);
 		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Against the reference, over every pixel and channel. Relative MSE divides each\npixel's squared error by its reference value squared (+0.01), so dark regions count.\nMeaningful only for the same scene and camera the reference was rendered from.");
+			ImGui::SetTooltip("Against the reference, over every pixel and channel.\nRelative MSE divides each pixel's squared error by its reference value squared (+0.01), so dark regions count.\nMAPE is the mean of |difference| / max(|reference|, 0.01).\nThe mean difference is signed: a bias shows there, noise does not.\nMeaningful only for the same scene and camera the reference was rendered from.");
 		}
+	}
+
+	//the convergence plot: relative MSE against samples, both logarithmic
+	const std::vector<ReferenceError>& current = m_gpu.convergence();
+	struct Drawn {
+		const std::string* label;
+		const std::vector<ReferenceError>* points;
+	};
+	std::vector<Drawn> drawn;
+	for (const ConvergenceCurve& curve : m_curves) {
+		drawn.push_back({ &curve.label, &curve.points });
+	}
+	const std::string currentLabel = m_curveLabel.empty() ? std::string("this render") : m_curveLabel;
+	if (current.size() >= 2) {
+		drawn.push_back({ &currentLabel, &current });
+	}
+	if (drawn.empty()) {
+		return;
+	}
+	double minSamples = 1e30, maxSamples = 0.0, minError = 1e30, maxError = 0.0;
+	for (const Drawn& d : drawn) {
+		for (const ReferenceError& point : *d.points) {
+			if (point.relativeMse > 0.0) {
+				minSamples = std::min(minSamples, (double)point.samples);
+				maxSamples = std::max(maxSamples, (double)point.samples);
+				minError = std::min(minError, point.relativeMse);
+				maxError = std::max(maxError, point.relativeMse);
+			}
+		}
+	}
+	if (maxSamples <= minSamples || maxError <= 0.0) {
+		return;
+	}
+	const double x0 = std::floor(std::log10(minSamples));
+	const double x1 = std::max(std::ceil(std::log10(maxSamples)), x0 + 1.0);
+	const double y0 = std::floor(std::log10(minError));
+	const double y1 = std::max(std::ceil(std::log10(maxError)), y0 + 1.0);
+	const ImVec2 size(ImGui::GetContentRegionAvail().x, 160.f);
+	const ImVec2 origin = ImGui::GetCursorScreenPos();
+	ImGui::Dummy(size);
+	ImDrawList* list = ImGui::GetWindowDrawList();
+	list->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(20, 20, 24, 255));
+	auto toScreen = [&](double samples, double err) {
+		const double fx = (std::log10(samples) - x0) / (x1 - x0);
+		const double fy = (std::log10(err) - y0) / (y1 - y0);
+		return ImVec2(origin.x + (float)fx * size.x, origin.y + size.y - (float)fy * size.y);
+	};
+	for (double decade = x0; decade <= x1; decade += 1.0) {
+		const ImVec2 p = toScreen(std::pow(10.0, decade), std::pow(10.0, y0));
+		list->AddLine(ImVec2(p.x, origin.y), ImVec2(p.x, origin.y + size.y), IM_COL32(70, 70, 80, 255));
+		const std::string text = fmt::format("{:g}", std::pow(10.0, decade));
+		list->AddText(ImVec2(p.x + 2.f, origin.y + size.y - 14.f), IM_COL32(150, 150, 160, 255), text.c_str());
+	}
+	for (double decade = y0; decade <= y1; decade += 1.0) {
+		const ImVec2 p = toScreen(std::pow(10.0, x0), std::pow(10.0, decade));
+		list->AddLine(ImVec2(origin.x, p.y), ImVec2(origin.x + size.x, p.y), IM_COL32(70, 70, 80, 255));
+		const std::string text = fmt::format("1e{:.0f}", decade);
+		list->AddText(ImVec2(origin.x + 2.f, p.y - 14.f), IM_COL32(150, 150, 160, 255), text.c_str());
+	}
+	//the line of slope -1 an unbiased estimator draws, through the first curve's first point
+	{
+		const ReferenceError& first = drawn.front().points->front();
+		if (first.relativeMse > 0.0) {
+			const ImVec2 a = toScreen(std::pow(10.0, x0), first.relativeMse * (double)first.samples / std::pow(10.0, x0));
+			const ImVec2 b = toScreen(std::pow(10.0, x1), first.relativeMse * (double)first.samples / std::pow(10.0, x1));
+			list->AddLine(a, b, IM_COL32(120, 120, 120, 160), 1.f);
+		}
+	}
+	for (size_t k = 0; k < drawn.size(); k++) {
+		const ImU32 color = CURVE_COLORS[k % (sizeof(CURVE_COLORS) / sizeof(CURVE_COLORS[0]))];
+		ImVec2 previous;
+		bool havePrevious = false;
+		for (const ReferenceError& point : *drawn[k].points) {
+			if (point.relativeMse <= 0.0) {
+				continue;
+			}
+			const ImVec2 p = toScreen((double)point.samples, point.relativeMse);
+			if (havePrevious) {
+				list->AddLine(previous, p, color, 1.5f);
+			}
+			previous = p;
+			havePrevious = true;
+		}
+	}
+	for (size_t k = 0; k < drawn.size(); k++) {
+		const ImU32 color = CURVE_COLORS[k % (sizeof(CURVE_COLORS) / sizeof(CURVE_COLORS[0]))];
+		const std::vector<ReferenceError>& points = *drawn[k].points;
+		const double last = (double)points.back().samples;
+		double slope = 0.0;
+		//the window stops at a quarter of the reference's samples, where the reference's own noise
+		//starts to bend the line, and spans two octaves below it
+		const double top = m_gpu.referenceSamples() > 0 ? std::min(last, m_gpu.referenceSamples() / 4.0) : last;
+		const bool fitted = convergenceSlope(points, std::max(top / 8.0, 4.0), top, slope);
+		ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(color));
+		if (fitted) {
+			ImGui::Text("%s: slope %.2f over %.0f to %.0f spp", drawn[k].label->c_str(), slope, std::max(top / 8.0, 4.0), top);
+		} else {
+			ImGui::Text("%s: too few points for a slope", drawn[k].label->c_str());
+		}
+		ImGui::PopStyleColor();
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Relative MSE against samples per pixel, log-log. An unbiased estimator falls with slope -1 (the grey line).\nA flatter line means the error stopped falling: accumulation precision (thousands of samples),\nor a bias, or the reference's own noise (past about a quarter of its samples).");
 	}
 }
 

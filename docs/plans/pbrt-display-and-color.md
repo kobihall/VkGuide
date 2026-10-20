@@ -48,7 +48,7 @@ pbrt's von Kries transform (PBR 4ed §5.4.2): convert to XYZ, then to LMS cone s
 | Khronos PBR Neutral | Khronos's hue-preserving curve for product renders, from outside the books |
 | False color | luminance mapped through viridis, `imgtool falsecolor`'s map, with a log scale |
 
-The false-color curve also serves the error and variance views of [pbrt-verification-harness.md](pbrt-verification-harness.md) and [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md).
+The false-color curve also serves the error and variance views of [pbrt-verification-harness.md](completed/pbrt-verification-harness.md) and [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md).
 
 ### Gamut mapping
 

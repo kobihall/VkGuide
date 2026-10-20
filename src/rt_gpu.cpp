@@ -722,6 +722,7 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 	m_totalGpuMs = 0.f;
 	m_droppedSamples = 0;
 	m_referenceError = {};
+	m_convergence.clear();
 }
 
 void GpuRenderer::stop()
@@ -775,6 +776,69 @@ void GpuRenderer::clearReference(VulkanEngine* engine)
 	m_hasReference = false;
 	m_referenceSamples = 0;
 	m_referenceError = {};
+	m_convergence.clear();
+}
+
+//the image's pixels as a host RGB image: a copy to a staging buffer once the device is idle
+static bool readLinearImage(VulkanEngine* engine, const AllocatedImage& source, Image& image)
+{
+	if (source.image == VK_NULL_HANDLE) {
+		return false;
+	}
+	vkDeviceWaitIdle(engine->m_device);
+	const VkExtent3D extent = source.imageExtent;
+	const VkDeviceSize bytes = (VkDeviceSize)extent.width * extent.height * 4 * sizeof(float);
+	const AllocatedBuffer staging = engine->createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_TO_CPU);
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		VkBufferImageCopy region {};
+		region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		region.imageExtent = extent;
+		//both images stay in GENERAL for good
+		vkCmdCopyImageToBuffer(cmd, source.image, VK_IMAGE_LAYOUT_GENERAL, staging.buffer, 1, &region);
+	});
+	vmaInvalidateAllocation(engine->m_memAllocator, staging.allocation, 0, bytes);
+	const float* rgba = (const float*)staging.info.pMappedData;
+	image.width = extent.width;
+	image.height = extent.height;
+	image.rgb.resize((size_t)extent.width * extent.height * 3);
+	for (size_t i = 0; i < (size_t)extent.width * extent.height; i++) {
+		image.rgb[i * 3 + 0] = rgba[i * 4 + 0];
+		image.rgb[i * 3 + 1] = rgba[i * 4 + 1];
+		image.rgb[i * 3 + 2] = rgba[i * 4 + 2];
+	}
+	engine->destroyBuffer(staging);
+	return true;
+}
+
+bool GpuRenderer::readAccumulation(VulkanEngine* engine, Image& image)
+{
+	return hasImage() && readLinearImage(engine, m_accumulation, image);
+}
+
+bool GpuRenderer::readReference(VulkanEngine* engine, Image& image)
+{
+	return m_hasReference && readLinearImage(engine, m_reference, image);
+}
+
+void GpuRenderer::loadReference(VulkanEngine* engine, const Image& image)
+{
+	std::vector<float> rgba(image.pixelCount() * 4, 1.f);
+	for (size_t i = 0; i < image.pixelCount(); i++) {
+		rgba[i * 4 + 0] = image.rgb[i * 3 + 0];
+		rgba[i * 4 + 1] = image.rgb[i * 3 + 1];
+		rgba[i * 4 + 2] = image.rgb[i * 3 + 2];
+	}
+	vkDeviceWaitIdle(engine->m_device);
+	clearReference(engine);
+	m_reference = engine->createImage(rgba.data(), { image.width, image.height, 1 }, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT);
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		vkutil::transition_image(cmd, m_reference.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+	});
+	m_hasReference = true;
+	m_capturePending = false;
+	m_referenceSamples = 0;
+	m_referenceError = {};
+	m_convergence.clear();
 }
 
 void GpuRenderer::recordReference(VkCommandBuffer cmd, VulkanEngine* engine, uint32_t slot)
@@ -799,6 +863,7 @@ void GpuRenderer::recordReference(VkCommandBuffer cmd, VulkanEngine* engine, uin
 		vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 		m_hasReference = true;
 		m_referenceSamples = m_samplesAccumulated;
+		m_convergence.clear();
 	}
 
 	//measured only against a reference of the same size: another size is another picture
@@ -808,7 +873,7 @@ void GpuRenderer::recordReference(VkCommandBuffer cmd, VulkanEngine* engine, uin
 
 	const uint32_t groupsX = (extent.width + ERROR_WORKGROUP - 1) / ERROR_WORKGROUP;
 	const uint32_t groupsY = (extent.height + ERROR_WORKGROUP - 1) / ERROR_WORKGROUP;
-	const VkDeviceSize partialBytes = sizeof(glm::vec2) * (VkDeviceSize)groupsX * groupsY;
+	const VkDeviceSize partialBytes = sizeof(glm::vec4) * (VkDeviceSize)groupsX * groupsY;
 	if (partialBytes > m_errorPartialsBytes) {
 		//grown in place: the old buffers may be in flight, so they retire like the scene buffers
 		retireBuffer(engine, m_errorPartials);
@@ -847,19 +912,32 @@ void GpuRenderer::collectReadbacks(VulkanEngine* engine, uint32_t slot)
 		const uint32_t groups = m_slotErrorGroups[slot];
 		m_slotErrorGroups[slot] = 0;
 		const VkDeviceSize offset = m_errorPartialsBytes * slot;
-		vmaInvalidateAllocation(engine->m_memAllocator, m_errorReadback.allocation, offset, sizeof(glm::vec2) * groups);
-		const glm::vec2* partials = (const glm::vec2*)((const uint8_t*)m_errorReadback.info.pMappedData + offset);
+		vmaInvalidateAllocation(engine->m_memAllocator, m_errorReadback.allocation, offset, sizeof(glm::vec4) * groups);
+		const glm::vec4* partials = (const glm::vec4*)((const uint8_t*)m_errorReadback.info.pMappedData + offset);
 		double squared = 0.0;
 		double relative = 0.0;
+		double percent = 0.0;
+		double difference = 0.0;
 		for (uint32_t i = 0; i < groups; i++) {
 			squared += partials[i].x;
 			relative += partials[i].y;
+			percent += partials[i].z;
+			difference += partials[i].w;
 		}
 		const double pixels = (double)std::max(m_accumulation.imageExtent.width * m_accumulation.imageExtent.height, 1u);
 		m_referenceError.rmse = std::sqrt(squared / (3.0 * pixels));
 		m_referenceError.relativeMse = relative / pixels;
+		m_referenceError.mape = percent / pixels;
+		m_referenceError.meanDifference = difference / (3.0 * pixels);
 		m_referenceError.samples = m_slotErrorSamples[slot];
 		m_referenceError.valid = true;
+		//one point per sample count: a frame measured again at the same count (the render
+		//finished, the reference moved) replaces its point
+		if (!m_convergence.empty() && m_convergence.back().samples == m_referenceError.samples) {
+			m_convergence.back() = m_referenceError;
+		} else if (m_referenceError.samples > 0 && (m_convergence.empty() || m_convergence.back().samples < m_referenceError.samples)) {
+			m_convergence.push_back(m_referenceError);
+		}
 	}
 
 	if (m_slotRender[slot] == 0) {

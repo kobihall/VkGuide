@@ -2,7 +2,7 @@
 
 The six materials the tracer has are Ray Tracing in One Weekend's lambertian, fuzzed metal, phong and Schlick dielectric, an emitter, and glTF's metallic-roughness model. None of them has an exact Fresnel term, a complex index of refraction, a rough dielectric, anisotropy, a thin window pane or diffuse transmission, and the dielectric does not scale radiance by η² when it refracts. This plan adds pbrt-v4's BxDFs as new material types beside the existing ones, which all stay.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md), [pbrt-material-system.md](completed/pbrt-material-system.md) and [pbrt-verification-harness.md](pbrt-verification-harness.md). Dispersion also needs [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md), [pbrt-material-system.md](completed/pbrt-material-system.md) and [pbrt-verification-harness.md](completed/pbrt-verification-harness.md). Dispersion also needs [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -10,6 +10,7 @@ The six materials the tracer has are Ray Tracing in One Weekend's lambertian, fu
 - The dielectric uses Schlick's approximation and a scalar IOR, and treats every refraction as radiance-preserving.
 - The metal is a mirror direction plus a random offset in a ball of radius `fuzz`. Its density was derived by hand (`fuzzBallPdf()`).
 - The pbr material samples GGX visible normals (Heitz 2018) with a colored Schlick Fresnel, and layers a Lambertian lobe under it without conserving energy at grazing angles (its own comment says so).
+- [pbrt-verification-harness.md](completed/pbrt-verification-harness.md) measured two flaws this plan must not carry over. Schlick's approximation is called with the incident cosine in both directions, so inside glass of index 1.5 it gives 0.040 at 30 degrees and 0.041 at 40 where the exact Fresnel reflectance is 0.055 and 0.245 (0.380 at 41 degrees, just under the critical angle); from outside it is within 0.013 up to 70 degrees. `glass` and `thin_glass` use `frDielectric()`, which has no such error. And phong, the fuzzy metal and the Lambertian lobe of `pbr` are not reciprocal (the relative asymmetry of `f(wo, wi)` against `f(wi, wo)` is 0.5 to 0.95): the Lambertian lobe's `1 - F(wo)` factor depends on one direction only. A new BxDF should be reciprocal, and `bin/bsdf_test` fails a type listed as reciprocal that is not. The three old types stay as they are, to keep every scene bit-identical.
 - `isSpecularMaterial()` decides which surfaces skip next-event estimation: a dielectric, or a metal whose fuzz is below 1e-4.
 
 ## Design
@@ -97,7 +98,7 @@ A glTF material with none of these keeps becoming `pbr`, so no existing import c
 ## Verification
 
 - Every existing scene renders bit-identical.
-- `bin/bsdf_test` passes the χ², weight and energy tests for every new type across roughness 0.01 to 1, IOR 1.1 to 2.5 and incident angles to 89° ([pbrt-verification-harness.md](pbrt-verification-harness.md)), and the reciprocity test for glass in both transport modes.
+- `bin/bsdf_test` passes the χ², weight and energy tests for every new type across roughness 0.01 to 1, IOR 1.1 to 2.5 and incident angles to 89° ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md)), and the reciprocity test for glass in both transport modes.
 - The white furnace shows glass and a smooth conductor with η = 1, k = 0 as invisible, and rough conductors losing the energy single scattering is known to lose (compensated later by [pbrt-appearance-extras.md](pbrt-appearance-extras.md)).
 - A glass sphere seen from inside a water-filled box (camera inside a closed glass mesh) renders with η² scaling on; the same scene with the scaling removed renders too bright, which is the bug the scaling fixes.
 

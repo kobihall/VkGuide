@@ -7,6 +7,7 @@ An optic is defined as much by what it is made of as by its shape. A lens focuse
 ## What the renderer does today
 
 - `dielectric` has one scalar `ir` and Schlick's approximation; [pbrt-bsdf-library.md](pbrt-bsdf-library.md) plans `glass` with exact Fresnel (`frDielectric()`, `frComplex()` in `crt_fresnel.glsl`) and a rough form.
+- Schlick's approximation is wrong inside glass, which is where a lens's internal reflections happen ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md) measured it). Leaving glass of index 1.5 it gives a reflectance of 0.040 at 30 degrees and 0.041 at 40, where the exact value is 0.055 and 0.245 (0.380 at 41 degrees). Light that should reflect inside a prism or a thick lens would transmit. The optical interface material must use the exact term, and its test must compare internal reflectance with the Fresnel equations at angles up to the critical angle, from both sides.
 - [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) plans `SpectrumRef` kinds `Tabulated`, `Cauchy`, `Sellmeier` and `Constant`, named spectra in `assets/spectra/` (pbrt's metal η and k, BK7 and a few glasses), and dispersion by terminating secondary lanes. In exact RGB a dielectric reads its index at 550 nm.
 - Nothing models absorption inside glass, air's index, or any coating.
 

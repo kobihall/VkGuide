@@ -72,7 +72,7 @@ A BSSRDF assumes a locally flat, semi-infinite, homogeneous slab. It is faster t
 ## Verification
 
 - With no `subsurface` material in the scene, every scene renders bit-identical, and slot 10 is never dispatched.
-- White furnace ([pbrt-verification-harness.md](pbrt-verification-harness.md)): a random-walk sphere with albedo 1 and an index-matched boundary (η = 1) under a uniform white environment is invisible.
+- White furnace ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md)): a random-walk sphere with albedo 1 and an index-matched boundary (η = 1) under a uniform white environment is invisible.
 - A random-walk sphere renders the same image as a sphere of the same homogeneous medium inside a dielectric rendered through the general media kernels. Both are the same physics.
 - `bin/media_test`: the BSSRDF profile integrates to the table's effective albedo; albedo inversion round-trips; probe-radius samples match the profile's pdf (χ²).
 - A thick marble slab: the BSSRDF and the random walk agree closely. A thin ear-like fin lit from behind: they differ, and the random walk matches the general media reference.

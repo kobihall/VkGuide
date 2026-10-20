@@ -17,6 +17,7 @@ On 2026-09-26 the user chose:
 - One integrator, the path tracer, with next-event estimation and MIS.
 - Nothing samples a ray leaving a light, nothing evaluates a camera's response to a ray arriving at it, and every contribution lands in the pixel its path started from.
 - Every BxDF assumes radiance transport; the legacy `dielectric` scales nothing on refraction.
+- Three of the six original materials are not reciprocal ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md) measured it): phong, the fuzzy metal and the Lambertian lobe of `pbr` give a relative asymmetry of 0.5 to 0.95 between `f(wo, wi)` and `f(wi, wo)`. A unidirectional path tracer never evaluates the reverse direction, but a light path and a camera path joined at a vertex do, so a bidirectional estimate through those materials is wrong by that factor. Decide before the first connection test whether bidirectional integrators refuse them, treat them as non-symmetric with an explicit adjoint, or wait for [pbrt-bsdf-library.md](pbrt-bsdf-library.md)'s types. Lambertian and the GGX lobe of `pbr` are reciprocal to 1e-6.
 
 ## Design
 

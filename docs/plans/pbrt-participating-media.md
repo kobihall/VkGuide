@@ -117,7 +117,7 @@ A thin homogeneous fog (σs around 0.01 m⁻¹) makes a laser beam visible in a 
 - With no medium in the scene, every scene renders bit-identical. The classification moves into `crt_classify.glsl` unchanged, and queues 7 and 8 stay empty.
 - `bin/media_test`: Henyey–Greenstein samples match their pdf (χ²); ratio tracking's mean transmittance equals `exp(−σt d)` for a homogeneous segment and a quadrature for a grid; the majorant grid bounds the density in every cell.
 - Beer–Lambert: an emissive quad seen through an absorbing slab of thickness `d` is dimmed by `exp(−σa d)`, within noise.
-- White furnace ([pbrt-verification-harness.md](pbrt-verification-harness.md)): a sphere of non-absorbing medium (albedo 1) under a uniform white environment is invisible.
+- White furnace ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md)): a sphere of non-absorbing medium (albedo 1) under a uniform white environment is invisible.
 - A density grid filled with one constant value renders the same image as the equivalent homogeneous medium.
 - A chromatic medium in exact RGB equals three monochromatic renders, one per channel.
 - *The Next Week*'s Cornell box with smoke renders with and without next-event estimation in kernel 07, and both converge to the same image.

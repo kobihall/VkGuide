@@ -23,6 +23,7 @@
 #include <span>
 #include <vector>
 
+#include <image_io.h>
 #include <rt_accel.h>
 #include <rt_gpu_types.h>
 #include <rt_kernels.h>
@@ -41,6 +42,10 @@ struct ReferenceError {
 	// the mean of (render - reference)^2 / (reference^2 + 0.01): an error that weighs a dark pixel's
 	// noise like a bright one's, the usual way renderers' outputs are compared
 	double relativeMse { 0.0 };
+	// the mean of |render - reference| / max(|reference|, 0.01): a fraction, 0.05 is 5 percent
+	double mape { 0.0 };
+	// the mean of render - reference over every pixel and channel: a bias the noise does not show
+	double meanDifference { 0.0 };
 	// the samples per pixel the render had when this was measured
 	uint32_t samples { 0 };
 	bool valid { false };
@@ -167,6 +172,16 @@ public:
 	VkExtent2D referenceExtent() const { return { m_reference.imageExtent.width, m_reference.imageExtent.height }; }
 	// the last measurement read back, of the render currently in the accumulation
 	const ReferenceError& referenceError() const { return m_referenceError; }
+	// every measurement of the running render against the reference, one per sample count: the
+	// convergence curve. Cleared when a render starts and when the reference changes
+	const std::vector<ReferenceError>& convergence() const { return m_convergence; }
+	// The accumulation, or the reference, as an RGB image on the host. They wait for the device
+	// to be idle, so call them between renders or accept the stall. False when there is none
+	bool readAccumulation(VulkanEngine* engine, Image& image);
+	bool readReference(VulkanEngine* engine, Image& image);
+	// Replaces the reference with a loaded image, of any size: a render of another size is not
+	// compared against it. Its sample count is unknown and shows as 0
+	void loadReference(VulkanEngine* engine, const Image& image);
 
 	// switchable mid-render; written through the radiance slots, so it accumulates like radiance
 	CrtDebugView debugView { CrtDebugView::None };
@@ -309,4 +324,5 @@ private:
 	std::vector<uint32_t> m_slotErrorGroups;
 	std::vector<uint32_t> m_slotErrorSamples;
 	ReferenceError m_referenceError;
+	std::vector<ReferenceError> m_convergence;
 };

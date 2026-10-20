@@ -141,7 +141,7 @@ A float carries about 7 digits. At 0.3 m from the origin its spacing is 30 nm, w
     - closed bodies: for 10⁶ random rays through a biconvex lens, a prism and a cube, every ray that enters leaves, and the parity of the hit count is even;
     - a plano-convex lens of N-BK7 at 587.6 nm has the paraxial focal length of the lensmaker's equation to 1e-9 relative in `double`, traced with real rays at 1e-4 of the aperture.
 - `bin/bvh_bench` with optic bodies: 0 mismatches against brute force, with `--perturb`.
-- GPU parity ([pbrt-verification-harness.md](pbrt-verification-harness.md)): a batch of fixed rays through each body gives the same surface indices and the same `t` to 1e-6 relative on the GPU and in the `float` mirror.
+- GPU parity ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md)): a batch of fixed rays through each body gives the same surface indices and the same `t` to 1e-6 relative on the GPU and in the `float` mirror.
 
 ## Order of work
 

@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-10-20
+
+### New
+
+- `bin/bsdf_test` checks the six original materials on the CPU through `src/bsdf.cpp`, the line-for-line mirror of `crt_scatter.glsl`. For 130 configurations of material, parameters and incident angle it runs a chi-square test of one million sampled directions against the density, compares the weights with `f cos` cell by cell, compares the directional albedo from the sampler with the one from quadrature, checks reciprocity, and runs every material at corner samples. **--selfcheck** plants three errors (a density 5% high, an evaluation 5% high, a sampling roughness 10% off) and fails unless the tests catch them.
+- **Windows** → **GPU self-tests** runs `shaders/test/bsdf_parity.comp` on 38912 random inputs, with the sample record off and on, and compares the shader with the C++ mirror. `VKGUIDE_SELFTEST=1` runs the tests at start-up and exits with 0 or 1.
+- **Raytrace Render** → **Compare to reference** has **Save...** and **Load...** (`.exr` or `.pfm`), MAPE and the mean difference beside RMSE and relative MSE, and a log-log plot of relative MSE against samples per pixel. The plot keeps up to eight earlier renders measured against the same reference, labeled by sampler and direct-lighting strategy, and reports each curve's slope. An unbiased estimator falls with slope -1.
+- `VKGUIDE_VERIFY=<scene>:<samples>:<output.exr|pfm>` opens a scene, renders it to that many samples with a fixed seed, writes the accumulation and quits. `VKGUIDE_VERIFY_SEED`, `_SIZE` and `_TIMEOUT` adjust it.
+- `bin/image_diff` compares two EXR or PFM files with RMSE, relative MSE, MAPE and the mean difference.
+- `tools/verify/` holds the scene-level checks. `furnace_check.py` renders a sphere of each material in a uniform white environment under every direct-lighting strategy, sampler, traversal and intersection flag. `cornell_check.py` compares the Cornell box with an independent radiosity solve (`radiosity.py`) and with pbrt-v4. `run_all.py` runs every check.
+- `assets/scenes/white_furnace.gltf`, `cornell_reference.gltf` and `cornell_empty.gltf`, and `assets/environment_maps/uniform_white.hdr` (radiance 1 in every direction), written by `tools/verify/make_scenes.py`. The repository ignores `.hdr` files, so the script writes the map again where it is missing.
+
+### Fixed
+
+- Fixed fully metallic `pbr` materials dropping samples as non-finite. With metallic 1 the diffuse lobe has no weight, and a lobe draw that reached it divided 0 by 0. A white metallic sphere dropped 1403 samples in a 64 x 64 render of 4096 samples at one sample per frame. The material now always takes the specular lobe, and the random stream is unchanged.
+- Fixed `randomFloat()` returning exactly 1.0 for 128 of its 2^32 PCG words, which its documentation excludes. It now returns at most 0.99999994 and every other draw is as it was.
+- Fixed the comment at the top of `crt_scatter.glsl`, which said the weight a `pbr` sample returns is exactly `evalSurface() / pdfSurface()`. It is the chosen lobe's weight, equal to the ratio in expectation.
+
+### Changed
+
+- The error pass behind **Compare to reference** writes four sums per workgroup instead of two.
+
+### Internal
+
+- `tests/test_stats.h` holds the statistics the CPU tests share: Pearson's chi-square test with pooled cells and its p-value, the Sidak correction, a grid over directions with adaptive quadrature of a density over each cell, and a running mean with its standard error.
+- `src/image_io.h/.cpp` is the static library `rt_image`: EXR through tinyexr (`../CPPLibraries/tinyexr/`, version 1.0.13, with the system zlib) and PFM, and `compareImages()`.
+- `src/gpu_selftest.h/.cpp` lists the GPU self-tests in `gpuSelfTests()`. A test is a function that runs a shader from `shaders/test/` and compares it with a C++ mirror.
+- `GpuRenderer` keeps a convergence history per render (`convergence()`), can read the accumulation or the reference back to the host, and can replace the reference with a loaded image.
+
 ## 2026-10-19
 
 ### New
