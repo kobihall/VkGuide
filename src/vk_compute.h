@@ -44,6 +44,12 @@ public:
 	ComputePassBuilder& setPushConstants() { return setPushConstantSize(sizeof(T)); }
 	// defaults to 16 x 16 x 1, the convention every .comp file in shaders/ follows
 	ComputePassBuilder& setWorkgroupSize(uint32_t x, uint32_t y = 1, uint32_t z = 1);
+	// Sets the shader's specialization constant `constantId` (layout (constant_id = N) const ...) for
+	// this pipeline. A value of 0 or 1 specializes a bool. The driver folds it into the code before
+	// optimizing, so a branch on it that is off costs nothing and changes nothing about the code
+	// around it - which an ordinary uniform or push constant does not promise (docs/plans/completed/
+	// pbrt-sample-generation.md: a dynamic flag moved a floating-point result by one ulp)
+	ComputePassBuilder& addSpecialization(uint32_t constantId, uint32_t value);
 
 	// aborts if the shader cannot be loaded or any vulkan object fails to build, matching the
 	// checkVkResult convention: a missing shader is a broken build, not recoverable input
@@ -54,6 +60,8 @@ private:
 	DescriptorLayoutBuilder m_layoutBuilder;
 	uint32_t m_pushConstantSize { 0 };
 	VkExtent3D m_workgroupSize { 16, 16, 1 };
+	std::vector<VkSpecializationMapEntry> m_specializationEntries;
+	std::vector<uint32_t> m_specializationData;
 };
 
 // the number of workgroups needed to cover `domain` invocations at `workgroupSize` each

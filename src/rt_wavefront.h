@@ -32,14 +32,20 @@ inline constexpr uint32_t CRT_QUEUE_COUNT = 7;
 inline constexpr VkDeviceSize CRT_PATH_STATE_SIZE = 64;
 inline constexpr VkDeviceSize CRT_HIT_RECORD_SIZE = 24;
 inline constexpr VkDeviceSize CRT_SHADOW_RAY_SIZE = 48;
+// the RaySamples record, and the stub that stands in for it while the selected sampler writes none
+// (src/sampler.h SAMPLE_RECORD_BYTES)
+inline constexpr VkDeviceSize CRT_SAMPLE_RECORD_SIZE = 48;
+inline constexpr VkDeviceSize CRT_SAMPLE_RECORD_STUB_SIZE = 16;
 
 class WavefrontPool {
 public:
 	// allocates the pool for width x height x samplesPerFrame paths if it is not that size already,
 	// after a device-wide wait (the frames in flight may still read the old one - rare, since it
 	// happens only when the resolution or the samples per frame change), and publishes the buffers.
-	// True when it reallocated
-	bool ensure(VulkanEngine* engine, CrtResourceTable& resources, uint32_t width, uint32_t height, uint32_t samplesPerFrame);
+	// `sampleRecord` is whether the selected sampler writes the RaySamples record: it exists at full
+	// size only then, and is a stub otherwise (a change reallocates just that buffer). True when it
+	// reallocated
+	bool ensure(VulkanEngine* engine, CrtResourceTable& resources, uint32_t width, uint32_t height, uint32_t samplesPerFrame, bool sampleRecord);
 	// requires the pool to be out of use
 	void destroy(VulkanEngine* engine, CrtResourceTable& resources);
 
@@ -54,7 +60,8 @@ public:
 
 	// the workgroups `variant` launches over its domain. Everything per-bounce is indirect, reading
 	// the header the previous kernel filled as its VkDispatchIndirectCommand. `materialClass` picks
-	// the surface queue of a KernelDomain::SurfaceQueues kernel
+	// the surface queue of a KernelDomain::SurfaceQueues kernel. A KernelVariant::cameraPass kernel
+	// launched with CRT_CAMERA_PASS as its bounce runs over the pool instead
 	DispatchSize dispatchSize(const KernelVariant& variant, uint32_t bounce, MaterialClass materialClass = MaterialClass::Basic) const;
 	// an empty header is a legal no-op dispatch. Reset from the command buffer, never by a shader,
 	// so an empty queue cannot leave a stale count behind
@@ -75,4 +82,7 @@ private:
 	AllocatedBuffer m_sampleBudget {};
 	// one ShadowRay per pool slot, indexed like the hits by ray queue position
 	AllocatedBuffer m_shadowRays {};
+	// one RaySamples per pool slot (indexed by path index), or the stub
+	AllocatedBuffer m_raySamples {};
+	bool m_hasSampleRecord { false };
 };

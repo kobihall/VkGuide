@@ -88,6 +88,14 @@ struct GpuRenderSnapshot {
 	glm::vec3 backgroundColor { 0.f };
 };
 
+// Why `sampler` cannot run a render of width x height with `settings` (as the render uses them, after
+// RaytraceRenderer::renderSettings()), or empty when it can. A sampler that needs the sample count
+// cannot run an unlimited render, one that interleaves pixels cannot run an image wider than
+// SAMPLER_MAX_IMAGE_SIDE, the Sobol and PMJ02BN samplers need their tables (`tablesLoaded`), and
+// PMJ02BN at most PMJ02BN_MAX_SAMPLES_PER_PIXEL samples. Such a render runs the independent sampler.
+// GpuRenderer::start() decides with it, and the Sampler section says it for the settings as they are
+std::string samplerFallbackReason(const KernelVariant& sampler, const RenderSettings& settings, uint32_t width, uint32_t height, bool tablesLoaded);
+
 class GpuRenderer {
 public:
 	GpuRenderer();
@@ -144,6 +152,11 @@ public:
 	// the schedule that records `id`, for pricing a render that has not started
 	const IntegratorSchedule& schedule(IntegratorId id) const;
 
+	// assets/sampler/ loaded, which the Sobol and PMJ02BN samplers need (samplerFallbackReason())
+	bool samplerTablesLoaded() const { return m_samplerTablesLoaded; }
+	// the render's sampler choices as CrtParams carries them
+	void sampleParams(CrtParams& params) const;
+
 	// THE REFERENCE: a copy of the accumulation to measure later renders against, for comparing
 	// strategies at equal samples or equal time. Captured from the next frame recorded; kept until
 	// cleared or the renderer is destroyed, and measured only while the render is the same size
@@ -173,9 +186,10 @@ public:
 		MaterialClass materialClass = MaterialClass::Basic);
 
 private:
-	// the pipeline of `variant` for traversal `traversal` (ignored for a kernel that does not trace)
-	// and `materialClass` (ignored for a kernel not built per class)
-	const ComputePass& pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal, MaterialClass materialClass);
+	// the pipeline of `variant` for traversal `traversal` (ignored for a kernel that does not trace),
+	// `materialClass` (ignored for a kernel not built per class) and `sampleRecord`, whether the
+	// sampler writes a record (ignored for a kernel that does not read it)
+	const ComputePass& pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal, MaterialClass materialClass, bool sampleRecord);
 	// builds every pipeline the selection's integrator runs
 	void preparePipelines(VulkanEngine* engine, const KernelSelection& selection);
 	// the bindings `variant` is built and written with under `traversal`: its own, plus the
@@ -203,13 +217,13 @@ private:
 
 	CrtResourceTable m_resources;
 
-	// ONE PIPELINE PER (VARIANT, TRAVERSAL, MATERIAL CLASS), built on first use: a kernel that traces
+	// ONE PIPELINE PER (VARIANT, TRAVERSAL, MATERIAL CLASS, SAMPLE RECORD), built on first use: a kernel that traces
 	// is built once per traversal, one that does not once, keyed with NO_TRAVERSAL; a kernel built
 	// per material class once per class, any other keyed with NO_CLASS. The registry's entries never
 	// move, so a variant's address is its identity
 	static constexpr uint32_t NO_TRAVERSAL = ~0u;
 	static constexpr uint32_t NO_CLASS = ~0u;
-	std::map<std::tuple<const KernelVariant*, uint32_t, uint32_t>, ComputePass> m_passes;
+	std::map<std::tuple<const KernelVariant*, uint32_t, uint32_t, uint32_t>, ComputePass> m_passes;
 
 	// one schedule per integrator, IntegratorId order, created in the constructor; the active one
 	// is the snapshot's integrator. m_scheduleActive says whether it has buffers to release
@@ -239,6 +253,20 @@ private:
 	// every instance, TLAS or not: what the linear traversal scans
 	uint32_t m_instanceCount { 0 };
 	std::shared_ptr<const RaytraceSceneAccel> m_uploadedScene;
+
+	// pbrt's Sobol matrices for the samplers (crt_common.glsl SamplerTableBuffer), device-local,
+	// uploaded once at start-up from assets/sampler/. Without the files (m_samplerTablesLoaded false)
+	// the binding names a stub and the samplers that read it do not run
+	void uploadSamplerTables(VulkanEngine* engine);
+	SamplerTables m_samplerData;
+	AllocatedBuffer m_samplerTableBuffer {};
+	bool m_samplerTablesLoaded { false };
+	// PMJ02BN's pixel samples are sorted for one sample count, into a region of the table buffer that
+	// starts at word m_pmjRegionWord; rewritten (after a device-wide wait) when a render with another
+	// count starts. 0 for none written yet
+	void uploadPmjPixelSamples(VulkanEngine* engine, uint32_t samplesPerPixel);
+	uint32_t m_pmjRegionWord { 0 };
+	uint32_t m_pmjUploadedSamples { 0 };
 
 	// the environment map's two sampling tables (crt_common.glsl EnvironmentSamplingBuffer),
 	// device-local, replaced only when another map is loaded

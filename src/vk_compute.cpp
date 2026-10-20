@@ -35,6 +35,17 @@ ComputePassBuilder& ComputePassBuilder::setWorkgroupSize(uint32_t x, uint32_t y,
 	return *this;
 }
 
+ComputePassBuilder& ComputePassBuilder::addSpecialization(uint32_t constantId, uint32_t value)
+{
+	VkSpecializationMapEntry entry {};
+	entry.constantID = constantId;
+	entry.offset = (uint32_t)(m_specializationData.size() * sizeof(uint32_t));
+	entry.size = sizeof(uint32_t);
+	m_specializationEntries.push_back(entry);
+	m_specializationData.push_back(value);
+	return *this;
+}
+
 ComputePass ComputePassBuilder::build(VkDevice device)
 {
 	ComputePass pass;
@@ -70,6 +81,14 @@ ComputePass ComputePassBuilder::build(VkDevice device)
 	stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
 	stageInfo.module = shader;
 	stageInfo.pName = "main";
+	VkSpecializationInfo specializationInfo {};
+	if (!m_specializationEntries.empty()) {
+		specializationInfo.mapEntryCount = (uint32_t)m_specializationEntries.size();
+		specializationInfo.pMapEntries = m_specializationEntries.data();
+		specializationInfo.dataSize = m_specializationData.size() * sizeof(uint32_t);
+		specializationInfo.pData = m_specializationData.data();
+		stageInfo.pSpecializationInfo = &specializationInfo;
+	}
 
 	VkComputePipelineCreateInfo pipelineInfo {};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;

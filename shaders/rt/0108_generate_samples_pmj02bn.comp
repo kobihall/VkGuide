@@ -1,0 +1,17 @@
+#version 460
+
+// 01 GENERATE SAMPLES - PMJ02BN. Progressive multi-jittered (0, 2) points with blue noise (Christensen,
+// Kensler and Kilpatrick 2018; pbrt's PMJ02BNSampler): five precomputed sets of 65536 points, read in
+// order for the first ten dimensions and permuted after, each pixel's points rotated by a blue-noise
+// texture. A pixel's own offsets are its cell of set 0, sorted for the render's sample count, so it
+// needs a known count and a render with Unlimited samples runs 0102 instead.
+//
+// Runs twice per frame: once over the pool before kernel 00 (Params.bounce == CRT_CAMERA_PASS) for the
+// camera's dimensions, and at the top of every bounce over the live ray queue. The body and the
+// mathematics are crt_sampler.glsl, which src/sampler.cpp mirrors.
+
+#extension GL_GOOGLE_include_directive : require
+#define CRT_SAMPLER_PMJ02BN
+#include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_sampler.glsl"

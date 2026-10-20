@@ -47,7 +47,11 @@ namespace {
 //13: adds "errorBoundedOffsets" and "watertightTriangles" to "render", the intersection precision
 //   settings. Absent in an older file, which reads with both on: its render differs from the one it
 //   was saved with by what the old 0.001 ray epsilon and Moller-Trumbore got wrong, and by nothing else
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 13;
+//14: adds "samplerRandomization" to "render" (none, permute_digits, fast_owen, owen), and kernel 01's
+//   samplers. A file without a "01" entry in "kernels" (one older than version 8, or written by hand)
+//   reads with "pcg_hash", the only variant there was, rather than a new scene's ZSobol, so it renders
+//   as it always did
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 14;
 
 //---------------------------------------------------------------- writing
 
@@ -176,9 +180,9 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	//every setting, defaults on read, so a scene shared between machines loses nothing and an
 	//older build ignores the block
 	const RenderSettings& r = scene.render;
-	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"unlimitedSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"restartOnChange":{},"errorBoundedOffsets":{},"watertightTriangles":{}}})",
+	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"unlimitedSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"restartOnChange":{},"errorBoundedOffsets":{},"watertightTriangles":{},"samplerRandomization":{}}})",
 		r.width, r.height, r.matchViewport, r.antialiasing, r.maxSamples, r.unlimitedSamples, r.rayDepth, r.useFixedSeed, r.seed, r.samplesPerFrame, r.russianRoulette, r.minBouncesBeforeRoulette, r.restartOnChange,
-		r.errorBoundedOffsets, r.watertightTriangles);
+		r.errorBoundedOffsets, r.watertightTriangles, jsonString(samplerRandomizationId(r.samplerRandomization)));
 
 	//version 11: the integrator and the traversal; version 8: the variant of each stage, by slot
 	//number and variant id. Ids rather than indices so that registering a new variant, or reordering
@@ -563,6 +567,12 @@ void readKernelSelection(simdjson::dom::object& root, int64_t version, SceneDesc
 			ids.stages.emplace_back(std::string(field.key), std::string(value));
 		}
 	}
+	//version 14: kernel 01 had one variant until then, and a file that names none means it. Every file
+	//from version 8 on names it, as "pcg_hash"; an older one has no "kernels" at all
+	const bool namesSampler = std::any_of(ids.stages.begin(), ids.stages.end(), [](const auto& stage) { return stage.first == kernelSlotNumber(KernelSlot::GenerateSamples); });
+	if (!namesSampler) {
+		ids.stages.emplace_back(kernelSlotNumber(KernelSlot::GenerateSamples), "pcg_hash");
+	}
 	scene.kernels = kernelSelectionFromIds(ids, &scene.kernelWarnings);
 }
 
@@ -614,6 +624,11 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 	readOptionalBool(object["restartOnChange"], out.restartOnChange);
 	readOptionalBool(object["errorBoundedOffsets"], out.errorBoundedOffsets);
 	readOptionalBool(object["watertightTriangles"], out.watertightTriangles);
+	//version 14
+	std::string_view randomization;
+	if (object["samplerRandomization"].get_string().get(randomization) == simdjson::SUCCESS) {
+		out.samplerRandomization = samplerRandomizationFromId(std::string(randomization));
+	}
 
 	//a hand-edited file cannot land on something the ui could not: the custom-resolution fields
 	//hold to the same bounds

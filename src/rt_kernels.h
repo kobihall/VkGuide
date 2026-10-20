@@ -13,7 +13,8 @@
 // so the directory listing IS the diagram.
 //
 //     00 Generate camera rays      once per frame, over the whole path pool
-//     01 Generate samples          per bounce, over the live ray queue
+//     01 Generate samples          per bounce, over the live ray queue (and, for a sampler that
+//                                  writes the sample record, once over the pool before 00)
 //     02 Intersect closest         per bounce, over the live ray queue
 //     03 Handle escaped            per bounce, over the queue 02 filled with misses
 //     04 Handle emissive geometry  per bounce, over the queue 02 filled with light hits
@@ -45,6 +46,7 @@
 #include <vector>
 
 #include <bvh_layout.h>
+#include <sampler.h>
 
 // The stage library, in the path tracer's dispatch order. The numeric values are the NN in the
 // shader filenames and are part of the scene file format - never renumber them, only append.
@@ -89,8 +91,14 @@ enum class CrtBinding : uint32_t {
 	ShadowRays = 19,
 	TriangleLights = 20,
 	EnvironmentSampling = 21,
-	// 22 to 25 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+	// 22 is reserved by docs/plans/pbrt-roadmap.md for a plan not built yet
+	// one RaySamples record per pool slot (docs/plans/completed/pbrt-sample-generation.md)
+	RaySamples = 23,
+	// 24 and 25 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
 	MaterialParams = 26,
+	// 27 to 45 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+	// pbrt's Sobol matrices and the other tables the samplers read, uploaded once
+	SamplerTables = 46,
 	Count
 };
 
@@ -129,7 +137,9 @@ const char* materialClassId(MaterialClass materialClass);
 enum class KernelSettings : uint32_t {
 	None,
 	// the BVH builder, leaf size and SAH costs, plus the build statistics
-	AccelerationStructure
+	AccelerationStructure,
+	// the sampler's randomization (kernel 01 variants that scramble Sobol or Halton points)
+	Sampler
 };
 
 // Which lights a kernel 06 variant sends shadow rays to - the strategy, as far as the rest of the
@@ -193,6 +203,22 @@ struct KernelVariant {
 
 	// kernel 06: which lights it samples (see NextEvent)
 	NextEvent nextEvent { NextEvent::None };
+
+	// kernel 01: the variant writes the RaySamples record, which kernels 00 and 06 then read
+	// (the CRT_SAMPLE_RECORD specialization constant), and which the renderer allocates only while one is selected
+	bool writesRecord { false };
+	// kernel 01: the variant also runs once over the whole pool before kernel 00, with
+	// CRT_CAMERA_PASS as the bounce, to write the camera's dimensions
+	bool cameraPass { false };
+	// kernel 01: the variant needs the render's sample count, so an unlimited render runs another
+	bool needsSampleCount { false };
+	// kernel 01: the generator it runs, src/sampler.h
+	SamplerKind sampler { SamplerKind::Count };
+
+	// kernels 00 and 06: the kernel draws its random numbers through crt_samples.glsl. It is built
+	// with the specialization constant CRT_SAMPLE_RECORD (constant_id 0) set to whether the selected
+	// sampler writes a record, so a kernel run without one is the code it always was
+	bool readsRecord { false };
 };
 
 // A traversal: how every kernel that traces searches the scene. A scene-wide choice rather than a

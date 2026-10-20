@@ -12,6 +12,7 @@
 #include "include/crt_material_class.glsl"
 #include "include/crt_interaction.glsl"
 #include "include/crt_random.glsl"
+#include "include/crt_samples.glsl"
 #include "equirect.glsl"
 #include "include/crt_scatter.glsl"
 #include "include/crt_light.glsl"

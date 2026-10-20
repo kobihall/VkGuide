@@ -2,7 +2,7 @@
 
 Every render uses Ray Tracing in One Weekend's thin-lens perspective camera: a pinhole when the aperture is zero, a uniformly sampled disk otherwise. pbrt adds orthographic and spherical projections, a realistic camera that traces rays through the lens elements of real lens prescriptions, and the camera measurement equation that gives a lens its vignetting. Its exercises add aperture shapes for bokeh and tilt-shift film planes. This plan adds all of them as camera data, and absorbs the one useful idea of the deleted `depth-of-field.md`, focusing by clicking.
 
-*Not implemented. Depends on [pbrt-sample-generation.md](pbrt-sample-generation.md). The realistic camera also depends on [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md), [physoptics-beam-axis.md](physoptics-beam-axis.md) (assemblies) and [physoptics-prescription-import.md](physoptics-prescription-import.md), and is item 28 of the [laser optics plan](physoptics-laser-optics.md)'s roadmap. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-sample-generation.md](completed/pbrt-sample-generation.md). The realistic camera also depends on [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md), [physoptics-beam-axis.md](physoptics-beam-axis.md) (assemblies) and [physoptics-prescription-import.md](physoptics-prescription-import.md), and is item 28 of the [laser optics plan](physoptics-laser-optics.md)'s roadmap. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decision already made
 

@@ -7,7 +7,9 @@
 // over the renderer's wavefront pool of width x height x samplesPerFrame paths, with index queues
 // compacted per bounce by a workgroup-aggregated allocator whose header doubles as the indirect
 // dispatch arguments. Each stage runs whichever variant the render's selection names, and the ones
-// that trace run the build of its traversal; nothing here names a strategy.
+// that trace run the build of its traversal; nothing here names a strategy. A sampler that writes the
+// sample record (docs/plans/completed/pbrt-sample-generation.md) also has a camera pass, which runs over
+// the whole pool before 00 so that 00 can read the camera's dimensions.
 
 #include <array>
 

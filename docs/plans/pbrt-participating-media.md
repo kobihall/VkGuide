@@ -66,7 +66,7 @@ pbrt's `SampleT_maj()` with null scattering (PBR 4ed §11.2.1 and §14.1.3): a m
 - Absorption ends the path. Scattering appends it to queue 8 with the scattering point. Null scattering continues.
 - Passing the hit distance appends the path to the surface queues through `crt_classify.glsl`, or to the escaped queue if there was no hit.
 
-The number of events is unbounded, so after the first two numbers, which come from `RaySamples.medium` ([pbrt-sample-generation.md](pbrt-sample-generation.md)), kernel 05 draws from the path's PCG stream. pbrt does the same with an RNG hashed from the ray.
+The number of events is unbounded, so after the first two numbers, which come from `RaySamples.medium` ([pbrt-sample-generation.md](completed/pbrt-sample-generation.md)), kernel 05 draws from the path's PCG stream. pbrt does the same with an RNG hashed from the ray. Kernel 01 writes zeros to the medium fields today: this plan generates them, dimensions 6 + 12 b + 8 to 11, in `fillBounceRecord()` of `crt_sampler.glsl` and `sampleBounceRecord()` of `src/sampler.cpp`.
 
 ### Chromatic media
 

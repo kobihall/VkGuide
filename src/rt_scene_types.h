@@ -20,6 +20,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <rt_material.h>
+#include <sampler.h>
 #include <shape.h>
 
 //---------------------------------------------------------------- shapes
@@ -436,6 +437,9 @@ struct RenderSettings {
 	// the watertight triangle test, which cannot lose a ray through a shared edge, and box tests
 	// widened so rounding cannot cull a grazing ray. Off restores Moller-Trumbore and the plain slabs
 	bool watertightTriangles { true };
+	// SAMPLER (docs/plans/completed/pbrt-sample-generation.md). How the Sobol and Halton samplers of
+	// kernel 01 scramble their points; the others ignore it. Owen scrambling is the default
+	SamplerRandomization samplerRandomization { SamplerRandomization::Owen };
 
 	bool operator==(const RenderSettings&) const = default;
 };

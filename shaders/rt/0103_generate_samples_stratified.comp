@@ -1,0 +1,15 @@
+#version 460
+
+// 01 GENERATE SAMPLES - STRATIFIED. Jittered strata. Every dimension of a pixel's samples is permuted among the strata of the render's
+// Max samples (one sample in each, in every 2D and 1D request), then jittered inside it. Needs a known
+// count, so a render with Unlimited samples runs 0102 instead.
+//
+// Runs twice per frame: once over the pool before kernel 00 (Params.bounce == CRT_CAMERA_PASS) for the
+// camera's dimensions, and at the top of every bounce over the live ray queue. The body and the
+// mathematics are crt_sampler.glsl, which src/sampler.cpp mirrors.
+
+#extension GL_GOOGLE_include_directive : require
+#define CRT_SAMPLER_STRATIFIED
+#include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_sampler.glsl"

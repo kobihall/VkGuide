@@ -12,6 +12,13 @@
 
 namespace {
 
+//the selected sampler writes the RaySamples record: kernels 00 and 06 are built to read it
+bool samplerWritesRecord(const KernelSelection& selection)
+{
+	const KernelVariant* sampler = selection.selected(KernelSlot::GenerateSamples);
+	return sampler != nullptr && sampler->implemented && sampler->writesRecord;
+}
+
 //shaders/image_error.comp's workgroup, each of which leaves one vec2 of partial sums
 constexpr uint32_t ERROR_WORKGROUP = 16;
 
@@ -150,6 +157,7 @@ void GpuRenderer::init(VulkanEngine* engine)
 
 	//the environment tables' binding must always name a buffer, a map or no map
 	uploadEnvironment(engine, nullptr);
+	uploadSamplerTables(engine);
 
 	//what a new scene renders with, so its first render does not stall on pipeline creation
 	preparePipelines(engine, defaultKernelSelection());
@@ -180,6 +188,10 @@ void GpuRenderer::destroy(VulkanEngine* engine)
 	}
 	m_uploadedEnvironment.reset();
 	m_hasEnvironmentBuffer = false;
+	if (m_samplerTableBuffer.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_samplerTableBuffer);
+		m_samplerTableBuffer = {};
+	}
 	clearReference(engine);
 	if (m_errorPartials.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_errorPartials);
@@ -224,11 +236,12 @@ std::vector<CrtBinding> GpuRenderer::bindingsOf(const KernelVariant& variant, ui
 	return bindings;
 }
 
-const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal, MaterialClass materialClass)
+const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal, MaterialClass materialClass, bool sampleRecord)
 {
 	const uint32_t key = variant.traces ? traversal : NO_TRAVERSAL;
 	const uint32_t classKey = variant.perMaterialClass ? (uint32_t)materialClass : NO_CLASS;
-	const auto found = m_passes.find({ &variant, key, classKey });
+	const uint32_t recordKey = variant.readsRecord && sampleRecord ? 1u : 0u;
+	const auto found = m_passes.find({ &variant, key, classKey, recordKey });
 	if (found != m_passes.end()) {
 		return found->second;
 	}
@@ -254,7 +267,12 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 	for (const CrtBinding binding : bindingsOf(variant, traversal)) {
 		builder.addBinding((uint32_t)binding, crtBindingType(binding));
 	}
-	const auto inserted = m_passes.emplace(std::make_tuple(&variant, key, classKey), builder
+	//a kernel that draws its numbers through crt_samples.glsl is specialized for whether there is a
+	//record to read them from (CRT_SAMPLE_RECORD), so without one it is the code it always was
+	if (variant.readsRecord) {
+		builder.addSpecialization(0, recordKey);
+	}
+	const auto inserted = m_passes.emplace(std::make_tuple(&variant, key, classKey, recordKey), builder
 		.setPushConstants<CrtParams>()
 		.setWorkgroupSize(CRT_WORKGROUP)
 		.build(engine->m_device));
@@ -263,7 +281,7 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 
 const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& variant, MaterialClass materialClass)
 {
-	return pass(engine, variant, m_snapshot.kernels.traversal, materialClass);
+	return pass(engine, variant, m_snapshot.kernels.traversal, materialClass, samplerWritesRecord(m_snapshot.kernels));
 }
 
 void GpuRenderer::preparePipelines(VulkanEngine* engine, const KernelSelection& selection)
@@ -275,7 +293,7 @@ void GpuRenderer::preparePipelines(VulkanEngine* engine, const KernelSelection& 
 		}
 		const uint32_t classes = variant->perMaterialClass ? (uint32_t)MaterialClass::Count : 1u;
 		for (uint32_t materialClass = 0; materialClass < classes; materialClass++) {
-			pass(engine, *variant, selection.traversal, (MaterialClass)materialClass);
+			pass(engine, *variant, selection.traversal, (MaterialClass)materialClass, samplerWritesRecord(selection));
 		}
 	}
 }
@@ -284,7 +302,7 @@ void GpuRenderer::dispatch(VkCommandBuffer cmd, VulkanEngine* engine, const Kern
 	MaterialClass materialClass)
 {
 	const uint32_t traversal = m_snapshot.kernels.traversal;
-	const ComputePass& computePass = pass(engine, variant, traversal, materialClass);
+	const ComputePass& computePass = pass(engine, variant, traversal, materialClass, samplerWritesRecord(m_snapshot.kernels));
 	const VkDescriptorSet set = engine->getCurrentFrame().frameDescriptors.allocate(engine->m_device, computePass.setLayout);
 
 	//a kernel gets only the bindings it declared, written from whatever their owners published
@@ -551,6 +569,82 @@ void GpuRenderer::uploadEnvironment(VulkanEngine* engine, const std::shared_ptr<
 	}
 }
 
+void GpuRenderer::uploadSamplerTables(VulkanEngine* engine)
+{
+	std::string error;
+	const std::filesystem::path directory = std::filesystem::path(engine->m_rootPath) / "assets" / "sampler";
+	m_samplerTablesLoaded = loadSamplerTables(directory, m_samplerData, error);
+	std::vector<uint32_t> words;
+	if (m_samplerTablesLoaded) {
+		words = packSamplerTablesForGpu(m_samplerData);
+		m_pmjRegionWord = words[6];
+	} else {
+		//the Sobol samplers fall back to the independent one; the binding still has to name a buffer
+		fmt::println("GpuRenderer: sampler tables not loaded ({}), the Sobol samplers are unavailable", error);
+		words.assign(16, 0u);
+	}
+	const VkDeviceSize bytes = sizeof(uint32_t) * words.size();
+
+	AllocatedBuffer staging = engine->createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+	memcpy(staging.info.pMappedData, words.data(), bytes);
+	vmaFlushAllocation(engine->m_memAllocator, staging.allocation, 0, bytes); //flush vma on MoltenVK
+
+	m_samplerTableBuffer = engine->createBuffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		VkBufferCopy copy {};
+		copy.size = bytes;
+		vkCmdCopyBuffer(cmd, staging.buffer, m_samplerTableBuffer.buffer, 1, &copy);
+	});
+	engine->destroyBuffer(staging);
+	m_resources.setBuffer(CrtBinding::SamplerTables, m_samplerTableBuffer.buffer, bytes);
+	if (m_samplerTablesLoaded) {
+		fmt::println("GpuRenderer: sampler tables uploaded - {:.2f} MB", double(bytes) / (1024.0 * 1024.0));
+	}
+}
+
+void GpuRenderer::uploadPmjPixelSamples(VulkanEngine* engine, uint32_t samplesPerPixel)
+{
+	if (!m_samplerTablesLoaded || m_pmjUploadedSamples == samplesPerPixel) {
+		return;
+	}
+	preparePmj02BnPixelSamples(m_samplerData, samplesPerPixel);
+	const std::vector<uint32_t> words = packPmj02BnPixelSamples(m_samplerData);
+	const VkDeviceSize bytes = sizeof(uint32_t) * words.size();
+
+	AllocatedBuffer staging = engine->createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+	memcpy(staging.info.pMappedData, words.data(), bytes);
+	vmaFlushAllocation(engine->m_memAllocator, staging.allocation, 0, bytes); //flush vma on MoltenVK
+
+	//a frame in flight may be reading the region for the previous count. Changing the count is a
+	//settings change, rare enough for a device-wide wait
+	vkDeviceWaitIdle(engine->m_device);
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		VkBufferCopy copy {};
+		copy.dstOffset = sizeof(uint32_t) * (VkDeviceSize)m_pmjRegionWord;
+		copy.size = bytes;
+		vkCmdCopyBuffer(cmd, staging.buffer, m_samplerTableBuffer.buffer, 1, &copy);
+	});
+	engine->destroyBuffer(staging);
+	m_pmjUploadedSamples = samplesPerPixel;
+}
+
+void GpuRenderer::sampleParams(CrtParams& params) const
+{
+	const KernelVariant* sampler = m_snapshot.kernels.selected(KernelSlot::GenerateSamples);
+	if (sampler == nullptr || !sampler->writesRecord) {
+		return;
+	}
+	const RenderSettings& settings = m_snapshot.settings;
+	const SamplerParams sampling = makeSamplerParams(sampler->sampler, settings.samplerRandomization, m_snapshot.seed, m_snapshot.width, m_snapshot.height, (uint32_t)std::max(settings.maxSamples, 1), settings.unlimitedSamples);
+	const PackedSamplerParams packed = packSamplerParams(sampling);
+	params.samplerOptions = packed.sampler;
+	params.samplerHalton = packed.halton;
+	params.samplerStrata = packed.strata;
+	params.samplerInvSamples = packed.inverseSamples;
+	params.samplerInvStrataX = packed.inverseStrataX;
+	params.samplerInvStrataY = packed.inverseStrataY;
+}
+
 void GpuRenderer::publishEngineImages(VulkanEngine* engine)
 {
 	//with no map loaded (or the snapshot not using it) the escaped kernel never samples the
@@ -565,9 +659,42 @@ void GpuRenderer::publishEngineImages(VulkanEngine* engine)
 
 //---------------------------------------------------------------- a render
 
+std::string samplerFallbackReason(const KernelVariant& sampler, const RenderSettings& settings, uint32_t width, uint32_t height, bool tablesLoaded)
+{
+	const bool usesTables = sampler.sampler == SamplerKind::Sobol || sampler.sampler == SamplerKind::PaddedSobol || sampler.sampler == SamplerKind::ZSobol
+		|| sampler.sampler == SamplerKind::Pmj02Bn;
+	const bool interleaves = usesTables || sampler.sampler == SamplerKind::Halton;
+	if (sampler.needsSampleCount && settings.unlimitedSamples) {
+		return fmt::format("{} needs a known number of samples, so a render with Unlimited samples runs the independent sampler.", sampler.name);
+	}
+	if (usesTables && !tablesLoaded) {
+		return fmt::format("{} needs assets/sampler/, which did not load, so renders run the independent sampler.", sampler.name);
+	}
+	if (interleaves && std::max(width, height) > SAMPLER_MAX_IMAGE_SIDE) {
+		return fmt::format("{} supports images up to {} pixels on a side, so this size renders with the independent sampler.", sampler.name, SAMPLER_MAX_IMAGE_SIDE);
+	}
+	if (sampler.sampler == SamplerKind::Pmj02Bn && (uint32_t)settings.maxSamples > PMJ02BN_MAX_SAMPLES_PER_PIXEL) {
+		return fmt::format("{} supports up to {} samples per pixel, so this count renders with the independent sampler.", sampler.name, PMJ02BN_MAX_SAMPLES_PER_PIXEL);
+	}
+	return {};
+}
+
 void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 {
 	m_snapshot = std::move(snapshot);
+
+	//THE SAMPLER THIS RENDER RUNS. The selection is the user's and stays as it is; what runs instead,
+	//when the selected sampler cannot run this render, is the independent one
+	if (const KernelVariant* sampler = m_snapshot.kernels.selected(KernelSlot::GenerateSamples)) {
+		const std::string reason = samplerFallbackReason(*sampler, m_snapshot.settings, m_snapshot.width, m_snapshot.height, m_samplerTablesLoaded);
+		if (!reason.empty()) {
+			m_snapshot.kernels[KernelSlot::GenerateSamples] = (uint32_t)findKernelVariant(KernelSlot::GenerateSamples, "independent");
+			fmt::println("GpuRenderer: {}", reason);
+		}
+	}
+	if (const KernelVariant* sampler = m_snapshot.kernels.selected(KernelSlot::GenerateSamples); sampler != nullptr && sampler->sampler == SamplerKind::Pmj02Bn) {
+		uploadPmjPixelSamples(engine, (uint32_t)std::max(m_snapshot.settings.maxSamples, 1));
+	}
 
 	//another integrator's schedule gives its buffers back first. The frames in flight may still
 	//use them, and switching integrator is rare, so a device-wide wait is the simple way
@@ -810,6 +937,7 @@ CrtParams GpuRenderer::baseParams(VulkanEngine* engine) const
 	//the map is stored divided by its scale (environmentStorageScale()); the texture reads get
 	//it back here. The light list prices the environment from the file's own values instead
 	params.environmentIntensity = m_snapshot.environmentIntensity * m_snapshot.environmentMapScale;
+	sampleParams(params);
 	return params;
 }
 

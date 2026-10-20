@@ -157,6 +157,9 @@ public:
 	bool m_isInitialized{ false };
 	int m_frameNumber {0};
 	bool m_stop_rendering{ false };
+	// VKGUIDE_WINDOW=minimized: the window starts minimized and the loop renders anyway, where it
+	// would otherwise pause while the window is hidden
+	bool m_renderWhenHidden{ false };
 
 	DeletionQueue m_mainDeletionQueue;
 

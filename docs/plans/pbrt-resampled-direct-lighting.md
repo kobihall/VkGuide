@@ -30,7 +30,7 @@ RIS against BSDF sampling: the chosen candidate's contribution is multiplied by 
 
 Settings: **Candidates** (M, 1 to 32, default 8) and **Target**: with the BSDF (the full unshadowed contribution) or without it (`Le |cos θ| / d²`, cheaper when the material evaluation is expensive).
 
-Each candidate needs its own random numbers. The first comes from `RaySamples.direct` ([pbrt-sample-generation.md](pbrt-sample-generation.md)) and the rest from the path's PCG stream, as the record's spill rule says.
+Each candidate needs its own random numbers. The first comes from `RaySamples.direct` ([pbrt-sample-generation.md](completed/pbrt-sample-generation.md)) and the rest from the path's PCG stream, as the record's spill rule says.
 
 ### ReSTIR
 
@@ -41,7 +41,7 @@ A second variant, `0607_surface_scatter_restir`, applies reuse at the first boun
 - For spatial reuse, a reuse pass merges k reservoirs (default 5) from random pixels within a radius (default 30 pixels) whose first hit is similar: normals within 25° and depths within 10 %.
 - The reuse pass then emits the one shadow ray for the pixel's final reservoir.
 
-The reuse pass must run after every pixel's initial reservoir exists and before kernel 08. `KernelVariant` gains `reusePass`, the shader of a second pipeline that the variant owns (`0607_surface_scatter_restir_reuse.comp`). The path schedule dispatches it at bounce 0, between kernel 06 and kernel 08, when the selected kernel 06 variant has one. This follows `cameraPass` in [pbrt-sample-generation.md](pbrt-sample-generation.md), and needs no new slot.
+The reuse pass must run after every pixel's initial reservoir exists and before kernel 08. `KernelVariant` gains `reusePass`, the shader of a second pipeline that the variant owns (`0607_surface_scatter_restir_reuse.comp`). The path schedule dispatches it at bounce 0, between kernel 06 and kernel 08, when the selected kernel 06 variant has one. This follows `cameraPass` in [pbrt-sample-generation.md](completed/pbrt-sample-generation.md), and needs no new slot.
 
 A reservoir's sample is valid for its owner's target, not a neighbor's. Merging with plain weights, as in Bitterli et al.'s biased variant, darkens contact shadows and edges. A **Combination** setting offers:
 

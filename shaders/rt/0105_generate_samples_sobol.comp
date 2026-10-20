@@ -1,0 +1,14 @@
+#version 460
+
+// 01 GENERATE SAMPLES - SOBOL. One Sobol sequence over the whole image (pbrt's SobolSampler): the first scale^2 points are one per
+// pixel, and every aligned power-of-two run of samples is a net.
+//
+// Runs twice per frame: once over the pool before kernel 00 (Params.bounce == CRT_CAMERA_PASS) for the
+// camera's dimensions, and at the top of every bounce over the live ray queue. The body and the
+// mathematics are crt_sampler.glsl, which src/sampler.cpp mirrors.
+
+#extension GL_GOOGLE_include_directive : require
+#define CRT_SAMPLER_SOBOL
+#include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_sampler.glsl"

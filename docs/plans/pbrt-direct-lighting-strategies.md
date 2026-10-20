@@ -33,7 +33,7 @@ A **Light samples** setting, N from 1 to 8, for the light and MIS variants: kern
 
 Veach's multi-sample MIS weighs the light technique by its count, `w_bsdf = p_bsdf / (p_bsdf + N p_light)` for the balance heuristic. Both heuristics depend only on the ratio of the two densities, so kernel 06 writes `misPdf = p_bsdf / N`, and kernels 03 and 04 compute the right weight without knowing N.
 
-The extra samples need random numbers. [pbrt-sample-generation.md](pbrt-sample-generation.md)'s `RaySamples` holds one light sample per bounce, and consumers that need more draw them from the path's PCG stream, so for N above 1 the first light sample comes from the sampler and the rest from PCG.
+The extra samples need random numbers. [pbrt-sample-generation.md](completed/pbrt-sample-generation.md)'s `RaySamples` holds one light sample per bounce, and consumers that need more draw them from the path's PCG stream, so for N above 1 the first light sample comes from the sampler and the rest from PCG.
 
 ### Sampling every light
 

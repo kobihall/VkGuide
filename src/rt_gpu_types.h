@@ -110,9 +110,19 @@ struct CrtParams {
 	// every record in instances[], whether or not a TLAS was built over them (shaders/rt/include/
 	// crt_linear.glsl scans exactly this many)
 	uint32_t instanceCount;
-	float pad0;
+	// the sampler's choices, packed (src/sampler.h PackedSamplerParams; unpacked by
+	// shaders/rt/include/crt_sampler.glsl). Not the field name `sampler`, a reserved word in GLSL
+	uint32_t samplerOptions;
+	uint32_t samplerHalton;
+	uint32_t samplerStrata;
+	float samplerInvSamples;
+	float samplerInvStrataX;
+	float samplerInvStrataY;
+	uint32_t pad0;
+	uint32_t pad1;
+	uint32_t pad2;
 };
-static_assert(sizeof(CrtParams) == 176);
+static_assert(sizeof(CrtParams) == 208);
 
 inline constexpr uint32_t CRT_FLAG_JITTER = 1u << 0;
 inline constexpr uint32_t CRT_FLAG_ROULETTE = 1u << 1;
@@ -122,12 +132,16 @@ inline constexpr uint32_t CRT_FLAG_SOLID_BACKGROUND = 1u << 3;
 inline constexpr uint32_t CRT_FLAG_ERROR_BOUNDS = 1u << 4;
 inline constexpr uint32_t CRT_FLAG_WATERTIGHT = 1u << 5;
 
+// Params.bounce for kernel 01's pass over the whole pool before kernel 00 (crt_common.glsl)
+inline constexpr uint32_t CRT_CAMERA_PASS = 0xFFFFFFFFu;
+
 // crt_common.glsl CRT_WORKGROUP; every kernel is 1-D at this size
 inline constexpr uint32_t CRT_WORKGROUP = 64;
 
 // the largest path pool the tracer allocates: width x height x samplesPerFrame is clamped to it
 // by lowering samplesPerFrame. 180 bytes per path (path state 64, hit 24, shadow ray 48, radiance
-// 16, seven queue entries 28), so ~720 MB at the cap
+// 16, seven queue entries 28), so ~720 MB at the cap, and 48 more for the sample record while a
+// sampler that writes one is selected (SAMPLE_RECORD_BYTES), ~912 MB
 inline constexpr uint32_t CRT_MAX_POOL = 4u * 1024u * 1024u;
 inline constexpr int CRT_MAX_DEPTH = 16;
 inline constexpr int CRT_MAX_SAMPLES_PER_FRAME = 8;

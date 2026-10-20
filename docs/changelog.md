@@ -10,6 +10,10 @@
 - **Raytrace Render** → **Intersection precision** has **Error-bounded ray offsets** and **Watertight triangles**. Both are on by default and saved with the scene.
 - `assets/scenes/thin_glass.gltf` is a pane of glass modeled as two quads 1e-4 apart, in front of a tiled wall. With error-bounded offsets the wall looks the same as without the pane, apart from the Fresnel loss.
 - `bin/bvh_bench` runs the robust-intersection checks first: nextafter parity, a crack test, error bounds against a double-precision reference, and spawn offsets that must not re-hit their surface. **--robust N** sets the rays per check.
+- Kernel 01 has seven samplers: Independent, Stratified, Halton, Sobol, Padded Sobol, ZSobol and PMJ02BN. **Raytrace Render** → **Sampler** chooses one, and **Randomization** chooses how Sobol and Halton points are scrambled. At equal samples the low-discrepancy samplers bring the relative MSE to between 0.6 and 0.8 of PCG's on the Cornell box, and between 0.2 and 0.45 on the Veach scene.
+- `bin/sampler_test` checks the samplers on the CPU: determinism, (0, 2)-nets, strata, discrepancy, and ZSobol's blue-noise error.
+- `assets/scenes/all_materials.gltf` is the Cornell box with one surface of each material type: Lambertian, Phong, fuzzy metal, glass, and two `pbr` finishes. It names no sampler, so it renders with **PCG per bounce**, the regression scene for bit-identical renders.
+- The `VKGUIDE_WINDOW` environment variable opens the window without taking focus: `background` opens it behind the active app, and `minimized` minimizes it to the Dock, where it keeps rendering. Unset, the window opens in front and focused, as before.
 
 ### Changed
 
@@ -23,6 +27,9 @@
 - A ray leaving a surface starts just past the rounding error of its hit point, not at the hit point with the first 0.001 of its length skipped. A shadow ray to an area light ends just past the light point's error instead of at 0.9999 of the distance. Renders differ from before by float rounding in the noise, and the converged image changes only where the epsilon was wrong. **Error-bounded ray offsets** off restores the old behavior bit for bit.
 - Triangles are tested with the watertight algorithm, and bounding box tests are widened so rounding cannot cull a grazing ray. It costs about 8 to 12 percent GPU time on Sponza, and the nodes and primitives tested per ray move by under 1.5 percent. **Watertight triangles** off restores Möller–Trumbore and the plain box tests bit for bit.
 - Scene files are payload version 13, which adds `"errorBoundedOffsets"` and `"watertightTriangles"` to `"render"`. An older file opens with both on.
+- A new scene renders with the ZSobol sampler, so its noise differs from before and the image converges faster; the converged image is the same. ZSobol costs about 40 percent more GPU time per frame on the all-shapes Cornell box. A scene file that names no sampler opens with **PCG per bounce** and renders bit-identical to before.
+- Stratified and PMJ02BN need a known number of samples. With **Unlimited samples** on, a render runs the independent sampler in their place, and the **Sampler** section says so.
+- Scene files are payload version 14, which adds `"samplerRandomization"` to `"render"`.
 
 ### Fixed
 
@@ -37,6 +44,11 @@
 - `src/rt_material.h/.cpp` holds the material model: `MaterialDef` with its parameters in a `ParamSet` by name, and `MATERIAL_TRAITS`, the only per-type knowledge outside the shaders. A new type is a traits row, its parameters, its pack function, and its record reader in `shaders/rt/include/crt_material.glsl`.
 - Binding 7 is a 16-byte `GpuMaterial` header (type, flags, parameter offset and count), and binding 26, `MaterialParams`, holds each material's parameter record. The six existing types pack their former 64-byte record unchanged, as `CrtClassicMaterial`.
 - Kernel 02 classifies a hit from its material's flags, and the traversal's alpha test reads a material's parameters only when it has `CRT_MATERIAL_FLAG_CUTOUT`.
+- Binding 23, `RaySamples`, holds a 48-byte record per path that kernel 01 writes and kernels 00 and 06 read, allocated only while a sampler that writes one is selected (192 MB at the 4M-path cap). Binding 46, `SamplerTables`, holds pbrt-v4's Sobol matrices, PMJ02BN sets and blue-noise textures from `assets/sampler/`, which `tools/sampler_tables/convert_pbrt_tables.py` makes.
+- A record-writing sampler runs a camera pass over the whole pool before kernel 00, with `CRT_CAMERA_PASS` as its bounce (`KernelVariant::cameraPass`).
+- Kernels 00 and 06 draw their random numbers through `sampleDimension()` in `shaders/rt/include/crt_samples.glsl` and are built with the specialization constant `CRT_SAMPLE_RECORD` (`ComputePassBuilder::addSpecialization()`, `KernelVariant::readsRecord`). Code that only runs with a record goes behind it, not behind a run-time flag, which changed `pcg_hash`'s rounding.
+- `CrtParams` is 208 bytes: it carries the sampler's packed parameters and three reciprocals, since no sampler shader divides floats.
+- `src/sampler.h/.cpp` is the static library `rt_sampler`, the line-for-line mirror of `shaders/rt/include/crt_sampler.glsl`. `tools/sampler_tables/generate_halton_tables.py` writes the Halton tables both sides read.
 - Kernel 02 sends hits on complex materials to queue 6, `CRT_QUEUE_SURFACE_COMPLEX`. Every kernel 06 variant includes `include/crt_material_class.glsl`, sets `KernelVariant::perMaterialClass`, and is built and dispatched once per class over `KernelDomain::SurfaceQueues`. The path pool takes 180 bytes per path.
 - `LoadedGLTF::materialsByIndex` and `materialNames` keep a file's materials in its own order, which a library entry's origin names them by.
 - `BvhTriangle` holds three vertices, `v0`, `v1` and `v2`, instead of a vertex and two edges, so triangles that share a vertex hold identical copies of it. The surface index moves from `e1.w` to `v1.w`. The struct stays 48 bytes, and Möller–Trumbore takes its edges as `v1 - v0` and `v2 - v0`, the same floats as before.

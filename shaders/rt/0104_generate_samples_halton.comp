@@ -1,0 +1,14 @@
+#version 460
+
+// 01 GENERATE SAMPLES - HALTON. Halton points scaled over the image, so that neighbouring pixels share one well-distributed set
+// (Grunschloss's index mapping, pbrt's HaltonSampler).
+//
+// Runs twice per frame: once over the pool before kernel 00 (Params.bounce == CRT_CAMERA_PASS) for the
+// camera's dimensions, and at the top of every bounce over the live ray queue. The body and the
+// mathematics are crt_sampler.glsl, which src/sampler.cpp mirrors.
+
+#extension GL_GOOGLE_include_directive : require
+#define CRT_SAMPLER_HALTON
+#include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_sampler.glsl"

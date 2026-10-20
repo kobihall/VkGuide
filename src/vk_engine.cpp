@@ -15,6 +15,7 @@
 
 #include <stdio.h>			// printf, fprintf
 #include <stdlib.h>			// abort, getenv
+#include <string.h>			// strcmp
 #include <iostream>
 #include <vector>
 #include <thread>
@@ -476,7 +477,7 @@ void VulkanEngine::run()
 
 		glfwPollEvents();
 
-		if(glfwGetWindowAttrib(m_window, GLFW_VISIBLE) != GLFW_TRUE) {
+		if(glfwGetWindowAttrib(m_window, GLFW_VISIBLE) != GLFW_TRUE && !m_renderWhenHidden) {
 			m_stop_rendering = true;
 		}
 		else {
@@ -605,7 +606,22 @@ void VulkanEngine::initGLFW()
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
+	//VKGUIDE_WINDOW=background opens the window without taking focus, for a scripted run while you
+	//work in another app or on another desktop; =minimized also minimizes it to the Dock and keeps
+	//rendering there. Unset, the window opens in front and focused, as it always has
+	const char* windowMode = getenv("VKGUIDE_WINDOW");
+	const bool minimized = windowMode != nullptr && strcmp(windowMode, "minimized") == 0;
+	const bool background = minimized || (windowMode != nullptr && strcmp(windowMode, "background") == 0);
+	if (background) {
+		glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
+		glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+	}
+
 	m_window = glfwCreateWindow(m_windowExtent.width, m_windowExtent.height, "Vulkan", nullptr, nullptr);
+	if (minimized) {
+		glfwIconifyWindow(m_window);
+		m_renderWhenHidden = true;
+	}
 	glfwSetWindowUserPointer(m_window, this);
 
 	//both of these are gated on the one capture flag rather than on separate heuristics, so there

@@ -10,10 +10,16 @@
 //
 // The camera is RTCamera (src/rt_job.cpp) in float: same origin, lower-left corner, horizontal
 // and vertical vectors, same lens basis, so both backends fire the same primary rays.
+//
+// The offset in the pixel and the position on the lens come from the sample record when the
+// selected sampler writes one (kernel 01's camera pass ran just before this); the path's own stream
+// is then seeded apart from the record, so that what a later bounce draws from it is independent of
+// the camera's numbers.
 
 #extension GL_GOOGLE_include_directive : require
 #include "include/crt_common.glsl"
 #include "include/crt_random.glsl"
+#include "include/crt_samples.glsl"
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
@@ -38,12 +44,16 @@ void main()
 			// the stream depends only on the pixel, which sample of that pixel this is, and the render
 			const uint sampleIndex = imageLoad(sampleCount, ivec2(x, y)).r + k;
 			uint rng = pcgHash(pixel ^ pcgHash(sampleIndex ^ pcgHash(pc.seed)));
+			if (CRT_SAMPLE_RECORD) {
+				rng = pcgHash(rng ^ CRT_RECORD_STREAM_SALT);
+			}
 
 			// pixel x covers [x/W, (x+1)/W) of the image plane, rows top-down; a jittered sample
 			// lands anywhere in the pixel, an un-jittered one at its centre
 			const bool jitter = (pc.flags & CRT_FLAG_JITTER) != 0u;
-			const float jx = jitter ? randomFloat(rng) : 0.5;
-			const float jy = jitter ? randomFloat(rng) : 0.5;
+			const vec2 jitterSample = jitter ? sampleDimension2D(index, rng, CRT_SAMPLE_CAMERA_PIXEL) : vec2(0.5);
+			const float jx = jitterSample.x;
+			const float jy = jitterSample.y;
 			const float u = (float(x) + jx) / float(pc.width);
 			const float v = (float(pc.height - 1u - y) + jy) / float(pc.height);
 
@@ -51,7 +61,7 @@ void main()
 			vec3 target = pc.lowerLeft.xyz + u * pc.horizontal.xyz + v * pc.vertical.xyz;
 			const float lensRadius = pc.lensU.w;
 			if (lensRadius > 0.0) {
-				vec2 rd = lensRadius * randomInDisk(rng);
+				vec2 rd = lensRadius * diskFromSample(sampleDimension2D(index, rng, CRT_SAMPLE_CAMERA_LENS));
 				origin += rd.x * pc.lensU.xyz + rd.y * pc.lensV.xyz;
 			}
 

@@ -44,7 +44,7 @@ Splitting needs free path slots to fork into, which exist only once [pbrt-wavefr
 
 ### Where the random numbers come from
 
-The roulette number is `RaySamples.indirect.w` ([pbrt-sample-generation.md](pbrt-sample-generation.md)). The shadow-roulette number comes from the path's PCG stream, since the record has no dimension for it and adding one would change every other sampler's layout.
+The roulette number is `RaySamples.indirect.w` ([pbrt-sample-generation.md](completed/pbrt-sample-generation.md)). The shadow-roulette number comes from the path's PCG stream, since the record has no dimension for it and adding one would change every other sampler's layout.
 
 ## Registry, bindings and data
 

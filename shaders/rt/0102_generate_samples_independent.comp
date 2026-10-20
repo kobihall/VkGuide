@@ -1,0 +1,15 @@
+#version 460
+
+// 01 GENERATE SAMPLES - INDEPENDENT. The path's PCG stream written into the record. It draws the numbers the pcg_hash variant would, in a
+// fixed order and into fixed fields instead of lazily, so a render with it converges to the same image
+// as 0101 and the difference in time is the cost of the record itself.
+//
+// Runs twice per frame: once over the pool before kernel 00 (Params.bounce == CRT_CAMERA_PASS) for the
+// camera's dimensions, and at the top of every bounce over the live ray queue. The body and the
+// mathematics are crt_sampler.glsl, which src/sampler.cpp mirrors.
+
+#extension GL_GOOGLE_include_directive : require
+#define CRT_SAMPLER_INDEPENDENT
+#include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_sampler.glsl"

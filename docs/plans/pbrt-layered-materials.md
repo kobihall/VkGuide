@@ -19,7 +19,7 @@ The `pbr` material is the only layered-looking material, and it is not a layered
 - `sampleF()` returns a direction whose distribution is the true BSDF, with `f` and `pdf` only proportional to their true values, and sets `pdfIsProportional`.
 - `pdf()` estimates the density stochastically, mixed with a uniform term so it is never zero where the BSDF is not.
 
-The walks need more random numbers than the per-bounce sample record holds, so they draw from the path's PCG stream after the record's dimensions, as pbrt-v4 does ([pbrt-sample-generation.md](pbrt-sample-generation.md)).
+The walks need more random numbers than the per-bounce sample record holds, so they draw from the path's PCG stream after the record's dimensions, as pbrt-v4 does ([pbrt-sample-generation.md](completed/pbrt-sample-generation.md)).
 
 ### MIS with a stochastic density
 

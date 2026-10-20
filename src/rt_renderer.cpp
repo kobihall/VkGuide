@@ -302,6 +302,7 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 	drawIntegratorCombo();
 	drawSettings(engine);
 
+	drawSamplerSettings(engine);
 	drawAccelSettings(engine);
 	drawIntersectionSettings();
 
@@ -445,14 +446,8 @@ double RaytraceRenderer::estimatedWorkPerFrame(const RenderSettings& settings) c
 	return m_gpu.schedule(m_kernels.integrator).estimatedWorkPerFrame(estimate);
 }
 
-void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor)
+RenderSettings RaytraceRenderer::renderSettings(VulkanEngine* engine) const
 {
-	const SceneCamera* camera = resolveCamera(editor);
-	if (camera == nullptr) {
-		return;
-	}
-
-	//the settings as this render will use them
 	RenderSettings settings = m_settings;
 	if (settings.matchViewport) {
 		settings.width = (int)engine->m_drawExtent.width;
@@ -467,6 +462,18 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	settings.maxSamples = std::max(settings.maxSamples, 1);
 	settings.rayDepth = std::clamp(settings.rayDepth, 1, CRT_MAX_DEPTH);
 	settings.samplesPerFrame = std::clamp(settings.samplesPerFrame, 1, CRT_MAX_SAMPLES_PER_FRAME);
+	return settings;
+}
+
+void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor)
+{
+	const SceneCamera* camera = resolveCamera(editor);
+	if (camera == nullptr) {
+		return;
+	}
+
+	//the settings as this render will use them
+	const RenderSettings settings = renderSettings(engine);
 
 	//the scene first: the budget check below needs its cost per ray
 	ensureSceneAccel(engine, editor);
@@ -919,6 +926,74 @@ void RaytraceRenderer::drawAccelSettings(VulkanEngine* engine)
 		ImGui::Text("  scene SAH cost %.1f per ray", tlas.sceneSahCost);
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Expected node visits + primitive tests for a random ray through the whole scene.\nLower is faster; compare builders and layouts by this and by the GPU time per frame.\nThe \"BVH traversal cost\" debug view shows the real cost per pixel.");
+		}
+	}
+}
+
+void RaytraceRenderer::drawSamplerSettings(VulkanEngine* engine)
+{
+	//kernel 01's variants ARE the samplers, so the combo is the registry's list for that slot, exactly
+	//as the Raytracer Shaders window shows it
+	if (!integratorRunsStage(m_kernels.integrator, KernelSlot::GenerateSamples)) {
+		return;
+	}
+	if (!ImGui::CollapsingHeader("Sampler")) {
+		return;
+	}
+	const std::span<const KernelVariant> samplers = kernelVariants(KernelSlot::GenerateSamples);
+	const KernelVariant* selected = m_kernels.selected(KernelSlot::GenerateSamples);
+	//"##variant": the section header above is also "Sampler", and the two would share an ID
+	if (ImGui::BeginCombo("Sampler##variant", selected != nullptr ? selected->name : "none")) {
+		for (uint32_t v = 0; v < (uint32_t)samplers.size(); v++) {
+			if (ImGui::Selectable(samplers[v].name, m_kernels[KernelSlot::GenerateSamples] == v)) {
+				KernelSelection changed = m_kernels;
+				changed[KernelSlot::GenerateSamples] = v;
+				setKernels(changed);
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("%s", samplers[v].description);
+			}
+		}
+		ImGui::EndCombo();
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Where each bounce's random numbers come from: kernel 01 of the Raytracer Shaders window.\nEvery sampler converges to the same image; the low-discrepancy ones get there with less noise.\nSaved with the scene. A new scene uses ZSobol, a scene saved before samplers existed PCG.");
+	}
+	selected = m_kernels.selected(KernelSlot::GenerateSamples);
+	if (selected == nullptr) {
+		return;
+	}
+
+	//the section's own settings exist only for the samplers that scramble their points
+	if (selected->settings == KernelSettings::Sampler) {
+		if (ImGui::BeginCombo("Randomization", samplerRandomizationName(m_settings.samplerRandomization))) {
+			for (uint32_t r = 0; r < (uint32_t)SamplerRandomization::Count; r++) {
+				const SamplerRandomization randomization = (SamplerRandomization)r;
+				if (ImGui::Selectable(samplerRandomizationName(randomization), m_settings.samplerRandomization == randomization)) {
+					m_settings.samplerRandomization = randomization;
+				}
+			}
+			ImGui::EndCombo();
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("How the Sobol or Halton points are scrambled, from the render's seed. None keeps the bare sequence,\nwhich can alias; Owen scrambling is the most random and the slowest. Halton treats fast Owen as Owen.\nSaved with the scene.");
+		}
+	}
+
+	//why the next render would run another sampler, from the settings as they are now: the decision
+	//GpuRenderer::start() makes, so the two cannot disagree, and nothing left over from the last render
+	const RenderSettings settings = renderSettings(engine);
+	const std::string fallback = samplerFallbackReason(*selected, settings, (uint32_t)settings.width, (uint32_t)settings.height, m_gpu.samplerTablesLoaded());
+	if (!fallback.empty()) {
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
+		ImGui::TextWrapped("%s", fallback.c_str());
+		ImGui::PopStyleColor();
+	}
+	if (selected->writesRecord) {
+		const double paths = (double)m_settings.width * (double)m_settings.height * (double)std::clamp(m_settings.samplesPerFrame, 1, CRT_MAX_SAMPLES_PER_FRAME);
+		ImGui::TextDisabled("Sample record: %.0f MB", std::min(paths, (double)CRT_MAX_POOL) * SAMPLE_RECORD_BYTES / (1024.0 * 1024.0));
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Kernel 01 writes 48 bytes of random numbers per path, which kernels 00 and 06 read.\nPCG per bounce needs none.");
 		}
 	}
 }

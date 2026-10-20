@@ -2,7 +2,7 @@
 
 Every other integrator draws each sample independently, so a path that carries light through a hard-to-find route, such as the gap of a door left ajar, is found only as often as its probability says. Metropolis light transport (MLT) finds such a path once and then explores its neighborhood by mutating it, spending samples in proportion to each path's contribution to the image. pbrt 3 implements it in primary sample space (Kelemen et al. 2002), where a path is the vector of random numbers that generated it, and multiplexes the strategies of its BDPT (Hachisuka et al. 2014; PBR 3ed §16.4). The user chose primary-sample-space MLT over the existing path tracer first, and multiplexed MLT over pbrt 3's BDPT after it. This plan adds both as integrators.
 
-*Not implemented. Depends on [pbrt-sample-generation.md](pbrt-sample-generation.md) (the sample record the chains write), and the splat buffer of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md). Multiplexed MLT also needs that plan's `bdpt` integrator. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-sample-generation.md](completed/pbrt-sample-generation.md) (the sample record the chains write), and the splat buffer of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md). Multiplexed MLT also needs that plan's `bdpt` integrator. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decision already made
 
@@ -10,7 +10,7 @@ On 2026-09-26 the user chose primary-sample-space MLT (PSSMLT) over the path tra
 
 ## What the renderer does today
 
-- Samples are independent. Kernel 01 will write each bounce's random numbers into `RaySamples` ([pbrt-sample-generation.md](pbrt-sample-generation.md)), from which every later kernel reads, and the dimension layout is fixed: 0 to 5 for the camera, then 12 per bounce.
+- Samples are independent. Kernel 01 will write each bounce's random numbers into `RaySamples` ([pbrt-sample-generation.md](completed/pbrt-sample-generation.md)), from which every later kernel reads, and the dimension layout is fixed: 0 to 5 for the camera, then 12 per bounce.
 - Every contribution lands in its path's own pixel; the splat buffer arrives with [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md).
 
 ## Design

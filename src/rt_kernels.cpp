@@ -80,6 +80,7 @@ std::vector<CrtBinding> scatterBindings(bool allLights)
 		CrtBinding::MaterialTextures,
 		CrtBinding::Lights,
 		CrtBinding::ShadowRays,
+		CrtBinding::RaySamples,
 	}));
 	if (allLights) {
 		bindings.push_back(CrtBinding::EnvironmentMap);
@@ -103,7 +104,8 @@ const std::vector<KernelVariant>& registry()
 			.description = "One primary ray per pool slot, jittered in the pixel and over the aperture.",
 			.shader = "rt/0001_generate_camera_rays.comp",
 			.domain = KernelDomain::Pool,
-			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SampleCount }),
+			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SampleCount, CrtBinding::RaySamples }),
+			.readsRecord = true,
 		});
 
 		//---------------------------------------------------------------- 01 generate samples
@@ -111,11 +113,49 @@ const std::vector<KernelVariant>& registry()
 			.slot = KernelSlot::GenerateSamples,
 			.id = "pcg_hash",
 			.name = "PCG per bounce",
-			.description = "Decorrelates each live path's PCG stream with the bounce index.",
+			.description = "No record: kernel 06 draws from each path's PCG stream, decorrelated per bounce. Renders exactly as the tracer did before samplers; what an older scene file opens with.",
 			.shader = "rt/0101_generate_samples.comp",
 			.domain = KernelDomain::CurrentRayQueue,
 			.bindings = WAVEFRONT_CORE,
 		});
+		//the samplers: each writes the RaySamples record and runs a camera pass first. They differ in
+		//what they read: the Sobol ones pbrt's generator matrices, the rest nothing but the film's
+		//sample count, which gives a path its sample index
+		auto sampler = [&](const char* id, const char* name, const char* description, const char* shader, SamplerKind kind, bool usesTables, KernelSettings settings, bool isDefault, bool needsCount) {
+			std::vector<CrtBinding> bindings = withCore({ CrtBinding::RaySamples, CrtBinding::SampleCount, CrtBinding::SampleBudget });
+			if (usesTables) {
+				bindings.push_back(CrtBinding::SamplerTables);
+			}
+			KernelVariant variant;
+			variant.slot = KernelSlot::GenerateSamples;
+			variant.id = id;
+			variant.name = name;
+			variant.description = description;
+			variant.shader = shader;
+			variant.domain = KernelDomain::CurrentRayQueue;
+			variant.bindings = std::move(bindings);
+			variant.isDefault = isDefault;
+			variant.settings = settings;
+			variant.writesRecord = true;
+			variant.cameraPass = true;
+			variant.needsSampleCount = needsCount;
+			variant.sampler = kind;
+			v.push_back(std::move(variant));
+		};
+		sampler("independent", "Independent (PCG, recorded)", "The path's PCG stream written into the record: pcg_hash's numbers in fixed dimensions, to measure the record's own cost.",
+			"rt/0102_generate_samples_independent.comp", SamplerKind::Independent, false, KernelSettings::None, false, false);
+		sampler("stratified", "Stratified", "Jittered strata, one sample per stratum of the render's Max samples, permuted per dimension. Needs a known sample count.",
+			"rt/0103_generate_samples_stratified.comp", SamplerKind::Stratified, false, KernelSettings::None, false, true);
+		sampler("halton", "Halton", "Halton points scaled over the image, so neighbouring pixels share one well-distributed set.",
+			"rt/0104_generate_samples_halton.comp", SamplerKind::Halton, false, KernelSettings::Sampler, false, false);
+		sampler("sobol", "Sobol", "One Sobol sequence over the whole image: every aligned run of samples is a (0, 2) net.",
+			"rt/0105_generate_samples_sobol.comp", SamplerKind::Sobol, true, KernelSettings::Sampler, false, false);
+		sampler("padded_sobol", "Padded Sobol", "A (0, 2)-sequence per pixel and request, randomly padded within blocks of 2^L samples.",
+			"rt/0106_generate_samples_padded_sobol.comp", SamplerKind::PaddedSobol, true, KernelSettings::Sampler, false, false);
+		sampler("zsobol", "ZSobol", "Padded Sobol indexed by the pixel's Morton code: blue-noise error between pixels. pbrt-v4's default.",
+			"rt/0107_generate_samples_zsobol.comp", SamplerKind::ZSobol, true, KernelSettings::Sampler, true, false);
+		sampler("pmj02bn", "PMJ02BN", "Progressive multi-jittered (0, 2) points with blue noise, from pbrt-v4's tables. Needs a known sample count.",
+			"rt/0108_generate_samples_pmj02bn.comp", SamplerKind::Pmj02Bn, true, KernelSettings::None, false, true);
 
 		//---------------------------------------------------------------- 02 intersect closest
 		//the search is the selected traversal's; what is listed here is what the body around it
@@ -186,6 +226,7 @@ const std::vector<KernelVariant>& registry()
 			.bindings = scatterBindings(false),
 			.perMaterialClass = true,
 			.nextEvent = NextEvent::DeltaLights,
+			.readsRecord = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::SurfaceScattering,
@@ -198,6 +239,7 @@ const std::vector<KernelVariant>& registry()
 			.bindings = scatterBindings(true),
 			.perMaterialClass = true,
 			.nextEvent = NextEvent::AllLights,
+			.readsRecord = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::SurfaceScattering,
@@ -210,6 +252,7 @@ const std::vector<KernelVariant>& registry()
 			.bindings = scatterBindings(true),
 			.perMaterialClass = true,
 			.nextEvent = NextEvent::AllLights,
+			.readsRecord = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::SurfaceScattering,
@@ -223,6 +266,7 @@ const std::vector<KernelVariant>& registry()
 			.isDefault = true,
 			.perMaterialClass = true,
 			.nextEvent = NextEvent::AllLights,
+			.readsRecord = true,
 		});
 
 		//---------------------------------------------------------------- 07 sample medium scattering
@@ -277,7 +321,7 @@ struct SlotInfo {
 
 constexpr std::array<SlotInfo, (size_t)KernelSlot::Count> SLOT_INFO { {
 	{ "00", "Generate camera rays", "One primary ray per (pixel, sample) slot of the path pool. Runs once per frame." },
-	{ "01", "Generate samples", "Prepares each live path's random samples for this bounce. Where a low-discrepancy sampler goes." },
+	{ "01", "Generate samples", "Writes the random numbers each live path's next bounce consumes, into the sample record kernels 00 and 06 read. The sampler: independent, stratified, Halton, Sobol, padded Sobol, ZSobol or PMJ02BN." },
 	{ "02", "Intersect closest", "Finds each ray's nearest hit with the selected traversal and sorts the paths into the escaped, emissive and surface queues." },
 	{ "03", "Handle escaped", "Paths that left the scene collect the background and end." },
 	{ "04", "Handle emissive geometry", "Paths that hit a light collect its emission, weighted by the MIS record kernel 06 left." },

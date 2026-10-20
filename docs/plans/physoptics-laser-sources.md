@@ -39,7 +39,7 @@ angle     θ ~ Normal(0, θ₀ / 2),   θ₀ = M² λ / (π w₀)   (the far-fie
 
 A bundle of such rays has the second-moment radius `w(z)² = w₀² + θ₀² z²`, which is the beam's, for M² = 1 and, by Siegman's definition of M², for an embedded Gaussian of any M². Through real optics the rays pick up the aberrations the optics have, which is what the request wants previewed. What rays cannot carry is diffraction at a hard aperture, whose Wigner function goes negative; that belongs to the wave backend.
 
-Sampling starts at the waist and carries each ray straight to the housing's aperture plane, so no ray starts inside the housing whatever the waist position. Positions use the sample record's light dimensions ([pbrt-sample-generation.md](pbrt-sample-generation.md)) through the Box–Muller transform, so stratified and low-discrepancy samplers stratify the beam's cross section.
+Sampling starts at the waist and carries each ray straight to the housing's aperture plane, so no ray starts inside the housing whatever the waist position. Positions use the sample record's light dimensions ([pbrt-sample-generation.md](completed/pbrt-sample-generation.md)) through the Box–Muller transform, so stratified and low-discrepancy samplers stratify the beam's cross section.
 
 ### As a light
 

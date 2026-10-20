@@ -291,7 +291,14 @@ A wavefront path tracer, as the first integrator above a stage library that late
 ```
 shaders/rt/
   0001_generate_camera_rays.comp        00 Generate camera rays
-  0101_generate_samples.comp            01 Generate samples
+  0101_generate_samples.comp            01 PCG per bounce: no sample record (old files' choice)
+  0102_generate_samples_independent.comp   01 the PCG stream written into the record
+  0103_generate_samples_stratified.comp    01 jittered strata; needs a known sample count
+  0104_generate_samples_halton.comp        01 Halton over the image
+  0105_generate_samples_sobol.comp         01 one Sobol sequence over the image
+  0106_generate_samples_padded_sobol.comp  01 padded Sobol, in blocks of 2^L samples
+  0107_generate_samples_zsobol.comp        01 ZSobol (the new-scene default)
+  0108_generate_samples_pmj02bn.comp       01 PMJ02BN; needs a known sample count
   0201_intersect_closest.comp           02 Intersect closest; traces: built once per traversal
   0301_handle_escaped.comp              03 Handle escaped
   0401_handle_emissive.comp             04 Handle emissive geometry
@@ -308,6 +315,11 @@ shaders/rt/
                          queueAppend(), hitTriangle(), the robust section (offsetRayOrigin(),
                          hitTriangleWatertight(), toWorldPoint()), the instance transforms, srgbToLinear()
     crt_random.glsl      PCG hash + sampling
+    crt_samples.glsl     what kernels 00 and 06 read: sampleDimension() from the RaySamples record or
+                         the PCG stream, the CRT_SAMPLE_RECORD specialization constant, the warps
+    crt_sampler.glsl     kernel 01's samplers and body (camera pass and bounce pass); one
+                         CRT_SAMPLER_<KIND> per .comp; mirrors src/sampler.cpp
+    crt_halton_tables.glsl  GENERATED: Halton's primes, reciprocals and digit counts
     crt_trace.glsl       the traversal a tracing kernel is built for: one CRT_TRAVERSAL_<ID> branch
                          per traversal, which CMake reads to compile the permutations
     crt_traverse.glsl    THE TRAVERSAL CONTRACT + TraceHit, work counters, testTriangles(),
@@ -338,7 +350,7 @@ shaders/image_error.comp  the Compare to reference error, 16×16 pixels per work
 
 `shaders/equirect.glsl` stays at `shaders/` (shared with `env_background.comp`) and is reached through the `-I${PROJECT_SOURCE_DIR}/shaders` that the root `CMakeLists.txt` now passes to `glslangValidator`. That same CMake block resolves each shader's path **relative to `shaders/`** so `.spv` output lands beside its source rather than colliding in one flat directory, and compiles a `.comp` that includes `include/crt_trace.glsl` once per traversal, to `<name>.comp.<id>.spv` with `-DCRT_TRAVERSAL_<ID>` (§8.16).
 
-C++: `src/rt_kernels.h/.cpp` (registry: stages, traversals, integrators), `src/rt_gpu.h/.cpp` (`GpuRenderer`: uploads, film, reference error, resource table, pipeline cache), `src/rt_gpu_types.h` (C++ mirrors, `CrtParams`, `CrtResourceTable`), `src/rt_wavefront.h/.cpp` (`WavefrontPool`), `src/rt_schedule.h/.cpp` and `src/rt_path_schedule.h/.cpp` (the schedule interface and the path tracer's), `src/rt_renderer.h/.cpp` (panels, guard, BVH settings, direct-lighting settings), `src/rt_accel.*` (the TLAS, and the light list built with it) + `src/bvh*` (`occludedScene()` mirrors `occluded()`), `src/rt_lights.h/.cpp` (the light list), `src/light_sampling.h/.cpp` (static lib `rt_light`, no Vulkan: the CPU mirror of `crt_light.glsl` and the environment tables), `tests/light_test.cpp` (`bin/light_test`).
+C++: `src/rt_kernels.h/.cpp` (registry: stages, traversals, integrators), `src/rt_gpu.h/.cpp` (`GpuRenderer`: uploads, film, reference error, resource table, pipeline cache), `src/rt_gpu_types.h` (C++ mirrors, `CrtParams`, `CrtResourceTable`), `src/rt_wavefront.h/.cpp` (`WavefrontPool`), `src/rt_schedule.h/.cpp` and `src/rt_path_schedule.h/.cpp` (the schedule interface and the path tracer's), `src/rt_renderer.h/.cpp` (panels, guard, BVH settings, direct-lighting settings), `src/rt_accel.*` (the TLAS, and the light list built with it) + `src/bvh*` (`occludedScene()` mirrors `occluded()`), `src/rt_lights.h/.cpp` (the light list), `src/light_sampling.h/.cpp` (static lib `rt_light`, no Vulkan: the CPU mirror of `crt_light.glsl` and the environment tables), `tests/light_test.cpp` (`bin/light_test`), `src/sampler.h/.cpp` and the generated `src/sampler_halton_tables.h` (static lib `rt_sampler`, no Vulkan: the CPU mirror of `crt_sampler.glsl` and the loader of `assets/sampler/`), `tests/sampler_test.cpp` (`bin/sampler_test`).
 
 ### 8.3 The registry (`src/rt_kernels.h/.cpp`) — the file to edit
 
@@ -348,7 +360,7 @@ The enums and tables:
 - `CrtBinding` — **the value IS the descriptor binding number** and must match `crt_common.glsl` exactly. Append only.
 - `KernelDomain` — `Pool` / `Pixels` (direct dispatch) or `CurrentRayQueue` / `FixedQueue` (indirect).
 - `KernelSettings`, `TraversalCost` — capability flags the UI and the render guard read.
-- `KernelVariant` — one table row: slot, `id` (scene-file constant), `name`, `description`, `shader`, `domain`, `queue`, `bindings`, `implemented`, `isDefault`, `traces` (built once per traversal, §8.7), `settings`, `nextEvent` (which lights a kernel 06 variant sends shadow rays to: `None`, `DeltaLights` or `AllLights`).
+- `KernelVariant` — one table row: slot, `id` (scene-file constant), `name`, `description`, `shader`, `domain`, `queue`, `bindings`, `implemented`, `isDefault`, `traces` (built once per traversal, §8.7), `settings`, `nextEvent` (which lights a kernel 06 variant sends shadow rays to: `None`, `DeltaLights` or `AllLights`), and for the samplers (§8.20) `writesRecord`, `cameraPass`, `needsSampleCount`, `sampler` and, on kernels 00 and 06, `readsRecord`.
 - `TraversalVariant` — one traversal: `id` (scene-file constant, and the `.spv` suffix), `name`, `description`, `bindings` (what the search reads, added to every tracing kernel's own), `settings`, `cost`, `requiresLayout`/`layout`, `isDefault`. Rows `bvh_binary` (default), `bvh_cwbvh`, `linear`.
 - `IntegratorId` / `IntegratorInfo` — `key` (scene-file constant), `name`, `description`, `stages` in dispatch order. Row `path`, running 00..09.
 
@@ -395,6 +407,8 @@ Consequence: the linear traversal never binds `BlasNodes`/`TlasNodes` at all; ke
 
 ```
 fillBuffer(sampleBudget) on a render's first frame; resetHeader(RAY_A); barrier
+01 camera pass                 direct over poolSize, bounce = CRT_CAMERA_PASS; a sampler that writes
+                               the record only (§8.20)    [+ barrier]
 00 Generate camera rays        direct over poolSize
 barrier; copyHeader(RAY_A, 0)
 for bounce in [0, rayDepth):
@@ -498,7 +512,7 @@ The Cornell box and sphere scenes render bit-identical to the previous commit wi
 
 ### 8.13 Deliberate behaviour change
 
-Kernel 01 hashes each live path's PCG state with the bounce index, where the pre-refactor tracer drew sequentially from one stream. **The noise pattern differs from before; the estimator and the converged image do not.** Slot 01 exists so a low-discrepancy sampler (Sobol/Halton, owen-scrambled) can replace one file — the reason pbrt gives sample generation its own kernel (PBR 4ed §15.3.5).
+Kernel 01 hashes each live path's PCG state with the bounce index, where the pre-refactor tracer drew sequentially from one stream. **The noise pattern differs from before; the estimator and the converged image do not.** Slot 01 exists so a low-discrepancy sampler can replace one file, the reason pbrt gives sample generation its own kernel (PBR 4ed §15.3.5); since 2026-10-19 the samplers are its other variants (§8.20).
 
 New scenes, and files without `"kernels"`, select `mis_power` for kernel 06, so their noise differs from before; the converged image does not. Selecting `bsdf` renders bit-identical to the tracer before shadow rays, in a scene without punctual lights. Punctual lights were not rendered at all before.
 
@@ -536,6 +550,9 @@ Design and verification: `docs/plans/completed/shadow-rays-nee.md` (§9 is the a
 - A kernel that calls `surfaceInteraction()` declares the bindings it reads (`withInteraction()` in `rt_kernels.cpp`), even if it never uses the field that needs one: the SPIR-V still references the buffer, and the validation layer reports `VUID-VkComputePipelineCreateInfo-layout-07988`.
 - A degenerate box face keeps its record at zero power, so the six faces stay in the order kernel 02 names them. A zero-power record prices at pmf 0, which gives a BSDF sample full weight.
 - `environmentMap` holds the texels divided by `m_environmentMapScale`. A new shader that reads it must multiply by `pc.environmentIntensity`, which includes the scale, or it renders a bright map up to that factor too dark.
+- `crt_sampler.glsl` is mirrored line for line by `src/sampler.cpp`; change both together and run `bin/sampler_test`. Neither side may divide floats: a GPU's division is not IEEE, so the CPU mirror would drift by an ulp. Divide on the CPU and pass the reciprocal (`CrtParams::samplerInv*`), or tabulate it (`crt_halton_tables.glsl`).
+- Code that only runs with a sample record goes behind the `CRT_SAMPLE_RECORD` specialization constant, never a run-time flag: a branch Metal cannot fold moved the fuzzy metal's arithmetic by one ulp and broke `pcg_hash`'s bit-identity (§8.20). A new kernel that includes `crt_samples.glsl` sets `KernelVariant::readsRecord`, or it is built for the default (no record) and reads PCG numbers under a sampler.
+- `sampler` is a reserved word in GLSL; the push-constant field is `samplerOptions`.
 - Both `.spv` outputs and `#include` resolution depend on the `-I` and relative-path handling in the root `CMakeLists.txt`; a new shader subdirectory works, a new include root does not without adding another `-I`.
 
 ### 8.16 The integrator layer (2026-09-29)
@@ -590,3 +607,18 @@ Design and as-built record: `docs/plans/completed/pbrt-robust-intersections.md`.
 - **Box tests.** Slabs widen their far distance by `1 + 2 gamma(3)`. The CWBVH node test pads each axis's near and far distance by `gamma(4) (|offset| + 255 |scaled|)` (`boxSlack`).
 - **Trap: exposing an intermediate changes the bits.** Returning `s.point` from `sampleLight()` changed how MoltenVK fused the sampling arithmetic, shifting renders by about 1e-6 with identical hits. Hand kernel 06 only what it needs, and re-run the flags-off comparison after any change to a sampler.
 - **Verified**: see the plan. Flags off, eight renders and their counters match the commit before. `bin/bvh_bench` runs the checks before the file-based ones (**--robust N**).
+
+### 8.20 Sample generation (2026-10-19)
+
+Design and as-built record: `docs/plans/completed/pbrt-sample-generation.md`.
+
+- **The record.** `RaySamples` (binding 23) is 48 bytes per pool slot, indexed by path index: `direct`, `indirect` and `medium`, a field per dimension of the bounce (`direct.x` the light choice, `direct.yz` the light point, `indirect.x` the lobe, `indirect.yz` the direction, `indirect.w` roulette; `direct.w` and `medium` are not generated yet). Dimensions are 0 to 5 for the camera and 6 + 12 b + field for bounce b. `WavefrontPool::ensure()` allocates it only while the selected kernel 01 variant `writesRecord`, and a 16-byte stub otherwise.
+- **The camera pass.** A record-writing variant has `cameraPass`: `PathSchedule::record()` dispatches it over the pool before kernel 00 with `bounce = CRT_CAMERA_PASS`, and it writes the pixel offset and lens position into `direct`, time and wavelength into `indirect.xy`. Kernel 00 reads them; the bounce passes then overwrite the record.
+- **Consumers.** Kernels 00 and 06 draw through `sampleDimension()`/`sampleDimension2D()` in `crt_samples.glsl`. They are built with the specialization constant `CRT_SAMPLE_RECORD` (`ComputePassBuilder::addSpecialization()`) set to whether the sampler writes a record, and `GpuRenderer`'s pipeline cache key is (variant, traversal, class, record). Without one they draw from the PCG stream in the old order and render bit-identical. The fuzzy metal's radius comes from the stream in either mode. With a record, kernel 00 salts the path's PCG seed (`CRT_RECORD_STREAM_SALT`).
+- **The samplers** are `crt_sampler.glsl`, one `CRT_SAMPLER_<KIND>` per `.comp`, mirrored by `SampleGenerator` in `src/sampler.cpp`. Their parameters reach the shader packed in `CrtParams` (now 208 bytes): `samplerOptions` (randomization, block size, resolution, Halton exponents), `samplerHalton` (Halton's inverses), `samplerStrata` and three reciprocals. `makeSamplerParams()` computes them and `packSamplerParams()` packs them.
+- **Tables.** `assets/sampler/*.bin` (pbrt-v4's Sobol matrices, PMJ02BN sets and blue noise; `tools/sampler_tables/convert_pbrt_tables.py`) go to binding 46, `SamplerTables`, once at start-up. PMJ02BN's pixel samples are rebuilt into a reserved region of it when a render with another sample count starts (`GpuRenderer::uploadPmjPixelSamples()`).
+- **Fallback.** `GpuRenderer::start()` runs the independent sampler in place of one that cannot run the render (a sampler with `needsSampleCount` under unlimited samples, missing tables, an image side above 65535, PMJ02BN above 65536 samples) and logs why. The decision is `samplerFallbackReason()`, which the **Sampler** section also calls on the settings as they stand (`RaytraceRenderer::renderSettings()`), so it never shows a reason left over from the last render.
+- **UI.** **Raytrace Render** → **Sampler** (`drawSamplerSettings()`): the variant, **Randomization** for the variants with `KernelSettings::Sampler`, the fallback note, and the record's size.
+- **Scene file.** Payload version 14 adds `"samplerRandomization"` to `"render"`. `readKernelSelection()` adds `"01":"pcg_hash"` to a file that names no sampler; a new scene gets `zsobol`, the variant marked `isDefault`.
+- **Verified**: `pcg_hash` against the build before, bit for bit, on five scenes (one with every material type), four strategies and two samples-per-frame settings; every sampler's record against `rt_sampler`, bit for bit, through bounce 15; every sampler converging to a 4096-sample reference; no validation messages. The plan has the error and GPU-time tables.
+

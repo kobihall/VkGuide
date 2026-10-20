@@ -2,7 +2,7 @@
 
 A real camera's shutter stays open for a while, and anything that moves during it smears. The tracer renders one instant. pbrt gives each camera ray a time between the shutter's opening and closing, and lets primitives carry an `AnimatedTransform` that interpolates between two transforms (PBR 3ed §2.9; PBR 4ed §5.1 and §7.1.2). *The Next Week* opens with the same idea, a sphere moving between two centers. The user chose two poses per object and camera, at shutter open and close, and no animation timeline. This plan adds shutter times, per-ray time, two-pose instances and cameras, and motion bounds in the TLAS.
 
-*Not implemented. Depends on [pbrt-sample-generation.md](pbrt-sample-generation.md) (the time dimension) and [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (object-to-world rows in `GpuInstance`). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-sample-generation.md](completed/pbrt-sample-generation.md) (the time dimension) and [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (object-to-world rows in `GpuInstance`). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decision already made
 

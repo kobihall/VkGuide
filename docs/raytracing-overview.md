@@ -29,7 +29,14 @@ The numbering is figure 15.2 of PBR 4ed, and **the directory listing is the diag
 ```
 shaders/rt/
   0001_generate_camera_rays.comp        00
-  0101_generate_samples.comp            01
+  0101_generate_samples.comp            01  ┐
+  0102_generate_samples_independent.comp 01  │
+  0103_generate_samples_stratified.comp 01  │
+  0104_generate_samples_halton.comp     01  │ the samplers
+  0105_generate_samples_sobol.comp      01  │
+  0106_generate_samples_padded_sobol.comp 01│
+  0107_generate_samples_zsobol.comp     01  │
+  0108_generate_samples_pmj02bn.comp    01  ┘
   0201_intersect_closest.comp           02  built once per traversal
   0301_handle_escaped.comp              03
   0401_handle_emissive.comp             04
@@ -49,7 +56,7 @@ shaders/rt/
 | # | Kernel | Runs over | What it does |
 |---|---|---|---|
 | 00 | Generate camera rays | the whole path pool, once per frame | One primary ray per (pixel, sample) slot, jittered in the pixel and across the aperture |
-| 01 | Generate samples | the live ray queue, per bounce | Prepares each path's randomness for this bounce. Where a Sobol sampler would go |
+| 01 | Generate samples | the live ray queue, per bounce, and for a sampler that writes a record the whole pool once before 00 | Writes the random numbers the path's next bounce consumes into its sample record, from a stratified, Halton, Sobol or PMJ02BN point. The `pcg_hash` variant writes none and leaves kernel 06 to draw from the path's PCG stream |
 | 02 | Intersect closest | the live ray queue, per bounce | Finds the nearest hit, applies alpha cutouts, writes a 24-byte hit record, and **sorts** the paths into four queues: escaped, emissive, and basic or complex surface |
 | 03 | Handle escaped | the escaped queue | A ray that left the scene collects the background, weighted by the path's MIS record, and ends |
 | 04 | Handle emissive geometry | the emissive queue | A ray that hit a light collects its emission, weighted by the path's MIS record, and ends. A ray that hit a glowing `pbr` surface collects its emission and carries on through 06 |
@@ -82,7 +89,7 @@ The workgroup-aggregated allocator that appends to a queue keeps `groupCountX` e
 
 ## 3. Swapping strategies
 
-This is the part built for experimenting. **Which shader runs in each slot, and which traversal every tracing kernel walks, are chosen at runtime**, from the **Windows** → **Raytracer Shaders** panel, and saved with the scene. Kernel 06's direct-lighting strategy also has a combo of its own, **Raytrace Render** → **Direct lighting** → **Strategy**.
+This is the part built for experimenting. **Which shader runs in each slot, and which traversal every tracing kernel walks, are chosen at runtime**, from the **Windows** → **Raytracer Shaders** panel, and saved with the scene. Kernel 06's direct-lighting strategy also has a combo of its own, **Raytrace Render** → **Direct lighting** → **Strategy**, and kernel 01's sampler one in **Raytrace Render** → **Sampler**.
 
 ### What exists today
 
@@ -90,10 +97,11 @@ This is the part built for experimenting. **Which shader runs in each slot, and 
 |---|---|
 | Integrator | **Path tracing** |
 | Traversal | **BVH (binary)** · BVH (compressed 8-wide) · Linear scan (brute force) |
+| 01 Generate samples | PCG per bounce · Independent · Stratified · Halton · Sobol · Padded Sobol · **ZSobol** · PMJ02BN |
 | 06 Sample surface scattering | BSDF sampling · Light sampling · MIS (balance heuristic) · **MIS (power heuristic)** |
 | every other slot | one each |
 
-The defaults are in bold. Section 5 covers the kernel 06 strategies.
+The defaults are in bold. A scene file saved before the samplers existed opens with PCG per bounce, and renders as it always did. Section 4 covers the samplers and section 5 the kernel 06 strategies.
 
 The traversals are the demonstration. A traversal is not a kernel variant but a scene-wide choice, like pbrt's aggregate: kernel 02 and kernel 08 are each one file, and the build compiles each once per traversal. Kernel 02 is:
 
@@ -179,7 +187,7 @@ Payload version 8 of the scene file adds the kernel selection and the BVH build 
 ```json
 "integrator": "path",
 "traversal": "linear",
-"kernels": {"00":"thin_lens","01":"pcg_hash","02":"closest","03":"background",
+"kernels": {"00":"thin_lens","01":"zsobol","02":"closest","03":"background",
             "04":"direct","05":"none","06":"mis_power","07":"none","08":"occlusion","09":"running_mean"},
 "accel":   {"builder":"spatial splits (SBVH)","maxLeafSize":4, ...}
 ```
@@ -196,6 +204,8 @@ Payload version 11 adds `"integrator"` and `"traversal"`. Kernels 02 and 08 beco
 
 Payload version 13 adds `"errorBoundedOffsets"` and `"watertightTriangles"` to `"render"`; an older file opens with both on.
 
+Payload version 14 adds `"samplerRandomization"` to `"render"`. A file with no `"01"` entry in `"kernels"` opens with `pcg_hash` rather than a new scene's `zsobol`.
+
 Payload version 12 saves the material library. `"materials"` holds each user material in full, and each shape or override mesh object names its material by index, or a glTF model's material as `{"model":0,"material":12}`. A glTF material is saved only as what you changed of it, in `"materialOverrides"`. An older file's inline materials open as one user material per object, named after it.
 
 ---
@@ -208,9 +218,17 @@ A thin-lens camera, precomputed on the CPU as an origin, the lower-left corner o
 
 $$P(u,v) = \text{lowerLeft} + u\,\vec{h} + v\,\vec{v}, \qquad \vec{d} = P - (O + r_x \vec{n} + r_y \vec{b})$$
 
-with $(r_x, r_y)$ uniform in a disk of radius aperture/2. The RNG is pure-integer PCG, seeded only from `(pixel, sample index, render seed)` — so a fixed seed reproduces an image exactly regardless of how the queues happened to be ordered or the workgroups scheduled. That determinism is what made the three-way traversal comparison possible.
+with $(r_x, r_y)$ uniform in a disk of radius aperture/2. The offset in the pixel and the point on the lens come from the sample record, or under `pcg_hash` from pure-integer PCG seeded only from `(pixel, sample index, render seed)`. Either way a fixed seed reproduces an image exactly regardless of how the queues happened to be ordered or the workgroups scheduled. That determinism is what made the three-way traversal comparison possible.
 
 Every radiance slot is pre-written to zero, with `w` marking whether the slot was spawned at all. A path that later dies silently — absorbed, roulette-killed, out of depth — then contributes exactly zero without writing anything. Each path's MIS record (section 5) starts at full weight: a camera ray sampled no light, so whatever it hits first counts in full.
+
+### 01 — Generate samples
+
+A sampler fills each live path's 48-byte `RaySamples` record (binding 23) with the twelve numbers its next bounce may consume: the light choice and the point on the light, the lobe choice, the direction and Russian roulette, and four reserved for media. Dimensions are allocated explicitly, as in pbrt-v4's wavefront: 0 to 5 are the camera's (pixel, lens, time, wavelength), then twelve per bounce, so a given number is always the same dimension of the sequence whatever branch a path takes. A record-writing variant also runs once over the whole pool before kernel 00 to write the camera's dimensions. Every sampler is a pure function of `(pixel, sample index, dimension, seed)`; kernels 00 and 06 read the record through `sampleDimension()` in `crt_samples.glsl`.
+
+The samplers are pbrt-v4's, ported from `samplers.h` with 32-bit hashes: independent, stratified, Halton, one Sobol sequence over the image, padded Sobol, ZSobol (padded Sobol in Morton order, whose error between neighboring pixels is blue noise), and PMJ02BN. **Raytrace Render** → **Sampler** picks one and, for Sobol and Halton, the **Randomization**: none, random digit permutations, fast Owen or Owen scrambling. Padded Sobol and ZSobol interleave samples in blocks of 2^L, L from **Max samples**, or 64 to a block when the render is unlimited. Stratified and PMJ02BN need the exact count, so an unlimited render runs the independent sampler in their place and the panel says so.
+
+`pcg_hash` writes no record, and kernels 00 and 06 draw from the path's PCG stream in the order they always did. Whether a record exists is a specialization constant, `CRT_SAMPLE_RECORD`, not a run-time flag: Metal's compiler rounded one material's arithmetic differently around a branch it could not fold, and the specialization constant keeps a `pcg_hash` render bit-identical to one from before the samplers. At equal samples, the low-discrepancy samplers bring the relative MSE to between 0.6 and 0.8 of PCG's on the Cornell box and between 0.2 and 0.45 on the Veach scene, at 15 to 40 percent more GPU time on an all-shapes scene. `docs/plans/completed/pbrt-sample-generation.md` has the numbers.
 
 ### 02 — Intersect closest
 
@@ -411,10 +429,12 @@ The MIS weights view works differently: it lets a path run to its second vertex 
 | Kernel 06's and 08's bodies | `shaders/rt/include/crt_surface.glsl`, `crt_shadow.glsl` |
 | The light list | `src/rt_lights.h/.cpp`, built by `buildSceneAccel()` in `src/rt_accel.cpp` |
 | Light sampling on the CPU (no Vulkan) | `src/light_sampling.h/.cpp` |
+| The samplers: kernel 01's body, and what kernels 00 and 06 read | `shaders/rt/include/crt_sampler.glsl`, `crt_samples.glsl` |
+| The samplers on the CPU (no Vulkan), and pbrt's tables | `src/sampler.h/.cpp`, `assets/sampler/` |
 | The reference error | `shaders/image_error.comp`, `GpuRenderer::recordReference()` |
-| CPU verification harnesses | `tests/bvh_bench.cpp` → `bin/bvh_bench`, `tests/light_test.cpp` → `bin/light_test` |
+| CPU verification harnesses | `tests/bvh_bench.cpp` → `bin/bvh_bench`, `tests/light_test.cpp` → `bin/light_test`, `tests/sampler_test.cpp` → `bin/sampler_test` |
 
-Several shader files are mirrored line for line by CPU code: `crt_bvh.glsl` ↔ `bvh_layout.h`, `crt_shape.glsl` ↔ `shape.cpp`, `crt_light.glsl` ↔ `light_sampling.cpp`, and the `crt_common.glsl` structs ↔ `rt_gpu_types.h`, `rt_accel.h` and `rt_lights.h`, with `static_assert`s on size. Each carries a "change both together" note in its header. `bvh_bench` checks the traversal side against brute force and `light_test` checks every light's sample densities, which transitively validates the GLSL.
+Several shader files are mirrored line for line by CPU code: `crt_bvh.glsl` ↔ `bvh_layout.h`, `crt_shape.glsl` ↔ `shape.cpp`, `crt_light.glsl` ↔ `light_sampling.cpp`, `crt_sampler.glsl` ↔ `sampler.cpp`, and the `crt_common.glsl` structs ↔ `rt_gpu_types.h`, `rt_accel.h` and `rt_lights.h`, with `static_assert`s on size. Each carries a "change both together" note in its header. `bvh_bench` checks the traversal side against brute force, `light_test` checks every light's sample densities, and `sampler_test` checks the samplers' nets, strata, discrepancy and blue noise, which transitively validates the GLSL.
 
 ---
 
@@ -423,3 +443,5 @@ Several shader files are mirrored line for line by CPU code: `crt_bvh.glsl` ↔ 
 Laine, Karras & Aila 2013, *Megakernels considered harmful* (the wavefront architecture); PBR 4ed ch. 15, especially §15.1.2 on why megakernels diverge and §15.2.4 on work queues; Aila & Laine 2009 (binary GPU BVH layout and ordered traversal); Ylitie, Karras & Laine 2017 (CWBVH); Möller & Trumbore 1997; Shirley, *Ray Tracing in One Weekend* / *The Next Week* (the camera, and the lambertian, metal, dielectric and emissive materials, by way of the project's original CPU raytracer); Bikker, *How to build a BVH*.
 
 For light sampling and MIS: Veach 1997, *Robust Monte Carlo methods for light transport simulation*, ch. 9 (the estimator, both heuristics, and the plates scene); Veach & Guibas 1995, *Optimally combining sampling techniques for Monte Carlo rendering*; PBR 4ed §2.2.3 (MIS and MIS compensation), §12.5.2 (image infinite lights), §12.6 (light sampling), §13.4 (the path tracer kernel 06 follows), §15.3.8–15.3.10 (the wavefront's emission, surface scattering and shadow rays) and §A.1 (the alias method); Ureña, Fajardo & King 2013, *An area-preserving parametrization for spherical rectangles*; Arvo 1995, *Stratified sampling of spherical triangles*; Karlík et al. 2019, *MIS compensation*; Mitsuba's `veach_mi` scene, which `assets/scenes/veach_mis.gltf` reproduces.
+
+For the samplers: PBR 4ed ch. 8 and §15.3.5; Christensen, Kensler & Kilpatrick 2018, *Progressive multi-jittered sample sequences*; Ahmed & Wonka 2020, *Screen-space blue-noise diffusion of Monte Carlo sampling error via hierarchical ordering of pixels*; Laine & Karras 2011, *Stratified sampling for stochastic transparency* (the fast Owen scrambler); Joe & Kuo 2008 (the Sobol matrices).

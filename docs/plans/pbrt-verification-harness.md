@@ -30,7 +30,7 @@ Delta materials skip tests 1 and 4 and check instead that the sampled direction 
 
 ### Sampler checks
 
-[pbrt-sample-generation.md](pbrt-sample-generation.md) adds `bin/sampler_test`. The harness provides the common machinery: star discrepancy of 2D projections, a check that every pixel's samples are stratified over the elementary intervals a (0, 2)-sequence promises, and determinism (the same pixel and sample index give the same values twice).
+[pbrt-sample-generation.md](completed/pbrt-sample-generation.md) adds `bin/sampler_test`. The harness provides the common machinery: star discrepancy of 2D projections, a check that every pixel's samples are stratified over the elementary intervals a (0, 2)-sequence promises, and determinism (the same pixel and sample index give the same values twice).
 
 ### Scene-level energy tests
 

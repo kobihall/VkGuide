@@ -1,20 +1,20 @@
 #version 460
 
-// 01 GENERATE SAMPLES. Runs at the top of every bounce, over the ray queue that bounce will
-// trace, and prepares each live path's sample state for the dimensions that bounce is about to
-// consume.
+// 01 GENERATE SAMPLES - PCG PER BOUNCE. Runs at the top of every bounce, over the ray queue that
+// bounce will trace, and prepares each live path's sample state for the dimensions that bounce is
+// about to consume.
 //
-// This variant decorrelates the path's PCG state with the bounce index. That is all this tracer
-// needs: the draws themselves - the BSDF sample, the light sample - happen lazily inside kernel 06,
-// straight out of PathState.rngState, and a stream that is a pure function of (pixel, sample index,
-// render seed, bounce) reproduces an image exactly from a fixed seed no matter how the queues
-// were ordered or the workgroups scheduled.
+// This variant decorrelates the path's PCG state with the bounce index and writes no sample record:
+// the draws themselves - the BSDF sample, the light sample - happen lazily inside kernel 06, straight
+// out of PathState.rngState, and a stream that is a pure function of (pixel, sample index, render
+// seed, bounce) reproduces an image exactly from a fixed seed no matter how the queues were ordered
+// or the workgroups scheduled. It is what a scene saved before the samplers existed runs, and it
+// renders bit-identically to the tracer of that time.
 //
-// It exists as its own kernel because THIS is where a low-discrepancy sampler goes. A 0102
-// variant would, instead of hashing, look up a Sobol or Halton point for (sampleIndex, bounce),
-// stratify it with an owen-scrambled hash and store the resulting dimensions for 06 to read -
-// which is why pbrt gives sample generation a kernel of its own rather than drawing inline
-// (PBR 4ed 15.3.5). Swapping this one file is then the whole change.
+// The other variants, 0102 to 0108, are the samplers: they write each path's RaySamples record
+// (crt_samples.glsl) from a stratified, Halton, Sobol or PMJ02BN point for (pixel, sample index,
+// bounce), as pbrt-v4's wavefront does in a kernel of its own (PBR 4ed 15.3.5). Their body is
+// crt_sampler.glsl.
 //
 // NOTE: the hash below changes which random numbers a given path draws, so the noise pattern
 // differs from the pre-refactor tracer. The estimator is unchanged and the converged image is

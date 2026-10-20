@@ -136,6 +136,11 @@ private:
 	void ensureSceneAccel(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	// the "Acceleration structure" section: builder and layout, and what they produced
 	void drawAccelSettings(VulkanEngine* engine);
+	// the "Sampler" section: kernel 01's variant, its randomization, and why a render runs another
+	void drawSamplerSettings(VulkanEngine* engine);
+	// m_settings as a render started now would use them: the viewport's size under Match viewport,
+	// one sample without antialiasing, every count clamped to what the tracer allows
+	RenderSettings renderSettings(VulkanEngine* engine) const;
 	// the "Intersection precision" section: error-bounded ray offsets and watertight triangles. Apart
 	// from the acceleration structure's, since every traversal takes both
 	void drawIntersectionSettings();

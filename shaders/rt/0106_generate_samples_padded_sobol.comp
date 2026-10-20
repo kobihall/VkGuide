@@ -1,0 +1,14 @@
+#version 460
+
+// 01 GENERATE SAMPLES - PADDED SOBOL. A (0, 2)-sequence per pixel and request, the samples of each permuted at random within a block of
+// 2^L (pbrt's PaddedSobolSampler).
+//
+// Runs twice per frame: once over the pool before kernel 00 (Params.bounce == CRT_CAMERA_PASS) for the
+// camera's dimensions, and at the top of every bounce over the live ray queue. The body and the
+// mathematics are crt_sampler.glsl, which src/sampler.cpp mirrors.
+
+#extension GL_GOOGLE_include_directive : require
+#define CRT_SAMPLER_PADDED_SOBOL
+#include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_sampler.glsl"

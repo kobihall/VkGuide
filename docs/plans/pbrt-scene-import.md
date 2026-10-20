@@ -37,7 +37,7 @@ Each pbrt feature maps to the plan that adds it. Until that plan lands, the impo
 |---|---|---|
 | `perspective`, `orthographic`, `spherical`, `realistic` cameras | [pbrt-cameras.md](pbrt-cameras.md) | perspective with the same pose |
 | `rgb`, `gbuffer`, `spectral` films; `iso`, `exposuretime`, `whitebalance`, `sensor` | [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md), [pbrt-display-and-color.md](pbrt-display-and-color.md), [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) | resolution only |
-| samplers, `pixelsamples` | [pbrt-sample-generation.md](pbrt-sample-generation.md) | PCG, and the sample count |
+| samplers, `pixelsamples` | [pbrt-sample-generation.md](completed/pbrt-sample-generation.md) | PCG, and the sample count |
 | filters | [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) | box |
 | `path`, `volpath`, `bdpt`, `lightpath`, `sppm`, `mlt`, `ambientocclusion` | the integrators of the other plans; `ambientocclusion` is [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md)'s debug view | `path` |
 | `trianglemesh`, `plymesh` (with `displacement`), `loopsubdiv` | meshes; [pbrt-subdivision-and-displacement.md](pbrt-subdivision-and-displacement.md) | meshes without refinement |

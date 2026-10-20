@@ -43,7 +43,7 @@ A pixel that stops early because its samples so far happen to be quiet has a val
 ### Interactions
 
 - Each sample touches only its own pixel under filter importance sampling ([pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md)), so Mitchell's problem does not arise: a dense clump of samples inside a pixel filter's extent never outweighs its neighbors.
-- ZSobol, Sobol and the other global samplers take each pixel's own sample index, which stays correct when counts differ. The stratified sampler needs a fixed count and is disabled while adaptive sampling is on ([pbrt-sample-generation.md](pbrt-sample-generation.md)).
+- ZSobol, Sobol and the other global samplers take each pixel's own sample index, which stays correct when counts differ. The stratified and PMJ02BN samplers need a fixed count and are disabled while adaptive sampling is on, as they are under unlimited samples ([pbrt-sample-generation.md](completed/pbrt-sample-generation.md)).
 - Path regeneration ([pbrt-wavefront-performance.md](pbrt-wavefront-performance.md)) takes its next (pixel, sample) pairs only from pixels with budget left.
 - Every render restart clears the budget, the variance and the half buffers along with the mean.
 

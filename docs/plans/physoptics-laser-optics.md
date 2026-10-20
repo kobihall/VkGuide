@@ -112,7 +112,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 3. [pbrt-verification-harness.md](pbrt-verification-harness.md)
 4. [pbrt-material-system.md](completed/pbrt-material-system.md). Implemented 2026-10-19, ahead of items 2 and 3, which it does not depend on.
 5. [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)
-6. [pbrt-sample-generation.md](pbrt-sample-generation.md)
+6. [pbrt-sample-generation.md](completed/pbrt-sample-generation.md). Implemented 2026-10-19, ahead of items 3 and 5, which it does not depend on.
 7. [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md)
 8. [pbrt-bsdf-library.md](pbrt-bsdf-library.md)
 

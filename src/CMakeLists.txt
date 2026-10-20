@@ -34,6 +34,19 @@ if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
     target_compile_options(rt_light PRIVATE -O2)
 endif()
 
+# The sample generators kernel 01 runs, as plain C++: the line-for-line mirror of
+# shaders/rt/include/crt_sampler.glsl and the loader of pbrt's Sobol, PMJ02BN and blue-noise tables
+# (assets/sampler/). Built into the app and checked on its own by tests/sampler_test.cpp
+add_library(rt_sampler STATIC
+    sampler.cpp
+    sampler.h
+    sampler_halton_tables.h)
+target_include_directories(rt_sampler PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(rt_sampler PUBLIC glm fmt::fmt)
+if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
+    target_compile_options(rt_sampler PRIVATE -O2)
+endif()
+
 # Add source to this project's executable.
 add_executable(vulkan_guide
     main.cpp
@@ -98,7 +111,7 @@ set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGE
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide PUBLIC rt_bvh rt_light vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
+target_link_libraries(vulkan_guide PUBLIC rt_bvh rt_light rt_sampler vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
 
 target_link_libraries(vulkan_guide PRIVATE GPUOpen::VulkanMemoryAllocator)
 

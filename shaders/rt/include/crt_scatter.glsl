@@ -18,7 +18,7 @@
 // The material is evaluated here too: its textures (resolveMaterial()) and its normal map
 // (materialShadingNormal()), both from the SurfaceInteraction kernel 06 rebuilt.
 //
-// Requires crt_common.glsl, crt_interaction.glsl and crt_random.glsl.
+// Requires crt_common.glsl, crt_interaction.glsl, crt_random.glsl and crt_samples.glsl.
 
 #include "crt_material.glsl"
 
@@ -79,7 +79,7 @@ vec3 sampleGgxVisibleNormal(vec3 wo, float alpha, vec2 u)
 // Specular weight under visible-normal sampling with separable Smith masking is F x G1(wi).
 // The diffuse lobe takes what the Fresnel term at the viewing angle leaves, the usual cheap
 // layering; it does not conserve energy exactly at grazing angles on rough surfaces
-bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, inout uint rng, out vec3 attenuation, out vec3 outDir)
+bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, uint pathIndex, inout uint rng, out vec3 attenuation, out vec3 outDir)
 {
 	const vec3 wo = -inDir;
 	const float cosO = max(dot(normal, wo), 1e-4);
@@ -96,13 +96,13 @@ bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, inout uint rng, out 
 	}
 	const float specularChance = specularWeight / (specularWeight + diffuseWeight);
 
-	if (randomFloat(rng) < specularChance) {
+	if (sampleDimension(pathIndex, rng, CRT_SAMPLE_INDIRECT_LOBE) < specularChance) {
 		// perceptual roughness squared is GGX's alpha; a floor keeps a "mirror" out of the
 		// singular limit the sampler divides by
 		const float alpha = max(m.roughness * m.roughness, 1e-3);
 		const mat3 frame = getTangentSpace(normal);
 		const vec3 woLocal = transpose(frame) * wo;
-		const vec3 h = sampleGgxVisibleNormal(woLocal, alpha, vec2(randomFloat(rng), randomFloat(rng)));
+		const vec3 h = sampleGgxVisibleNormal(woLocal, alpha, sampleDimension2D(pathIndex, rng, CRT_SAMPLE_INDIRECT_DIRECTION));
 		const vec3 wiLocal = reflect(-woLocal, h);
 		if (wiLocal.z <= 0.0) {
 			attenuation = vec3(0.0);
@@ -115,7 +115,7 @@ bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, inout uint rng, out 
 	}
 
 	// normal + a point on the unit sphere is a cosine-weighted direction, as for lambertian
-	vec3 d = normal + randomUnitVector(rng);
+	vec3 d = normal + unitVectorFromSample(sampleDimension2D(pathIndex, rng, CRT_SAMPLE_INDIRECT_DIRECTION));
 	if (dot(d, d) < 1e-8) {
 		d = normal;
 	}
@@ -126,12 +126,12 @@ bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, inout uint rng, out 
 
 // the materials, by type. `inDir` is the unit incoming direction. Returns false when the path is
 // absorbed
-bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, inout uint rng, out vec3 attenuation, out vec3 outDir)
+bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, uint pathIndex, inout uint rng, out vec3 attenuation, out vec3 outDir)
 {
 	switch (m.type) {
 	case CRT_MATERIAL_LAMBERTIAN: {
 		// normal + a point on the unit sphere is a true cosine-weighted Lambertian distribution
-		vec3 d = normal + randomUnitVector(rng);
+		vec3 d = normal + unitVectorFromSample(sampleDimension2D(pathIndex, rng, CRT_SAMPLE_INDIRECT_DIRECTION));
 		// the two can cancel almost exactly, and a zero direction turns into NaN once normalised
 		if (dot(d, d) < 1e-8) {
 			d = normal;
@@ -142,14 +142,23 @@ bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, 
 	}
 	case CRT_MATERIAL_METAL: {
 		vec3 reflected = reflect(inDir, normal);
-		outDir = reflected + m.param * randomInBall(rng);
+		if (!CRT_SAMPLE_RECORD) {
+			// without a record, the expression it always was: written through ballFromSample() it
+			// rounds differently on Metal, by one ulp, and the render is no longer bit-identical
+			outDir = reflected + m.param * randomInBall(rng);
+		} else {
+			// the direction takes the record's two numbers, the radius the stream's next
+			const vec2 ballDirection = sampleRecordField2D(pathIndex, CRT_SAMPLE_INDIRECT_DIRECTION);
+			const float ballRadius = randomFloat(rng);
+			outDir = reflected + m.param * ballFromSample(ballDirection, ballRadius);
+		}
 		attenuation = m.albedo;
 		return dot(outDir, normal) > 0.0;
 	}
 	case CRT_MATERIAL_PHONG: {
 		vec3 reflected = reflect(inDir, normal);
 		float alpha = pow(1000.0, m.param * m.param);
-		outDir = randomInHemisphere(reflected, alpha, rng);
+		outDir = hemisphereFromSample(reflected, alpha, sampleDimension2D(pathIndex, rng, CRT_SAMPLE_INDIRECT_DIRECTION));
 		attenuation = m.albedo;
 		return dot(outDir, normal) > 0.0;
 	}
@@ -159,7 +168,7 @@ bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, 
 		float cosTheta = min(dot(-inDir, normal), 1.0);
 		float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
 		bool cannotRefract = ratio * sinTheta > 1.0;
-		if (cannotRefract || schlick(cosTheta, ratio) > randomFloat(rng)) {
+		if (cannotRefract || schlick(cosTheta, ratio) > sampleDimension(pathIndex, rng, CRT_SAMPLE_INDIRECT_LOBE)) {
 			outDir = reflect(inDir, normal);
 		} else {
 			outDir = refractDir(inDir, normal, ratio);
@@ -167,7 +176,7 @@ bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, 
 		return true;
 	}
 	case CRT_MATERIAL_PBR:
-		return scatterPbr(m, inDir, normal, rng, attenuation, outDir);
+		return scatterPbr(m, inDir, normal, pathIndex, rng, attenuation, outDir);
 	}
 	attenuation = vec3(0.0);
 	outDir = normal;

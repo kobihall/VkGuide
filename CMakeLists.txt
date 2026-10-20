@@ -40,6 +40,13 @@ if (NOT MSVC)
     target_compile_options(light_test PRIVATE -O2)
 endif()
 
+# CPU-only verification of the sample generators behind kernel 01: ./bin/sampler_test
+add_executable(sampler_test tests/sampler_test.cpp)
+target_link_libraries(sampler_test PRIVATE rt_sampler fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(sampler_test PRIVATE -O2)
+endif()
+
 
 find_program(GLSL_VALIDATOR glslangValidator HINTS /usr/bin /usr/local/bin $ENV{VULKAN_SDK}/Bin/ $ENV{VULKAN_SDK}/Bin32/)
 

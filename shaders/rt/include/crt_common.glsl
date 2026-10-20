@@ -30,6 +30,9 @@
 // triangles are tested with the watertight algorithm, and a box test widens its far distance by
 // CRT_BOX_FAR_SCALE: neither can lose a hit through rounding
 #define CRT_FLAG_WATERTIGHT 32u
+// the value of Params.bounce for the pass of kernel 01 that runs before kernel 00, over the whole
+// pool, and writes the camera's dimensions into the record
+#define CRT_CAMERA_PASS 0xFFFFFFFFu
 
 #define CRT_DEBUG_NONE 0u
 #define CRT_DEBUG_PRIMARY_DIRECTION 1u
@@ -363,10 +366,28 @@ layout (std430, set = 0, binding = 21) readonly buffer EnvironmentSamplingBuffer
 	float envCompensatedIntegral;
 	float envData[];
 };
-// 22 to 25: reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+// 22: reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+// one RaySamples per pool slot: the random numbers a path's next bounce consumes, written by kernel 01
+// and read by kernels 00 and 06. A 16-byte stub while the selected sampler writes no record
+// (CRT_SAMPLE_RECORD off). src/sampler.h SAMPLE_RECORD_BYTES
+struct RaySamples {
+	// x the light choice, yz the point on the light, w spare. In the camera pass: xy the offset in the
+	// pixel, zw the position on the lens
+	vec4 direct;
+	// x the lobe or transmission choice, yz the direction, w Russian roulette. In the camera pass: x
+	// time, y wavelength
+	vec4 indirect;
+	// x the distance, y the interaction type, zw the phase function's direction. Not generated yet
+	vec4 medium;
+};
+layout (std430, set = 0, binding = 23) buffer RaySampleBuffer { RaySamples raySamples[]; };
+// 24 and 25: reserved by docs/plans/pbrt-roadmap.md for plans not built yet
 // every material's parameter record, back to back: GpuMaterial.paramOffset finds its own, and
 // crt_material.glsl reads it in the order src/rt_material.cpp packed it
 layout (std430, set = 0, binding = 26) readonly buffer MaterialParamBuffer { vec4 materialParams[]; };
+// pbrt's Sobol generator matrices and the other tables the samplers read, uploaded once. The header
+// and layout are in crt_sampler.glsl, built by src/rt_gpu.cpp
+layout (std430, set = 0, binding = 46) readonly buffer SamplerTableBuffer { uint samplerTables[]; };
 
 // src/rt_gpu_types.h CrtParams
 layout (push_constant) uniform Params {
@@ -402,7 +423,18 @@ layout (push_constant) uniform Params {
 	// every record in instances[], unbounded and bounded alike, regardless of whether a TLAS was
 	// built over them. A traversal-free variant of kernel 02 scans exactly this many
 	uint instanceCount;
-	float pad0;
+	// the sampler's choices, packed (src/sampler.h PackedSamplerParams; unpacked in crt_sampler.glsl)
+	uint samplerOptions;
+	uint samplerHalton;
+	uint samplerStrata;
+	// the stratified sampler's 1 / samples, 1 / strata across and 1 / strata down: multiplied by,
+	// since a GPU's division is not IEEE and the CPU mirror's is
+	float samplerInvSamples;
+	float samplerInvStrataX;
+	float samplerInvStrataY;
+	uint pad0;
+	uint pad1;
+	uint pad2;
 } pc;
 
 uint queueSlot(uint queue, uint index)

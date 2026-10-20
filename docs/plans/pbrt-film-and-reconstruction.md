@@ -2,7 +2,7 @@
 
 Each pixel's value is a running mean of its samples, kept in an rgba32f image, and each sample is jittered uniformly inside its pixel. That is a box filter, which PBR 4ed calls the least desirable choice because it lets aliasing through. The float running mean also stops improving at high sample counts: pbrt measured MSE flattening after about 1000 spp with a 32-bit reference, which undermines **Compare to reference** exactly where it matters. This plan adds pixel reconstruction filters, compensated accumulation, per-pixel variance and optional firefly suppression.
 
-*Not implemented. Depends on [pbrt-sample-generation.md](pbrt-sample-generation.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-sample-generation.md](completed/pbrt-sample-generation.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decisions already made
 

@@ -33,8 +33,8 @@
 // The surface itself comes from crt_interaction.glsl, rebuilt from the thin hit record, and the
 // shadow ray leaves from its point: kernel 08 reads the origin from the ShadowRay, not from hits[].
 //
-// Requires crt_common.glsl, crt_interaction.glsl, crt_random.glsl, equirect.glsl, crt_scatter.glsl,
-// crt_light.glsl and crt_debug.glsl.
+// Requires crt_common.glsl, crt_interaction.glsl, crt_random.glsl, crt_samples.glsl, equirect.glsl,
+// crt_scatter.glsl, crt_light.glsl and crt_debug.glsl.
 
 #define CRT_DIRECT_BSDF 0
 #define CRT_DIRECT_LIGHT 1
@@ -106,7 +106,7 @@ bool spawnShadowRay(SurfaceInteraction si, vec3 direction, float distance, vec3 
 // shadowRays[entry] if it would add anything. `si` is the vertex, `normal` the shading normal the
 // material takes. Draws its random numbers after the BSDF sample's, so a strategy that samples
 // nothing here leaves the path's random stream exactly as it was
-bool nextEvent(ClassicMaterial material, vec3 inDir, SurfaceInteraction si, vec3 normal, PathState path, inout uint rng, uint entry)
+bool nextEvent(ClassicMaterial material, vec3 inDir, SurfaceInteraction si, vec3 normal, PathState path, uint pathIndex, inout uint rng, uint entry)
 {
 	const vec3 position = si.p;
 	vec3 direction;
@@ -121,7 +121,7 @@ bool nextEvent(ClassicMaterial material, vec3 inDir, SurfaceInteraction si, vec3
 	if (lightHeader.deltaCount == 0u) {
 		return false;
 	}
-	const uint index = sampleDeltaLightIndex(randomFloat(rng));
+	const uint index = sampleDeltaLightIndex(sampleDimension(pathIndex, rng, CRT_SAMPLE_DIRECT_LIGHT));
 	if (!sampleDeltaLight(lights[index], position, direction, distance, emitted, lightNormal)) {
 		return false;
 	}
@@ -130,8 +130,8 @@ bool nextEvent(ClassicMaterial material, vec3 inDir, SurfaceInteraction si, vec3
 	if (lightHeader.count == 0u) {
 		return false;
 	}
-	const uint index = sampleLightIndex(randomFloat(rng));
-	const vec2 u = vec2(randomFloat(rng), randomFloat(rng));
+	const uint index = sampleLightIndex(sampleDimension(pathIndex, rng, CRT_SAMPLE_DIRECT_LIGHT));
+	const vec2 u = sampleDimension2D(pathIndex, rng, CRT_SAMPLE_DIRECT_POINT);
 	// MIS lets the environment's light samples skip what a BSDF sample finds well enough anyway
 	// (pbrt-v4's compensated distribution); on its own, light sampling has to cover everything
 	const uint environmentTable = CRT_DIRECT_LIGHTING == CRT_DIRECT_MIS ? 1u : 0u;
@@ -211,7 +211,7 @@ void main()
 
 			vec3 attenuation;
 			vec3 outDir;
-			bool alive = scatterSurface(material, inDir, normal, frontFace, rng, attenuation, outDir);
+			bool alive = scatterSurface(material, inDir, normal, frontFace, pathIndex, rng, attenuation, outDir);
 			vec3 throughput = path.throughput * attenuation;
 			const uint nextBounce = path.bounce + 1u;
 
@@ -225,7 +225,7 @@ void main()
 
 			if (alive && (pc.flags & CRT_FLAG_ROULETTE) != 0u && nextBounce > pc.minBouncesBeforeRoulette) {
 				const float survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.05, 1.0);
-				if (randomFloat(rng) >= survival) {
+				if (sampleDimension(pathIndex, rng, CRT_SAMPLE_INDIRECT_ROULETTE) >= survival) {
 					alive = false;
 				} else {
 					throughput /= survival;
@@ -236,7 +236,7 @@ void main()
 			// the continuation, and a BSDF it could land in
 			const bool specular = isSpecularMaterial(material);
 			if (nextBounce < pc.rayDepth && !specular && !pastFirstVertex) {
-				shadow = nextEvent(material, inDir, si, normal, path, rng, entry);
+				shadow = nextEvent(material, inDir, si, normal, path, pathIndex, rng, entry);
 			}
 
 			if (alive) {

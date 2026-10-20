@@ -33,7 +33,10 @@ void PathSchedule::start(GpuRenderer& renderer, VulkanEngine* engine)
 	if (samplesPerFrame != (uint32_t)snapshot.settings.samplesPerFrame) {
 		fmt::println("PathSchedule: samples per frame lowered to {} to keep the pool under {} paths", samplesPerFrame, CRT_MAX_POOL);
 	}
-	renderer.wavefrontPool().ensure(engine, renderer.resources(), snapshot.width, snapshot.height, samplesPerFrame);
+	//the sample record exists only while the selected sampler writes one
+	const KernelVariant* sampler = snapshot.kernels.selected(KernelSlot::GenerateSamples);
+	const bool sampleRecord = sampler != nullptr && sampler->implemented && sampler->writesRecord;
+	renderer.wavefrontPool().ensure(engine, renderer.resources(), snapshot.width, snapshot.height, samplesPerFrame, sampleRecord);
 
 	if (m_headerReadback.buffer == VK_NULL_HANDLE) {
 		m_headerReadback = engine->createBuffer((VkDeviceSize)FRAME_OVERLAP * READBACK_HEADERS_PER_SLOT * sizeof(CrtQueueHeader), VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_TO_CPU);
@@ -131,6 +134,14 @@ void PathSchedule::record(GpuRenderer& renderer, VulkanEngine* engine, VkCommand
 	//---------------------------------------------------------------- 00 generate camera rays
 	pool.resetHeader(cmd, CRT_QUEUE_RAY_A);
 	vkutil::memory_barrier(cmd, transferStage, transferAccess, computeStages, computeAccess);
+	//---- 01 generate samples, the camera pass: a sampler that writes a record fills in the camera's
+	//dimensions over the whole pool first, for kernel 00 to read
+	if (const KernelVariant* samples = passFor(KernelSlot::GenerateSamples); samples != nullptr && samples->cameraPass) {
+		params.bounce = CRT_CAMERA_PASS;
+		launch(*samples, CRT_CAMERA_PASS);
+		params.bounce = 0;
+		vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
+	}
 	if (const KernelVariant* generate = passFor(KernelSlot::GenerateCameraRays)) {
 		launch(*generate, 0);
 	}
