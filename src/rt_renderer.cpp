@@ -410,6 +410,26 @@ void RaytraceRenderer::drawSettings(VulkanEngine* engine)
 		}
 		ImGui::EndCombo();
 	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Replaces shading inside the path tracer. Samples taken after a change show the view, and the earlier ones stay in the average: restart the render for a clean one.");
+	}
+
+	//the measurements of the film: display only, so they switch live and work on a finished render
+	if (ImGui::BeginCombo("Analysis view", crtAnalysisViewName(m_gpu.analysisView))) {
+		for (uint32_t i = 0; i < (uint32_t)CrtAnalysisView::Count; i++) {
+			const CrtAnalysisView view = (CrtAnalysisView)i;
+			if (ImGui::Selectable(crtAnalysisViewName(view), view == m_gpu.analysisView)) {
+				m_gpu.analysisView = view;
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("%s", crtAnalysisViewDescription(view));
+			}
+		}
+		ImGui::EndCombo();
+	}
+	if (ImGui::IsItemHovered() && m_gpu.analysisView != CrtAnalysisView::None) {
+		ImGui::SetTooltip("%s", crtAnalysisViewDescription(m_gpu.analysisView));
+	}
 }
 
 double RaytraceRenderer::sceneCostPerRay() const

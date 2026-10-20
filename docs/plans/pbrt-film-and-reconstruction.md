@@ -12,7 +12,7 @@ On 2026-09-26 the user accepted two defaults: filter importance sampling in kern
 
 - Kernel 00 jitters each sample uniformly in its pixel, or places it at the center when antialiasing is off.
 - Kernel 09 (`0901_update_film.comp`, `running_mean`) folds the frame's K slots into `accumulation` as `μ_{n+m} = (n μ_n + Σ L_k) / (n + m)`, skipping unspawned and non-finite samples and counting the non-finite ones.
-- `sampleCount` (r32ui) keeps each pixel's count for the mean and for adaptive sampling.
+- `sampleCount` (r32ui) keeps each pixel's count for the mean and for adaptive sampling. It also gives kernel 00 each path's sample index, which has a bug when a sample is dropped.[^1]
 - Nothing estimates per-pixel variance, and nothing clamps outliers.
 
 ## Design
@@ -36,6 +36,8 @@ A new kernel 09 variant, `0902_compensated_mean`, keeps sums instead of a runnin
 - It also writes the resolved mean into `accumulation` every frame, so the tonemap pass, the reference comparison and the auxiliary outputs read the same image as today.
 
 `0901_running_mean` stays for bit-identical comparisons. New scenes select `0902`.
+
+`0902` is also where the sample-index bug in footnote 1 gets fixed, since it changes what the film counts: the count the mean divides by and the number of samples taken become two numbers.
 
 ### Per-pixel variance
 
@@ -76,6 +78,7 @@ New variants: kernel 00 `filter_importance`; kernel 09 `compensated_mean`, `outl
 - `0002` with the box filter converges to the same image as `0001` (it is the same distribution, reached through a table).
 - A checkerboard plane receding to the horizon at 1 spp shows the aliasing difference between box, Gaussian and Mitchell, as in PBR 4ed Figure 8.48.
 - The white furnace scene converges to exactly 1 under every filter.
+- A sample forced to a NaN in one pixel of a render at 1 sample per frame is dropped once and the pixel carries on: its count reaches the render's sample target, minus the one dropped sample, instead of freezing (footnote 1). The **Dropped samples** analysis view shows exactly one red pixel.
 
 ## Open questions
 
@@ -84,3 +87,9 @@ New variants: kernel 00 `filter_importance`; kernel 09 `compensated_mean`, `outl
 ## Sources
 
 PBR 4ed §5.4.3 to §5.4.6 (filtering image samples, the weighted importance sampling estimator, RGBFilm with double-precision pixels and `maxComponentValue`), §8.8 (filters and `FilterSampler`), §B.2.11 (robust variance estimation), Figure 5.24 (32-bit references); Zirr, Hanika and Dachsbacher 2018, *Re-weighting firefly samples for improved finite-sample Monte Carlo estimates*; pbrt-v4 `src/pbrt/film.*`, `filters.*`.
+
+[^1]: **A dropped sample is drawn again every frame.** Found 2026-10-20 by the verification harness ([pbrt-verification-harness.md](completed/pbrt-verification-harness.md), finding 7).
+
+    *The bug.* Kernel 00 seeds a path from `sampleIndex = sampleCount[pixel] + k`, where `k` is the path's slot within the frame. Kernel 09 adds only the samples it accepts to `sampleCount`, and skips a non-finite sample without counting it. So a dropped sample leaves the count where it was, and the next frame starts from the same index, which gives the same random stream and, for a deterministic fault, the same non-finite sample. At 1 sample per frame the pixel never gets past it. In a 64 x 64 render of 4096 samples, a fully metallic `pbr` sphere (before its 0/0 was fixed) dropped one sample 1403 times at pixel (39, 17), and that pixel finished at 2693 samples. At several samples per frame the retry happens once or twice, because the next frame starts a little past the bad index. Any non-finite sample from any cause does this, and the pixel's mean is then over fewer distinct samples, so it converges more slowly than its neighbors. Kernel 09's dropped-sample counter reports the repeats as new drops, so a single bad sample reads as a stream of them.
+
+    *The fix.* The count the mean divides by and the number of samples taken have to be separate. Give kernel 00 its sample index from a second per-pixel counter of samples taken, which kernel 09 advances by the number of slots it spawned for the pixel, accepted or not, and keep `sampleCount` as the count of accepted samples that the mean divides by. That is one more `r32ui` image beside `sampleCount` (or a second channel of a wider one), one more image binding for kernels 00 and 09, and `0901_running_mean` has to keep today's behavior for bit-identical comparisons, so the change belongs to `0902_compensated_mean` and its kernel 00 partner. [pbrt-adaptive-sampling.md](pbrt-adaptive-sampling.md) draws each pixel's budget from the same counter and needs the same split: its budget compares samples taken against the target, and its variance estimate uses the accepted count. Do not make kernel 09 count a dropped sample as accepted: the sum would then divide by a sample it does not contain, which biases the pixel low by one sample's share.

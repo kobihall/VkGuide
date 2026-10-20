@@ -12,6 +12,14 @@
 
 namespace {
 
+//shaders/analysis_view.comp's push constants
+struct AnalysisPushConstants {
+	uint32_t view;
+	uint32_t samples;
+	uint32_t baseSamples;
+	uint32_t hasReference;
+};
+
 //the selected sampler writes the RaySamples record: kernels 00 and 06 are built to read it
 bool samplerWritesRecord(const KernelSelection& selection)
 {
@@ -57,6 +65,48 @@ const char* crtDebugViewName(CrtDebugView view)
 		break;
 	}
 	return "unknown";
+}
+
+const char* crtAnalysisViewName(CrtAnalysisView view)
+{
+	switch (view) {
+	case CrtAnalysisView::None:
+		return "Picture";
+	case CrtAnalysisView::ReferenceError:
+		return "Error against reference";
+	case CrtAnalysisView::ReferenceDifference:
+		return "Difference from reference";
+	case CrtAnalysisView::Noise:
+		return "Noise (convergence)";
+	case CrtAnalysisView::EnergyAboveOne:
+		return "Energy above 1";
+	case CrtAnalysisView::DroppedSamples:
+		return "Dropped samples";
+	case CrtAnalysisView::Count:
+		break;
+	}
+	return "?";
+}
+
+const char* crtAnalysisViewDescription(CrtAnalysisView view)
+{
+	switch (view) {
+	case CrtAnalysisView::None:
+		return "The rendered picture.";
+	case CrtAnalysisView::ReferenceError:
+		return "Each pixel's error against the reference: the square root of (render - reference)^2 / (reference^2 + 0.01), on a log scale from 0.1% (blue) to 100% (red). Needs a reference of the render's size (Compare to reference); magenta without one.";
+	case CrtAnalysisView::ReferenceDifference:
+		return "Render minus reference, relative to the reference: red where the render is brighter, blue where it is darker. Noise alternates between the two; a bias is one colour over an area. Needs a reference of the render's size.";
+	case CrtAnalysisView::Noise:
+		return "An estimate of each pixel's remaining error from how much it changed since the film held half the samples, on the log scale of the error view. It needs no reference and falls as the render converges. Grey until the film has doubled once.";
+	case CrtAnalysisView::EnergyAboveOne:
+		return "Pixels with a channel above 1 in red, brighter with the excess; the rest in grey. For furnace scenes, where a passive material must not exceed 1.";
+	case CrtAnalysisView::DroppedSamples:
+		return "Pixels where kernel 09 dropped a non-finite sample, in red; the rest dim grey. A dropped sample biases its pixel, so any red is a NaN or an infinity in a path.";
+	case CrtAnalysisView::Count:
+		break;
+	}
+	return "";
 }
 
 VkDescriptorType crtBindingType(CrtBinding binding)
@@ -155,6 +205,16 @@ void GpuRenderer::init(VulkanEngine* engine)
 		.setWorkgroupSize(ERROR_WORKGROUP, ERROR_WORKGROUP)
 		.build(engine->m_device);
 
+	//the analysis views: a plain image pass over the film, the reference, the noise base and the display image
+	m_analysisPass = ComputePassBuilder(shaderDir + "analysis_view.comp.spv")
+		.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.setPushConstants<AnalysisPushConstants>()
+		.build(engine->m_device);
+
 	//the environment tables' binding must always name a buffer, a map or no map
 	uploadEnvironment(engine, nullptr);
 	uploadSamplerTables(engine);
@@ -201,6 +261,7 @@ void GpuRenderer::destroy(VulkanEngine* engine)
 		m_errorPartialsBytes = 0;
 	}
 	m_errorPass.destroy(engine->m_device);
+	m_analysisPass.destroy(engine->m_device);
 	if (m_traversalStats.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_traversalStats);
 		engine->destroyBuffer(m_statsReadback);
@@ -333,12 +394,16 @@ void GpuRenderer::ensureFilm(VulkanEngine* engine, uint32_t width, uint32_t heig
 	const VkExtent3D extent { width, height, 1 };
 	m_accumulation = engine->createImage(extent, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 	m_sampleCount = engine->createImage(extent, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+	m_noiseBase = engine->createImage(extent, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+	m_noiseBaseSamples = 0;
+	m_nextNoiseBase = 0;
 
 	//both images live in GENERAL for good: written by the film stage, read by the tonemap and
 	//cleared by the command buffer, all of which accept it
 	engine->immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, m_accumulation.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 		vkutil::transition_image(cmd, m_sampleCount.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+		vkutil::transition_image(cmd, m_noiseBase.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 	});
 	m_resources.setImage(CrtBinding::Accumulation, m_accumulation.imageView, VK_IMAGE_LAYOUT_GENERAL);
 	m_resources.setImage(CrtBinding::SampleCount, m_sampleCount.imageView, VK_IMAGE_LAYOUT_GENERAL);
@@ -352,7 +417,8 @@ void GpuRenderer::freeFilm(VulkanEngine* engine)
 	}
 	engine->destroyImage(m_accumulation);
 	engine->destroyImage(m_sampleCount);
-	m_accumulation = m_sampleCount = {};
+	engine->destroyImage(m_noiseBase);
+	m_accumulation = m_sampleCount = m_noiseBase = {};
 	m_resources.clear(CrtBinding::Accumulation);
 	m_resources.clear(CrtBinding::SampleCount);
 	m_hasFilm = false;
@@ -723,6 +789,9 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 	m_droppedSamples = 0;
 	m_referenceError = {};
 	m_convergence.clear();
+	//the noise view compares the film with a copy of itself from when it held half as many samples
+	m_noiseBaseSamples = 0;
+	m_nextNoiseBase = 4;
 }
 
 void GpuRenderer::stop()
@@ -777,6 +846,25 @@ void GpuRenderer::clearReference(VulkanEngine* engine)
 	m_referenceSamples = 0;
 	m_referenceError = {};
 	m_convergence.clear();
+}
+
+void GpuRenderer::recordAnalysis(VkCommandBuffer cmd, VulkanEngine* engine, const AllocatedImage& displayImage)
+{
+	//a reference of another size is another picture; the accumulation stands in for the binding
+	const bool hasReference = m_hasReference && m_reference.imageExtent.width == m_accumulation.imageExtent.width && m_reference.imageExtent.height == m_accumulation.imageExtent.height;
+	const VkDescriptorSet set = engine->getCurrentFrame().frameDescriptors.allocate(engine->m_device, m_analysisPass.setLayout);
+	DescriptorWriter writer;
+	writer.writeImage(0, m_accumulation.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.writeImage(1, hasReference ? m_reference.imageView : m_accumulation.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.writeImage(2, m_noiseBase.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.writeImage(3, m_sampleCount.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.writeImage(4, displayImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.updateSet(engine->m_device, set);
+
+	const AnalysisPushConstants constants { (uint32_t)analysisView, m_samplesAccumulated, m_noiseBaseSamples, hasReference ? 1u : 0u };
+	//the tonemap wrote the display image, and the film and the reference were written before it
+	vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+	dispatchComputePassOver(cmd, m_analysisPass, set, &constants, displayImage.imageExtent);
 }
 
 //the image's pixels as a host RGB image: a copy to a staging buffer once the device is idle
@@ -1055,6 +1143,20 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 		vkCmdFillBuffer(cmd, m_traversalStats.buffer, 0, VK_WHOLE_SIZE, 0);
 		vkutil::memory_barrier(cmd, transferStage, transferAccess, computeStages, computeAccess);
 
+		//the film as the frames before this one left it, kept each time its sample count has doubled,
+		//so that the frame about to run takes it past the copy: the noise view needs the two apart
+		if (m_samplesAccumulated > 0 && m_samplesAccumulated >= m_nextNoiseBase) {
+			VkImageCopy region {};
+			region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			region.extent = m_accumulation.imageExtent;
+			vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+			vkCmdCopyImage(cmd, m_accumulation.image, VK_IMAGE_LAYOUT_GENERAL, m_noiseBase.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+			vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+			m_noiseBaseSamples = m_samplesAccumulated;
+			m_nextNoiseBase = m_samplesAccumulated * 2u;
+		}
+
 		//THE INTEGRATOR. Everything above and below is the same for every one of them
 		m_schedules[(size_t)m_activeIntegrator]->record(*this, engine, cmd, slot, baseParams(engine));
 
@@ -1078,6 +1180,9 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 	if (m_hasImage) {
 		recordReference(cmd, engine, slot);
 		engine->m_tonemapPass.dispatch(cmd, engine->m_device, engine->getCurrentFrame().frameDescriptors, m_accumulation, displayImage, exposure);
+		if (analysisView != CrtAnalysisView::None) {
+			recordAnalysis(cmd, engine, displayImage);
+		}
 	}
 
 	if (m_running && m_hasTimestamps) {

@@ -185,7 +185,7 @@ private:
 	int m_nextLightNumber { 1 };
 	// the Materials window's selection, 0 for none
 	uint64_t m_selectedMaterialId { 0 };
-	bool m_showMaterials { false };
+	bool m_showMaterials { true };
 
 	// shapes, cameras, lights, mesh objects and materials share one id space, so the gizmo's opaque
 	// target id cannot collide

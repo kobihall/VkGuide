@@ -66,6 +66,22 @@ enum class CrtDebugView : uint32_t {
 
 const char* crtDebugViewName(CrtDebugView view);
 
+// A measurement of the film shown in place of the picture (shaders/analysis_view.comp). Unlike a debug
+// view it runs after the tonemap, restarts nothing and works on a finished render
+enum class CrtAnalysisView : uint32_t {
+	None = 0,
+	ReferenceError,
+	ReferenceDifference,
+	Noise,
+	EnergyAboveOne,
+	DroppedSamples,
+	Count
+};
+
+const char* crtAnalysisViewName(CrtAnalysisView view);
+// what the view shows and what it needs, for the panel's tooltip
+const char* crtAnalysisViewDescription(CrtAnalysisView view);
+
 // what start() renders: taken by value at the click, never re-read
 struct GpuRenderSnapshot {
 	uint32_t width { 0 };
@@ -185,6 +201,8 @@ public:
 
 	// switchable mid-render; written through the radiance slots, so it accumulates like radiance
 	CrtDebugView debugView { CrtDebugView::None };
+	// switchable any time, restarts nothing: it only changes what the display image shows
+	CrtAnalysisView analysisView { CrtAnalysisView::None };
 
 
 	// FOR SCHEDULES. The render being recorded, every binding's resource, and the wavefront pool
@@ -229,6 +247,8 @@ private:
 	CrtParams baseParams(VulkanEngine* engine) const;
 	// the reference copy and its error measurement, inside record()
 	void recordReference(VkCommandBuffer cmd, VulkanEngine* engine, uint32_t slot);
+	// the analysis view over the display image, after the tonemap
+	void recordAnalysis(VkCommandBuffer cmd, VulkanEngine* engine, const AllocatedImage& displayImage);
 
 	CrtResourceTable m_resources;
 
@@ -251,6 +271,12 @@ private:
 	// the film, sized for the render
 	AllocatedImage m_accumulation {};
 	AllocatedImage m_sampleCount {};
+	// a copy of the accumulation from when it held m_noiseBaseSamples samples, taken each time the
+	// count doubles: what the noise view compares the film with
+	AllocatedImage m_noiseBase {};
+	uint32_t m_noiseBaseSamples { 0 };
+	uint32_t m_nextNoiseBase { 0 };
+	ComputePass m_analysisPass;
 	bool m_hasFilm { false };
 	bool m_hasImage { false };
 

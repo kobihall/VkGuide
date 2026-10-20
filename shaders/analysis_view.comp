@@ -1,0 +1,133 @@
+#version 460
+
+// ANALYSIS VIEWS: the converging render looked at through a measurement instead of as a picture. Unlike the
+// debug views (shaders/rt/include/crt_debug.glsl), which replace shading inside the path tracer and
+// restart a render, these read the film the tracer already accumulated and overwrite the display image
+// after the tonemap, so they switch live and work on a finished render. docs/raytracing-overview.md.
+//
+//   1 error against the reference: sqrt of the pixel's relative squared error, (x - r)^2 / (r^2 + 0.01),
+//     on a log scale from 0.1% (blue) to 100% (red)
+//   2 difference from the reference: red where the render is brighter, blue where it is darker. Noise
+//     alternates; a bias is one colour over an area
+//   3 noise: the change since the film held about half the samples, which estimates the error of the
+//     current mean (below) in the error view's own measure and scale. Falls as the render converges
+//   4 energy above 1: pixels with a channel above 1 in red, brighter with the excess, the rest grey.
+//     For furnace scenes, where nothing may exceed 1
+//   5 dropped samples: pixels where kernel 09 dropped a non-finite sample, in red, the rest dim grey
+//
+// The noise estimate: the mean of N samples and the mean of the first Ns of them differ by a variable
+// of variance s^2 (1/Ns - 1/N), while the mean of N has error variance s^2/N, so the error is the
+// difference times sqrt(Ns / (N - Ns)).
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (rgba32f, set = 0, binding = 0) uniform readonly image2D accumulation;
+layout (rgba32f, set = 0, binding = 1) uniform readonly image2D reference;
+layout (rgba32f, set = 0, binding = 2) uniform readonly image2D noiseBase;
+layout (r32ui, set = 0, binding = 3) uniform readonly uimage2D sampleCount;
+layout (rgba8, set = 0, binding = 4) uniform writeonly image2D displayImage;
+
+layout (push_constant) uniform constants {
+	uint view;
+	// samples per pixel the film holds
+	uint samples;
+	// samples per pixel noiseBase held when it was copied; 0 when it has not been
+	uint baseSamples;
+	// 1 when `reference` is a reference of this image's size
+	uint hasReference;
+} pc;
+
+#define VIEW_REFERENCE_ERROR 1u
+#define VIEW_REFERENCE_DIFFERENCE 2u
+#define VIEW_NOISE 3u
+#define VIEW_ENERGY_ABOVE_ONE 4u
+#define VIEW_DROPPED_SAMPLES 5u
+
+// a jet ramp, blue to red
+vec3 jet(float t)
+{
+	t = clamp(t, 0.0, 1.0);
+	return clamp(vec3(1.5 - abs(4.0 * t - 3.0), 1.5 - abs(4.0 * t - 2.0), 1.5 - abs(4.0 * t - 1.0)), 0.0, 1.0);
+}
+
+// 0.1% maps to 0 and 100% to 1
+float logScale(float relative)
+{
+	return (log2(max(relative, 1e-6)) / log2(10.0) + 3.0) / 3.0;
+}
+
+vec3 clean(vec3 v)
+{
+	return mix(vec3(0.0), v, equal(v, v));
+}
+
+float mean3(vec3 v)
+{
+	return (v.x + v.y + v.z) / 3.0;
+}
+
+// the picture itself, dimmed, for the pixels a view has nothing to say about
+vec3 backdrop(vec3 radiance, float level)
+{
+	return vec3(sqrt(clamp(mean3(radiance), 0.0, 1.0))) * level;
+}
+
+void main()
+{
+	const ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+	const ivec2 size = imageSize(displayImage);
+	if (coord.x >= size.x || coord.y >= size.y) {
+		return;
+	}
+	const vec3 x = clean(imageLoad(accumulation, coord).rgb);
+	vec3 color = vec3(0.0);
+
+	switch (pc.view) {
+	case VIEW_REFERENCE_ERROR:
+	case VIEW_REFERENCE_DIFFERENCE: {
+		if (pc.hasReference == 0u) {
+			// no reference, or one of another size: magenta says so
+			color = vec3(0.35, 0.0, 0.35);
+			break;
+		}
+		const vec3 r = clean(imageLoad(reference, coord).rgb);
+		if (pc.view == VIEW_REFERENCE_ERROR) {
+			const vec3 d = x - r;
+			color = jet(logScale(sqrt(mean3(d * d / (r * r + 0.01)))));
+		} else {
+			const float d = mean3(x - r);
+			const float s = clamp(d / max(mean3(r), 0.05), -1.0, 1.0);
+			color = backdrop(r, 0.3) + vec3(max(s, 0.0), 0.0, max(-s, 0.0));
+		}
+		break;
+	}
+	case VIEW_NOISE: {
+		if (pc.baseSamples == 0u || pc.samples <= pc.baseSamples) {
+			// the film has not had a second look at itself yet
+			color = backdrop(x, 0.25);
+			break;
+		}
+		const vec3 b = clean(imageLoad(noiseBase, coord).rgb);
+		// the same relative RMS as the error view, so the two read on one scale
+		const vec3 d = x - b;
+		const float error = sqrt(mean3(d * d / (x * x + 0.01))) * sqrt(float(pc.baseSamples) / float(pc.samples - pc.baseSamples));
+		color = jet(logScale(error));
+		break;
+	}
+	case VIEW_ENERGY_ABOVE_ONE: {
+		const float peak = max(x.r, max(x.g, x.b));
+		if (peak > 1.0005) {
+			color = vec3(1.0, 0.15, 0.15) * (0.5 + 0.5 * clamp((peak - 1.0) / 0.1, 0.0, 1.0));
+		} else {
+			color = backdrop(x, 0.6);
+		}
+		break;
+	}
+	case VIEW_DROPPED_SAMPLES: {
+		const uint counted = imageLoad(sampleCount, coord).r;
+		color = pc.samples > counted ? vec3(1.0, 0.0, 0.0) : backdrop(x, 0.4);
+		break;
+	}
+	}
+	imageStore(displayImage, coord, vec4(clamp(color, 0.0, 1.0), 1.0));
+}
