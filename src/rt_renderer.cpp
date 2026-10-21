@@ -305,6 +305,7 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 	drawSettings(engine);
 
 	drawSamplerSettings(engine);
+	drawFilmSettings(engine);
 	drawAccelSettings(engine);
 	drawIntersectionSettings();
 
@@ -1240,6 +1241,122 @@ void RaytraceRenderer::drawSamplerSettings(VulkanEngine* engine)
 		ImGui::TextDisabled("Sample record: %.0f MB", std::min(paths, (double)CRT_MAX_POOL) * SAMPLE_RECORD_BYTES / (1024.0 * 1024.0));
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Kernel 01 writes 48 bytes of random numbers per path, which kernels 00 and 06 read.\nPCG per bounce needs none.");
+		}
+	}
+}
+
+void RaytraceRenderer::drawFilmSettings(VulkanEngine* engine)
+{
+	//kernel 00's variants place a sample in its pixel and kernel 09's turn the samples into the pixel's
+	//value, so the two combos are the registry's lists for those slots, as the Raytracer Shaders window shows them
+	if (!integratorRunsStage(m_kernels.integrator, KernelSlot::GenerateCameraRays) || !integratorRunsStage(m_kernels.integrator, KernelSlot::UpdateFilm)) {
+		return;
+	}
+	if (!ImGui::CollapsingHeader("Film")) {
+		return;
+	}
+	auto variantCombo = [&](const char* label, KernelSlot slot, const char* tooltip) {
+		const std::span<const KernelVariant> variants = kernelVariants(slot);
+		const KernelVariant* current = m_kernels.selected(slot);
+		if (ImGui::BeginCombo(label, current != nullptr ? current->name : "none")) {
+			for (uint32_t v = 0; v < (uint32_t)variants.size(); v++) {
+				if (ImGui::Selectable(variants[v].name, m_kernels[slot] == v)) {
+					KernelSelection changed = m_kernels;
+					changed[slot] = v;
+					setKernels(changed);
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s", variants[v].description);
+				}
+			}
+			ImGui::EndCombo();
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", tooltip);
+		}
+	};
+
+	variantCombo("Pixel sampling", KernelSlot::GenerateCameraRays,
+		"Where in the image plane each sample goes: kernel 00 of the Raytracer Shaders window.\nFiltered pixels draw it from the pixel filter below (pbrt-v4's filter importance sampling), so a pixel\nis a weighted average of what lies around it; box pixels draw it uniformly inside the pixel.\nSaved with the scene. A new scene uses filtered pixels, a scene saved before filters existed box pixels.");
+	const KernelVariant* camera = m_kernels.selected(KernelSlot::GenerateCameraRays);
+	if (camera != nullptr && camera->settings == KernelSettings::PixelFilter) {
+		PixelFilterSettings& filter = m_settings.pixelFilter;
+		if (ImGui::BeginCombo("Pixel filter", pixelFilterName(filter.kind))) {
+			for (uint32_t k = 0; k < (uint32_t)PixelFilterKind::Count; k++) {
+				const PixelFilterKind kind = (PixelFilterKind)k;
+				if (ImGui::Selectable(pixelFilterName(kind), filter.kind == kind) && filter.kind != kind) {
+					//each filter has its own natural radius and parameters (pbrt-v4's defaults)
+					filter = defaultPixelFilter(kind);
+				}
+			}
+			ImGui::EndCombo();
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("The weighting a pixel gives the light around its centre. Box is the pixel itself and lets aliasing through;\nGaussian is pbrt's default; Mitchell and Lanczos sharpen and have negative lobes, which weigh some samples -1.\nSaved with the scene.");
+		}
+		ImGui::DragFloat("Radius", &filter.radius, 0.01f, MIN_FILTER_RADIUS, MAX_FILTER_RADIUS, "%.2f px");
+		filter.radius = std::clamp(filter.radius, MIN_FILTER_RADIUS, MAX_FILTER_RADIUS);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("How far from the pixel's centre the filter reaches, in pixels. A wider filter blurs more.");
+		}
+		if (filter.kind == PixelFilterKind::Gaussian) {
+			ImGui::DragFloat("Sigma", &filter.sigma, 0.005f, 0.05f, 4.f, "%.3f px");
+			filter.sigma = std::clamp(filter.sigma, 0.05f, 4.f);
+		} else if (filter.kind == PixelFilterKind::Mitchell) {
+			ImGui::DragFloat("B", &filter.b, 0.005f, 0.f, 1.f, "%.3f");
+			ImGui::DragFloat("C", &filter.c, 0.005f, 0.f, 1.f, "%.3f");
+			filter.b = std::clamp(filter.b, 0.f, 1.f);
+			filter.c = std::clamp(filter.c, 0.f, 1.f);
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("Mitchell and Netravali's two parameters: B blurs, C rings. B = C = 1/3 is their recommendation.");
+			}
+		} else if (filter.kind == PixelFilterKind::Lanczos) {
+			ImGui::DragFloat("Tau", &filter.tau, 0.01f, 0.5f, 8.f, "%.2f");
+			filter.tau = std::clamp(filter.tau, 0.5f, 8.f);
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("The number of sinc lobes the window spans.");
+			}
+		}
+		if (!m_settings.antialiasing) {
+			ImGui::TextDisabled("Antialiasing is off: every sample is the centre of its pixel");
+		}
+	}
+
+	//"##variant": the section header above is also "Film", and the two would share an ID
+	variantCombo("Film##variant", KernelSlot::UpdateFilm,
+		"How a pixel's samples become its value: kernel 09 of the Raytracer Shaders window.\nThe compensated mean keeps weighted float sums that stay accurate to high sample counts, a running\nvariance for the Standard error view, and the clamp; the running mean is the film scenes saved before used.\nSaved with the scene.");
+	const KernelVariant* film = m_kernels.selected(KernelSlot::UpdateFilm);
+	if (film != nullptr && film->settings == KernelSettings::Film) {
+		ImGui::Checkbox("Clamp samples", &m_settings.clampSamples);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Scales a sample whose brightest channel exceeds the limit down to it, keeping its colour. It removes\nfireflies and the light they carried, so the image is darker than the converged one. Off by default. Saved with the scene.");
+		}
+		if (m_settings.clampSamples) {
+			ImGui::DragFloat("Limit", &m_settings.clampValue, 0.05f, 0.001f, 1.0e6f, "%.2f", ImGuiSliderFlags_Logarithmic);
+			m_settings.clampValue = std::max(m_settings.clampValue, 0.001f);
+		}
+	}
+	if (film != nullptr && film->keepsFilmCascade) {
+		ImGui::DragFloat("Outlier kappa", &m_settings.outlierKappa, 0.1f, 1.f, 1000.f, "%.1f", ImGuiSliderFlags_Logarithmic);
+		m_settings.outlierKappa = std::clamp(m_settings.outlierKappa, 1.f, 1000.f);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("A sample of a brightness a pixel and its neighbors saw fewer than this many times is weighed down in\nproportion, and one nobody corroborates is dropped (Zirr et al. 2018). 1 stays closest to the true mean;\na larger value bounds the variance to 1/kappa of the squared mean, at the cost of the energy of rare bright\npaths. Keep it small against the samples per pixel: 4 suits a few hundred samples. Saved with the scene.");
+		}
+	}
+
+	//why the next render would run another film, from the settings as they are now: the decision
+	//GpuRenderer::start() makes, so the two cannot disagree
+	const RenderSettings settings = renderSettings(engine);
+	const FilmFallback fallback = filmFallback(m_kernels, settings, (uint32_t)settings.width, (uint32_t)settings.height);
+	if (!fallback.reason.empty()) {
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
+		ImGui::TextWrapped("%s", fallback.reason.c_str());
+		ImGui::PopStyleColor();
+	} else if (film != nullptr && film->keepsFilmRecord) {
+		const double bytesPerPixel = (double)sizeof(CrtFilmPixel) + (film->keepsFilmCascade ? (double)FILM_CASCADE_BYTES_PER_PIXEL : 0.0);
+		ImGui::TextDisabled("Film record: %.0f MB", (double)settings.width * (double)settings.height * bytesPerPixel / (1024.0 * 1024.0));
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("48 bytes a pixel: the compensated weighted sums, the luminance's running variance and the samples accepted;\nthe outlier film adds 96 for its cascade of buffers by brightness.");
 		}
 	}
 }

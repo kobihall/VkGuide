@@ -1,0 +1,43 @@
+#version 460
+
+// GPU SELF-TEST: the film arithmetic of crt_film.glsl - the clamp, the Neumaier sums, Welford's variance and
+// the resolve - run over sequences of samples, to be compared with its C++ mirror (filmAddSample() and
+// filmResolve() in src/film.cpp). One invocation takes one sequence. Not part of any render.
+// src/gpu_selftest_film.cpp.
+
+#extension GL_GOOGLE_include_directive : require
+#include "rt/include/crt_common.glsl"
+#include "rt/include/crt_film.glsl"
+
+layout (local_size_x = 64) in;
+
+// a sequence: the index of its first sample in binding 92, how many samples, and the clamp as float bits
+layout (std430, set = 0, binding = 90) readonly buffer SequenceBuffer { uvec4 sequences[]; };
+// rgb in xyz and the weight (+1 or -1) in w
+layout (std430, set = 0, binding = 92) readonly buffer SampleBuffer { vec4 sequenceSamples[]; };
+// the resolved value in xyz and the accepted count in w; the luminance's mean, M2 and the weight sum
+layout (std430, set = 0, binding = 91) writeonly buffer SumResultBuffer { vec4 sumResults[]; };
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= sequences.length()) {
+		return;
+	}
+	const uvec4 sequence = sequences[index];
+	const float clampComponent = uintBitsToFloat(sequence.z);
+
+	FilmPixel pixel;
+	pixel.sum = vec4(0.0);
+	pixel.compensation = vec4(0.0);
+	pixel.welfordMean = 0.0;
+	pixel.welfordM2 = 0.0;
+	pixel.accepted = 0u;
+	pixel.pad = 0u;
+	for (uint i = 0u; i < sequence.y; i++) {
+		const vec4 s = sequenceSamples[sequence.x + i];
+		filmAddSample(pixel, s.xyz, s.w, clampComponent);
+	}
+	sumResults[index * 2u] = vec4(filmResolve(pixel), float(pixel.accepted));
+	sumResults[index * 2u + 1u] = vec4(pixel.welfordMean, pixel.welfordM2, pixel.sum.w + pixel.compensation.w, 0.0);
+}

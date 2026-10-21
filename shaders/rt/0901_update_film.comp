@@ -47,13 +47,13 @@ void main()
 		atomicAdd(traversalStats[CRT_STAT_DROPPED_SAMPLES], dropped);
 	}
 
-	const uint n = imageLoad(sampleCount, coord).r;
+	const uint n = imageLoad(samplesTaken, coord).r;
 	const uint total = n + count;
 
 	if (pc.debugView == CRT_DEBUG_SAMPLE_COUNT_HEAT) {
 		// the count itself, as a grey ramp against the target - flat for a uniform budget
 		imageStore(accumulation, coord, vec4(vec3(float(total) / float(max(pc.maxSamples, 1u))), 1.0));
-		imageStore(sampleCount, coord, uvec4(total, 0u, 0u, 0u));
+		imageStore(samplesTaken, coord, uvec4(total, 0u, 0u, 0u));
 		return;
 	}
 
@@ -64,5 +64,5 @@ void main()
 	const vec3 mean = imageLoad(accumulation, coord).rgb;
 	const vec3 updated = (mean * float(n) + sum) / float(total);
 	imageStore(accumulation, coord, vec4(updated, 1.0));
-	imageStore(sampleCount, coord, uvec4(total, 0u, 0u, 0u));
+	imageStore(samplesTaken, coord, uvec4(total, 0u, 0u, 0u));
 }

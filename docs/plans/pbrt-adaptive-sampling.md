@@ -2,12 +2,12 @@
 
 Every pixel receives the same number of samples, though a pixel of flat sky converges long before one under a caustic. The path tracer was built with a per-pixel sample budget for exactly this, and nothing fills it yet. pbrt deliberately has no adaptive sampling: its authors found few methods robust across scenes (PBR 4ed chapter 8, "Further Reading"), and Kirk and Arvo 1991 showed that deciding from samples that are also added to the image biases it. This plan adds a policy with both problems handled explicitly: a choice of error estimate, a floor that keeps sampling everywhere, and an unbiased mode that decides from samples kept out of the image.
 
-*Not implemented. Depends on [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) (per-pixel variance in `0902_compensated_mean`). This revision replaces the earlier barebones draft of this file. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md) (per-pixel variance in `0902_compensated_mean`). This revision replaces the earlier barebones draft of this file. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
 - `sampleBudget` (binding 5, one `uint` per pixel) exists. Kernel 00 spawns `min(sampleBudget[pixel], samplesPerFrame)` paths for each pixel, and a fresh render fills every budget with the samples per frame (`rt_gpu.cpp`).
-- `sampleCount` (`r32ui`) holds each pixel's count, and the running mean divides by it, so pixels may hold different numbers of samples.
+- The `samplesTaken` image (binding 9, `r32ui`, the film plan's rename of `sampleCount`) holds each pixel's samples taken, which seeds a path's random stream. Under `0902_compensated_mean` it advances by every slot kernel 09 saw spawned, and the samples accepted are in the film record (`CrtFilmPixel::accepted`, binding 31), which the running mean divides by and the variance estimate uses. The budget compares samples taken with the target, as the film plan's counter split intended.
 - The **Sample count heat** debug view shows `sampleCount`.
 - Nothing writes the budget after the first frame.
 
@@ -20,7 +20,7 @@ An **Error estimate** setting:
 - **Variance** uses the relative standard error of each pixel's mean, `√(M2 / (n − 1) / n) / max(mean, floor)`, from the Welford sums of `0902_compensated_mean`.
 - **Half-buffer difference** accumulates samples with even and odd indices into two halves and takes their difference relative to their mean, averaged over an 8 × 8 tile. A pixel whose few samples happen to agree fools it less, and it needs one more rgba32f image. Cycles' adaptive sampling uses this estimate.
 
-Either estimate treats fireflies as high variance forever, so the estimate reads the clamped sample (the **Clamp** of [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md)) even when the image does not clamp.
+Either estimate treats fireflies as high variance forever, so the estimate reads the clamped sample (the **Clamp** of [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md)) even when the image does not clamp. The film's Welford sums read the clamped sample only while the clamp is on, so this plan adds a second threshold for the estimate.
 
 ### The policy pass
 
@@ -42,7 +42,7 @@ A pixel that stops early because its samples so far happen to be quiet has a val
 
 ### Interactions
 
-- Each sample touches only its own pixel under filter importance sampling ([pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md)), so Mitchell's problem does not arise: a dense clump of samples inside a pixel filter's extent never outweighs its neighbors.
+- Each sample touches only its own pixel under filter importance sampling ([pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md)), so Mitchell's problem does not arise: a dense clump of samples inside a pixel filter's extent never outweighs its neighbors.
 - ZSobol, Sobol and the other global samplers take each pixel's own sample index, which stays correct when counts differ. The stratified and PMJ02BN samplers need a fixed count and are disabled while adaptive sampling is on, as they are under unlimited samples ([pbrt-sample-generation.md](completed/pbrt-sample-generation.md)).
 - Path regeneration ([pbrt-wavefront-performance.md](pbrt-wavefront-performance.md)) takes its next (pixel, sample) pairs only from pixels with budget left.
 - Every render restart clears the budget, the variance and the half buffers along with the mean.

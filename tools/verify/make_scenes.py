@@ -4,6 +4,7 @@
   assets/scenes/white_furnace.gltf     a gallery of spheres of every material under a white background
   assets/scenes/cornell_reference.gltf the Cornell box, diffuse, with its two boxes
   assets/scenes/cornell_empty.gltf     the Cornell box without them, which radiosity.py solves exactly
+  assets/scenes/caustic_glass.gltf     a glass sphere on a floor under a small lamp: a caustic made of fireflies
   assets/environment_maps/uniform_white.hdr   radiance 1 in every direction
 
 Run from anywhere:  python3 tools/verify/make_scenes.py
@@ -15,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 import cornell
+from caustic_scene import caustic_scene
 from vkscene import ROOT, camera, make_scene, sphere, write_scene
 
 # the materials of the gallery and of furnace_check.py, all with a white base colour
@@ -67,7 +69,8 @@ def main():
     write_scene(scenes / "white_furnace.gltf", gallery())
     write_scene(scenes / "cornell_reference.gltf", cornell.scene(True))
     write_scene(scenes / "cornell_empty.gltf", cornell.scene(False))
-    print("wrote white_furnace.gltf, cornell_reference.gltf, cornell_empty.gltf and uniform_white.hdr")
+    write_scene(scenes / "caustic_glass.gltf", caustic_scene())
+    print("wrote white_furnace.gltf, cornell_reference.gltf, cornell_empty.gltf, caustic_glass.gltf and uniform_white.hdr")
 
 
 if __name__ == "__main__":

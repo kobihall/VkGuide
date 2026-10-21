@@ -19,6 +19,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <film.h>
 #include <rt_material.h>
 #include <sampler.h>
 #include <shape.h>
@@ -440,6 +441,18 @@ struct RenderSettings {
 	// SAMPLER (docs/plans/completed/pbrt-sample-generation.md). How the Sobol and Halton samplers of
 	// kernel 01 scramble their points; the others ignore it. Owen scrambling is the default
 	SamplerRandomization samplerRandomization { SamplerRandomization::Owen };
+	// FILM (docs/plans/completed/pbrt-film-and-reconstruction.md). The filter kernel 00's filtered variant
+	// draws each sample's place from; pbrt-v4's default Gaussian. Kernel 00's unfiltered variant ignores it
+	PixelFilterSettings pixelFilter;
+	// clamp each sample's largest component to clampValue before it reaches the film. Off by default: it
+	// removes fireflies at the cost of the energy they carried (kernel 09 variants that keep a film record)
+	bool clampSamples { false };
+	float clampValue { 10.f };
+	// the outlier-reweighted film's kappa: samples of a brightness seen fewer than this many times in a pixel
+	// are weighed down in proportion. Small against the samples per pixel: 1 stays closest to the true mean,
+	// and 4 took a glass caustic's relative MSE at 256 samples from 0.069 to 0.0045 for 4 percent of its
+	// energy. Zirr et al. use 20 to 32 at 1000 samples and more
+	float outlierKappa { 4.f };
 
 	bool operator==(const RenderSettings&) const = default;
 };

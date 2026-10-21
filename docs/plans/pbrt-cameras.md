@@ -6,7 +6,7 @@ Every render uses Ray Tracing in One Weekend's thin-lens perspective camera: a p
 
 ## Decision already made
 
-On 2026-09-26 the user chose to keep the projection as `SceneCamera` data, evaluated by a switch in kernel 00 that is uniform across the dispatch, over kernel 00 variants per camera type. Kernel 00 variants stay reserved for how pixels are sampled ([pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md)).
+On 2026-09-26 the user chose to keep the projection as `SceneCamera` data, evaluated by a switch in kernel 00 that is uniform across the dispatch, over kernel 00 variants per camera type. Kernel 00 variants are how pixels are sampled: `thin_lens` and `filter_importance` ([pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md)).
 
 ## What the renderer does today
 
@@ -38,7 +38,7 @@ pbrt's realistic camera traces each camera ray backwards through a stack of sphe
 
 - Focusing moves the lens stack along the axis; pbrt computes the position with the thick-lens approximation and then refines it (PBR 3ed §6.4.3 and §6.4.4).
 - For efficiency it precomputes the exit pupil's bounds over 64 radial positions on the film, and samples the rear element only inside them (§6.4.5).
-- Each ray gets a weight of `cos⁴ θ / z²` times the exit pupil's area, the camera measurement equation (PBR 4ed §5.4.1), which produces natural vignetting. The weight goes to `PixelState.cameraWeight` ([pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md)).
+- Each ray gets a weight of `cos⁴ θ / z²` times the exit pupil's area, the camera measurement equation (PBR 4ed §5.4.1), which produces natural vignetting. The weight starts as the path's throughput, as pbrt multiplies `cameraRay.weight` into the radiance before the film sees it; the film's weight stays the filter's sign ([pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md)).
 - In spectral modes each element's glass disperses by its catalog formula, which gives chromatic aberration for free ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md), [physoptics-optical-materials.md](physoptics-optical-materials.md)). In exact RGB every glass is read at the design wavelength.
 - Coatings on the lens surfaces apply, so an uncoated lens shows its ghosts when the light integrator renders through it.
 

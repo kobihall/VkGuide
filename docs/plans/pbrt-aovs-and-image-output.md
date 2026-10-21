@@ -2,7 +2,7 @@
 
 A render exists only on the GPU: nothing saves it, so every comparison with pbrt, every reference image and every figure starts with a screenshot of an 8-bit tone-mapped window. The tracer also produces nothing beside its radiance. pbrt's `GBufferFilm` writes position, normals, depth derivatives, uv, albedo and variance next to the image in one OpenEXR file, and its `SpectralFilm` writes per-wavelength bands. This plan adds image export, those auxiliary outputs (AOVs), light groups for relighting after the render, and an ambient occlusion view.
 
-*Not implemented. Depends on [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) (`PixelState`, weight sums, variance) and [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (the interaction the outputs read). PNG export uses [pbrt-display-and-color.md](pbrt-display-and-color.md)'s encoding. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md) (the film record's weight sums and variance; the film plan did not allocate `PixelState`, so this plan does) and [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (the interaction the outputs read). PNG export uses [pbrt-display-and-color.md](pbrt-display-and-color.md)'s encoding. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -56,7 +56,7 @@ pbrt records the first visible surface's `VisibleSurface` at depth 0 of each cam
 
 A **Capture through specular** option records the first non-specular hit instead, so a mirror's albedo and normal show what it reflects. Denoisers expect that, and pbrt does not do it. Off by default.
 
-Kernels 03, 04 and 06 write the fields into `PixelState` at bounce 0, 72 bytes a slot, allocated only while any output is on. Kernel 09 folds them into the AOV images with the sample's filter weight, the estimator pbrt's `gBufferWeightSum` applies. The AOV images are one rgba32f 2D array image (binding 32, `AovImages`) with a layer per four channels, allocated for the enabled outputs only.
+Kernels 03, 04 and 06 write the fields into `PixelState` at bounce 0, 72 bytes a slot, allocated only while any output is on (binding 29, which the film plan left unallocated). Kernel 09 folds them into the AOV images with the sample's filter weight, the sign in its radiance slot's `w`, the estimator pbrt's `gBufferWeightSum` applies. The AOV images are one rgba32f 2D array image (binding 32, `AovImages`) with a layer per four channels, allocated for the enabled outputs only.
 
 An **Auxiliary outputs** section in the render panel has a checkbox per output. Turning one on restarts the render, since it has to accumulate from the first sample. Each enabled output registers with the `DisplayRegistry` as its own window under **Windows**, through a small visualization pass: normals as `0.5 + 0.5n`, depth normalized to its range, ids as hashed colors.
 

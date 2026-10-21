@@ -28,7 +28,8 @@ The numbering is figure 15.2 of PBR 4ed, and **the directory listing is the diag
 
 ```
 shaders/rt/
-  0001_generate_camera_rays.comp        00
+  0001_generate_camera_rays.comp        00  box pixels (old files)
+  0002_generate_camera_rays_filtered.comp  00  filtered pixels (the default)
   0101_generate_samples.comp            01  ┐
   0102_generate_samples_independent.comp 01  │
   0103_generate_samples_stratified.comp 01  │
@@ -47,7 +48,9 @@ shaders/rt/
   0604_surface_scatter_mis_power.comp   06  ┘
   0701_sample_medium_scattering.comp    07  (stub)
   0801_trace_shadow_rays.comp           08  built once per traversal
-  0901_update_film.comp                 09
+  0901_update_film.comp                 09  the running mean (old files)
+  0902_update_film_compensated.comp     09  compensated weighted sums, variance (the default)
+  0903_update_film_outliers.comp        09  0902 plus outlier reweighting
   include/                              the shared pieces
 ```
 
@@ -55,14 +58,14 @@ shaders/rt/
 
 | # | Kernel | Runs over | What it does |
 |---|---|---|---|
-| 00 | Generate camera rays | the whole path pool, once per frame | One primary ray per (pixel, sample) slot, jittered in the pixel and across the aperture |
+| 00 | Generate camera rays | the whole path pool, once per frame | One primary ray per (pixel, sample) slot, placed in its pixel by the pixel filter and across the aperture |
 | 01 | Generate samples | the live ray queue, per bounce, and for a sampler that writes a record the whole pool once before 00 | Writes the random numbers the path's next bounce consumes into its sample record, from a stratified, Halton, Sobol or PMJ02BN point. The `pcg_hash` variant writes none and leaves kernel 06 to draw from the path's PCG stream |
 | 02 | Intersect closest | the live ray queue, per bounce | Finds the nearest hit, applies alpha cutouts, writes a 24-byte hit record, and **sorts** the paths into four queues: escaped, emissive, and basic or complex surface |
 | 03 | Handle escaped | the escaped queue | A ray that left the scene collects the background, weighted by the path's MIS record, and ends |
 | 04 | Handle emissive geometry | the emissive queue | A ray that hit a light collects its emission, weighted by the path's MIS record, and ends. A ray that hit a glowing `pbr` surface collects its emission and carries on through 06 |
 | 06 | Sample surface scattering | each surface queue, by its own build | Samples a light and pushes a shadow ray towards it, then scatters the path off the surface, or ends it |
 | 08 | Trace shadow rays | the shadow queue | Traces each shadow ray with the selected traversal and adds its light where nothing is in the way |
-| 09 | Update film | the pixels, once per frame | Folds the frame's samples into the running mean |
+| 09 | Update film | the pixels, once per frame | Folds the frame's samples into each pixel's value |
 
 Then a shared tonemap pass turns the accumulated linear HDR into the rgba8 image the "Raytraced Output" window shows.
 
@@ -218,7 +221,7 @@ A thin-lens camera, precomputed on the CPU as an origin, the lower-left corner o
 
 $$P(u,v) = \text{lowerLeft} + u\,\vec{h} + v\,\vec{v}, \qquad \vec{d} = P - (O + r_x \vec{n} + r_y \vec{b})$$
 
-with $(r_x, r_y)$ uniform in a disk of radius aperture/2. The offset in the pixel and the point on the lens come from the sample record, or under `pcg_hash` from pure-integer PCG seeded only from `(pixel, sample index, render seed)`. Either way a fixed seed reproduces an image exactly regardless of how the queues happened to be ordered or the workgroups scheduled. That determinism is what made the three-way traversal comparison possible.
+with $(r_x, r_y)$ uniform in a disk of radius aperture/2. The offset in the pixel is drawn from the selected pixel filter (the `filter_importance` variant), or uniformly inside the pixel (`thin_lens`, what older scene files open with). The offset and the point on the lens come from the sample record, or under `pcg_hash` from pure-integer PCG seeded only from `(pixel, sample index, render seed)`. Either way a fixed seed reproduces an image exactly regardless of how the queues happened to be ordered or the workgroups scheduled. That determinism is what made the three-way traversal comparison possible.
 
 Every radiance slot is pre-written to zero, with `w` marking whether the slot was spawned at all. A path that later dies silently — absorbed, roulette-killed, out of depth — then contributes exactly zero without writing anything. Each path's MIS record (section 5) starts at full weight: a camera ray sampled no light, so whatever it hits first counts in full.
 
@@ -302,13 +305,19 @@ Each shadow ray starts at its path's hit point and stops just short of the light
 
 ### 09 — Update film
 
-A running mean rather than a running sum, so that a future adaptive sample budget can leave pixels with different counts:
+A new scene folds a pixel's samples into weighted sums with Neumaier compensation:
+
+$$\mu = \frac{\sum_k w_k L_k}{\sum_k w_k}$$
+
+where $w_k$ is $+1$, or $-1$ where a pixel filter with negative lobes (Mitchell, Lanczos) was negative at the sample's position. This is the weighted estimator of PBR 4ed equation 5.13. The compensation keeps the low bits each addition rounds away in a second float and adds them back when the sum is read. It holds while the number of terms times float's epsilon stays well below 1, which a pixel's samples do.
+
+A scene saved before the compensated film keeps the running mean, which folds the samples into the mean directly and does not weigh them:
 
 $$\mu_{n+m} = \frac{n\,\mu_n + \sum_{k} L_k}{n+m}$$
 
-Unspawned slots and non-finite samples are skipped and not counted — one NaN folded into a mean poisons that pixel permanently.
+Either way, unspawned slots and non-finite samples are skipped and not counted, since one NaN folded into a mean poisons that pixel permanently. A skipped sample still biases its pixel, since it stood for a real path's contribution. So kernel 09 counts the non-finite samples it drops, and **Raytrace Render** shows the total in orange whenever it is above zero. Any count there means a NaN or an infinity got into a path.
 
-A skipped sample still biases its pixel, since it stood for a real path's contribution. So kernel 09 counts the non-finite samples it drops, and **Raytrace Render** shows the total in orange whenever it is above zero. Any count there means a NaN or an infinity got into a path.
+The compensated film also keeps Welford's running mean and variance of each sample's luminance, which **Analysis view** → **Standard error** shows, and the count of samples taken apart from the count accepted, so that a dropped sample is not drawn again. It can clamp a sample's largest component to a limit, and the outlier-reweighted variant resolves each pixel from a cascade of buffers by brightness, which weighs rare bright samples down (Zirr et al. 2018).
 
 ---
 

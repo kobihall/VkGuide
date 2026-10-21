@@ -2,7 +2,7 @@
 
 The shared tonemap pass (`shaders/tonemap.comp`) scales the linear image by the camera's exposure, clamps it to [0, 1] and takes the square root, the "gamma 2" of Ray Tracing in One Weekend. That is not the sRGB transfer curve, it clips highlights hard, and it offers no white balance and no way to express exposure the way a photographer would. pbrt's film and its `imgtool` add a sensor model with ISO and shutter time, von Kries white balance, output color spaces, and Reinhard and ACES filmic tone curves. This plan turns the tonemap pass into a display transform with those stages.
 
-*Not implemented. Depends on [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md). Color temperatures and sensor curves come from [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md). Color temperatures and sensor curves come from [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -48,7 +48,7 @@ pbrt's von Kries transform (PBR 4ed §5.4.2): convert to XYZ, then to LMS cone s
 | Khronos PBR Neutral | Khronos's hue-preserving curve for product renders, from outside the books |
 | False color | luminance mapped through viridis, `imgtool falsecolor`'s map, with a log scale |
 
-The false-color curve also serves the error and variance views of [pbrt-verification-harness.md](completed/pbrt-verification-harness.md) and [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md).
+The false-color curve also serves the error and standard error views (the latter from [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md)) of [pbrt-verification-harness.md](completed/pbrt-verification-harness.md) and [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md).
 
 ### Gamut mapping
 

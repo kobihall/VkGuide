@@ -100,11 +100,23 @@ const std::vector<KernelVariant>& registry()
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::GenerateCameraRays,
 			.id = "thin_lens",
-			.name = "Thin lens",
-			.description = "One primary ray per pool slot, jittered in the pixel and over the aperture.",
+			.name = "Thin lens (box pixels)",
+			.description = "One primary ray per pool slot, jittered uniformly in the pixel and over the aperture. What a scene saved before pixel filters opens with.",
 			.shader = "rt/0001_generate_camera_rays.comp",
 			.domain = KernelDomain::Pool,
-			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SampleCount, CrtBinding::RaySamples }),
+			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples }),
+			.readsRecord = true,
+		});
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::GenerateCameraRays,
+			.id = "filter_importance",
+			.name = "Thin lens (filtered pixels)",
+			.description = "One primary ray per pool slot, placed by importance sampling the pixel filter, and jittered over the aperture. pbrt-v4's way of filtering.",
+			.shader = "rt/0002_generate_camera_rays_filtered.comp",
+			.domain = KernelDomain::Pool,
+			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples, CrtBinding::FilterTable }),
+			.isDefault = true,
+			.settings = KernelSettings::PixelFilter,
 			.readsRecord = true,
 		});
 
@@ -122,7 +134,7 @@ const std::vector<KernelVariant>& registry()
 		//what they read: the Sobol ones pbrt's generator matrices, the rest nothing but the film's
 		//sample count, which gives a path its sample index
 		auto sampler = [&](const char* id, const char* name, const char* description, const char* shader, SamplerKind kind, bool usesTables, KernelSettings settings, bool isDefault, bool needsCount) {
-			std::vector<CrtBinding> bindings = withCore({ CrtBinding::RaySamples, CrtBinding::SampleCount, CrtBinding::SampleBudget });
+			std::vector<CrtBinding> bindings = withCore({ CrtBinding::RaySamples, CrtBinding::SamplesTaken, CrtBinding::SampleBudget });
 			if (usesTables) {
 				bindings.push_back(CrtBinding::SamplerTables);
 			}
@@ -302,10 +314,35 @@ const std::vector<KernelVariant>& registry()
 			.slot = KernelSlot::UpdateFilm,
 			.id = "running_mean",
 			.name = "Running mean",
-			.description = "Folds each pixel's samples into its mean, skipping unspawned slots and NaNs.",
+			.description = "Folds each pixel's samples into its float mean, skipping unspawned slots and NaNs. A scene saved before the compensated film opens with it. Ignores the sign of a filter's negative lobes.",
 			.shader = "rt/0901_update_film.comp",
 			.domain = KernelDomain::Pixels,
-			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SampleCount, CrtBinding::TraversalStats },
+			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats },
+		});
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::UpdateFilm,
+			.id = "compensated_mean",
+			.name = "Compensated mean",
+			.description = "Weighted sums with Neumaier compensation, the luminance's running variance, an optional clamp, and a count of samples taken apart from the count accepted, so a dropped sample is not drawn again.",
+			.shader = "rt/0902_update_film_compensated.comp",
+			.domain = KernelDomain::Pixels,
+			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::AccumulationError },
+			.isDefault = true,
+			.settings = KernelSettings::Film,
+			.keepsFilmRecord = true,
+		});
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::UpdateFilm,
+			.id = "outlier_reweighted",
+			.name = "Outlier reweighted",
+			.description = "The compensated mean, with each pixel's value resolved from a cascade of buffers by brightness: samples of a brightness too rare in the pixel and its neighbors are weighed down or dropped (Zirr et al. 2018). Removes fireflies with far less lost energy than the clamp.",
+			.shader = "rt/0903_update_film_outliers.comp",
+			.domain = KernelDomain::Pixels,
+			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::AccumulationError, CrtBinding::FilmCascade },
+			.settings = KernelSettings::Film,
+			.keepsFilmRecord = true,
+			.keepsFilmCascade = true,
+			.passes = 2,
 		});
 
 		return v;
@@ -320,7 +357,7 @@ struct SlotInfo {
 };
 
 constexpr std::array<SlotInfo, (size_t)KernelSlot::Count> SLOT_INFO { {
-	{ "00", "Generate camera rays", "One primary ray per (pixel, sample) slot of the path pool. Runs once per frame." },
+	{ "00", "Generate camera rays", "One primary ray per (pixel, sample) slot of the path pool, placed in its pixel uniformly or by the pixel filter. Runs once per frame." },
 	{ "01", "Generate samples", "Writes the random numbers each live path's next bounce consumes, into the sample record kernels 00 and 06 read. The sampler: independent, stratified, Halton, Sobol, padded Sobol, ZSobol or PMJ02BN." },
 	{ "02", "Intersect closest", "Finds each ray's nearest hit with the selected traversal and sorts the paths into the escaped, emissive and surface queues." },
 	{ "03", "Handle escaped", "Paths that left the scene collect the background and end." },
@@ -329,7 +366,7 @@ constexpr std::array<SlotInfo, (size_t)KernelSlot::Count> SLOT_INFO { {
 	{ "06", "Sample surface scattering", "Samples a light and scatters the path off the surface it hit. The choice of direct-lighting strategy." },
 	{ "07", "Sample medium scattering", "Would scatter a path off a medium's phase function." },
 	{ "08", "Trace shadow rays", "Traces the shadow rays kernel 06 emitted, with the selected traversal, and adds the light that gets through." },
-	{ "09", "Update film", "Folds the frame's samples into the running per-pixel mean. Runs once per frame." },
+	{ "09", "Update film", "Folds the frame's samples into each pixel's value: a running mean, or compensated weighted sums with a variance estimate. Runs once per frame." },
 } };
 
 // The traversals, in the order the panel lists them. Each id is a CRT_TRAVERSAL_<ID> branch of

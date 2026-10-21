@@ -78,7 +78,9 @@ enum class CrtBinding : uint32_t {
 	Instances = 6,
 	Materials = 7,
 	Accumulation = 8,
-	SampleCount = 9,
+	// the samples taken of each pixel: the index a path is seeded from. Kernel 09's running mean advances it
+	// by the samples it accepts, the compensated film by every slot it spawned
+	SamplesTaken = 9,
 	EnvironmentMap = 10,
 	BlasTriangles = 11,
 	MaterialTextures = 12,
@@ -96,9 +98,20 @@ enum class CrtBinding : uint32_t {
 	RaySamples = 23,
 	// 24 and 25 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
 	MaterialParams = 26,
-	// 27 to 45 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+	// 27 and 28 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+	// 29 is PixelState, reserved for the auxiliary outputs: a sample's filter weight rides in the w of its
+	// radiance slot, so the film plan did not allocate it
+	// the selected pixel filter's sampling table (docs/plans/completed/pbrt-film-and-reconstruction.md)
+	FilterTable = 30,
+	// the compensated film's per-pixel sums, variance and accepted count (the roadmap's name for the
+	// plan's AccumulationError)
+	AccumulationError = 31,
+	// 32 to 45 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
 	// pbrt's Sobol matrices and the other tables the samplers read, uploaded once
 	SamplerTables = 46,
+	// 47 to 61 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+	// the outlier-reweighted film's cascade of buffers (docs/plans/completed/pbrt-film-and-reconstruction.md)
+	FilmCascade = 62,
 	Count
 };
 
@@ -139,7 +152,11 @@ enum class KernelSettings : uint32_t {
 	// the BVH builder, leaf size and SAH costs, plus the build statistics
 	AccelerationStructure,
 	// the sampler's randomization (kernel 01 variants that scramble Sobol or Halton points)
-	Sampler
+	Sampler,
+	// the pixel filter (kernel 00's filtered variant)
+	PixelFilter,
+	// the clamp (kernel 09 variants that keep a film record)
+	Film
 };
 
 // Which lights a kernel 06 variant sends shadow rays to - the strategy, as far as the rest of the
@@ -214,6 +231,18 @@ struct KernelVariant {
 	bool needsSampleCount { false };
 	// kernel 01: the generator it runs, src/sampler.h
 	SamplerKind sampler { SamplerKind::Count };
+
+	// kernel 09: the variant keeps a film record per pixel (binding 31): the weighted sums, the variance,
+	// the clamp, and the count of samples accepted apart from the count taken. It weighs a sample by the
+	// sign kernel 00 left in its slot's w, which a filter with negative lobes needs; a variant without
+	// this renders such a filter wrong, and GpuRenderer::start() runs another in its place
+	bool keepsFilmRecord { false };
+	// kernel 09: the variant also keeps the cascade of buffers by brightness (binding 62, 6 x 16 bytes a
+	// pixel) that outlier reweighting resolves from
+	bool keepsFilmCascade { false };
+	// how many times the schedule dispatches the stage in a frame, with a barrier between. params.bounce
+	// is the pass: the outlier film accumulates in pass 0 and resolves from its neighbors' results in pass 1
+	uint32_t passes { 1 };
 
 	// kernels 00 and 06: the kernel draws its random numbers through crt_samples.glsl. It is built
 	// with the specialization constant CRT_SAMPLE_RECORD (constant_id 0) set to whether the selected

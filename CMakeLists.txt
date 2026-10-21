@@ -54,6 +54,13 @@ if (NOT MSVC)
     target_compile_options(bsdf_test PRIVATE -O2)
 endif()
 
+# CPU-only verification of the film behind kernels 00 and 09: ./bin/film_test
+add_executable(film_test tests/film_test.cpp)
+target_link_libraries(film_test PRIVATE rt_film fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(film_test PRIVATE -O2)
+endif()
+
 # Compares two images (EXR or PFM) with the render panel's error measures: ./bin/image_diff
 add_executable(image_diff tests/image_diff.cpp)
 target_link_libraries(image_diff PRIVATE rt_image)

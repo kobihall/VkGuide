@@ -1,0 +1,21 @@
+#version 460
+
+// 00 GENERATE CAMERA RAYS - FILTERED PIXELS. Kernel 0001 with the offset in the pixel drawn from the
+// selected pixel filter instead of uniformly (pbrt-v4's filter importance sampling, PBR 4ed 8.8.3). A
+// camera ray goes through a point of the filter's footprint around its pixel's centre, which for the
+// Gaussian filter reaches 1.5 pixels out, and the pixel it belongs to is still the one it was spawned
+// for: each pixel's value is the mean of its own samples, so no sample touches a neighbour and kernel
+// 09 needs no atomics. The sign of the filter where the sample landed goes into the radiance slot's w,
+// which is nonzero for a spawned slot as before; only a filter with negative lobes (Mitchell, Lanczos)
+// ever makes it -1, and kernel 09's compensated variants weigh by it (sum(w L) / sum(w)).
+//
+// The filter is tabulated on the CPU (src/film.h) and read from binding 30. With antialiasing off the
+// sample is the centre of its pixel, as in 0001. docs/plans/completed/pbrt-film-and-reconstruction.md.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_samples.glsl"
+#define CRT_PIXEL_FILTER
+#include "include/crt_filter.glsl"
+#include "include/crt_camera.glsl"

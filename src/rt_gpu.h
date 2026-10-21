@@ -75,6 +75,9 @@ enum class CrtAnalysisView : uint32_t {
 	Noise,
 	EnergyAboveOne,
 	DroppedSamples,
+	// the film's standard error of the mean over the mean, from the luminance's running variance; needs a
+	// kernel 09 variant that keeps a film record
+	StandardError,
 	Count
 };
 
@@ -116,6 +119,21 @@ struct GpuRenderSnapshot {
 // PMJ02BN at most PMJ02BN_MAX_SAMPLES_PER_PIXEL samples. Such a render runs the independent sampler.
 // GpuRenderer::start() decides with it, and the Sampler section says it for the settings as they are
 std::string samplerFallbackReason(const KernelVariant& sampler, const RenderSettings& settings, uint32_t width, uint32_t height, bool tablesLoaded);
+
+// Why the render's kernel 09 is not the selected variant, and which one runs instead; no reason when the
+// selection runs. A filter with negative lobes (Mitchell, Lanczos) needs the weighted sums of a variant
+// that keeps a film record, and so does the clamp, so a Running mean selection runs the compensated mean
+// then; and a film record is 48 bytes a pixel, which an image past FILM_RECORD_BYTES_LIMIT does not get.
+// GpuRenderer::start() decides with it, and the Film section says it for the settings as they stand
+struct FilmFallback {
+	std::string reason;
+	// the id of the kernel 09 variant that runs
+	const char* variant { "" };
+};
+FilmFallback filmFallback(const KernelSelection& kernels, const RenderSettings& settings, uint32_t width, uint32_t height);
+// the record and, for the outlier film, the cascade: one CrtFilmPixel and OUTLIER_BUFFERS vec4s a pixel
+inline constexpr uint64_t FILM_RECORD_BYTES_LIMIT = 1ull << 30;
+inline constexpr uint64_t FILM_CASCADE_BYTES_PER_PIXEL = OUTLIER_BUFFERS * sizeof(glm::vec4);
 
 class GpuRenderer {
 public:
@@ -169,6 +187,11 @@ public:
 	uint64_t droppedSamples() const { return m_droppedSamples; }
 	// the active schedule's per-bounce counts, from the last frame read back
 	std::span<const ScheduleCounter> counters() const;
+
+	// the film variant of the running render keeps a record per pixel (sums, variance, accepted count)
+	bool hasFilmRecord() const { return m_filmRecordsLive; }
+	// bytes the film record takes at the render's size, 0 without one
+	VkDeviceSize filmRecordBytes() const { return m_filmRecordsLive ? m_filmRecordBytes : 0; }
 
 	// the schedule that records `id`, for pricing a render that has not started
 	const IntegratorSchedule& schedule(IntegratorId id) const;
@@ -233,6 +256,11 @@ private:
 	// render's size changes
 	void ensureFilm(VulkanEngine* engine, uint32_t width, uint32_t height);
 	void freeFilm(VulkanEngine* engine);
+	// binding 31: one CrtFilmPixel per pixel while the selected kernel 09 keeps a record, a stub otherwise.
+	// Reallocated (after a device-wide wait) when the size or the need changes
+	void ensureFilmRecords(VulkanEngine* engine, uint32_t width, uint32_t height, bool needed, bool cascade);
+	// binding 30: the pixel filter's sampling table, uploaded when the filter changes
+	void uploadFilterTable(VulkanEngine* engine, const PixelFilterSettings& filter);
 	void uploadScene(VulkanEngine* engine);
 	void uploadGeometry(VulkanEngine* engine, const std::shared_ptr<const RaytraceGeometry>& geometry);
 	// hands a buffer the frame in flight may still read to the deletion queue of that frame's slot
@@ -270,7 +298,20 @@ private:
 
 	// the film, sized for the render
 	AllocatedImage m_accumulation {};
-	AllocatedImage m_sampleCount {};
+	// the samples taken of each pixel (CrtBinding::SamplesTaken)
+	AllocatedImage m_samplesTaken {};
+	AllocatedBuffer m_filmRecords {};
+	uint32_t m_filmRecordPixels { 0 };
+	VkDeviceSize m_filmRecordBytes { 0 };
+	bool m_filmRecordsLive { false };
+	// binding 62: the outlier film's cascade, OUTLIER_BUFFERS vec4s a pixel, or a one-pixel stub
+	AllocatedBuffer m_filmCascade {};
+	uint32_t m_filmCascadePixels { 0 };
+	VkDeviceSize m_filmCascadeBytes { 0 };
+	bool m_filmCascadeLive { false };
+	AllocatedBuffer m_filterBuffer {};
+	PixelFilterSettings m_uploadedFilter;
+	bool m_hasFilterBuffer { false };
 	// a copy of the accumulation from when it held m_noiseBaseSamples samples, taken each time the
 	// count doubles: what the noise view compares the film with
 	AllocatedImage m_noiseBase {};

@@ -2,7 +2,7 @@
 
 This roadmap covers every feature that *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* describe and this renderer lacks or implements weakly. Each feature has a plan in `docs/plans/`, named `pbrt-*.md` since 2026-10-18. This file records the decisions that shape all of them and reserves the resources they share, so that the plans can be implemented in any order without colliding.
 
-*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, the material system, robust intersections and sample generation on 2026-10-19, and the verification harness on 2026-10-20; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
+*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, the material system, robust intersections and sample generation on 2026-10-19, the verification harness on 2026-10-20, and the film and reconstruction on 2026-10-21; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
 
 *Revised 2026-10-18 for the [laser optics plan](physoptics-laser-optics.md), whose `physoptics-*.md` plans build on these. That plan's roadmap gives one linear order for both sets of plans; it pulls several of these forward (the foundations, the BSDF library, light types, image output, the display transform, the light integrator of bidirectional path tracing, cameras and polarization). The reservations below gain the laser optics plan's rows, and every rule here applies to its plans too.*
 
@@ -55,7 +55,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 | [pbrt-material-system.md](completed/pbrt-material-system.md) | Implemented: named material library, parameter records, material traits table, basic and complex surface queues |
 | [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) | Lane-count families, spectral representations, `SpectrumRef`, uplifting, sensors, blackbody, dispersion |
 | [pbrt-sample-generation.md](completed/pbrt-sample-generation.md) | Implemented: per-bounce sample record and kernel 01 variants: independent, stratified, Halton, Sobol, padded Sobol, ZSobol, PMJ02BN |
-| [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) | Pixel filters by importance sampling, compensated accumulation, firefly handling, per-pixel variance |
+| [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md) | Implemented: pixel filters by importance sampling, compensated accumulation, per-pixel variance, clamp and outlier reweighting |
 
 ### Appearance
 
@@ -171,7 +171,7 @@ alternative-accelerators ─> gpu-bvh-construction ─> wavefront-performance (r
 verification-harness ─> (every plan with a new BSDF, sampler or light)
 ```
 
-The foundations change the shape of every kernel, so do them first and in this order (the integrator layer, the thin hit record, the material system, robust intersections, sample generation and the verification harness are done; the material system and sample generation came ahead of plans they do not need): spectral rendering, film. After that the groups are largely independent.
+The foundations change the shape of every kernel, so do them first and in this order (the integrator layer, the thin hit record, the material system, robust intersections, sample generation, the verification harness and the film are done; the material system and sample generation came ahead of plans they do not need): spectral rendering. After that the groups are largely independent.
 
 ## Rules every plan follows
 
@@ -181,7 +181,7 @@ Every plan must leave a scene that does not use its feature rendering bit-identi
 
 ### Binding numbers
 
-Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Numbers 0 to 21, 23, 26 and 46 exist. These are reserved so that plans landing in any order never collide. A plan that is never built leaves a gap, which is legal.
+Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Numbers 0 to 21, 23, 26, 30, 31, 46 and 62 exist. These are reserved so that plans landing in any order never collide. A plan that is never built leaves a gap, which is legal.
 
 | Binding | Resource | Plan |
 |---|---|---|
@@ -192,9 +192,9 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 26 | `MaterialParams` | material-system |
 | 27 | `Textures` (descriptor array) | textures |
 | 28 | `LightBvh` | bvh-light-sampler |
-| 29 | `PixelState` | film-and-reconstruction |
-| 30 | `FilterTable` | film-and-reconstruction |
-| 31 | `AccumulationError` | film-and-reconstruction |
+| 29 | `PixelState` | not allocated: a sample's filter weight rides in its radiance slot's `w` ([completed/pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md)); aovs-and-image-output allocates it |
+| 30 | `FilterTable` | film-and-reconstruction (implemented) |
+| 31 | `AccumulationError` | film-and-reconstruction (implemented) |
 | 32 | `AovImages` | aovs-and-image-output |
 | 33 | `MediumGrids` | participating-media |
 | 34 | `Curves` | curves-and-hair |
@@ -219,7 +219,7 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 53 | `BdptVertices` | bidirectional-path-tracing |
 | 54 | `VisiblePoints` | photon-mapping |
 
-Bindings 55 to 61 are reserved by the [laser optics plan](physoptics-laser-optics.md): 55 `OpticSurfaces`, 56 `OpticCoatings`, 57 `OpticPathState`, 58 `BeamGraph`, 59 `Detectors`, 60 `DetectorFilm`, 61 `RayRecords`.
+Bindings 55 to 61 are reserved by the [laser optics plan](physoptics-laser-optics.md): 55 `OpticSurfaces`, 56 `OpticCoatings`, 57 `OpticPathState`, 58 `BeamGraph`, 59 `Detectors`, 60 `DetectorFilm`, 61 `RayRecords`. Binding 62, `FilmCascade`, is the outlier-reweighted film's cascade of buffers by brightness, which the film plan added.
 
 The Radeon Pro 560X allows 31 storage buffers per stage (`maxPerStageDescriptorStorageBuffers`). No kernel may declare more; the per-variant subsets keep every kernel well under it today (kernel 02 declares 14).
 
@@ -254,7 +254,7 @@ The queue set (`crt_common.glsl`) grows by appending. Each queue costs `poolSize
 | `time` | `float` | motion-blur |
 | `coneWidth`, `coneSpread` | `float` × 2 | textures |
 
-With `CRT_LANES = 4` that is 96 bytes: the `Spectrum` aligns to 16 bytes, so the fields end at byte 96 with no padding. A further field grows the struct to 112. Fields in `PixelState`: the filter weight and camera ray weight (film-and-reconstruction, cameras), and the first-hit position, normals, depth, uv, albedo and ids (aovs-and-image-output). Light groups need no path state: each contribution is added to its group's sums as it happens.
+With `CRT_LANES = 4` that is 96 bytes: the `Spectrum` aligns to 16 bytes, so the fields end at byte 96 with no padding. A further field grows the struct to 112. Fields in `PixelState`: the first-hit position, normals, depth, uv, albedo and ids (aovs-and-image-output). The film plan did not allocate it: a sample's filter weight (+1 or -1) is the `w` of its radiance slot, and the camera's ray weight can start as the path's throughput, since pbrt multiplies it into the radiance and not into the film weight. Light groups need no path state: each contribution is added to its group's sums as it happens.
 
 The radiance slot (`radiance[]`, binding 4) stays a `vec4` in film space in every mode. Kernels that add radiance convert their lanes to film space at the moment they add it (spectral-rendering), so kernel 09 and the accumulation image keep their size whatever the lane count.
 
@@ -295,7 +295,7 @@ A kernel that traces includes `crt_trace.glsl` and is compiled once per traversa
 
 ### Scene files
 
-Every plan that saves something bumps `SCENE_FILE_FORMAT_VERSION` by one when it lands (14 today), and every older version keeps loading. Plans do not pre-assign version numbers, since the order they land in is unknown.
+Every plan that saves something bumps `SCENE_FILE_FORMAT_VERSION` by one when it lands (15 today), and every older version keeps loading. Plans do not pre-assign version numbers, since the order they land in is unknown.
 
 ### CPU mirrors and tests
 
@@ -306,6 +306,7 @@ Every GLSL module that holds sampling or scattering mathematics gets a line-for-
 | `rt_spectrum` | `crt_spectrum.glsl` | `bin/spectrum_test` | spectral-rendering |
 | `rt_bsdf` | `crt_scatter.glsl` now, then `crt_bsdf_*.glsl`, `crt_microfacet.glsl` | `bin/bsdf_test`, and the GPU self-test | verification-harness (implemented), bsdf-library |
 | `rt_sampler` | `crt_sampler.glsl` | `bin/sampler_test` | sample-generation (implemented) |
+| `rt_film` | `crt_filter.glsl`, `crt_film.glsl` | `bin/film_test`, and the GPU self-tests | film-and-reconstruction (implemented) |
 | `rt_media` | `crt_medium.glsl` | `bin/media_test` | participating-media |
 | `rt_optics` | `crt_optic.glsl`, `crt_coating.glsl`, `crt_tmm.glsl`, `crt_birefringence.glsl` | `bin/optics_test`, `bin/beam_test` | the physoptics plans |
 

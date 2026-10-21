@@ -36,9 +36,9 @@ Each pbrt feature maps to the plan that adds it. Until that plan lands, the impo
 | pbrt | Here | Until then |
 |---|---|---|
 | `perspective`, `orthographic`, `spherical`, `realistic` cameras | [pbrt-cameras.md](pbrt-cameras.md) | perspective with the same pose |
-| `rgb`, `gbuffer`, `spectral` films; `iso`, `exposuretime`, `whitebalance`, `sensor` | [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md), [pbrt-display-and-color.md](pbrt-display-and-color.md), [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) | resolution only |
+| `rgb`, `gbuffer`, `spectral` films; `iso`, `exposuretime`, `whitebalance`, `sensor` | [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md), [pbrt-display-and-color.md](pbrt-display-and-color.md), [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) | resolution only |
 | samplers, `pixelsamples` | [pbrt-sample-generation.md](completed/pbrt-sample-generation.md) | PCG, and the sample count |
-| filters | [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) | box |
+| filters | [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md), implemented: `box`, `triangle`, `gaussian`, `mitchell` and `sinc` (as `lanczos`) map to `RenderSettings::pixelFilter` | the file's filter kind and its radius |
 | `path`, `volpath`, `bdpt`, `lightpath`, `sppm`, `mlt`, `ambientocclusion` | the integrators of the other plans; `ambientocclusion` is [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md)'s debug view | `path` |
 | `trianglemesh`, `plymesh` (with `displacement`), `loopsubdiv` | meshes; [pbrt-subdivision-and-displacement.md](pbrt-subdivision-and-displacement.md) | meshes without refinement |
 | `sphere`, `cylinder`, `disk`, `bilinearmesh`, `curve` | [pbrt-analytic-shapes.md](pbrt-analytic-shapes.md), [pbrt-curves-and-hair.md](pbrt-curves-and-hair.md) | full spheres; others skipped |

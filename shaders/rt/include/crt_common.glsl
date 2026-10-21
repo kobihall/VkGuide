@@ -321,8 +321,11 @@ layout (std430, set = 0, binding = 6) readonly buffer InstanceBuffer { GpuInstan
 layout (std430, set = 0, binding = 7) readonly buffer MaterialBuffer { GpuMaterial materials[]; };
 // the running mean per pixel
 layout (rgba32f, set = 0, binding = 8) uniform image2D accumulation;
-// samples folded into the mean per pixel
-layout (r32ui, set = 0, binding = 9) uniform uimage2D sampleCount;
+// how many samples of this pixel the render has taken: the index kernel 00 and the samplers seed a
+// path from. Kernel 09's running mean advances it by the samples it accepts, so a dropped sample is
+// drawn again; the compensated film advances it by every slot it spawned, and keeps the accepted
+// count in filmPixels (docs/plans/completed/pbrt-film-and-reconstruction.md)
+layout (r32ui, set = 0, binding = 9) uniform uimage2D samplesTaken;
 layout (set = 0, binding = 10) uniform sampler2D environmentMap;
 // every BLAS's triangles, concatenated; an instance's triangleBase finds its own
 layout (std430, set = 0, binding = 11) readonly buffer BlasTriangleBuffer { BvhTriangle blasTriangles[]; };
@@ -385,9 +388,38 @@ layout (std430, set = 0, binding = 23) buffer RaySampleBuffer { RaySamples raySa
 // every material's parameter record, back to back: GpuMaterial.paramOffset finds its own, and
 // crt_material.glsl reads it in the order src/rt_material.cpp packed it
 layout (std430, set = 0, binding = 26) readonly buffer MaterialParamBuffer { vec4 materialParams[]; };
+// binding 29 is reserved for PixelState (docs/plans/pbrt-roadmap.md): a sample's filter weight rides in the w of its
+// radiance slot instead, which kernel 00 writes and kernel 09 reads
+// the selected pixel filter, tabulated and ready to sample (src/film.h packFilterTable): the header
+// (the table's width and height, the filter's radius, the integral of |f|), then the marginal cdf
+// over the rows (height + 1 entries), each row's cdf (height x (width + 1)), |f| per cell (height x
+// width) and the signed f per cell. Read by kernel 00's filtered variant (crt_filter.glsl)
+layout (std430, set = 0, binding = 30) readonly buffer FilterTableBuffer {
+	uint filterWidth;
+	uint filterHeight;
+	float filterRadius;
+	float filterIntegral;
+	float filterData[];
+};
+// one pixel's film as the compensated variants of kernel 09 keep it (src/rt_gpu_types.h CrtFilmPixel,
+// src/film.h FilmPixel): sum(w L) per channel and sum(w) with their Neumaier compensation terms, the
+// luminance's Welford mean and M2, and how many samples the pixel accepted. 48 bytes
+struct FilmPixel {
+	// rgb: sum(w L), w: sum(w)
+	vec4 sum;
+	vec4 compensation;
+	float welfordMean;
+	float welfordM2;
+	uint accepted;
+	uint pad;
+};
+layout (std430, set = 0, binding = 31) buffer FilmRecordBuffer { FilmPixel filmPixels[]; };
 // pbrt's Sobol generator matrices and the other tables the samplers read, uploaded once. The header
 // and layout are in crt_sampler.glsl, built by src/rt_gpu.cpp
 layout (std430, set = 0, binding = 46) readonly buffer SamplerTableBuffer { uint samplerTables[]; };
+// the outlier-reweighted film's cascade (crt_film.glsl): CRT_OUTLIER_BUFFERS vec4s per pixel, each the sum
+// of alpha w rgb in xyz and of alpha S in w for one brightness level. A stub while another film runs
+layout (std430, set = 0, binding = 62) buffer FilmCascadeBuffer { vec4 filmCascade[]; };
 
 // src/rt_gpu_types.h CrtParams
 layout (push_constant) uniform Params {
@@ -432,8 +464,10 @@ layout (push_constant) uniform Params {
 	float samplerInvSamples;
 	float samplerInvStrataX;
 	float samplerInvStrataY;
-	uint pad0;
-	uint pad1;
+	// the film's clamp: a sample whose largest component exceeds it is scaled down to it. 0 clamps nothing
+	float filmClamp;
+	// the outlier-reweighted film's kappa: samples of a brightness seen fewer than this many times are weighed down
+	float outlierKappa;
 	uint pad2;
 } pc;
 

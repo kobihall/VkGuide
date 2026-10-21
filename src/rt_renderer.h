@@ -156,6 +156,7 @@ private:
 	void drawAccelSettings(VulkanEngine* engine);
 	// the "Sampler" section: kernel 01's variant, its randomization, and why a render runs another
 	void drawSamplerSettings(VulkanEngine* engine);
+	void drawFilmSettings(VulkanEngine* engine);
 	// m_settings as a render started now would use them: the viewport's size under Match viewport,
 	// one sample without antialiasing, every count clamped to what the tracer allows
 	RenderSettings renderSettings(VulkanEngine* engine) const;

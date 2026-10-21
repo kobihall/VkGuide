@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-10-21
+
+### New
+
+- **Raytrace Render** → **Film** chooses how a pixel is built. **Pixel sampling** places each sample in its pixel either uniformly or by the **Pixel filter**: box, triangle, Gaussian, Mitchell-Netravali or Lanczos, each with its radius and parameters. A pixel becomes the weighted average of the light around it, which is pbrt-v4's filter importance sampling, so each sample still belongs to one pixel.
+- **Film** → **Compensated mean** keeps weighted float sums with Neumaier compensation, weighing a sample by the sign of a filter with negative lobes. Against the running mean, which sees the same samples, the Cornell box's accumulation differs by 5e-6 relative RMS at 16384 samples per pixel and 1e-4 at 262144, and the difference grows in proportion to the sample count.
+- **Film** → **Clamp samples** scales a sample whose brightest channel exceeds a limit down to it. It is off by default and removes fireflies at the cost of their energy.
+- **Film** → **Outlier reweighted** resolves each pixel from a cascade of buffers by brightness and weighs rare bright samples down, after Zirr, Hanika and Dachsbacher 2018. **Outlier kappa** sets how rare, 4 by default. On a glass caustic made of fireflies at 256 samples it lowers the relative MSE from 0.069 to 0.0045 and keeps 96 percent of the energy, where a clamp of 10 reaches 0.0055 and keeps 90 percent. It costs 21 percent more GPU time, and on scenes without fireflies it lowers no error.
+- **Raytrace Render** → **Analysis view** → **Standard error** shows the standard error of each pixel's mean over the mean, from the running variance of the samples' luminance. It needs no reference.
+- `bin/film_test` checks the filters, their sampling tables, the weighted mean, the compensated sum, Welford's variance, the clamp and the outlier reweighting on the CPU. **--selfcheck** plants a sampler 2 percent off and a sum without compensation and fails unless both are caught.
+- **Windows** → **GPU self-tests** gains three tests: the film's shaders against `src/film.cpp`, kernel 09's accounting over synthetic frames (a dropped sample, a constant fed for 65536 frames, signed weights, the clamp), and the outlier kernel against its mirror.
+- `tools/verify/filter_check.py` compares box filtering through the table with the unfiltered jitter and renders a checkerboard to the horizon under three filters. `film_check.py` measures the compensated film's precision and the outlier film against a clamp. `furnace_check.py` renders every pixel filter, where a mirror or glass sphere must stay exactly 1 in every pixel. `run_all.py` runs all three.
+- `assets/scenes/caustic_glass.gltf` is a glass sphere on a floor under a small lamp, a caustic made of fireflies.
+
+### Changed
+
+- A new scene renders with the Gaussian filter (radius 1.5, sigma 0.5) and the compensated film. Its converged image is slightly softer than before. A scene saved earlier opens with box pixels and the running mean and renders bit-identical to before.
+- Scene files are payload version 15, which adds `"pixelFilter"`, `"clampSamples"`, `"clampValue"` and `"outlierKappa"` to `"render"`. A file without `"pixelFilter"` reads a box.
+- Kernel 00's existing variant is named **Thin lens (box pixels)**, and kernel 09's **Running mean** ignores the sign of a filter's negative lobes. A render that needs the signs or the clamp runs the compensated mean instead, and the **Film** section says so.
+- **Analysis view** → **Dropped samples** compares the samples taken with the samples accepted under the compensated film, and the render's target under the running mean.
+
+### Fixed
+
+- Fixed a sample dropped as non-finite being drawn again every frame at one sample per frame, which left its pixel short of samples. The compensated film counts every sample taken apart from the ones it accepts, so a pixel that drops one carries on. The running mean keeps the old behavior, so a scene that selects it renders bit-identical.
+
+### Internal
+
+- The film is two kernel stages' worth of variants: kernel 00 `filter_importance` (`0002_generate_camera_rays_filtered.comp`) beside `thin_lens`, and kernel 09 `compensated_mean` (`0902_update_film_compensated.comp`) and `outlier_reweighted` (`0903_update_film_outliers.comp`) beside `running_mean`. Kernel 00's body is `include/crt_camera.glsl` and the compensated films' is `include/crt_film_update.glsl`; with the old variants selected, kernel 00's instructions are the same as before.
+- `src/film.h/.cpp` is the static library `rt_film`, the line-for-line mirror of `shaders/rt/include/crt_filter.glsl` and `crt_film.glsl`.
+- A sample's filter weight is the `w` of its radiance slot, +1 or -1, and kernel 09 reads it. Binding 29, `PixelState`, is not allocated.
+- Binding 9 is `CrtBinding::SamplesTaken` (the `r32ui` image that was `sampleCount`). Binding 30 is `FilterTable`, binding 31 `AccumulationError` (`CrtFilmPixel`, 48 bytes a pixel) and binding 62 `FilmCascade` (96 bytes a pixel, only for the outlier film). The film record is a one-pixel stub under the running mean, and a film record past 1 GiB falls back to it.
+- `CrtParams` stays 208 bytes: `filmClamp` and `outlierKappa` take two padding words.
+- `KernelVariant` gains `keepsFilmRecord`, `keepsFilmCascade` and `passes`. A stage with `passes` above 1 is dispatched that many times per frame with a barrier between, and `params.bounce` is the pass. `KernelSettings` gains `PixelFilter` and `Film`.
+- `analysis_view.comp` reads the film record through binding 5 and a `hasFilmRecord` push constant.
+
 ## 2026-10-20
 
 ### New

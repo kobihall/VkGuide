@@ -67,6 +67,20 @@ struct CrtClassicMaterial {
 };
 static_assert(sizeof(CrtClassicMaterial) == 64);
 
+// binding 31, one per pixel while a film variant that keeps sums is selected (crt_common.glsl
+// FilmPixel; the arithmetic is src/film.h FilmPixel)
+struct CrtFilmPixel {
+	// rgb: sum(w L), w: sum(w), each with its Neumaier compensation term beside it
+	glm::vec4 sum;
+	glm::vec4 compensation;
+	// the luminance's Welford mean and M2, and the samples accepted
+	float welfordMean;
+	float welfordM2;
+	uint32_t accepted;
+	uint32_t pad;
+};
+static_assert(sizeof(CrtFilmPixel) == 48);
+
 struct CrtQueueHeader {
 	// == VkDispatchIndirectCommand, maintained by the allocator as ceil(rayCount / workgroup)
 	uint32_t groupCountX;
@@ -118,8 +132,11 @@ struct CrtParams {
 	float samplerInvSamples;
 	float samplerInvStrataX;
 	float samplerInvStrataY;
-	uint32_t pad0;
-	uint32_t pad1;
+	// the film's clamp (RenderSettings::clampSamples): a sample whose largest component exceeds it is
+	// scaled down to it. 0 clamps nothing
+	float filmClamp;
+	// RenderSettings::outlierKappa, for the outlier-reweighted film
+	float outlierKappa;
 	uint32_t pad2;
 };
 static_assert(sizeof(CrtParams) == 208);

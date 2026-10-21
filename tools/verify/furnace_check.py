@@ -10,8 +10,10 @@ it renders is known:
             scattering, which is below 1 by design
 
 and the converged value must not depend on how the renderer got there, so the same sphere is also
-rendered under every direct-lighting strategy, every sampler, both background kinds and the
-intersection precision flags, and the means must agree within their noise.
+rendered under every direct-lighting strategy, every sampler, both background kinds, the
+intersection precision flags and every pixel filter with the compensated film, and the means must
+agree within their noise. A filter only blurs, and a furnace is uniform, so a material that is exact
+must stay exactly 1 in every pixel whatever the filter, even where its negative lobes weigh a sample -1.
 
 The mean is over the pixels of the sphere's disc less a 1.5 pixel margin (an edge pixel blends the
 sphere with the background). The noise is the standard error of that mean from the pixels themselves,
@@ -37,6 +39,9 @@ DISTANCE = 4.0
 FOV = 40.0
 
 STRATEGIES = ["bsdf", "light", "mis_balance", "mis_power"]
+FILTERS = ["box", "triangle", "gaussian", "mitchell", "lanczos"]
+# src/film.cpp's default radius of each: the disc keeps this far from its edge when a filter blurs it
+FILTER_RADIUS = {"box": 0.5, "triangle": 2.0, "gaussian": 1.5, "mitchell": 2.0, "lanczos": 4.0}
 SAMPLERS = ["pcg_hash", "independent", "stratified", "halton", "sobol", "padded_sobol", "zsobol", "pmj02bn"]
 TRAVERSALS = ["bvh_binary", "bvh_cwbvh", "linear"]
 
@@ -61,9 +66,11 @@ def disc_mask(margin=1.5):
 MASK = disc_mask()
 
 
-def measure(image):
-    """The disc's mean, its standard error, and the largest pixel."""
-    v = image[MASK][:, 1]
+def measure(image, margin=1.5):
+    """The disc's mean, its standard error, and the largest pixel. A filter that reaches `margin` pixels
+    from the disc's edge blends the sphere with the background there, so the disc shrinks to match."""
+    mask = MASK if margin == 1.5 else disc_mask(margin)
+    v = image[mask][:, 1]
     return v.mean(), v.std() / math.sqrt(len(v)), v.max()
 
 
@@ -75,8 +82,8 @@ class Runner:
         self.failures = []
         self.cache = {}
 
-    def render(self, name, *, strategy="mis_power", sampler=None, background="solid", traversal=None, flags=None):
-        key = (name, strategy, sampler, background, traversal, tuple(sorted((flags or {}).items())))
+    def render(self, name, *, strategy="mis_power", sampler=None, background="solid", traversal=None, flags=None, pixel_filter=None, film="compensated_mean"):
+        key = (name, strategy, sampler, background, traversal, tuple(sorted((flags or {}).items())), pixel_filter, film)
         if key in self.cache:
             return self.cache[key]
         kernels = {"06": strategy}
@@ -90,10 +97,18 @@ class Runner:
         if traversal:
             kwargs["traversal"] = traversal
         if flags:
-            kwargs["render_extra"] = flags
+            kwargs["render_extra"] = dict(flags)
+        margin = 1.5
+        if pixel_filter:
+            # a scene that names kernel 00 and 09 and a filter renders with them; one that names none
+            # renders as scenes before pixel filters did, with box pixels and a running mean
+            kernels["00"] = "filter_importance"
+            kernels["09"] = film
+            kwargs.setdefault("render_extra", {})["pixelFilter"] = {"kind": pixel_filter}
+            margin = max(margin, FILTER_RADIUS[pixel_filter] + 0.5)
         scene = furnace_scene(self.materials[name], **kwargs)
         image, dropped = run_render(scene, self.spp, workdir=self.workdir)
-        result = measure(image) + (dropped,)
+        result = measure(image, margin) + (dropped, float(image.min()), float(image.max()))
         self.cache[key] = result
         return result
 
@@ -103,7 +118,7 @@ class Runner:
 
 
 def check_expectation(runner, name, label, result):
-    mean, se, peak, dropped = result
+    mean, se, peak, dropped = result[:4]
     kind, value = EXPECT.get(name, ("at most", 1.0))
     slack = 4 * se + 1e-3
     if dropped:
@@ -116,8 +131,8 @@ def check_expectation(runner, name, label, result):
 
 def agree(runner, what, results):
     """Every result of a group must match the first within the noise."""
-    reference_label, (mean0, se0, _, _) = results[0]
-    for label, (mean, se, _, _) in results[1:]:
+    reference_label, (mean0, se0, *_) = results[0]
+    for label, (mean, se, *_) in results[1:]:
         if abs(mean - mean0) > 4 * math.hypot(se, se0) + 1e-3:
             runner.fail(f"{what}: {label} renders {mean:.5f} +- {se:.5f} but {reference_label} renders {mean0:.5f} +- {se0:.5f}")
 
@@ -178,6 +193,26 @@ def main():
             check_expectation(runner, name, label, result)
         print(f"  {name:26s} " + "  ".join(f"{label} {r[0]:.4f}" for label, r in group))
         agree(runner, f"{name}, traversals and flags", group)
+
+    print("\nevery pixel filter with the compensated film: a material that is exact stays exactly 1 in every pixel")
+    for name in [n for n in ["metal mirror", "dielectric 1.5", "lambertian 1"] if args.only in n]:
+        group = []
+        for pixel_filter in (FILTERS[:3] if args.quick else FILTERS):
+            result = runner.render(name, pixel_filter=pixel_filter, background="env")
+            group.append((pixel_filter, result))
+            check_expectation(runner, name, pixel_filter, result)
+            low, high = result[4], result[5]
+            if name != "lambertian 1" and (low < 1.0 - 1e-5 or high > 1.0 + 1e-5):
+                runner.fail(f"{name} [{pixel_filter}]: pixels range over [{low:.6f}, {high:.6f}], and every one must be exactly 1")
+        print(f"  {name:26s} " + "  ".join(f"{label} {r[0]:.5f}" for label, r in group))
+    for name in [n for n in ["lambertian 0.5", "pbr rough 0.5 metal 0"] if args.only in n]:
+        group = [("box, running mean", runner.render(name, background="env"))]
+        for pixel_filter in (FILTERS[:3] if args.quick else FILTERS):
+            result = runner.render(name, pixel_filter=pixel_filter, background="env")
+            group.append((pixel_filter, result))
+            check_expectation(runner, name, pixel_filter, result)
+        print(f"  {name:26s} " + "  ".join(f"{label} {r[0]:.4f}" for label, r in group))
+        agree(runner, f"{name}, pixel filters", group)
 
     print(f"\nwhite furnace: {'ok' if not runner.failures else str(len(runner.failures)) + ' failure(s)'}")
     return 1 if runner.failures else 0

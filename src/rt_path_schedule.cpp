@@ -221,7 +221,16 @@ void PathSchedule::record(GpuRenderer& renderer, VulkanEngine* engine, VkCommand
 
 	//---------------------------------------------------------------- 09 update film
 	if (const KernelVariant* film = passFor(KernelSlot::UpdateFilm)) {
-		launch(*film, 0);
+		//a film with more than one pass (the outlier film resolves from its neighbors' results) numbers them in
+		//params.bounce, and each waits for the one before
+		for (uint32_t filmPass = 0; filmPass < film->passes; filmPass++) {
+			params.bounce = filmPass;
+			launch(*film, filmPass);
+			if (filmPass + 1 < film->passes) {
+				vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
+			}
+		}
+		params.bounce = 0;
 	}
 
 	m_slotHeaderCount[frameSlot] = params.rayDepth + 1;

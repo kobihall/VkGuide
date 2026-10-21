@@ -719,7 +719,7 @@ void main()
 	const uint k = pathIndex - pixel * pc.samplesPerFrame;
 	const uint x = pixel % pc.width;
 	const uint y = pixel / pc.width;
-	const uint sampleIndex = imageLoad(sampleCount, ivec2(x, y)).r + k;
+	const uint sampleIndex = imageLoad(samplesTaken, ivec2(x, y)).r + k;
 
 	if (pc.bounce == CRT_CAMERA_PASS) {
 		if (k < min(sampleBudget[pixel], pc.samplesPerFrame)) {

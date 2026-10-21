@@ -1,0 +1,30 @@
+#version 460
+
+// 09 UPDATE FILM - COMPENSATED MEAN. Folds each pixel's K radiance slots into sums instead of a running
+// mean, and resolves the mean from them. Runs once per frame, after the bounce loop.
+//
+// Per pixel it keeps (binding 31, 48 bytes, crt_film.glsl): sum(w L) per channel and sum(w), each a
+// Neumaier-compensated float sum, so that the mean keeps its precision out to the sample counts where
+// a running mean's float stalls (pbrt measures its error flattening after about 1000 samples with
+// a 32-bit pixel); Welford's mean and M2 of the luminance, for the standard error of the mean; and the
+// number of samples accepted. A sample is weighed by the sign kernel 00 left in the slot's w: +1 for
+// every filter that is never negative, so the mean is then the plain mean of the samples, and -1 where
+// Mitchell's or Lanczos's filter is negative, pbrt's weighted estimator (PBR 4ed equation 5.13).
+// The clamp, when set, scales a sample down to the threshold before it is summed (pbrt's maxComponentValue).
+//
+// It writes the resolved mean into the accumulation image every frame, so the tonemap, the reference
+// comparison and the analysis views read the image they always did.
+//
+// The film's count of samples TAKEN (binding 9) is advanced by every slot that spawned, accepted or
+// dropped, while the count of samples accepted is in the record. Kernel 00 and the samplers seed a path
+// from the count taken, so a sample dropped as non-finite is not drawn again next frame: 0901 advances
+// by the accepted samples only, and at one sample per frame a pixel that dropped one never got past
+// it (docs/plans/completed/pbrt-verification-harness.md, finding 7). The drops are counted into
+// traversalStats[CRT_STAT_DROPPED_SAMPLES], as in 0901.
+//
+// docs/plans/completed/pbrt-film-and-reconstruction.md.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_film.glsl"
+#include "include/crt_film_update.glsl"

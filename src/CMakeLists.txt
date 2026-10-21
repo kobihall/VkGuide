@@ -47,6 +47,18 @@ if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
     target_compile_options(rt_sampler PRIVATE -O2)
 endif()
 
+# The film, as plain C++: pixel filters and their sampling table, the compensated sums, the variance and the
+# clamp kernels 00 and 09 run - the line-for-line mirror of shaders/rt/include/crt_filter.glsl and
+# crt_film.glsl. Built into the app and checked on its own by tests/film_test.cpp
+add_library(rt_film STATIC
+    film.cpp
+    film.h)
+target_include_directories(rt_film PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(rt_film PUBLIC rt_light glm)
+if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
+    target_compile_options(rt_film PRIVATE -O2)
+endif()
+
 # The surface scattering the path tracer runs in kernel 06, as plain C++: the line-for-line mirror of
 # shaders/rt/include/crt_scatter.glsl. Checked on its own by tests/bsdf_test.cpp and against the GPU
 # by the self-test in the Windows menu
@@ -132,6 +144,7 @@ add_executable(vulkan_guide
     gpu_selftest.cpp
     gpu_selftest.h
     gpu_selftest_bsdf.cpp
+    gpu_selftest_film.cpp
     camera.cpp
     camera.h)
 
@@ -140,7 +153,7 @@ set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGE
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide PUBLIC rt_bvh rt_light rt_sampler rt_bsdf rt_image vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
+target_link_libraries(vulkan_guide PUBLIC rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_image vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
 
 target_link_libraries(vulkan_guide PRIVATE GPUOpen::VulkanMemoryAllocator)
 

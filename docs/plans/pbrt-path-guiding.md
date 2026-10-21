@@ -2,7 +2,7 @@
 
 Kernel 06 chooses the next direction from the BSDF alone. That is a poor match wherever indirect light arrives from a narrow set of directions, such as a room lit through a doorway by an adjacent bright room: most BSDF samples hit dark walls. Path guiding learns the incident radiance as the render runs and samples from it. The user chose to plan Müller et al.'s practical path guiding (2017), the method pbrt's exercise 13.8 names and production renderers adopted, as research. It stores incident radiance in an SD-tree: a spatial binary tree whose leaves hold adaptive quadtrees over direction. This plan adds it as a kernel 06 variant with its training loop.
 
-*Not implemented, research. Uses the per-pixel variance of [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) to combine iterations. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented, research. Uses the per-pixel variance of [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md) to combine iterations. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 

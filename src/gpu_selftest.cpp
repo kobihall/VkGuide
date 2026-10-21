@@ -7,11 +7,17 @@
 #include <vk_engine.h>
 
 SelfTestResult runBsdfParityTest(VulkanEngine* engine);
+SelfTestResult runFilmParityTest(VulkanEngine* engine);
+SelfTestResult runFilmAccountingTest(VulkanEngine* engine);
+SelfTestResult runFilmOutlierTest(VulkanEngine* engine);
 
 std::span<const SelfTest> gpuSelfTests()
 {
 	static const SelfTest tests[] = {
 		{ "BSDF parity (crt_scatter.glsl against src/bsdf.cpp)", runBsdfParityTest },
+		{ "Film parity (crt_filter.glsl and crt_film.glsl against src/film.cpp)", runFilmParityTest },
+		{ "Film accounting (kernel 09: samples taken, accepted, precision, weights, clamp)", runFilmAccountingTest },
+		{ "Film outliers (kernel 0903: the cascade and its resolve against src/film.cpp)", runFilmOutlierTest },
 	};
 	return tests;
 }

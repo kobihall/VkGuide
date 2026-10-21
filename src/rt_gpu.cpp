@@ -18,6 +18,8 @@ struct AnalysisPushConstants {
 	uint32_t samples;
 	uint32_t baseSamples;
 	uint32_t hasReference;
+	// 1 when binding 5 holds the compensated film's per-pixel record
+	uint32_t hasFilmRecord;
 };
 
 //the selected sampler writes the RaySamples record: kernels 00 and 06 are built to read it
@@ -82,6 +84,8 @@ const char* crtAnalysisViewName(CrtAnalysisView view)
 		return "Energy above 1";
 	case CrtAnalysisView::DroppedSamples:
 		return "Dropped samples";
+	case CrtAnalysisView::StandardError:
+		return "Standard error";
 	case CrtAnalysisView::Count:
 		break;
 	}
@@ -103,6 +107,8 @@ const char* crtAnalysisViewDescription(CrtAnalysisView view)
 		return "Pixels with a channel above 1 in red, brighter with the excess; the rest in grey. For furnace scenes, where a passive material must not exceed 1.";
 	case CrtAnalysisView::DroppedSamples:
 		return "Pixels where kernel 09 dropped a non-finite sample, in red; the rest dim grey. A dropped sample biases its pixel, so any red is a NaN or an infinity in a path.";
+	case CrtAnalysisView::StandardError:
+		return "The standard error of each pixel's mean over the mean, from the running variance of its samples' luminance, on the log scale of the error view. Needs no reference; grey with the Running mean film, which keeps no variance.";
 	case CrtAnalysisView::Count:
 		break;
 	}
@@ -113,7 +119,7 @@ VkDescriptorType crtBindingType(CrtBinding binding)
 {
 	switch (binding) {
 	case CrtBinding::Accumulation:
-	case CrtBinding::SampleCount:
+	case CrtBinding::SamplesTaken:
 		return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	case CrtBinding::EnvironmentMap:
 	case CrtBinding::MaterialTextures:
@@ -212,9 +218,14 @@ void GpuRenderer::init(VulkanEngine* engine)
 		.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 		.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 		.addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
 		.setPushConstants<AnalysisPushConstants>()
 		.build(engine->m_device);
 
+	//the film's two bindings must always name a buffer too: the pixel filter's table, and the film record
+	//(a stub until a render keeps one)
+	uploadFilterTable(engine, PixelFilterSettings {});
+	ensureFilmRecords(engine, 1, 1, false, false);
 	//the environment tables' binding must always name a buffer, a map or no map
 	uploadEnvironment(engine, nullptr);
 	uploadSamplerTables(engine);
@@ -251,6 +262,17 @@ void GpuRenderer::destroy(VulkanEngine* engine)
 	if (m_samplerTableBuffer.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_samplerTableBuffer);
 		m_samplerTableBuffer = {};
+	}
+	if (m_filmRecords.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_filmRecords);
+		engine->destroyBuffer(m_filmCascade);
+		m_filmRecords = {};
+		m_filmCascade = {};
+	}
+	if (m_filterBuffer.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_filterBuffer);
+		m_filterBuffer = {};
+		m_hasFilterBuffer = false;
 	}
 	clearReference(engine);
 	if (m_errorPartials.buffer != VK_NULL_HANDLE) {
@@ -393,7 +415,7 @@ void GpuRenderer::ensureFilm(VulkanEngine* engine, uint32_t width, uint32_t heig
 
 	const VkExtent3D extent { width, height, 1 };
 	m_accumulation = engine->createImage(extent, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-	m_sampleCount = engine->createImage(extent, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+	m_samplesTaken = engine->createImage(extent, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 	m_noiseBase = engine->createImage(extent, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 	m_noiseBaseSamples = 0;
 	m_nextNoiseBase = 0;
@@ -402,11 +424,11 @@ void GpuRenderer::ensureFilm(VulkanEngine* engine, uint32_t width, uint32_t heig
 	//cleared by the command buffer, all of which accept it
 	engine->immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, m_accumulation.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-		vkutil::transition_image(cmd, m_sampleCount.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+		vkutil::transition_image(cmd, m_samplesTaken.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 		vkutil::transition_image(cmd, m_noiseBase.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 	});
 	m_resources.setImage(CrtBinding::Accumulation, m_accumulation.imageView, VK_IMAGE_LAYOUT_GENERAL);
-	m_resources.setImage(CrtBinding::SampleCount, m_sampleCount.imageView, VK_IMAGE_LAYOUT_GENERAL);
+	m_resources.setImage(CrtBinding::SamplesTaken, m_samplesTaken.imageView, VK_IMAGE_LAYOUT_GENERAL);
 	m_hasFilm = true;
 }
 
@@ -416,13 +438,73 @@ void GpuRenderer::freeFilm(VulkanEngine* engine)
 		return;
 	}
 	engine->destroyImage(m_accumulation);
-	engine->destroyImage(m_sampleCount);
+	engine->destroyImage(m_samplesTaken);
 	engine->destroyImage(m_noiseBase);
-	m_accumulation = m_sampleCount = m_noiseBase = {};
+	m_accumulation = m_samplesTaken = m_noiseBase = {};
 	m_resources.clear(CrtBinding::Accumulation);
-	m_resources.clear(CrtBinding::SampleCount);
+	m_resources.clear(CrtBinding::SamplesTaken);
 	m_hasFilm = false;
 	m_hasImage = false;
+}
+
+void GpuRenderer::ensureFilmRecords(VulkanEngine* engine, uint32_t width, uint32_t height, bool needed, bool cascade)
+{
+	const uint32_t pixels = needed ? width * height : 1u;
+	const uint32_t cascadePixels = cascade ? pixels : 1u;
+	if (m_filmRecords.buffer != VK_NULL_HANDLE && m_filmRecordsLive == needed && m_filmRecordPixels == pixels && m_filmCascadeLive == cascade && m_filmCascadePixels == cascadePixels) {
+		return;
+	}
+	//the previous render's frames may still be reading the old record
+	vkDeviceWaitIdle(engine->m_device);
+	if (m_filmRecords.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_filmRecords);
+		engine->destroyBuffer(m_filmCascade);
+	}
+	m_filmRecordBytes = sizeof(CrtFilmPixel) * (VkDeviceSize)pixels;
+	m_filmCascadeBytes = FILM_CASCADE_BYTES_PER_PIXEL * (VkDeviceSize)cascadePixels;
+	const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	m_filmRecords = engine->createBuffer(m_filmRecordBytes, usage, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_filmCascade = engine->createBuffer(m_filmCascadeBytes, usage, VMA_MEMORY_USAGE_GPU_ONLY);
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		vkCmdFillBuffer(cmd, m_filmRecords.buffer, 0, VK_WHOLE_SIZE, 0);
+		vkCmdFillBuffer(cmd, m_filmCascade.buffer, 0, VK_WHOLE_SIZE, 0);
+	});
+	m_resources.setBuffer(CrtBinding::AccumulationError, m_filmRecords.buffer, m_filmRecordBytes);
+	m_resources.setBuffer(CrtBinding::FilmCascade, m_filmCascade.buffer, m_filmCascadeBytes);
+	m_filmRecordsLive = needed;
+	m_filmRecordPixels = pixels;
+	m_filmCascadeLive = cascade;
+	m_filmCascadePixels = cascadePixels;
+	if (needed) {
+		fmt::println("GpuRenderer: film record {} x {} x {} bytes = {:.0f} MB{}", width, height, sizeof(CrtFilmPixel), double(m_filmRecordBytes) / (1024.0 * 1024.0),
+			cascade ? fmt::format(", cascade {:.0f} MB", double(m_filmCascadeBytes) / (1024.0 * 1024.0)) : std::string());
+	}
+}
+
+void GpuRenderer::uploadFilterTable(VulkanEngine* engine, const PixelFilterSettings& filter)
+{
+	if (m_hasFilterBuffer && m_uploadedFilter == filter) {
+		return;
+	}
+	const std::vector<uint32_t> words = packFilterTable(buildFilterTable(filter));
+	const VkDeviceSize bytes = sizeof(uint32_t) * words.size();
+
+	AllocatedBuffer staging = engine->createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+	memcpy(staging.info.pMappedData, words.data(), bytes);
+	vmaFlushAllocation(engine->m_memAllocator, staging.allocation, 0, bytes); //flush vma on MoltenVK
+
+	retireBuffer(engine, m_filterBuffer);
+	m_filterBuffer = engine->createBuffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		VkBufferCopy copy {};
+		copy.size = bytes;
+		vkCmdCopyBuffer(cmd, staging.buffer, m_filterBuffer.buffer, 1, &copy);
+	});
+	engine->destroyBuffer(staging);
+	m_resources.setBuffer(CrtBinding::FilterTable, m_filterBuffer.buffer, bytes);
+
+	m_uploadedFilter = filter;
+	m_hasFilterBuffer = true;
 }
 
 //---------------------------------------------------------------- the scene
@@ -745,9 +827,48 @@ std::string samplerFallbackReason(const KernelVariant& sampler, const RenderSett
 	return {};
 }
 
+FilmFallback filmFallback(const KernelSelection& kernels, const RenderSettings& settings, uint32_t width, uint32_t height)
+{
+	const KernelVariant* film = kernels.selected(KernelSlot::UpdateFilm);
+	if (film == nullptr || !film->implemented) {
+		return {};
+	}
+	if (film->keepsFilmRecord) {
+		const uint64_t bytesPerPixel = sizeof(CrtFilmPixel) + (film->keepsFilmCascade ? FILM_CASCADE_BYTES_PER_PIXEL : 0);
+		if ((uint64_t)width * height * bytesPerPixel > FILM_RECORD_BYTES_LIMIT) {
+			return { fmt::format("The {} film keeps {} bytes a pixel, more than {} MB at {} x {}, so this size renders with the running mean.",
+				film->name, bytesPerPixel, FILM_RECORD_BYTES_LIMIT >> 20, width, height), "running_mean" };
+		}
+		return {};
+	}
+	const KernelVariant* camera = kernels.selected(KernelSlot::GenerateCameraRays);
+	const bool filtered = camera != nullptr && camera->settings == KernelSettings::PixelFilter && settings.antialiasing;
+	if (filtered && pixelFilterHasNegativeLobes(settings.pixelFilter.kind)) {
+		return { fmt::format("The {} filter has negative lobes, which the {} film cannot weigh, so renders run the compensated mean.",
+			pixelFilterName(settings.pixelFilter.kind), film->name), "compensated_mean" };
+	}
+	if (settings.clampSamples) {
+		return { fmt::format("The {} film does not clamp samples, so renders with the clamp on run the compensated mean.", film->name), "compensated_mean" };
+	}
+	return {};
+}
+
 void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 {
 	m_snapshot = std::move(snapshot);
+
+	//THE FILM THIS RENDER RUNS, decided like the sampler below: the selection is the user's and stays as
+	//it is, and the render runs another when the selected one cannot do what the settings ask
+	{
+		const FilmFallback fallback = filmFallback(m_snapshot.kernels, m_snapshot.settings, m_snapshot.width, m_snapshot.height);
+		if (!fallback.reason.empty()) {
+			const int replacement = findKernelVariant(KernelSlot::UpdateFilm, fallback.variant);
+			if (replacement >= 0) {
+				m_snapshot.kernels[KernelSlot::UpdateFilm] = (uint32_t)replacement;
+				fmt::println("GpuRenderer: {}", fallback.reason);
+			}
+		}
+	}
 
 	//THE SAMPLER THIS RENDER RUNS. The selection is the user's and stays as it is; what runs instead,
 	//when the selected sampler cannot run this render, is the independent one
@@ -773,6 +894,10 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 	m_activeIntegrator = integrator;
 
 	ensureFilm(engine, m_snapshot.width, m_snapshot.height);
+	const KernelVariant* filmVariant = m_snapshot.kernels.selected(KernelSlot::UpdateFilm);
+	ensureFilmRecords(engine, m_snapshot.width, m_snapshot.height, filmVariant != nullptr && filmVariant->implemented && filmVariant->keepsFilmRecord,
+		filmVariant != nullptr && filmVariant->implemented && filmVariant->keepsFilmCascade);
+	uploadFilterTable(engine, m_snapshot.settings.pixelFilter);
 	uploadScene(engine);
 	uploadEnvironment(engine, m_snapshot.environment);
 	preparePipelines(engine, m_snapshot.kernels);
@@ -857,11 +982,12 @@ void GpuRenderer::recordAnalysis(VkCommandBuffer cmd, VulkanEngine* engine, cons
 	writer.writeImage(0, m_accumulation.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 	writer.writeImage(1, hasReference ? m_reference.imageView : m_accumulation.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 	writer.writeImage(2, m_noiseBase.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-	writer.writeImage(3, m_sampleCount.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.writeImage(3, m_samplesTaken.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 	writer.writeImage(4, displayImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.writeBuffer(5, m_filmRecords.buffer, m_filmRecordBytes, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 	writer.updateSet(engine->m_device, set);
 
-	const AnalysisPushConstants constants { (uint32_t)analysisView, m_samplesAccumulated, m_noiseBaseSamples, hasReference ? 1u : 0u };
+	const AnalysisPushConstants constants { (uint32_t)analysisView, m_samplesAccumulated, m_noiseBaseSamples, hasReference ? 1u : 0u, m_filmRecordsLive ? 1u : 0u };
 	//the tonemap wrote the display image, and the film and the reference were written before it
 	vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 	dispatchComputePassOver(cmd, m_analysisPass, set, &constants, displayImage.imageExtent);
@@ -1100,6 +1226,9 @@ CrtParams GpuRenderer::baseParams(VulkanEngine* engine) const
 	params.minBouncesBeforeRoulette = (uint32_t)std::max(settings.minBouncesBeforeRoulette, 0);
 	params.debugView = (uint32_t)debugView;
 	params.maxSamples = std::max(m_maxSamples, 1u);
+	//the clamp is a feature of the film variants that keep a record; the others never see it
+	params.filmClamp = (settings.clampSamples && m_filmRecordsLive) ? settings.clampValue : 0.f;
+	params.outlierKappa = std::max(settings.outlierKappa, 1.f);
 	//the map is stored divided by its scale (environmentStorageScale()); the texture reads get
 	//it back here. The light list prices the environment from the file's own values instead
 	params.environmentIntensity = m_snapshot.environmentIntensity * m_snapshot.environmentMapScale;
@@ -1137,7 +1266,13 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 			VkClearColorValue zeroUint {};
 			zeroUint.uint32[0] = 0;
 			vkCmdClearColorImage(cmd, m_accumulation.image, VK_IMAGE_LAYOUT_GENERAL, &zeroFloat, 1, &range);
-			vkCmdClearColorImage(cmd, m_sampleCount.image, VK_IMAGE_LAYOUT_GENERAL, &zeroUint, 1, &range);
+			vkCmdClearColorImage(cmd, m_samplesTaken.image, VK_IMAGE_LAYOUT_GENERAL, &zeroUint, 1, &range);
+			if (m_filmRecordsLive) {
+				vkCmdFillBuffer(cmd, m_filmRecords.buffer, 0, VK_WHOLE_SIZE, 0);
+			}
+			if (m_filmCascadeLive) {
+				vkCmdFillBuffer(cmd, m_filmCascade.buffer, 0, VK_WHOLE_SIZE, 0);
+			}
 		}
 		//every kernel that traces adds its work to these, per frame
 		vkCmdFillBuffer(cmd, m_traversalStats.buffer, 0, VK_WHOLE_SIZE, 0);

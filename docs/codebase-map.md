@@ -290,7 +290,8 @@ A wavefront path tracer, as the first integrator above a stage library that late
 
 ```
 shaders/rt/
-  0001_generate_camera_rays.comp        00 Generate camera rays
+  0001_generate_camera_rays.comp        00 Generate camera rays: a sample uniform in its pixel (old files)
+  0002_generate_camera_rays_filtered.comp  00 a sample placed by the pixel filter (the new-scene default)
   0101_generate_samples.comp            01 PCG per bounce: no sample record (old files' choice)
   0102_generate_samples_independent.comp   01 the PCG stream written into the record
   0103_generate_samples_stratified.comp    01 jittered strata; needs a known sample count
@@ -309,7 +310,9 @@ shaders/rt/
   0604_surface_scatter_mis_power.comp   06 MIS, power heuristic (the default)
   0701_sample_medium_scattering.comp    07 STUB, implemented = false
   0801_trace_shadow_rays.comp           08 Trace shadow rays; traces: built once per traversal
-  0901_update_film.comp                 09 Update film (not a PBR figure box)
+  0901_update_film.comp                 09 Update film (not a PBR figure box): the float running mean (old files)
+  0902_update_film_compensated.comp     09 compensated weighted sums, variance, clamp (the new-scene default)
+  0903_update_film_outliers.comp        09 0902 plus outlier reweighting, in two passes
   include/
     crt_common.glsl      buffer structs, GLOBAL BINDING NUMBERS, push constants, queue set,
                          queueAppend(), hitTriangle(), the robust section (offsetRayOrigin(),
@@ -320,6 +323,11 @@ shaders/rt/
     crt_sampler.glsl     kernel 01's samplers and body (camera pass and bounce pass); one
                          CRT_SAMPLER_<KIND> per .comp; mirrors src/sampler.cpp
     crt_halton_tables.glsl  GENERATED: Halton's primes, reciprocals and digit counts
+    crt_camera.glsl      kernel 00's body, shared by 0001 and 0002 (CRT_PIXEL_FILTER)
+    crt_filter.glsl      sampleFilter(): the pixel filter's table inverted; mirrors src/film.cpp
+    crt_film.glsl        the clamp, Neumaier sums, Welford, resolve, and the outlier cascade;
+                         mirrors src/film.cpp
+    crt_film_update.glsl kernel 09's compensated variants' body (CRT_FILM_CASCADE for 0903)
     crt_trace.glsl       the traversal a tracing kernel is built for: one CRT_TRAVERSAL_<ID> branch
                          per traversal, which CMake reads to compile the permutations
     crt_traverse.glsl    THE TRAVERSAL CONTRACT + TraceHit, work counters, testTriangles(),
@@ -350,7 +358,7 @@ shaders/image_error.comp  the Compare to reference error, 16×16 pixels per work
 
 `shaders/equirect.glsl` stays at `shaders/` (shared with `env_background.comp`) and is reached through the `-I${PROJECT_SOURCE_DIR}/shaders` that the root `CMakeLists.txt` now passes to `glslangValidator`. That same CMake block resolves each shader's path **relative to `shaders/`** so `.spv` output lands beside its source rather than colliding in one flat directory, and compiles a `.comp` that includes `include/crt_trace.glsl` once per traversal, to `<name>.comp.<id>.spv` with `-DCRT_TRAVERSAL_<ID>` (§8.16).
 
-C++: `src/rt_kernels.h/.cpp` (registry: stages, traversals, integrators), `src/rt_gpu.h/.cpp` (`GpuRenderer`: uploads, film, reference error, resource table, pipeline cache), `src/rt_gpu_types.h` (C++ mirrors, `CrtParams`, `CrtResourceTable`), `src/rt_wavefront.h/.cpp` (`WavefrontPool`), `src/rt_schedule.h/.cpp` and `src/rt_path_schedule.h/.cpp` (the schedule interface and the path tracer's), `src/rt_renderer.h/.cpp` (panels, guard, BVH settings, direct-lighting settings), `src/rt_accel.*` (the TLAS, and the light list built with it) + `src/bvh*` (`occludedScene()` mirrors `occluded()`), `src/rt_lights.h/.cpp` (the light list), `src/light_sampling.h/.cpp` (static lib `rt_light`, no Vulkan: the CPU mirror of `crt_light.glsl` and the environment tables), `tests/light_test.cpp` (`bin/light_test`), `src/sampler.h/.cpp` and the generated `src/sampler_halton_tables.h` (static lib `rt_sampler`, no Vulkan: the CPU mirror of `crt_sampler.glsl` and the loader of `assets/sampler/`), `tests/sampler_test.cpp` (`bin/sampler_test`), `src/bsdf.h/.cpp` (static lib `rt_bsdf`: the CPU mirror of `crt_scatter.glsl`) with `tests/bsdf_test.cpp` and `tests/test_stats.h`, `src/image_io.h/.cpp` (static lib `rt_image`), `src/gpu_selftest*.cpp` with `shaders/test/`, and `tools/verify/` (section 8.21).
+C++: `src/rt_kernels.h/.cpp` (registry: stages, traversals, integrators), `src/rt_gpu.h/.cpp` (`GpuRenderer`: uploads, film, reference error, resource table, pipeline cache), `src/rt_gpu_types.h` (C++ mirrors, `CrtParams`, `CrtResourceTable`), `src/rt_wavefront.h/.cpp` (`WavefrontPool`), `src/rt_schedule.h/.cpp` and `src/rt_path_schedule.h/.cpp` (the schedule interface and the path tracer's), `src/rt_renderer.h/.cpp` (panels, guard, BVH settings, direct-lighting settings), `src/rt_accel.*` (the TLAS, and the light list built with it) + `src/bvh*` (`occludedScene()` mirrors `occluded()`), `src/rt_lights.h/.cpp` (the light list), `src/light_sampling.h/.cpp` (static lib `rt_light`, no Vulkan: the CPU mirror of `crt_light.glsl` and the environment tables), `tests/light_test.cpp` (`bin/light_test`), `src/sampler.h/.cpp` and the generated `src/sampler_halton_tables.h` (static lib `rt_sampler`, no Vulkan: the CPU mirror of `crt_sampler.glsl` and the loader of `assets/sampler/`), `tests/sampler_test.cpp` (`bin/sampler_test`), `src/bsdf.h/.cpp` (static lib `rt_bsdf`: the CPU mirror of `crt_scatter.glsl`) with `tests/bsdf_test.cpp` and `tests/test_stats.h`, `src/image_io.h/.cpp` (static lib `rt_image`), `src/film.h/.cpp` (static lib `rt_film`: the CPU mirror of `crt_filter.glsl` and `crt_film.glsl`) with `tests/film_test.cpp` (`bin/film_test`), `src/gpu_selftest*.cpp` with `shaders/test/`, and `tools/verify/` (sections 8.21 and 8.22).
 
 ### 8.3 The registry (`src/rt_kernels.h/.cpp`) — the file to edit
 
@@ -360,7 +368,7 @@ The enums and tables:
 - `CrtBinding` — **the value IS the descriptor binding number** and must match `crt_common.glsl` exactly. Append only.
 - `KernelDomain` — `Pool` / `Pixels` (direct dispatch) or `CurrentRayQueue` / `FixedQueue` (indirect).
 - `KernelSettings`, `TraversalCost` — capability flags the UI and the render guard read.
-- `KernelVariant` — one table row: slot, `id` (scene-file constant), `name`, `description`, `shader`, `domain`, `queue`, `bindings`, `implemented`, `isDefault`, `traces` (built once per traversal, §8.7), `settings`, `nextEvent` (which lights a kernel 06 variant sends shadow rays to: `None`, `DeltaLights` or `AllLights`), and for the samplers (§8.20) `writesRecord`, `cameraPass`, `needsSampleCount`, `sampler` and, on kernels 00 and 06, `readsRecord`.
+- `KernelVariant` — one table row: slot, `id` (scene-file constant), `name`, `description`, `shader`, `domain`, `queue`, `bindings`, `implemented`, `isDefault`, `traces` (built once per traversal, §8.7), `settings`, `nextEvent` (which lights a kernel 06 variant sends shadow rays to: `None`, `DeltaLights` or `AllLights`), for the samplers (§8.20) `writesRecord`, `cameraPass`, `needsSampleCount`, `sampler` and, on kernels 00 and 06, `readsRecord`, and for the films (§8.22) `keepsFilmRecord`, `keepsFilmCascade` and `passes`.
 - `TraversalVariant` — one traversal: `id` (scene-file constant, and the `.spv` suffix), `name`, `description`, `bindings` (what the search reads, added to every tracing kernel's own), `settings`, `cost`, `requiresLayout`/`layout`, `isDefault`. Rows `bvh_binary` (default), `bvh_cwbvh`, `linear`.
 - `IntegratorId` / `IntegratorInfo` — `key` (scene-file constant), `name`, `description`, `stages` in dispatch order. Row `path`, running 00..09.
 
@@ -427,7 +435,8 @@ for bounce in [0, rayDepth):
     08 Trace shadow rays       indirect over SHADOW      each shadow ray carries its own origin
     barrier; copyHeader(next, bounce + 1); copyHeader(SHADOW, CRT_MAX_DEPTH + 1 + bounce);
     copyHeader(SURFACE, 2 * CRT_MAX_DEPTH + 1 + bounce); copyHeader(SURFACE_COMPLEX, 3 * CRT_MAX_DEPTH + 1 + bounce)
-09 Update film                 direct over width × height
+09 Update film                 direct over width × height, `passes` times (2 for 0903: accumulate,
+                               then resolve from the neighbors), a barrier between
 barrier; copy the frame's counters to readback, 09's dropped-sample count last
 image_error.comp against the reference, when one is captured; tonemap
 ```
@@ -635,4 +644,21 @@ Design and as-built record: `docs/plans/completed/pbrt-verification-harness.md`.
 - **Reference images.** `GpuRenderer::readAccumulation()`, `readReference()` and `loadReference()` move images between the GPU and `Image` (`src/image_io.h`). `image_error.comp` writes four sums per workgroup (squared error, relative squared error, absolute percentage error, signed difference). `GpuRenderer::convergence()` is the running render's curve, one point per sample count, and `RaytraceRenderer` keeps the previous renders' curves.
 - **`tools/verify/`** is Python with numpy only. `vkscene.py` builds version 7 scene files and runs the renderer; `cornell.py` is the one description of the Cornell box that the scene files, `radiosity.py` and `pbrt_cornell.py` are made from.
 - **Analysis views** (`CrtAnalysisView`, `shaders/analysis_view.comp`) are display-time: a pass after the tonemap reads the film, the reference, `m_noiseBase` (a copy of the film from when its count last doubled, taken at the start of the next frame so the two differ) and the sample-count image, and overwrites the display image. They need no restart and no kernel knows them. The debug views (`CrtDebugView`) still replace shading inside kernels 03, 04 and 06. The noise view's estimate, `|x - b| sqrt(Ns / (N - Ns))` in the error view's relative RMS measure, agrees with the measured error against a reference to about 25 percent (0.0026 against 0.0032 on the Cornell box at 128 samples).
-- **Trap: the film count is the sample index.** Kernel 00 seeds a path from `sampleCount + k`, and kernel 09 counts accepted samples only, so a dropped sample is redrawn every frame at 1 sample per frame. See finding 7 of the harness plan; the fix waits for `docs/plans/pbrt-film-and-reconstruction.md` (footnote 1).
+- **Trap: the film count is the sample index.** Kernel 00 seeds a path from `samplesTaken + k`, and the running mean (`0901`) counts accepted samples only, so with it a dropped sample is redrawn every frame at 1 sample per frame. See finding 7 of the harness plan. The compensated films count every spawned slot (§8.22).
+
+### 8.22 Film and reconstruction (2026-10-21)
+
+Design and as-built record: `docs/plans/completed/pbrt-film-and-reconstruction.md`.
+
+- **Three stages' worth of variants.** Kernel 00 has `thin_lens` (`0001`, a sample uniform in its pixel) and `filter_importance` (`0002`, drawn from the pixel filter). Kernel 09 has `running_mean` (`0901`), `compensated_mean` (`0902`) and `outlier_reweighted` (`0903`). The new-scene defaults are `filter_importance` and `compensated_mean`; `readKernelSelection()` adds `"00":"thin_lens"` and `"09":"running_mean"` to a file that names neither.
+- **A sample's weight is the `w` of its radiance slot.** Kernel 00 writes the sign of the filter where the sample landed (+1, or -1 for Mitchell and Lanczos); every other writer of `radiance[]` leaves `w` alone except the debug views, which write 1. Kernel 09's compensated variants read it as `sum(w L) / sum(w)`. `PixelState` (binding 29) is not allocated.
+- **`samplesTaken`.** `CrtBinding::SamplesTaken` is binding 9, the `r32ui` image that was `sampleCount`. Kernel 00 and the samplers seed a path from it. `0901` advances it by the samples it accepts, `0902` and `0903` by every spawned slot, and keep the accepted count in `CrtFilmPixel::accepted`.
+- **The film record** (binding 31, 48 bytes a pixel, `CrtFilmPixel`, `FilmPixel` in `crt_common.glsl`): two `vec4` of Neumaier sums and compensation terms, Welford's mean and M2, the accepted count. `GpuRenderer::ensureFilmRecords()` allocates it while the selected variant has `keepsFilmRecord`, a one-pixel stub otherwise, and `record()` zeroes it when a render starts. `0903` adds the cascade, binding 62, six `vec4` a pixel.
+- **The filter table** (binding 30) is built and uploaded by `GpuRenderer::uploadFilterTable()` when the filter changes, through a staging buffer, like the environment's tables.
+- **Fallback.** `filmFallback()` runs the compensated mean in place of the running mean when the filter has negative lobes or the clamp is on, and the running mean in place of a film record past 1 GiB. `GpuRenderer::start()` and the **Film** section call it, so the panel shows the reason for the settings as they stand.
+- **Precision.** `crt_film.glsl` marks the compensation `precise`; Metal kept it, which the GPU self-test measures. The compensation is itself a float sum and holds only while the terms times float's epsilon stay well below 1 (exact to 2^17 terms).
+- **Shared bodies.** `crt_camera.glsl` is kernel 00's body, and `0001`'s instruction stream after the refactor is identical to the one before once the ids are stripped (`spirv-dis`, then a diff). `crt_film_update.glsl` is kernel 09's compensated body.
+- **Analysis pass.** `analysis_view.comp` gains binding 5 (the film record) and `hasFilmRecord`: **Dropped samples** compares samples taken with samples accepted under the compensated film, and **Standard error** reads the Welford sums.
+- **Scene file.** Payload version 15 adds `"pixelFilter"`, `"clampSamples"`, `"clampValue"` and `"outlierKappa"` to `"render"`. `readRenderSettings()` starts from a box filter, so a file without the block renders as it did.
+- **Tests.** `bin/film_test` (CPU), three GPU self-tests (`gpu_selftest_film.cpp`: parity with the mirror, kernel 09's accounting through the real shaders, `0903` against the mirror), and in `tools/verify/` `filter_check.py`, `film_check.py` and the filter section of `furnace_check.py`. `caustic_scene.py` writes `assets/scenes/caustic_glass.gltf`, a caustic of fireflies.
+- **Traps.** A tracked verification scene regenerated by `make_scenes.py` differs from the committed one in `samplesPerFrame`; restore it. Kappa has to stay small against the samples per pixel (4 at a few hundred); at 64 samples kappa 32 darkens the Cornell box by a third. A render at one sample per pixel shows no filter, since a pixel is then one point sample.

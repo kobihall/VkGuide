@@ -1,0 +1,19 @@
+#version 460
+
+// 09 UPDATE FILM - OUTLIER REWEIGHTED. 0902's compensated weighted sums, variance and clamp, and beside
+// them a cascade of buffers by brightness (binding 62), from which the pixel's value is resolved with
+// the fireflies reweighted (Zirr, Hanika and Dachsbacher 2018; src/film.h has the estimator). The film
+// record still holds the plain weighted sums, so the unreweighted mean is always there to compare with.
+//
+// It runs in two passes, the stage's `passes` (params.bounce is the pass): pass 0 folds the frame's
+// samples into the record and the cascade as 0902 does, and pass 1 resolves every pixel into the
+// accumulation image from its own cascade and its neighbors', which pass 0 had to finish writing.
+// Samples whose brightness is rare in a pixel and its 3 x 3 neighborhood are weighed down or dropped
+// as a clamp would, with far less energy lost where the brightness is well sampled elsewhere.
+// docs/plans/completed/pbrt-film-and-reconstruction.md.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#define CRT_FILM_CASCADE
+#include "include/crt_film.glsl"
+#include "include/crt_film_update.glsl"

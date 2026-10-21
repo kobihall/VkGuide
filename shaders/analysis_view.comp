@@ -14,6 +14,8 @@
 //   4 energy above 1: pixels with a channel above 1 in red, brighter with the excess, the rest grey.
 //     For furnace scenes, where nothing may exceed 1
 //   5 dropped samples: pixels where kernel 09 dropped a non-finite sample, in red, the rest dim grey
+//   6 standard error: the standard error of the pixel's mean over the mean, from the running variance
+//     the compensated film keeps, on the error view's log scale. Needs no reference
 //
 // The noise estimate: the mean of N samples and the mean of the first Ns of them differ by a variable
 // of variance s^2 (1/Ns - 1/N), while the mean of N has error variance s^2/N, so the error is the
@@ -24,8 +26,20 @@ layout (local_size_x = 16, local_size_y = 16) in;
 layout (rgba32f, set = 0, binding = 0) uniform readonly image2D accumulation;
 layout (rgba32f, set = 0, binding = 1) uniform readonly image2D reference;
 layout (rgba32f, set = 0, binding = 2) uniform readonly image2D noiseBase;
-layout (r32ui, set = 0, binding = 3) uniform readonly uimage2D sampleCount;
+layout (r32ui, set = 0, binding = 3) uniform readonly uimage2D samplesTaken;
 layout (rgba8, set = 0, binding = 4) uniform writeonly image2D displayImage;
+
+// the compensated film's record per pixel (crt_common.glsl FilmPixel, binding 31 of the render): a stub
+// while the running mean is the film, which is when hasFilmRecord is 0
+struct FilmPixel {
+	vec4 sum;
+	vec4 compensation;
+	float welfordMean;
+	float welfordM2;
+	uint accepted;
+	uint pad;
+};
+layout (std430, set = 0, binding = 5) readonly buffer FilmRecordBuffer { FilmPixel filmPixels[]; };
 
 layout (push_constant) uniform constants {
 	uint view;
@@ -35,6 +49,8 @@ layout (push_constant) uniform constants {
 	uint baseSamples;
 	// 1 when `reference` is a reference of this image's size
 	uint hasReference;
+	// 1 when binding 5 holds a record per pixel
+	uint hasFilmRecord;
 } pc;
 
 #define VIEW_REFERENCE_ERROR 1u
@@ -42,6 +58,7 @@ layout (push_constant) uniform constants {
 #define VIEW_NOISE 3u
 #define VIEW_ENERGY_ABOVE_ONE 4u
 #define VIEW_DROPPED_SAMPLES 5u
+#define VIEW_STANDARD_ERROR 6u
 
 // a jet ramp, blue to red
 vec3 jet(float t)
@@ -124,8 +141,29 @@ void main()
 		break;
 	}
 	case VIEW_DROPPED_SAMPLES: {
-		const uint counted = imageLoad(sampleCount, coord).r;
-		color = pc.samples > counted ? vec3(1.0, 0.0, 0.0) : backdrop(x, 0.4);
+		const uint taken = imageLoad(samplesTaken, coord).r;
+		// the running mean counts only the samples it accepted, so the render's target is the yardstick;
+		// the compensated film counts every sample taken and the ones it accepted apart
+		const uint counted = pc.hasFilmRecord != 0u ? filmPixels[uint(coord.y) * uint(imageSize(accumulation).x) + uint(coord.x)].accepted : taken;
+		const uint expected = pc.hasFilmRecord != 0u ? taken : pc.samples;
+		color = expected > counted ? vec3(1.0, 0.0, 0.0) : backdrop(x, 0.4);
+		break;
+	}
+	case VIEW_STANDARD_ERROR: {
+		if (pc.hasFilmRecord == 0u) {
+			// the running mean keeps no variance
+			color = backdrop(x, 0.25);
+			break;
+		}
+		const FilmPixel film = filmPixels[uint(coord.y) * uint(imageSize(accumulation).x) + uint(coord.x)];
+		if (film.accepted < 2u) {
+			color = backdrop(x, 0.25);
+			break;
+		}
+		// src/film.h relativeStandardError(), with the floor that makes a dark pixel read on the error view's scale
+		const float n = float(film.accepted);
+		const float standardError = sqrt(max(film.welfordM2, 0.0) / (n - 1.0) / n);
+		color = jet(logScale(standardError / max(abs(film.welfordMean), 0.1)));
 		break;
 	}
 	}

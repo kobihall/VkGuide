@@ -51,7 +51,13 @@ namespace {
 //   samplers. A file without a "01" entry in "kernels" (one older than version 8, or written by hand)
 //   reads with "pcg_hash", the only variant there was, rather than a new scene's ZSobol, so it renders
 //   as it always did
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 14;
+//15: adds the film to "render": "pixelFilter" (a "kind" box, triangle, gaussian, mitchell or lanczos, its
+//   "radius", and the "sigma", "b" and "c" or "tau" its kind uses), "clampSamples", "clampValue" and
+//   "outlierKappa", and kernel 00's "filter_importance" and kernel 09's "compensated_mean" and
+//   "outlier_reweighted". A file without a "00" or "09"
+//   entry in "kernels" reads with "thin_lens" and "running_mean", the only variants there were, and one
+//   without "pixelFilter" with a box, so it renders as it always did rather than as a new scene does
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 15;
 
 //---------------------------------------------------------------- writing
 
@@ -180,9 +186,13 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	//every setting, defaults on read, so a scene shared between machines loses nothing and an
 	//older build ignores the block
 	const RenderSettings& r = scene.render;
-	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"unlimitedSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"restartOnChange":{},"errorBoundedOffsets":{},"watertightTriangles":{},"samplerRandomization":{}}})",
+	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"unlimitedSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"restartOnChange":{},"errorBoundedOffsets":{},"watertightTriangles":{},"samplerRandomization":{})",
 		r.width, r.height, r.matchViewport, r.antialiasing, r.maxSamples, r.unlimitedSamples, r.rayDepth, r.useFixedSeed, r.seed, r.samplesPerFrame, r.russianRoulette, r.minBouncesBeforeRoulette, r.restartOnChange,
 		r.errorBoundedOffsets, r.watertightTriangles, jsonString(samplerRandomizationId(r.samplerRandomization)));
+	//version 15: the film
+	json += fmt::format(R"(,"pixelFilter":{{"kind":{},"radius":{},"sigma":{},"b":{},"c":{},"tau":{}}},"clampSamples":{},"clampValue":{},"outlierKappa":{}}})",
+		jsonString(pixelFilterId(r.pixelFilter.kind)), jsonNumber(r.pixelFilter.radius), jsonNumber(r.pixelFilter.sigma), jsonNumber(r.pixelFilter.b), jsonNumber(r.pixelFilter.c),
+		jsonNumber(r.pixelFilter.tau), r.clampSamples, jsonNumber(r.clampValue), jsonNumber(r.outlierKappa));
 
 	//version 11: the integrator and the traversal; version 8: the variant of each stage, by slot
 	//number and variant id. Ids rather than indices so that registering a new variant, or reordering
@@ -569,9 +579,19 @@ void readKernelSelection(simdjson::dom::object& root, int64_t version, SceneDesc
 	}
 	//version 14: kernel 01 had one variant until then, and a file that names none means it. Every file
 	//from version 8 on names it, as "pcg_hash"; an older one has no "kernels" at all
-	const bool namesSampler = std::any_of(ids.stages.begin(), ids.stages.end(), [](const auto& stage) { return stage.first == kernelSlotNumber(KernelSlot::GenerateSamples); });
-	if (!namesSampler) {
+	auto names = [&](KernelSlot slot) {
+		return std::any_of(ids.stages.begin(), ids.stages.end(), [&](const auto& stage) { return stage.first == kernelSlotNumber(slot); });
+	};
+	if (!names(KernelSlot::GenerateSamples)) {
 		ids.stages.emplace_back(kernelSlotNumber(KernelSlot::GenerateSamples), "pcg_hash");
+	}
+	//version 15: kernels 00 and 09 had one variant each until then, and a file that names none means it.
+	//The same files as above: every one from version 8 on names them
+	if (!names(KernelSlot::GenerateCameraRays)) {
+		ids.stages.emplace_back(kernelSlotNumber(KernelSlot::GenerateCameraRays), "thin_lens");
+	}
+	if (!names(KernelSlot::UpdateFilm)) {
+		ids.stages.emplace_back(kernelSlotNumber(KernelSlot::UpdateFilm), "running_mean");
 	}
 	scene.kernels = kernelSelectionFromIds(ids, &scene.kernelWarnings);
 }
@@ -605,6 +625,8 @@ void readAccelSettings(JsonElement element, AccelSettings& out)
 
 void readRenderSettings(JsonElement element, RenderSettings& out)
 {
+	//a file before version 15 has no filter, and its renders placed a sample uniformly in its pixel
+	out.pixelFilter = boxPixelFilter();
 	simdjson::dom::object object;
 	if (element.get_object().get(object) != simdjson::SUCCESS) {
 		return;
@@ -629,6 +651,25 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 	if (object["samplerRandomization"].get_string().get(randomization) == simdjson::SUCCESS) {
 		out.samplerRandomization = samplerRandomizationFromId(std::string(randomization));
 	}
+	//version 15
+	simdjson::dom::object filter;
+	if (object["pixelFilter"].get_object().get(filter) == simdjson::SUCCESS) {
+		std::string_view kind;
+		if (filter["kind"].get_string().get(kind) == simdjson::SUCCESS) {
+			const PixelFilterKind parsed = pixelFilterFromId(std::string(kind).c_str());
+			if (parsed != PixelFilterKind::Count) {
+				out.pixelFilter = defaultPixelFilter(parsed);
+			}
+		}
+		readOptionalFloat(filter["radius"], out.pixelFilter.radius);
+		readOptionalFloat(filter["sigma"], out.pixelFilter.sigma);
+		readOptionalFloat(filter["b"], out.pixelFilter.b);
+		readOptionalFloat(filter["c"], out.pixelFilter.c);
+		readOptionalFloat(filter["tau"], out.pixelFilter.tau);
+	}
+	readOptionalBool(object["clampSamples"], out.clampSamples);
+	readOptionalFloat(object["clampValue"], out.clampValue);
+	readOptionalFloat(object["outlierKappa"], out.outlierKappa);
 
 	//a hand-edited file cannot land on something the ui could not: the custom-resolution fields
 	//hold to the same bounds
@@ -638,6 +679,14 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 	out.rayDepth = std::max(out.rayDepth, 1);
 	out.samplesPerFrame = std::max(out.samplesPerFrame, 1);
 	out.minBouncesBeforeRoulette = std::max(out.minBouncesBeforeRoulette, 0);
+	//the film's parameters hold to the panel's bounds, which keep the filter's table small and finite
+	out.pixelFilter.radius = std::clamp(out.pixelFilter.radius, MIN_FILTER_RADIUS, MAX_FILTER_RADIUS);
+	out.pixelFilter.sigma = std::clamp(out.pixelFilter.sigma, 0.05f, 4.f);
+	out.pixelFilter.b = std::clamp(out.pixelFilter.b, 0.f, 1.f);
+	out.pixelFilter.c = std::clamp(out.pixelFilter.c, 0.f, 1.f);
+	out.pixelFilter.tau = std::clamp(out.pixelFilter.tau, 0.5f, 8.f);
+	out.clampValue = std::max(out.clampValue, 0.001f);
+	out.outlierKappa = std::clamp(out.outlierKappa, 1.f, 1000.f);
 }
 
 //a version-3 file kept the lens and exposure in "render"; they now belong to every camera, so

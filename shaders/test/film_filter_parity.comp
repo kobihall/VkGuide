@@ -1,0 +1,26 @@
+#version 460
+
+// GPU SELF-TEST: sampleFilter() of crt_filter.glsl on a batch of uniform pairs, to be compared with its
+// C++ mirror (sampleFilterTable() in src/film.cpp). The host publishes the filter's packed table as
+// binding 30, as a render does. Not part of any render. src/gpu_selftest_film.cpp.
+
+#extension GL_GOOGLE_include_directive : require
+#include "rt/include/crt_common.glsl"
+#include "rt/include/crt_filter.glsl"
+
+layout (local_size_x = 64) in;
+
+// the uniform pair of each case, in xy
+layout (std430, set = 0, binding = 90) readonly buffer FilterCaseBuffer { vec4 filterCases[]; };
+// the offset in xy, the weight in z
+layout (std430, set = 0, binding = 91) writeonly buffer FilterResultBuffer { vec4 filterResults[]; };
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= filterCases.length()) {
+		return;
+	}
+	const FilterSample s = sampleFilter(filterCases[index].xy);
+	filterResults[index] = vec4(s.offset, s.weight, 0.0);
+}
