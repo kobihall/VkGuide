@@ -34,6 +34,17 @@
 // pool, and writes the camera's dimensions into the record
 #define CRT_CAMERA_PASS 0xFFFFFFFFu
 
+// Which optional outputs this build of a kernel writes, specialization constants set when the pipeline is built
+// (docs/plans/completed/pbrt-aovs-and-image-output.md). Off, the code behind them is gone before the compiler
+// optimizes, so a render that asks for neither is the code it was before: a run-time flag moved Metal's
+// arithmetic by an ulp around the sample record (crt_samples.glsl), and these follow its rule. constant_id 0 is
+// CRT_SAMPLE_RECORD
+//
+// CRT_AOV: camera paths record their first visible surface into PixelState, and kernel 09 folds it into AovImages
+layout (constant_id = 1) const bool CRT_AOV = false;
+// CRT_LIGHT_GROUPS: kernels 03, 04 and 08 add each contribution to its light group's sums in ChannelSums
+layout (constant_id = 2) const bool CRT_LIGHT_GROUPS = false;
+
 #define CRT_DEBUG_NONE 0u
 #define CRT_DEBUG_PRIMARY_DIRECTION 1u
 #define CRT_DEBUG_HIT_MISS 2u
@@ -49,6 +60,9 @@
 // red where they disagree by more than 90 degrees, so a material shades a side of the surface the
 // ray never reached; elsewhere grey, the cosine between them
 #define CRT_DEBUG_NORMAL_DISAGREEMENT 8u
+// after pbrt's AOIntegrator: at the first hit, a cosine-distributed ray about the shading normal, capped at
+// Params.aoDistance, and the pixel is the fraction of those that reach it unoccluded. A miss is black
+#define CRT_DEBUG_AMBIENT_OCCLUSION 9u
 
 #define CRT_MATERIAL_LAMBERTIAN 0u
 #define CRT_MATERIAL_METAL 1u
@@ -226,7 +240,9 @@ struct GpuLight {
 	// and over the delta lights alone, which are lights[0, deltaCount): what the BSDF strategy samples
 	float deltaAliasQ;
 	uint deltaAliasIndex;
-	uint pad0;
+	// its light group, 0 to 7 (docs/plans/completed/pbrt-aovs-and-image-output.md): the sums its contributions
+	// are kept in beside the picture
+	uint group;
 	uint pad1;
 	uint pad2;
 };
@@ -250,7 +266,8 @@ struct LightHeader {
 // and pdf all applied - so kernel 08 only decides whether to add it
 struct ShadowRay {
 	vec3 origin;
-	// reserved for the medium the ray starts in and its light group (docs/plans/pbrt-roadmap.md); 0
+	// the medium the ray starts in (the low 24 bits, docs/plans/pbrt-participating-media.md: 0 for now) and the
+	// light group its contribution belongs to (the high 8 bits), which kernel 06 sets under CRT_LIGHT_GROUPS
 	uint mediumAndGroup;
 	vec3 direction;
 	float tMax;
@@ -388,8 +405,40 @@ layout (std430, set = 0, binding = 23) buffer RaySampleBuffer { RaySamples raySa
 // every material's parameter record, back to back: GpuMaterial.paramOffset finds its own, and
 // crt_material.glsl reads it in the order src/rt_material.cpp packed it
 layout (std430, set = 0, binding = 26) readonly buffer MaterialParamBuffer { vec4 materialParams[]; };
-// binding 29 is reserved for PixelState (docs/plans/pbrt-roadmap.md): a sample's filter weight rides in the w of its
-// radiance slot instead, which kernel 00 writes and kernel 09 reads
+// A sample's filter weight rides in the w of its radiance slot, which kernel 00 writes and kernel 09 reads; this is
+// the rest of what a camera path hands the film (docs/plans/completed/pbrt-aovs-and-image-output.md).
+// PixelState: the first visible surface a camera path met, written by kernels 03, 04 and 06 under CRT_AOV and
+// folded into aovImages by kernel 09. By pool slot, 72 bytes. Scalars only, so the struct is 72 bytes in std430
+// and not 80; src/rt_gpu_types.h CrtPixelState, src/aov.h AovSample
+struct PixelState {
+	// world space
+	float px;
+	float py;
+	float pz;
+	// along the camera's forward axis
+	float depth;
+	// the geometric normal, and the shading normal on the same side as it
+	float nx;
+	float ny;
+	float nz;
+	float nsx;
+	float nsy;
+	float nsz;
+	float u;
+	float v;
+	// the BSDF's directional albedo, 0 for an emitter
+	float ar;
+	float ag;
+	float ab;
+	// into instances[] and materials[]
+	uint instance;
+	uint material;
+	// CRT_AOV_STATE_HIT once a surface is recorded; kernel 00 clears it
+	uint state;
+};
+#define CRT_AOV_STATE_HIT 1u
+// binding 29: a 4-byte stub while no output accumulates
+layout (std430, set = 0, binding = 29) buffer PixelStateBuffer { PixelState pixelStates[]; };
 // the selected pixel filter, tabulated and ready to sample (src/film.h packFilterTable): the header
 // (the table's width and height, the filter's radius, the integral of |f|), then the marginal cdf
 // over the rows (height + 1 entries), each row's cdf (height x (width + 1)), |f| per cell (height x
@@ -414,6 +463,13 @@ struct FilmPixel {
 	uint pad;
 };
 layout (std430, set = 0, binding = 31) buffer FilmRecordBuffer { FilmPixel filmPixels[]; };
+// the auxiliary outputs' sums, a layer of four floats per pixel for each layer the render keeps (src/aov.h AovLayer;
+// Params.aovLayers says where each one is). Kernel 09 folds the frame into them. A one-layer stub otherwise
+layout (rgba32f, set = 0, binding = 32) uniform image2DArray aovImages;
+// the light groups' sums: per pixel, lightGroupCount x 3 floats of sum(w L) by group, then sum(w), the weight sum the
+// groups divide by. Kernels 03, 04 and 08 add atomically (several slots land on one pixel in a frame); kernel 09
+// adds the weight. A 4-byte stub while light groups are off
+layout (std430, set = 0, binding = 45) buffer ChannelSumBuffer { float channelSums[]; };
 // pbrt's Sobol generator matrices and the other tables the samplers read, uploaded once. The header
 // and layout are in crt_sampler.glsl, built by src/rt_gpu.cpp
 layout (std430, set = 0, binding = 46) readonly buffer SamplerTableBuffer { uint samplerTables[]; };
@@ -468,8 +524,21 @@ layout (push_constant) uniform Params {
 	float filmClamp;
 	// the outlier-reweighted film's kappa: samples of a brightness seen fewer than this many times are weighed down
 	float outlierKappa;
-	uint pad2;
+	// the auxiliary outputs: one bit per src/aov.h AovOutput, and CRT_AOV_THROUGH_SPECULAR
+	uint aovOutputs;
+	// where each AovLayer is in aovImages, a nibble each in AovLayer order (0xF for a layer the render does not keep)
+	uint aovLayers;
+	// the light groups the render keeps, 0 when there are none
+	uint lightGroupCount;
+	// the group the background belongs to: the environment map, the sky gradient or the solid colour
+	uint environmentGroup;
+	// the ambient occlusion view's ray length
+	float aoDistance;
 } pc;
+
+#define CRT_AOV_THROUGH_SPECULAR 0x80000000u
+// the src/aov.h AovOutput bits kernel 06 reads
+#define CRT_AOV_OUTPUT_ALBEDO (1u << 5u)
 
 uint queueSlot(uint queue, uint index)
 {

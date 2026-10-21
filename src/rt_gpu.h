@@ -17,12 +17,15 @@
 // descriptor set is written from, and the pipeline cache. The RaytraceRenderer owns the display
 // image, the BVH settings and the panels.
 
+#include <array>
 #include <map>
+#include <string>
 #include <tuple>
 #include <memory>
 #include <span>
 #include <vector>
 
+#include <aov.h>
 #include <image_io.h>
 #include <rt_accel.h>
 #include <rt_gpu_types.h>
@@ -61,10 +64,35 @@ enum class CrtDebugView : uint32_t {
 	TraversalCost,
 	MisWeights,
 	NormalDisagreement,
+	// after pbrt's AOIntegrator: the fraction of cosine-distributed rays about the first hit's normal that travel
+	// GpuRenderer::aoDistance without meeting anything
+	AmbientOcclusion,
 	Count
 };
 
 const char* crtDebugViewName(CrtDebugView view);
+// the id the command line names a view by, and the view with an id (CrtDebugView::Count for none)
+const char* crtDebugViewId(CrtDebugView view);
+CrtDebugView crtDebugViewFromId(const std::string& id);
+
+// The pictures of the auxiliary outputs, one window each under Windows (shaders/aov_view.comp VIEW_*)
+enum class CrtAovView : uint32_t {
+	Position,
+	Depth,
+	Normal,
+	ShadingNormal,
+	Uv,
+	Albedo,
+	InstanceId,
+	MaterialId,
+	Variance,
+	SampleCount,
+	Count
+};
+
+const char* crtAovViewName(CrtAovView view);
+// the output that has to be on for the view to exist
+AovOutput crtAovViewOutput(CrtAovView view);
 
 // A measurement of the film shown in place of the picture (shaders/analysis_view.comp). Unlike a debug
 // view it runs after the tonemap, restarts nothing and works on a finished render
@@ -110,7 +138,26 @@ struct GpuRenderSnapshot {
 	// a missed ray sees backgroundColor instead of the environment map or the sky gradient
 	bool solidBackground { false };
 	glm::vec3 backgroundColor { 0.f };
+	// the light groups the render keeps sums for, 0 when it keeps none (RenderSettings::lightGroups off); and the
+	// group the background belongs to. The groups of the lights and materials are in the light list
+	uint32_t lightGroupCount { 0 };
+	uint32_t environmentGroup { 0 };
 };
+
+// Why a render cannot keep every output its settings ask for, and which it keeps. The AOV layers and the light
+// groups' sums are each a buffer of 16 and 4 x (3 groups + 1) bytes a pixel, and one past OUTPUT_BYTES_LIMIT
+// (an 8192 x 8192 image with every output) is left off; the render says so. GpuRenderer::start() decides with it,
+// and the Outputs section says it for the settings as they stand
+struct OutputsFallback {
+	std::string reason;
+	bool aov { true };
+	bool lightGroups { true };
+};
+OutputsFallback outputsFallback(const AovSettings& aov, uint32_t lightGroupCount, uint32_t width, uint32_t height);
+inline constexpr uint64_t OUTPUT_BYTES_LIMIT = 1ull << 30;
+// the bytes AovImages takes for the layers `aov` keeps, and the light groups' sums for `groups` groups, at a size
+uint64_t aovImageBytes(const AovSettings& aov, uint32_t width, uint32_t height);
+uint64_t lightGroupSumBytes(uint32_t groups, uint32_t width, uint32_t height);
 
 // Why `sampler` cannot run a render of width x height with `settings` (as the render uses them, after
 // RaytraceRenderer::renderSettings()), or empty when it can. A sampler that needs the sample count
@@ -193,6 +240,30 @@ public:
 	// bytes the film record takes at the render's size, 0 without one
 	VkDeviceSize filmRecordBytes() const { return m_filmRecordsLive ? m_filmRecordBytes : 0; }
 
+	// THE OUTPUTS the running render keeps (docs/plans/completed/pbrt-aovs-and-image-output.md): the auxiliary
+	// outputs it accumulates and where their layers are, and how many light groups it sums. Decided at start()
+	const AovSettings& aovSettings() const { return m_aov; }
+	const AovLayout& aovLayout() const { return m_aovLayout; }
+	uint32_t lightGroupCount() const { return m_lightGroupCount; }
+	// the memory the outputs take, 0 when the render keeps none
+	uint64_t aovBytes() const { return m_aovLayout.count > 0 ? aovImageBytes(m_aov, m_snapshot.width, m_snapshot.height) : 0; }
+	uint64_t lightGroupBytes() const { return lightGroupSumBytes(m_lightGroupCount, m_snapshot.width, m_snapshot.height); }
+	// what the render dropped of its settings' outputs, and why; empty when it dropped none
+	const std::string& outputsNote() const { return m_outputsNote; }
+	// the accumulation, the AOV layers, the light groups' sums and the sample counts, on the host. Waits for the
+	// device to be idle. False when there is no render
+	bool readOutputs(VulkanEngine* engine, RenderOutputsData& data);
+	// The render's display-time settings, switchable any time and restarting nothing. Relight rebuilds the picture
+	// from the light groups' sums, each times its gain (the camera's, set before every frame); the ambient occlusion
+	// view's ray length in scene units, 0 for a tenth of the scene's size
+	bool relight { false };
+	std::array<LightGroupGain, MAX_LIGHT_GROUPS> relightGains {};
+	float aoDistance { 0.f };
+	// the scene's size, which a default length is a tenth of
+	float autoAoDistance() const { return m_autoAoDistance; }
+	// whether the view's window exists, which follows the outputs the render keeps
+	bool hasAovView(CrtAovView view) const;
+
 	// the schedule that records `id`, for pricing a render that has not started
 	const IntegratorSchedule& schedule(IntegratorId id) const;
 
@@ -245,9 +316,12 @@ private:
 	// the pipeline of `variant` for traversal `traversal` (ignored for a kernel that does not trace),
 	// `materialClass` (ignored for a kernel not built per class) and `sampleRecord`, whether the
 	// sampler writes a record (ignored for a kernel that does not read it)
-	const ComputePass& pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal, MaterialClass materialClass, bool sampleRecord);
+	const ComputePass& pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal, MaterialClass materialClass, uint32_t features);
 	// builds every pipeline the selection's integrator runs
 	void preparePipelines(VulkanEngine* engine, const KernelSelection& selection);
+	// the specialization constants a kernel is built with for `selection` and the outputs the render keeps:
+	// bit 0 the sample record, bit 1 CRT_AOV, bit 2 CRT_LIGHT_GROUPS
+	uint32_t pipelineFeatures(const KernelSelection& selection) const;
 	// the bindings `variant` is built and written with under `traversal`: its own, plus the
 	// traversal's if it traces, each once
 	static std::vector<CrtBinding> bindingsOf(const KernelVariant& variant, uint32_t traversal);
@@ -295,6 +369,41 @@ private:
 	bool m_scheduleActive { false };
 
 	WavefrontPool m_pool;
+
+	// the outputs' buffers: AovImages (a layer per kept AovLayer, or a 1 x 1 stub), the light groups' sums (or a
+	// stub) and, for Relight, the rebuilt picture. Sized by ensureOutputs() when a render starts
+	void ensureOutputs(VulkanEngine* engine, uint32_t width, uint32_t height);
+	void ensureRelitImage(VulkanEngine* engine);
+	// the windows of the outputs the render keeps: created and registered when a render starts, destroyed when an
+	// output goes off or the size changes
+	void syncAovViews(VulkanEngine* engine);
+	void destroyAovViews(VulkanEngine* engine);
+	void recordAovViews(VkCommandBuffer cmd, VulkanEngine* engine);
+	void recordRelight(VkCommandBuffer cmd, VulkanEngine* engine);
+
+	AovSettings m_aov;
+	AovLayout m_aovLayout;
+	uint32_t m_lightGroupCount { 0 };
+	uint32_t m_outputFeatures { 0 };
+	std::string m_outputsNote;
+	float m_autoAoDistance { 1.f };
+	float m_depthScale { 1.f };
+	AllocatedImage m_aovImage {};
+	VkExtent2D m_aovImageExtent { 0, 0 };
+	uint32_t m_aovImageLayers { 0 };
+	AllocatedBuffer m_channelSums {};
+	VkDeviceSize m_channelSumBytes { 0 };
+	AllocatedImage m_relit {};
+	bool m_hasRelit { false };
+	ComputePass m_relightPass;
+	ComputePass m_aovViewPass;
+	struct AovViewImage {
+		CrtAovView view;
+		std::string name;
+		AllocatedImage image;
+	};
+	std::vector<AovViewImage> m_aovViews;
+	bool m_hasOutputs { false };
 
 	// the film, sized for the render
 	AllocatedImage m_accumulation {};

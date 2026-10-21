@@ -149,13 +149,15 @@ bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, 
 	}
 	case CRT_MATERIAL_METAL: {
 		vec3 reflected = reflect(inDir, normal);
-		if (!CRT_SAMPLE_RECORD) {
+		// the albedo estimate of the auxiliary outputs draws pbrt's fixed numbers, never the path's (crt_samples.glsl)
+		const bool albedoSamples = CRT_AOV && g_albedoSample >= 0;
+		if (!CRT_SAMPLE_RECORD && !albedoSamples) {
 			// without a record, the expression it always was: written through ballFromSample() it
 			// rounds differently on Metal, by one ulp, and the render is no longer bit-identical
 			outDir = reflected + m.param * randomInBall(rng);
 		} else {
 			// the direction takes the record's two numbers, the radius the stream's next
-			const vec2 ballDirection = sampleRecordField2D(pathIndex, CRT_SAMPLE_INDIRECT_DIRECTION);
+			const vec2 ballDirection = albedoSamples ? CRT_ALBEDO_U[max(g_albedoSample, 0)] : sampleRecordField2D(pathIndex, CRT_SAMPLE_INDIRECT_DIRECTION);
 			const float ballRadius = randomFloat(rng);
 			outDir = reflected + m.param * ballFromSample(ballDirection, ballRadius);
 		}

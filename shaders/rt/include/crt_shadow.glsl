@@ -17,7 +17,7 @@
 // Its traversal work goes into traversalStats after the extend stage's, per bounce, so the panel can
 // show what shadow rays cost apart from the rest.
 //
-// Requires crt_common.glsl and crt_trace.glsl.
+// Requires crt_common.glsl, crt_trace.glsl and crt_light_groups.glsl.
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
@@ -47,6 +47,9 @@ void main()
 			// added, not written: one path sends at most one shadow ray a bounce, and 03 and 04 have
 			// already added this bounce's emission
 			radiance[ray.radianceSlot].rgb += ray.contribution;
+			if (CRT_LIGHT_GROUPS) {
+				lightGroupAdd(ray.radianceSlot, ray.mediumAndGroup >> 24u, ray.contribution);
+			}
 		}
 		atomicAdd(s_nodesVisited, g_nodesVisited);
 		atomicAdd(s_primitivesTested, g_primitivesTested);

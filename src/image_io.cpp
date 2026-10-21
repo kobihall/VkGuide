@@ -16,6 +16,9 @@
 #define TINYEXR_IMPLEMENTATION
 #include <tinyexr.h>
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
 namespace {
 
 std::string lowerExtension(const std::filesystem::path& path)
@@ -92,6 +95,27 @@ ImageIoStatus loadPfm(const std::filesystem::path& path, Image& image)
 	return { true, fmt::format("Loaded '{}' ({} x {})", path.filename().string(), width, height) };
 }
 
+
+bool sortByName(const ImageChannel* a, const ImageChannel* b)
+{
+	return a->name < b->name;
+}
+
+void appendBytes(std::vector<uint8_t>& bytes, const void* data, size_t count)
+{
+	const uint8_t* source = (const uint8_t*)data;
+	bytes.insert(bytes.end(), source, source + count);
+}
+
+ImageIoStatus exrFailure(const std::filesystem::path& path, const char* verb, const char* error)
+{
+	std::string message = fmt::format("{} '{}' failed: {}", verb, path.filename().string(), error != nullptr ? error : "unknown error");
+	if (error != nullptr) {
+		FreeEXRErrorMessage(error);
+	}
+	return failure(std::move(message));
+}
+
 }  // namespace
 
 ImageIoStatus saveImage(const std::filesystem::path& path, const Image& image)
@@ -103,8 +127,14 @@ ImageIoStatus saveImage(const std::filesystem::path& path, const Image& image)
 	if (extension == ".pfm") {
 		return savePfm(path, image);
 	}
+	if (extension == ".hdr") {
+		if (stbi_write_hdr(path.string().c_str(), (int)image.width, (int)image.height, 3, image.rgb.data()) == 0) {
+			return failure(fmt::format("Writing '{}' failed", path.string()));
+		}
+		return { true, fmt::format("Saved '{}' ({} x {})", path.filename().string(), image.width, image.height) };
+	}
 	if (extension != ".exr") {
-		return failure(fmt::format("Cannot save '{}': the extension must be .exr or .pfm", path.filename().string()));
+		return failure(fmt::format("Cannot save '{}': the extension must be .exr, .pfm or .hdr", path.filename().string()));
 	}
 	const char* error = nullptr;
 	const int status = SaveEXR(image.rgb.data(), (int)image.width, (int)image.height, 3, 0, path.string().c_str(), &error);
@@ -116,6 +146,201 @@ ImageIoStatus saveImage(const std::filesystem::path& path, const Image& image)
 		return failure(std::move(message));
 	}
 	return { true, fmt::format("Saved '{}' ({} x {})", path.filename().string(), image.width, image.height) };
+}
+
+ImageIoStatus saveImage8(const std::filesystem::path& path, const Image8& image)
+{
+	if (image.width == 0 || image.height == 0 || image.rgba.size() != (size_t)image.width * image.height * 4) {
+		return failure("There is no image to save");
+	}
+	if (lowerExtension(path) != ".png") {
+		return failure(fmt::format("Cannot save '{}': the extension must be .png", path.filename().string()));
+	}
+	//the alpha channel is always 1 in a display image, so a PNG of three channels says as much
+	std::vector<uint8_t> rgb((size_t)image.width * image.height * 3);
+	for (size_t i = 0; i < (size_t)image.width * image.height; i++) {
+		rgb[i * 3 + 0] = image.rgba[i * 4 + 0];
+		rgb[i * 3 + 1] = image.rgba[i * 4 + 1];
+		rgb[i * 3 + 2] = image.rgba[i * 4 + 2];
+	}
+	if (stbi_write_png(path.string().c_str(), (int)image.width, (int)image.height, 3, rgb.data(), (int)image.width * 3) == 0) {
+		return failure(fmt::format("Writing '{}' failed", path.string()));
+	}
+	return { true, fmt::format("Saved '{}' ({} x {})", path.filename().string(), image.width, image.height) };
+}
+
+ImageAttribute ImageAttribute::text(std::string name, const std::string& text)
+{
+	ImageAttribute attribute;
+	attribute.name = std::move(name);
+	attribute.type = "string";
+	attribute.value.assign(text.begin(), text.end());
+	return attribute;
+}
+
+ImageAttribute ImageAttribute::real(std::string name, float value)
+{
+	ImageAttribute attribute;
+	attribute.name = std::move(name);
+	attribute.type = "float";
+	appendBytes(attribute.value, &value, sizeof(value));
+	return attribute;
+}
+
+ImageAttribute ImageAttribute::integer(std::string name, int32_t value)
+{
+	ImageAttribute attribute;
+	attribute.name = std::move(name);
+	attribute.type = "int";
+	appendBytes(attribute.value, &value, sizeof(value));
+	return attribute;
+}
+
+ImageAttribute ImageAttribute::matrix(std::string name, const float (&rowMajor)[16])
+{
+	ImageAttribute attribute;
+	attribute.name = std::move(name);
+	attribute.type = "m44f";
+	appendBytes(attribute.value, rowMajor, sizeof(rowMajor));
+	return attribute;
+}
+
+ImageAttribute ImageAttribute::chromaticities(std::string name, const float (&xy)[8])
+{
+	ImageAttribute attribute;
+	attribute.name = std::move(name);
+	attribute.type = "chromaticities";
+	appendBytes(attribute.value, xy, sizeof(xy));
+	return attribute;
+}
+
+std::string ImageAttribute::asText() const
+{
+	return type == "string" ? std::string(value.begin(), value.end()) : std::string();
+}
+
+const ImageChannel* ChannelImage::find(const std::string& name) const
+{
+	for (const ImageChannel& channel : channels) {
+		if (channel.name == name) {
+			return &channel;
+		}
+	}
+	return nullptr;
+}
+
+ImageIoStatus saveChannelImage(const std::filesystem::path& path, const ChannelImage& image, const ExrOptions& options)
+{
+	const size_t pixels = (size_t)image.width * image.height;
+	if (pixels == 0 || image.channels.empty()) {
+		return failure("There is no image to save");
+	}
+	std::vector<const ImageChannel*> sorted;
+	for (const ImageChannel& channel : image.channels) {
+		if (channel.values.size() != pixels || channel.name.empty() || channel.name.size() > 255) {
+			return failure(fmt::format("Cannot save '{}': channel '{}' is not {} x {} values with a name of up to 255 characters", path.filename().string(), channel.name, image.width, image.height));
+		}
+		sorted.push_back(&channel);
+	}
+	//the format keeps its channels sorted by name, and the readers rely on it
+	std::sort(sorted.begin(), sorted.end(), sortByName);
+
+	EXRHeader header;
+	InitEXRHeader(&header);
+	EXRImage exrImage;
+	InitEXRImage(&exrImage);
+	const int count = (int)sorted.size();
+	std::vector<float*> pointers;
+	for (const ImageChannel* channel : sorted) {
+		pointers.push_back(const_cast<float*>(channel->values.data()));
+	}
+	exrImage.images = (unsigned char**)pointers.data();
+	exrImage.width = (int)image.width;
+	exrImage.height = (int)image.height;
+	exrImage.num_channels = count;
+
+	header.num_channels = count;
+	header.channels = (EXRChannelInfo*)std::calloc((size_t)count, sizeof(EXRChannelInfo));
+	header.pixel_types = (int*)std::calloc((size_t)count, sizeof(int));
+	header.requested_pixel_types = (int*)std::calloc((size_t)count, sizeof(int));
+	for (int i = 0; i < count; i++) {
+		std::strncpy(header.channels[i].name, sorted[i]->name.c_str(), 255);
+		header.pixel_types[i] = TINYEXR_PIXELTYPE_FLOAT;
+		header.requested_pixel_types[i] = options.half ? TINYEXR_PIXELTYPE_HALF : TINYEXR_PIXELTYPE_FLOAT;
+	}
+	header.compression_type = TINYEXR_COMPRESSIONTYPE_ZIP;
+
+	std::vector<EXRAttribute> attributes(std::min<size_t>(image.attributes.size(), TINYEXR_MAX_CUSTOM_ATTRIBUTES));
+	for (size_t i = 0; i < attributes.size(); i++) {
+		const ImageAttribute& source = image.attributes[i];
+		std::memset(&attributes[i], 0, sizeof(EXRAttribute));
+		std::strncpy(attributes[i].name, source.name.c_str(), 255);
+		std::strncpy(attributes[i].type, source.type.c_str(), 255);
+		attributes[i].value = const_cast<unsigned char*>(source.value.data());
+		attributes[i].size = (int)source.value.size();
+	}
+	header.custom_attributes = attributes.empty() ? nullptr : attributes.data();
+	header.num_custom_attributes = (int)attributes.size();
+
+	const char* error = nullptr;
+	const int status = SaveEXRImageToFile(&exrImage, &header, path.string().c_str(), &error);
+
+	//the arrays above are ours, not tinyexr's allocation, so FreeEXRHeader would free them wrongly
+	std::free(header.channels);
+	std::free(header.pixel_types);
+	std::free(header.requested_pixel_types);
+	if (status != TINYEXR_SUCCESS) {
+		return exrFailure(path, "Saving", error);
+	}
+	return { true, fmt::format("Saved '{}' ({} x {}, {} channels)", path.filename().string(), image.width, image.height, count) };
+}
+
+ImageIoStatus loadChannelImage(const std::filesystem::path& path, ChannelImage& image)
+{
+	EXRVersion version;
+	if (ParseEXRVersionFromFile(&version, path.string().c_str()) != TINYEXR_SUCCESS || version.multipart || version.tiled) {
+		return failure(fmt::format("'{}' is not a single-part scanline EXR file", path.filename().string()));
+	}
+	EXRHeader header;
+	InitEXRHeader(&header);
+	const char* error = nullptr;
+	if (ParseEXRHeaderFromFile(&header, &version, path.string().c_str(), &error) != TINYEXR_SUCCESS) {
+		return exrFailure(path, "Loading", error);
+	}
+	//every channel comes back as a float whatever the file stores
+	for (int i = 0; i < header.num_channels; i++) {
+		header.requested_pixel_types[i] = TINYEXR_PIXELTYPE_FLOAT;
+	}
+	EXRImage exrImage;
+	InitEXRImage(&exrImage);
+	if (LoadEXRImageFromFile(&exrImage, &header, path.string().c_str(), &error) != TINYEXR_SUCCESS) {
+		FreeEXRHeader(&header);
+		return exrFailure(path, "Loading", error);
+	}
+
+	image = {};
+	image.width = (uint32_t)exrImage.width;
+	image.height = (uint32_t)exrImage.height;
+	const size_t pixels = (size_t)image.width * image.height;
+	for (int i = 0; i < header.num_channels; i++) {
+		ImageChannel channel;
+		channel.name = header.channels[i].name;
+		channel.values.assign((const float*)exrImage.images[i], (const float*)exrImage.images[i] + pixels);
+		image.channels.push_back(std::move(channel));
+	}
+	for (int i = 0; i < header.num_custom_attributes; i++) {
+		const EXRAttribute& source = header.custom_attributes[i];
+		ImageAttribute attribute;
+		attribute.name = source.name;
+		attribute.type = source.type;
+		attribute.value.assign(source.value, source.value + source.size);
+		image.attributes.push_back(std::move(attribute));
+	}
+	const std::string name = path.filename().string();
+	const int channelCount = header.num_channels;
+	FreeEXRImage(&exrImage);
+	FreeEXRHeader(&header);
+	return { true, fmt::format("Loaded '{}' ({} x {}, {} channels)", name, image.width, image.height, channelCount) };
 }
 
 ImageIoStatus loadImage(const std::filesystem::path& path, Image& image)

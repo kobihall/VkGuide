@@ -61,6 +61,27 @@ if (NOT MSVC)
     target_compile_options(film_test PRIVATE -O2)
 endif()
 
+# CPU-only verification of the auxiliary outputs behind kernel 09: ./bin/aov_test
+add_executable(aov_test tests/aov_test.cpp)
+target_link_libraries(aov_test PRIVATE rt_aov fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(aov_test PRIVATE -O2)
+endif()
+
+# Lists the channels and attributes of an EXR file and dumps them as .npy: ./bin/exr_dump
+add_executable(exr_dump tests/exr_dump.cpp)
+target_link_libraries(exr_dump PRIVATE rt_image fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(exr_dump PRIVATE -O2)
+endif()
+
+# Converts an image between EXR, PFM and Radiance HDR: ./bin/image_convert
+add_executable(image_convert tests/image_convert.cpp)
+target_link_libraries(image_convert PRIVATE rt_image stb_image fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(image_convert PRIVATE -O2)
+endif()
+
 # Compares two images (EXR or PFM) with the render panel's error measures: ./bin/image_diff
 add_executable(image_diff tests/image_diff.cpp)
 target_link_libraries(image_diff PRIVATE rt_image)

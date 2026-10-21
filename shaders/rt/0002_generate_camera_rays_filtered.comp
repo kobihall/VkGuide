@@ -16,6 +16,7 @@
 #include "include/crt_common.glsl"
 #include "include/crt_random.glsl"
 #include "include/crt_samples.glsl"
+#include "include/crt_aov.glsl"
 #define CRT_PIXEL_FILTER
 #include "include/crt_filter.glsl"
 #include "include/crt_camera.glsl"

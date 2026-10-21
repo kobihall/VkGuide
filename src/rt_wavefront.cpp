@@ -2,21 +2,31 @@
 
 #include <vk_engine.h>
 
-bool WavefrontPool::ensure(VulkanEngine* engine, CrtResourceTable& resources, uint32_t width, uint32_t height, uint32_t samplesPerFrame, bool sampleRecord)
+bool WavefrontPool::ensure(VulkanEngine* engine, CrtResourceTable& resources, uint32_t width, uint32_t height, uint32_t samplesPerFrame, bool sampleRecord, bool pixelState)
 {
 	if (m_allocated && m_width == width && m_height == height && m_samplesPerFrame == samplesPerFrame) {
-		if (m_hasSampleRecord == sampleRecord) {
+		if (m_hasSampleRecord == sampleRecord && m_hasPixelState == pixelState) {
 			return false;
 		}
-		//only the record changed size: a different sampler was selected. The frames in flight may
-		//still read the old one
+		//only an optional buffer changed size: a different sampler or an output was turned on or off. The
+		//frames in flight may still read the old one
 		vkDeviceWaitIdle(engine->m_device);
-		engine->destroyBuffer(m_raySamples);
-		const VkDeviceSize recordBytes = sampleRecord ? CRT_SAMPLE_RECORD_SIZE * m_size : CRT_SAMPLE_RECORD_STUB_SIZE;
-		m_raySamples = engine->createBuffer(recordBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-		m_hasSampleRecord = sampleRecord;
-		resources.setBuffer(CrtBinding::RaySamples, m_raySamples.buffer, recordBytes);
-		fmt::println("WavefrontPool: sample record {}, {:.0f} MB", sampleRecord ? "allocated" : "released", double(recordBytes) / (1024.0 * 1024.0));
+		if (m_hasSampleRecord != sampleRecord) {
+			engine->destroyBuffer(m_raySamples);
+			const VkDeviceSize recordBytes = sampleRecord ? CRT_SAMPLE_RECORD_SIZE * m_size : CRT_SAMPLE_RECORD_STUB_SIZE;
+			m_raySamples = engine->createBuffer(recordBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+			m_hasSampleRecord = sampleRecord;
+			resources.setBuffer(CrtBinding::RaySamples, m_raySamples.buffer, recordBytes);
+			fmt::println("WavefrontPool: sample record {}, {:.0f} MB", sampleRecord ? "allocated" : "released", double(recordBytes) / (1024.0 * 1024.0));
+		}
+		if (m_hasPixelState != pixelState) {
+			engine->destroyBuffer(m_pixelStates);
+			const VkDeviceSize stateBytes = pixelState ? CRT_PIXEL_STATE_SIZE * m_size : CRT_PIXEL_STATE_SIZE;
+			m_pixelStates = engine->createBuffer(stateBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+			m_hasPixelState = pixelState;
+			resources.setBuffer(CrtBinding::PixelState, m_pixelStates.buffer, stateBytes);
+			fmt::println("WavefrontPool: pixel state {}, {:.0f} MB", pixelState ? "allocated" : "released", double(stateBytes) / (1024.0 * 1024.0));
+		}
 		return true;
 	}
 
@@ -39,8 +49,10 @@ bool WavefrontPool::ensure(VulkanEngine* engine, CrtResourceTable& resources, ui
 	const VkDeviceSize recordBytes = sampleRecord ? CRT_SAMPLE_RECORD_SIZE * m_size : CRT_SAMPLE_RECORD_STUB_SIZE;
 	m_raySamples = engine->createBuffer(recordBytes, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_hasSampleRecord = sampleRecord;
+	const VkDeviceSize stateBytes = pixelState ? CRT_PIXEL_STATE_SIZE * m_size : CRT_PIXEL_STATE_SIZE;
+	m_pixelStates = engine->createBuffer(stateBytes, storage, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_hasPixelState = pixelState;
 	m_sampleBudget = engine->createBuffer(sizeof(uint32_t) * (VkDeviceSize)width * height, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-	//the headers are the indirect arguments, reset by the command buffer and read back for the readout
 	m_headers = engine->createBuffer(sizeof(CrtQueueHeader) * CRT_QUEUE_COUNT, storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_allocated = true;
 
@@ -52,8 +64,9 @@ bool WavefrontPool::ensure(VulkanEngine* engine, CrtResourceTable& resources, ui
 	resources.setBuffer(CrtBinding::SampleBudget, m_sampleBudget.buffer, sizeof(uint32_t) * (VkDeviceSize)width * height);
 	resources.setBuffer(CrtBinding::ShadowRays, m_shadowRays.buffer, CRT_SHADOW_RAY_SIZE * m_size);
 	resources.setBuffer(CrtBinding::RaySamples, m_raySamples.buffer, recordBytes);
+	resources.setBuffer(CrtBinding::PixelState, m_pixelStates.buffer, stateBytes);
 
-	const double megabytes = double((CRT_PATH_STATE_SIZE + CRT_HIT_RECORD_SIZE + CRT_SHADOW_RAY_SIZE + 4 * CRT_QUEUE_COUNT + 16) * m_size + recordBytes + 4 * (VkDeviceSize)width * height) / (1024.0 * 1024.0);
+	const double megabytes = double((CRT_PATH_STATE_SIZE + CRT_HIT_RECORD_SIZE + CRT_SHADOW_RAY_SIZE + 4 * CRT_QUEUE_COUNT + 16) * m_size + recordBytes + stateBytes + 4 * (VkDeviceSize)width * height) / (1024.0 * 1024.0);
 	fmt::println("WavefrontPool: {} x {} x {} = {} paths, {:.0f} MB", width, height, samplesPerFrame, m_size, megabytes);
 	return true;
 }
@@ -70,9 +83,10 @@ void WavefrontPool::destroy(VulkanEngine* engine, CrtResourceTable& resources)
 	engine->destroyBuffer(m_sampleBudget);
 	engine->destroyBuffer(m_shadowRays);
 	engine->destroyBuffer(m_raySamples);
+	engine->destroyBuffer(m_pixelStates);
 	engine->destroyBuffer(m_headers);
-	m_paths = m_hits = m_queues = m_radiance = m_sampleBudget = m_shadowRays = m_raySamples = m_headers = {};
-	for (const CrtBinding binding : { CrtBinding::Paths, CrtBinding::Hits, CrtBinding::Queues, CrtBinding::Headers, CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::ShadowRays, CrtBinding::RaySamples }) {
+	m_paths = m_hits = m_queues = m_radiance = m_sampleBudget = m_shadowRays = m_raySamples = m_pixelStates = m_headers = {};
+	for (const CrtBinding binding : { CrtBinding::Paths, CrtBinding::Hits, CrtBinding::Queues, CrtBinding::Headers, CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::ShadowRays, CrtBinding::RaySamples, CrtBinding::PixelState }) {
 		resources.clear(binding);
 	}
 	m_allocated = false;

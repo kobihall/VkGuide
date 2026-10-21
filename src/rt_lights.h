@@ -42,6 +42,9 @@ enum class GpuLightKind : uint32_t {
 // crt_common.glsl CRT_NO_LIGHT: the index of no light
 inline constexpr uint32_t GPU_NO_LIGHT = 0xFFFFFFFFu;
 
+// The light groups (0 to 7) are what every record carries beside its kind: the sums the render keeps by group
+// (docs/plans/completed/pbrt-aovs-and-image-output.md)
+
 // 96 bytes, crt_common.glsl GpuLight, whose comment lists what a, b and c hold for each kind
 struct GpuLight {
 	glm::vec4 a { 0.f };
@@ -54,7 +57,9 @@ struct GpuLight {
 	uint32_t aliasIndex { 0 };
 	float deltaAliasQ { 1.f };
 	uint32_t deltaAliasIndex { 0 };
-	uint32_t pad[3] {};
+	// its light group, 0 to 7 (docs/plans/completed/pbrt-aovs-and-image-output.md)
+	uint32_t group { 0 };
+	uint32_t pad[2] {};
 };
 static_assert(sizeof(GpuLight) == 96);
 
@@ -93,14 +98,14 @@ public:
 	void addPunctual(const SceneLight& light);
 	// an analytic shape's emitting surfaces (shapeLightGeometry()), all with the same radiance. The
 	// first record's index, or GPU_NO_LIGHT when the shape adds none
-	uint32_t addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance);
+	uint32_t addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance, uint32_t group = 0);
 	// one emitting triangle of a placed mesh, in world space: its record's index, or GPU_NO_LIGHT for
 	// a triangle with no area or no emission. `attributeIndex` is its global attribute record,
 	// `material` its index in the scene's materials (for the alpha test of a cut-out emitter),
 	// `emissiveLayer` its texture, -1 for none, and `textureMean` that texture's mean luminance over it
-	uint32_t addTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, const glm::vec3& radiance, uint32_t attributeIndex, uint32_t material, int emissiveLayer, float textureMean);
+	uint32_t addTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, const glm::vec3& radiance, uint32_t attributeIndex, uint32_t material, int emissiveLayer, float textureMean, uint32_t group = 0);
 	// `luminanceIntegral` is EnvironmentDistribution::luminanceIntegral
-	void addEnvironment(float luminanceIntegral, float intensity);
+	void addEnvironment(float luminanceIntegral, float intensity, uint32_t group = 0);
 
 	// a run of triangleLights entries for one mesh instance, all GPU_NO_LIGHT until set
 	uint32_t beginTriangleRun(uint32_t triangleCount);

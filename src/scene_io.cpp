@@ -57,7 +57,7 @@ namespace {
 //   "outlier_reweighted". A file without a "00" or "09"
 //   entry in "kernels" reads with "thin_lens" and "running_mean", the only variants there were, and one
 //   without "pixelFilter" with a box, so it renders as it always did rather than as a new scene does
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 15;
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 16;
 
 //---------------------------------------------------------------- writing
 
@@ -193,6 +193,25 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	json += fmt::format(R"(,"pixelFilter":{{"kind":{},"radius":{},"sigma":{},"b":{},"c":{},"tau":{}}},"clampSamples":{},"clampValue":{},"outlierKappa":{}}})",
 		jsonString(pixelFilterId(r.pixelFilter.kind)), jsonNumber(r.pixelFilter.radius), jsonNumber(r.pixelFilter.sigma), jsonNumber(r.pixelFilter.b), jsonNumber(r.pixelFilter.c),
 		jsonNumber(r.pixelFilter.tau), r.clampSamples, jsonNumber(r.clampValue), jsonNumber(r.outlierKappa));
+	//version 16: the auxiliary outputs (by id) and the light groups, still inside "render"
+	json.pop_back();
+	json += R"(,"aov":{"outputs":[)";
+	bool firstOutput = true;
+	for (uint32_t i = 0; i < (uint32_t)AovOutput::Count; i++) {
+		if (r.aov.has((AovOutput)i)) {
+			json += fmt::format("{}{}", firstOutput ? "" : ",", jsonString(aovOutputId((AovOutput)i)));
+			firstOutput = false;
+		}
+	}
+	json += fmt::format(R"(],"captureThroughSpecular":{}}},"lightGroups":{}}})", r.aov.captureThroughSpecular, r.lightGroups);
+
+	//version 16: the light groups' names and the background's group, and what exporting a render does
+	json += R"(,"lightGroupNames":[)";
+	for (size_t i = 0; i < scene.lightGroupNames.size(); i++) {
+		json += fmt::format("{}{}", i > 0 ? "," : "", jsonString(scene.lightGroupNames[i]));
+	}
+	json += fmt::format(R"(],"environmentGroup":{},"export":{{"half":{},"saveWhenFinished":{},"path":{}}})", scene.environmentGroup, scene.exportSettings.halfFloat, scene.exportSettings.saveWhenFinished,
+		jsonString(scene.exportSettings.saveWhenFinishedPath.empty() ? std::string() : portablePath(std::filesystem::path(scene.exportSettings.saveWhenFinishedPath), sceneDirectory)));
 
 	//version 11: the integrator and the traversal; version 8: the variant of each stage, by slot
 	//number and variant id. Ids rather than indices so that registering a new variant, or reordering
@@ -221,9 +240,18 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		if (i > 0) {
 			json += ',';
 		}
-		json += fmt::format(R"({{"name":{},"position":{},"orientation":{},"fov":{},"aperture":{},"focusDistance":{},"exposure":{}}})",
+		json += fmt::format(R"({{"name":{},"position":{},"orientation":{},"fov":{},"aperture":{},"focusDistance":{},"exposure":{})",
 			jsonString(c.name), jsonVec3(c.position), jsonQuat(c.orientation),
 			jsonNumber(c.vfovDegrees), jsonNumber(c.aperture), jsonNumber(c.focusDistance), jsonNumber(c.exposure));
+		//version 16: what Relight multiplies each light group by, display only like the exposure; omitted at the default
+		if (c.relight != SceneCamera {}.relight) {
+			json += R"(,"relight":[)";
+			for (size_t g = 0; g < c.relight.size(); g++) {
+				json += fmt::format(R"({}{{"scale":{},"tint":{}}})", g > 0 ? "," : "", jsonNumber(c.relight[g].scale), jsonVec3(c.relight[g].tint));
+			}
+			json += ']';
+		}
+		json += '}';
 	}
 	json += ']';
 
@@ -248,6 +276,9 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		if (scene.lights[i].model >= 0) {
 			json += fmt::format(R"(,"model":{})", scene.lights[i].model);
 		}
+		if (light.lightGroup != 0) {
+			json += fmt::format(R"(,"lightGroup":{})", light.lightGroup);
+		}
 		json += '}';
 	}
 	json += ']';
@@ -260,7 +291,8 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		if (i > 0) {
 			json += ',';
 		}
-		json += fmt::format(R"({{"name":{},"type":"{}"{}}})", jsonString(material.name), materialTypeName(material.type), materialParamsJson(material, nullptr));
+		json += fmt::format(R"({{"name":{},"type":"{}"{}{}}})", jsonString(material.name), materialTypeName(material.type), materialParamsJson(material, nullptr),
+			material.lightGroup != 0 ? fmt::format(R"(,"lightGroup":{})", material.lightGroup) : std::string());
 	}
 	json += R"(],"materialOverrides":[)";
 	for (size_t i = 0; i < scene.materialOverrides.size(); i++) {
@@ -275,7 +307,8 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		for (const auto& [name, value] : edit.params) {
 			names.insert(name);
 		}
-		json += fmt::format(R"({{"model":{},"material":{}{}}})", edit.model, edit.gltfIndex, materialParamsJson(edited, &names));
+		json += fmt::format(R"({{"model":{},"material":{}{}{}}})", edit.model, edit.gltfIndex, materialParamsJson(edited, &names),
+			edit.lightGroup != 0 ? fmt::format(R"(,"lightGroup":{})", edit.lightGroup) : std::string());
 	}
 	json += ']';
 
@@ -670,6 +703,24 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 	readOptionalBool(object["clampSamples"], out.clampSamples);
 	readOptionalFloat(object["clampValue"], out.clampValue);
 	readOptionalFloat(object["outlierKappa"], out.outlierKappa);
+	//version 16: the auxiliary outputs, by id (an id this build does not know is skipped), and the light groups
+	simdjson::dom::object aov;
+	if (object["aov"].get_object().get(aov) == simdjson::SUCCESS) {
+		simdjson::dom::array outputs;
+		if (aov["outputs"].get_array().get(outputs) == simdjson::SUCCESS) {
+			for (simdjson::dom::element entry : outputs) {
+				std::string_view id;
+				if (entry.get_string().get(id) == simdjson::SUCCESS) {
+					const AovOutput output = aovOutputFromId(std::string(id));
+					if (output != AovOutput::Count) {
+						out.aov.set(output, true);
+					}
+				}
+			}
+		}
+		readOptionalBool(aov["captureThroughSpecular"], out.aov.captureThroughSpecular);
+	}
+	readOptionalBool(object["lightGroups"], out.lightGroups);
 
 	//a hand-edited file cannot land on something the ui could not: the custom-resolution fields
 	//hold to the same bounds
@@ -722,6 +773,21 @@ bool readCamera(simdjson::dom::object object, SceneCamera& out, std::string& err
 	readOptionalFloat(object["aperture"], out.aperture);
 	readOptionalFloat(object["focusDistance"], out.focusDistance);
 	readOptionalFloat(object["exposure"], out.exposure);
+	//version 16: Relight's gain for each light group, display only
+	simdjson::dom::array relight;
+	if (object["relight"].get_array().get(relight) == simdjson::SUCCESS) {
+		size_t group = 0;
+		for (simdjson::dom::element entry : relight) {
+			if (group >= out.relight.size()) {
+				break;
+			}
+			readOptionalFloat(entry["scale"], out.relight[group].scale);
+			readVec3(entry["tint"], out.relight[group].tint);
+			out.relight[group].scale = std::max(out.relight[group].scale, 0.f);
+			out.relight[group].tint = glm::max(out.relight[group].tint, glm::vec3(0.f));
+			group++;
+		}
+	}
 	out.vfovDegrees = std::clamp(out.vfovDegrees, 1.f, 179.f);
 	out.aperture = std::max(out.aperture, 0.f);
 	out.focusDistance = std::max(out.focusDistance, 0.01f);
@@ -773,6 +839,8 @@ bool readLight(simdjson::dom::object object, size_t index, size_t modelCount, Sc
 	readOptionalFloat(object["range"], light.range);
 	readOptionalFloat(object["innerCone"], light.innerConeDegrees);
 	readOptionalFloat(object["outerCone"], light.outerConeDegrees);
+	readOptionalUint(object["lightGroup"], light.lightGroup);
+	light.lightGroup = std::min(light.lightGroup, MAX_LIGHT_GROUPS - 1u);
 	light.range = std::max(light.range, 0.f);
 	light.outerConeDegrees = std::clamp(light.outerConeDegrees, 0.f, 90.f);
 	light.innerConeDegrees = std::clamp(light.innerConeDegrees, 0.f, light.outerConeDegrees);
@@ -905,6 +973,8 @@ bool readMaterialDef(simdjson::dom::object object, size_t index, MaterialDef& ou
 	}
 	out.type = *type;
 	readMaterialParams(object, out.type, out.params);
+	readOptionalUint(object["lightGroup"], out.lightGroup);
+	out.lightGroup = std::min(out.lightGroup, MAX_LIGHT_GROUPS - 1u);
 	return true;
 }
 
@@ -1035,6 +1105,33 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 	readKernelSelection(root, version, ctx.scene);
 	readAccelSettings(root["accel"], ctx.scene.accel);
 
+	//version 16: the light groups' names and the background's group, and the export settings. A file without them
+	//has the one group, and exports as a new scene does
+	simdjson::dom::array groupNames;
+	if (root["lightGroupNames"].get_array().get(groupNames) == simdjson::SUCCESS) {
+		std::vector<std::string> names;
+		for (simdjson::dom::element entry : groupNames) {
+			std::string_view groupName;
+			if (names.size() < MAX_LIGHT_GROUPS && entry.get_string().get(groupName) == simdjson::SUCCESS) {
+				names.push_back(std::string(groupName));
+			}
+		}
+		if (!names.empty()) {
+			ctx.scene.lightGroupNames = std::move(names);
+		}
+	}
+	readOptionalUint(root["environmentGroup"], ctx.scene.environmentGroup);
+	ctx.scene.environmentGroup = std::min(ctx.scene.environmentGroup, (uint32_t)ctx.scene.lightGroupNames.size() - 1u);
+	simdjson::dom::object exportObject;
+	if (root["export"].get_object().get(exportObject) == simdjson::SUCCESS) {
+		readOptionalBool(exportObject["half"], ctx.scene.exportSettings.halfFloat);
+		readOptionalBool(exportObject["saveWhenFinished"], ctx.scene.exportSettings.saveWhenFinished);
+		std::string_view exportPath;
+		if (exportObject["path"].get_string().get(exportPath) == simdjson::SUCCESS && !exportPath.empty()) {
+			ctx.scene.exportSettings.saveWhenFinishedPath = resolvePath(exportPath, ctx.sceneDirectory).string();
+		}
+	}
+
 	//version 4: cameras. An older file gets one default camera, carrying the lens settings its
 	//"render" block had
 	simdjson::dom::array cameras;
@@ -1121,6 +1218,8 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			edit.model = (int)model;
 			edit.gltfIndex = (uint32_t)gltfIndex;
 			readMaterialParams(overrideObject, MaterialType::Pbr, edit.params);
+			readOptionalUint(overrideObject["lightGroup"], edit.lightGroup);
+			edit.lightGroup = std::min(edit.lightGroup, MAX_LIGHT_GROUPS - 1u);
 			ctx.scene.materialOverrides.push_back(std::move(edit));
 		}
 	}

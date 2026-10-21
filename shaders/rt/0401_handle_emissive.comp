@@ -23,12 +23,15 @@
 // throughput and the origin read here.
 
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_atomic_float : require
 #include "include/crt_common.glsl"
 #include "include/crt_interaction.glsl"
 #include "include/crt_random.glsl"
 #include "equirect.glsl"
 #include "include/crt_light.glsl"
 #include "include/crt_debug.glsl"
+#include "include/crt_aov.glsl"
+#include "include/crt_light_groups.glsl"
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
@@ -106,6 +109,13 @@ void main()
 		return;
 	}
 
+	// an emitter that does not scatter is the camera path's visible surface when nothing before it was: the
+	// albedo is 0, as there is nothing to reflect. A glowing pbr surface scatters too, and kernel 06 records it
+	if (CRT_AOV && (materials[si.material].flags & CRT_MATERIAL_FLAG_SCATTERS) == 0u && aovWantsSurface(path.radianceSlot, false)) {
+		const vec3 shadingNormal = dot(normal, si.n) < 0.0 ? -normal : normal;
+		aovRecord(path.radianceSlot, si.p, si.n, shadingNormal, si.uv, vec3(0.0), hit.instance, si.material);
+	}
+
 	// added, not written: the path may have passed other glowing surfaces on earlier bounces. The
 	// weight is applied only when it is not 1, so a strategy without light sampling adds exactly
 	// what it always did
@@ -114,4 +124,7 @@ void main()
 		contribution *= weight;
 	}
 	radiance[path.radianceSlot].rgb += contribution;
+	if (CRT_LIGHT_GROUPS) {
+		lightGroupAdd(path.radianceSlot, si.lightIndex != CRT_NO_LIGHT ? lights[si.lightIndex].group : 0u, contribution);
+	}
 }

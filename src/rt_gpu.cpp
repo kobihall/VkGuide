@@ -6,6 +6,7 @@
 
 #include <rt_schedule.h>
 #include <vk_engine.h>
+#include <vk_readback.h>
 #include <vk_images.h>
 #include <vk_initializers.h>
 #include <vk_tonemap.h>
@@ -20,6 +21,23 @@ struct AnalysisPushConstants {
 	uint32_t hasReference;
 	// 1 when binding 5 holds the compensated film's per-pixel record
 	uint32_t hasFilmRecord;
+};
+
+//shaders/aov_view.comp's push constants
+struct AovViewPushConstants {
+	uint32_t view;
+	uint32_t layers;
+	uint32_t maxSamples;
+	float depthScale;
+};
+
+//shaders/relight.comp's push constants: scale x tint per group, rgb
+struct RelightPushConstants {
+	uint32_t width;
+	uint32_t height;
+	uint32_t groupCount;
+	uint32_t pad;
+	glm::vec4 gain[MAX_LIGHT_GROUPS];
 };
 
 //the selected sampler writes the RaySamples record: kernels 00 and 06 are built to read it
@@ -63,10 +81,28 @@ const char* crtDebugViewName(CrtDebugView view)
 		return "MIS weights (red BSDF, green light)";
 	case CrtDebugView::NormalDisagreement:
 		return "shading vs geometric normal (red past 90 degrees)";
+	case CrtDebugView::AmbientOcclusion:
+		return "ambient occlusion";
 	case CrtDebugView::Count:
 		break;
 	}
 	return "unknown";
+}
+
+const char* crtDebugViewId(CrtDebugView view)
+{
+	static const char* const ids[(size_t)CrtDebugView::Count] = { "none", "direction", "hit", "normal", "bounce", "samples", "traversal", "mis", "disagreement", "ao" };
+	return view < CrtDebugView::Count ? ids[(size_t)view] : "";
+}
+
+CrtDebugView crtDebugViewFromId(const std::string& id)
+{
+	for (uint32_t i = 0; i < (uint32_t)CrtDebugView::Count; i++) {
+		if (id == crtDebugViewId((CrtDebugView)i)) {
+			return (CrtDebugView)i;
+		}
+	}
+	return CrtDebugView::Count;
 }
 
 const char* crtAnalysisViewName(CrtAnalysisView view)
@@ -115,11 +151,97 @@ const char* crtAnalysisViewDescription(CrtAnalysisView view)
 	return "";
 }
 
+const char* crtAovViewName(CrtAovView view)
+{
+	switch (view) {
+	case CrtAovView::Position:
+		return "AOV: Position";
+	case CrtAovView::Depth:
+		return "AOV: Depth";
+	case CrtAovView::Normal:
+		return "AOV: Normal";
+	case CrtAovView::ShadingNormal:
+		return "AOV: Shading normal";
+	case CrtAovView::Uv:
+		return "AOV: UV";
+	case CrtAovView::Albedo:
+		return "AOV: Albedo";
+	case CrtAovView::InstanceId:
+		return "AOV: Instance id";
+	case CrtAovView::MaterialId:
+		return "AOV: Material id";
+	case CrtAovView::Variance:
+		return "AOV: Variance";
+	case CrtAovView::SampleCount:
+		return "AOV: Sample count";
+	case CrtAovView::Count:
+		break;
+	}
+	return "?";
+}
+
+AovOutput crtAovViewOutput(CrtAovView view)
+{
+	switch (view) {
+	case CrtAovView::Position:
+		return AovOutput::Position;
+	case CrtAovView::Depth:
+		return AovOutput::Depth;
+	case CrtAovView::Normal:
+		return AovOutput::Normal;
+	case CrtAovView::ShadingNormal:
+		return AovOutput::ShadingNormal;
+	case CrtAovView::Uv:
+		return AovOutput::Uv;
+	case CrtAovView::Albedo:
+		return AovOutput::Albedo;
+	case CrtAovView::InstanceId:
+	case CrtAovView::MaterialId:
+		return AovOutput::Ids;
+	case CrtAovView::Variance:
+		return AovOutput::Variance;
+	case CrtAovView::SampleCount:
+	case CrtAovView::Count:
+		break;
+	}
+	return AovOutput::SampleCount;
+}
+
+uint64_t aovImageBytes(const AovSettings& aov, uint32_t width, uint32_t height)
+{
+	return (uint64_t)makeAovLayout(aov).count * width * height * sizeof(glm::vec4);
+}
+
+uint64_t lightGroupSumBytes(uint32_t groups, uint32_t width, uint32_t height)
+{
+	return groups == 0 ? 0 : (uint64_t)width * height * (3ull * groups + 1ull) * sizeof(float);
+}
+
+OutputsFallback outputsFallback(const AovSettings& aov, uint32_t lightGroupCount, uint32_t width, uint32_t height)
+{
+	OutputsFallback fallback;
+	if (aovImageBytes(aov, width, height) > OUTPUT_BYTES_LIMIT) {
+		fallback.aov = false;
+		fallback.reason = fmt::format("The auxiliary outputs take {:.0f} MB at {} x {}, more than {} MB, so this size renders without them.",
+			double(aovImageBytes(aov, width, height)) / (1024.0 * 1024.0), width, height, OUTPUT_BYTES_LIMIT >> 20);
+	}
+	if (lightGroupSumBytes(lightGroupCount, width, height) > OUTPUT_BYTES_LIMIT) {
+		fallback.lightGroups = false;
+		if (!fallback.reason.empty()) {
+			fallback.reason += " ";
+		}
+		fallback.reason += fmt::format("The light groups' sums take {:.0f} MB at {} x {}, more than {} MB, so this size renders without light groups.",
+			double(lightGroupSumBytes(lightGroupCount, width, height)) / (1024.0 * 1024.0), width, height, OUTPUT_BYTES_LIMIT >> 20);
+	}
+	return fallback;
+}
+
 VkDescriptorType crtBindingType(CrtBinding binding)
 {
 	switch (binding) {
 	case CrtBinding::Accumulation:
 	case CrtBinding::SamplesTaken:
+	case CrtBinding::AovImages:
 		return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	case CrtBinding::EnvironmentMap:
 	case CrtBinding::MaterialTextures:
@@ -222,10 +344,25 @@ void GpuRenderer::init(VulkanEngine* engine)
 		.setPushConstants<AnalysisPushConstants>()
 		.build(engine->m_device);
 
+	//the auxiliary outputs' pictures, and Relight: plain passes over the sums the render keeps
+	m_aovViewPass = ComputePassBuilder(shaderDir + "aov_view.comp.spv")
+		.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.setPushConstants<AovViewPushConstants>()
+		.build(engine->m_device);
+	m_relightPass = ComputePassBuilder(shaderDir + "relight.comp.spv")
+		.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.setPushConstants<RelightPushConstants>()
+		.build(engine->m_device);
+
 	//the film's two bindings must always name a buffer too: the pixel filter's table, and the film record
 	//(a stub until a render keeps one)
 	uploadFilterTable(engine, PixelFilterSettings {});
 	ensureFilmRecords(engine, 1, 1, false, false);
+	//and the outputs' bindings: stubs until a render keeps any
+	ensureOutputs(engine, 1, 1);
 	//the environment tables' binding must always name a buffer, a map or no map
 	uploadEnvironment(engine, nullptr);
 	uploadSamplerTables(engine);
@@ -282,6 +419,22 @@ void GpuRenderer::destroy(VulkanEngine* engine)
 		m_errorReadback = {};
 		m_errorPartialsBytes = 0;
 	}
+	destroyAovViews(engine);
+	if (m_aovImage.image != VK_NULL_HANDLE) {
+		engine->destroyImage(m_aovImage);
+		m_aovImage = {};
+	}
+	if (m_channelSums.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_channelSums);
+		m_channelSums = {};
+	}
+	if (m_hasRelit) {
+		engine->destroyImage(m_relit);
+		m_relit = {};
+		m_hasRelit = false;
+	}
+	m_aovViewPass.destroy(engine->m_device);
+	m_relightPass.destroy(engine->m_device);
 	m_errorPass.destroy(engine->m_device);
 	m_analysisPass.destroy(engine->m_device);
 	if (m_traversalStats.buffer != VK_NULL_HANDLE) {
@@ -319,11 +472,13 @@ std::vector<CrtBinding> GpuRenderer::bindingsOf(const KernelVariant& variant, ui
 	return bindings;
 }
 
-const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal, MaterialClass materialClass, bool sampleRecord)
+const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& variant, uint32_t traversal, MaterialClass materialClass, uint32_t features)
 {
 	const uint32_t key = variant.traces ? traversal : NO_TRAVERSAL;
 	const uint32_t classKey = variant.perMaterialClass ? (uint32_t)materialClass : NO_CLASS;
-	const uint32_t recordKey = variant.readsRecord && sampleRecord ? 1u : 0u;
+	//the features that matter to this kernel: bit 0 the sample record to a kernel that reads it, bits 1 and 2 the
+	//outputs to a kernel that writes or folds them
+	const uint32_t recordKey = (variant.readsRecord ? (features & 1u) : 0u) | (variant.usesOutputs ? (features & 6u) : 0u);
 	const auto found = m_passes.find({ &variant, key, classKey, recordKey });
 	if (found != m_passes.end()) {
 		return found->second;
@@ -353,7 +508,13 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 	//a kernel that draws its numbers through crt_samples.glsl is specialized for whether there is a
 	//record to read them from (CRT_SAMPLE_RECORD), so without one it is the code it always was
 	if (variant.readsRecord) {
-		builder.addSpecialization(0, recordKey);
+		builder.addSpecialization(0, recordKey & 1u);
+	}
+	//and for whether the render keeps auxiliary outputs (CRT_AOV) and light groups (CRT_LIGHT_GROUPS), the same
+	//way, so a render that keeps neither runs the code it always did
+	if (variant.usesOutputs) {
+		builder.addSpecialization(1, (recordKey >> 1) & 1u);
+		builder.addSpecialization(2, (recordKey >> 2) & 1u);
 	}
 	const auto inserted = m_passes.emplace(std::make_tuple(&variant, key, classKey, recordKey), builder
 		.setPushConstants<CrtParams>()
@@ -364,7 +525,12 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 
 const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& variant, MaterialClass materialClass)
 {
-	return pass(engine, variant, m_snapshot.kernels.traversal, materialClass, samplerWritesRecord(m_snapshot.kernels));
+	return pass(engine, variant, m_snapshot.kernels.traversal, materialClass, pipelineFeatures(m_snapshot.kernels));
+}
+
+uint32_t GpuRenderer::pipelineFeatures(const KernelSelection& selection) const
+{
+	return (samplerWritesRecord(selection) ? 1u : 0u) | m_outputFeatures;
 }
 
 void GpuRenderer::preparePipelines(VulkanEngine* engine, const KernelSelection& selection)
@@ -376,7 +542,7 @@ void GpuRenderer::preparePipelines(VulkanEngine* engine, const KernelSelection& 
 		}
 		const uint32_t classes = variant->perMaterialClass ? (uint32_t)MaterialClass::Count : 1u;
 		for (uint32_t materialClass = 0; materialClass < classes; materialClass++) {
-			pass(engine, *variant, selection.traversal, (MaterialClass)materialClass, samplerWritesRecord(selection));
+			pass(engine, *variant, selection.traversal, (MaterialClass)materialClass, pipelineFeatures(selection));
 		}
 	}
 }
@@ -385,7 +551,7 @@ void GpuRenderer::dispatch(VkCommandBuffer cmd, VulkanEngine* engine, const Kern
 	MaterialClass materialClass)
 {
 	const uint32_t traversal = m_snapshot.kernels.traversal;
-	const ComputePass& computePass = pass(engine, variant, traversal, materialClass, samplerWritesRecord(m_snapshot.kernels));
+	const ComputePass& computePass = pass(engine, variant, traversal, materialClass, pipelineFeatures(m_snapshot.kernels));
 	const VkDescriptorSet set = engine->getCurrentFrame().frameDescriptors.allocate(engine->m_device, computePass.setLayout);
 
 	//a kernel gets only the bindings it declared, written from whatever their owners published
@@ -415,7 +581,7 @@ void GpuRenderer::ensureFilm(VulkanEngine* engine, uint32_t width, uint32_t heig
 
 	const VkExtent3D extent { width, height, 1 };
 	m_accumulation = engine->createImage(extent, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-	m_samplesTaken = engine->createImage(extent, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+	m_samplesTaken = engine->createImage(extent, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 	m_noiseBase = engine->createImage(extent, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 	m_noiseBaseSamples = 0;
 	m_nextNoiseBase = 0;
@@ -479,6 +645,218 @@ void GpuRenderer::ensureFilmRecords(VulkanEngine* engine, uint32_t width, uint32
 		fmt::println("GpuRenderer: film record {} x {} x {} bytes = {:.0f} MB{}", width, height, sizeof(CrtFilmPixel), double(m_filmRecordBytes) / (1024.0 * 1024.0),
 			cascade ? fmt::format(", cascade {:.0f} MB", double(m_filmCascadeBytes) / (1024.0 * 1024.0)) : std::string());
 	}
+}
+
+//---------------------------------------------------------------- the outputs
+
+void GpuRenderer::ensureOutputs(VulkanEngine* engine, uint32_t width, uint32_t height)
+{
+	//a render that keeps none gets a one-texel image and a few bytes, so the bindings always name something
+	const bool aovLive = m_aovLayout.count > 0;
+	const VkExtent2D extent = aovLive ? VkExtent2D { width, height } : VkExtent2D { 1, 1 };
+	const uint32_t layers = aovLive ? m_aovLayout.count : 1u;
+	const bool sumsLive = m_lightGroupCount > 0;
+	const VkDeviceSize sumBytes = sumsLive ? lightGroupSumBytes(m_lightGroupCount, width, height) : 16;
+
+	const bool imageSame = m_aovImage.image != VK_NULL_HANDLE && m_aovImageExtent.width == extent.width && m_aovImageExtent.height == extent.height && m_aovImageLayers == layers;
+	const bool sumsSame = m_channelSums.buffer != VK_NULL_HANDLE && m_channelSumBytes == sumBytes;
+	if (imageSame && sumsSame) {
+		return;
+	}
+	//the previous render's frames may still use the old ones
+	vkDeviceWaitIdle(engine->m_device);
+	if (!imageSame) {
+		if (m_aovImage.image != VK_NULL_HANDLE) {
+			engine->destroyImage(m_aovImage);
+		}
+		m_aovImage = engine->createImageArray({ extent.width, extent.height, 1 }, layers, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+		engine->immediateSubmit([&](VkCommandBuffer cmd) {
+			vkutil::transition_image(cmd, m_aovImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+			const VkClearColorValue zero { { 0.f, 0.f, 0.f, 0.f } };
+			const VkImageSubresourceRange range = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
+			vkCmdClearColorImage(cmd, m_aovImage.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+		});
+		m_aovImageExtent = extent;
+		m_aovImageLayers = layers;
+		m_resources.setImage(CrtBinding::AovImages, m_aovImage.imageView, VK_IMAGE_LAYOUT_GENERAL);
+		if (aovLive) {
+			fmt::println("GpuRenderer: auxiliary outputs {} x {} x {} layers = {:.0f} MB", extent.width, extent.height, layers, double(aovImageBytes(m_aov, width, height)) / (1024.0 * 1024.0));
+		}
+	}
+	if (!sumsSame) {
+		if (m_channelSums.buffer != VK_NULL_HANDLE) {
+			engine->destroyBuffer(m_channelSums);
+		}
+		m_channelSums = engine->createBuffer(sumBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+		engine->immediateSubmit([&](VkCommandBuffer cmd) {
+			vkCmdFillBuffer(cmd, m_channelSums.buffer, 0, VK_WHOLE_SIZE, 0);
+		});
+		m_channelSumBytes = sumBytes;
+		m_resources.setBuffer(CrtBinding::ChannelSums, m_channelSums.buffer, sumBytes);
+		if (sumsLive) {
+			fmt::println("GpuRenderer: light group sums {} x {} x {} groups = {:.0f} MB", width, height, m_lightGroupCount, double(sumBytes) / (1024.0 * 1024.0));
+		}
+	}
+}
+
+void GpuRenderer::ensureRelitImage(VulkanEngine* engine)
+{
+	const VkExtent3D extent = m_accumulation.imageExtent;
+	if (m_hasRelit && m_relit.imageExtent.width == extent.width && m_relit.imageExtent.height == extent.height) {
+		return;
+	}
+	vkDeviceWaitIdle(engine->m_device);
+	if (m_hasRelit) {
+		engine->destroyImage(m_relit);
+	}
+	m_relit = engine->createImage(extent, TonemapPass::LINEAR_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		vkutil::transition_image(cmd, m_relit.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+	});
+	m_hasRelit = true;
+}
+
+bool GpuRenderer::hasAovView(CrtAovView view) const
+{
+	for (const AovViewImage& entry : m_aovViews) {
+		if (entry.view == view) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void GpuRenderer::destroyAovViews(VulkanEngine* engine)
+{
+	if (m_aovViews.empty()) {
+		return;
+	}
+	//unregister first so no new frame references a view, then wait out the ones that already do
+	for (const AovViewImage& entry : m_aovViews) {
+		engine->m_displayRegistry.unregisterImage(entry.name);
+	}
+	vkDeviceWaitIdle(engine->m_device);
+	for (const AovViewImage& entry : m_aovViews) {
+		engine->destroyImage(entry.image);
+	}
+	m_aovViews.clear();
+}
+
+void GpuRenderer::syncAovViews(VulkanEngine* engine)
+{
+	//the views the render's outputs call for, at the render's size
+	std::vector<CrtAovView> wanted;
+	for (uint32_t i = 0; i < (uint32_t)CrtAovView::Count; i++) {
+		const CrtAovView view = (CrtAovView)i;
+		const AovOutput output = crtAovViewOutput(view);
+		const bool on = output == AovOutput::SampleCount ? m_aov.has(AovOutput::SampleCount) : (m_aov.has(output) && m_aovLayout.count > 0);
+		if (on) {
+			wanted.push_back(view);
+		}
+	}
+	bool same = wanted.size() == m_aovViews.size();
+	for (size_t i = 0; same && i < wanted.size(); i++) {
+		same = m_aovViews[i].view == wanted[i] && m_aovViews[i].image.imageExtent.width == m_snapshot.width && m_aovViews[i].image.imageExtent.height == m_snapshot.height;
+	}
+	if (same) {
+		return;
+	}
+	destroyAovViews(engine);
+	for (const CrtAovView view : wanted) {
+		AovViewImage entry;
+		entry.view = view;
+		entry.name = crtAovViewName(view);
+		entry.image = engine->createImage({ m_snapshot.width, m_snapshot.height, 1 }, TonemapPass::DISPLAY_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		//black until the first pass writes it, and in the layout the registry reads it in
+		AllocatedImage image = entry.image;
+		engine->immediateSubmit([&](VkCommandBuffer cmd) {
+			vkutil::transition_image(cmd, image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+			const VkClearColorValue black { { 0.f, 0.f, 0.f, 1.f } };
+			const VkImageSubresourceRange range = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
+			vkCmdClearColorImage(cmd, image.image, VK_IMAGE_LAYOUT_GENERAL, &black, 1, &range);
+			vkutil::transition_image(cmd, image.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		});
+		engine->m_displayRegistry.registerImage(entry.name, entry.image.imageView, { m_snapshot.width, m_snapshot.height });
+		m_aovViews.push_back(std::move(entry));
+	}
+}
+
+void GpuRenderer::recordAovViews(VkCommandBuffer cmd, VulkanEngine* engine)
+{
+	if (m_aovViews.empty()) {
+		return;
+	}
+	//kernel 09's sums were written before this, by the frame's schedule
+	vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+	for (const AovViewImage& entry : m_aovViews) {
+		const VkDescriptorSet set = engine->getCurrentFrame().frameDescriptors.allocate(engine->m_device, m_aovViewPass.setLayout);
+		DescriptorWriter writer;
+		writer.writeImage(0, m_aovImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+		writer.writeImage(1, m_samplesTaken.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+		writer.writeImage(2, entry.image.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+		writer.updateSet(engine->m_device, set);
+
+		const AovViewPushConstants constants { (uint32_t)entry.view, m_aovLayout.pack(), m_maxSamples, m_depthScale };
+		vkutil::transition_image(cmd, entry.image.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+		dispatchComputePassOver(cmd, m_aovViewPass, set, &constants, entry.image.imageExtent);
+		vkutil::transition_image(cmd, entry.image.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	}
+}
+
+void GpuRenderer::recordRelight(VkCommandBuffer cmd, VulkanEngine* engine)
+{
+	const VkDescriptorSet set = engine->getCurrentFrame().frameDescriptors.allocate(engine->m_device, m_relightPass.setLayout);
+	DescriptorWriter writer;
+	writer.writeBuffer(0, m_channelSums.buffer, m_channelSumBytes, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	writer.writeImage(1, m_relit.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.updateSet(engine->m_device, set);
+
+	RelightPushConstants constants {};
+	constants.width = m_accumulation.imageExtent.width;
+	constants.height = m_accumulation.imageExtent.height;
+	constants.groupCount = m_lightGroupCount;
+	for (uint32_t g = 0; g < MAX_LIGHT_GROUPS; g++) {
+		constants.gain[g] = glm::vec4(relightGains[g].tint * relightGains[g].scale, 0.f);
+	}
+	//the sums were written by the frame's schedule (and the weight sum by kernel 09), before the tonemap reads this
+	vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+	dispatchComputePassOver(cmd, m_relightPass, set, &constants, m_relit.imageExtent);
+	vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+}
+
+bool GpuRenderer::readOutputs(VulkanEngine* engine, RenderOutputsData& data)
+{
+	if (!hasImage()) {
+		return false;
+	}
+	data = {};
+	data.width = m_accumulation.imageExtent.width;
+	data.height = m_accumulation.imageExtent.height;
+	data.aov = m_aov;
+	data.layout = m_aovLayout;
+	data.samplesPerPixel = m_samplesAccumulated;
+	std::vector<uint8_t> bytes;
+	if (m_aovLayout.count > 0) {
+		if (!readbackImage(engine, m_aovImage.image, VK_IMAGE_LAYOUT_GENERAL, m_aovImage.imageExtent, m_aovLayout.count, sizeof(glm::vec4), bytes)) {
+			return false;
+		}
+		data.aovLayers.resize(bytes.size() / sizeof(float));
+		std::memcpy(data.aovLayers.data(), bytes.data(), bytes.size());
+	}
+	if (m_lightGroupCount > 0) {
+		if (!readbackBuffer(engine, m_channelSums.buffer, lightGroupSumBytes(m_lightGroupCount, data.width, data.height), bytes)) {
+			return false;
+		}
+		data.lightGroups = m_lightGroupCount;
+		data.groupSums.resize(bytes.size() / sizeof(float));
+		std::memcpy(data.groupSums.data(), bytes.data(), bytes.size());
+	}
+	if (!readbackImage(engine, m_samplesTaken.image, VK_IMAGE_LAYOUT_GENERAL, m_samplesTaken.imageExtent, 1, sizeof(uint32_t), bytes)) {
+		return false;
+	}
+	data.samplesTaken.resize(bytes.size() / sizeof(uint32_t));
+	std::memcpy(data.samplesTaken.data(), bytes.data(), bytes.size());
+	return true;
 }
 
 void GpuRenderer::uploadFilterTable(VulkanEngine* engine, const PixelFilterSettings& filter)
@@ -893,7 +1271,42 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 	}
 	m_activeIntegrator = integrator;
 
+	//THE OUTPUTS this render keeps beside its picture, decided like the film and the sampler: the settings are the
+	//user's and stay as they are, and the render drops an output whose memory would pass the limit
+	{
+		const OutputsFallback fallback = outputsFallback(m_snapshot.settings.aov, m_snapshot.lightGroupCount, m_snapshot.width, m_snapshot.height);
+		m_aov = m_snapshot.settings.aov;
+		m_lightGroupCount = m_snapshot.lightGroupCount;
+		if (!fallback.aov) {
+			m_aov.outputs &= 1u << (uint32_t)AovOutput::SampleCount;
+			m_aov.captureThroughSpecular = false;
+		}
+		if (!fallback.lightGroups) {
+			m_lightGroupCount = 0;
+		}
+		m_outputsNote = fallback.reason;
+		if (!fallback.reason.empty()) {
+			fmt::println("GpuRenderer: {}", fallback.reason);
+		}
+		m_aovLayout = makeAovLayout(m_aov);
+		m_outputFeatures = (m_aovLayout.count > 0 ? 2u : 0u) | (m_lightGroupCount > 0 ? 4u : 0u);
+
+		//the scene's size sets the ambient occlusion view's default ray length and the depth view's far end
+		m_autoAoDistance = 1.f;
+		m_depthScale = 1.f;
+		if (m_snapshot.scene != nullptr) {
+			const Aabb& bounds = m_snapshot.scene->tlas.bounds;
+			if (bounds.min.x <= bounds.max.x && bounds.min.y <= bounds.max.y && bounds.min.z <= bounds.max.z) {
+				const float radius = std::max(0.5f * glm::length(bounds.max - bounds.min), 1e-3f);
+				m_autoAoDistance = 0.1f * radius;
+				m_depthScale = glm::length(0.5f * (bounds.min + bounds.max) - m_snapshot.camera.lookFrom) + radius;
+			}
+		}
+	}
+
 	ensureFilm(engine, m_snapshot.width, m_snapshot.height);
+	ensureOutputs(engine, m_snapshot.width, m_snapshot.height);
+	syncAovViews(engine);
 	const KernelVariant* filmVariant = m_snapshot.kernels.selected(KernelSlot::UpdateFilm);
 	ensureFilmRecords(engine, m_snapshot.width, m_snapshot.height, filmVariant != nullptr && filmVariant->implemented && filmVariant->keepsFilmRecord,
 		filmVariant != nullptr && filmVariant->implemented && filmVariant->keepsFilmCascade);
@@ -1229,6 +1642,12 @@ CrtParams GpuRenderer::baseParams(VulkanEngine* engine) const
 	//the clamp is a feature of the film variants that keep a record; the others never see it
 	params.filmClamp = (settings.clampSamples && m_filmRecordsLive) ? settings.clampValue : 0.f;
 	params.outlierKappa = std::max(settings.outlierKappa, 1.f);
+	//the auxiliary outputs and the light groups
+	params.aovOutputs = m_aov.outputs | (m_aov.captureThroughSpecular ? AOV_PARAM_CAPTURE_THROUGH_SPECULAR : 0u);
+	params.aovLayers = m_aovLayout.pack();
+	params.lightGroupCount = m_lightGroupCount;
+	params.environmentGroup = std::min(m_snapshot.environmentGroup, MAX_LIGHT_GROUPS - 1u);
+	params.aoDistance = aoDistance > 0.f ? aoDistance : m_autoAoDistance;
 	//the map is stored divided by its scale (environmentStorageScale()); the texture reads get
 	//it back here. The light list prices the environment from the file's own values instead
 	params.environmentIntensity = m_snapshot.environmentIntensity * m_snapshot.environmentMapScale;
@@ -1273,6 +1692,13 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 			if (m_filmCascadeLive) {
 				vkCmdFillBuffer(cmd, m_filmCascade.buffer, 0, VK_WHOLE_SIZE, 0);
 			}
+			//the outputs accumulate from the first sample, like the film
+			if (m_aovLayout.count > 0) {
+				vkCmdClearColorImage(cmd, m_aovImage.image, VK_IMAGE_LAYOUT_GENERAL, &zeroFloat, 1, &range);
+			}
+			if (m_lightGroupCount > 0) {
+				vkCmdFillBuffer(cmd, m_channelSums.buffer, 0, VK_WHOLE_SIZE, 0);
+			}
 		}
 		//every kernel that traces adds its work to these, per frame
 		vkCmdFillBuffer(cmd, m_traversalStats.buffer, 0, VK_WHOLE_SIZE, 0);
@@ -1314,7 +1740,14 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 
 	if (m_hasImage) {
 		recordReference(cmd, engine, slot);
-		engine->m_tonemapPass.dispatch(cmd, engine->m_device, engine->getCurrentFrame().frameDescriptors, m_accumulation, displayImage, exposure);
+		//Relight shows the picture the light groups' sums make, each times its gain, in place of the film's
+		const bool relit = relight && m_lightGroupCount > 0;
+		if (relit) {
+			ensureRelitImage(engine);
+			recordRelight(cmd, engine);
+		}
+		engine->m_tonemapPass.dispatch(cmd, engine->m_device, engine->getCurrentFrame().frameDescriptors, relit ? m_relit : m_accumulation, displayImage, exposure);
+		recordAovViews(cmd, engine);
 		if (analysisView != CrtAnalysisView::None) {
 			recordAnalysis(cmd, engine, displayImage);
 		}

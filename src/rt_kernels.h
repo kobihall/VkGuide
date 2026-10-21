@@ -99,14 +99,20 @@ enum class CrtBinding : uint32_t {
 	// 24 and 25 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
 	MaterialParams = 26,
 	// 27 and 28 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
-	// 29 is PixelState, reserved for the auxiliary outputs: a sample's filter weight rides in the w of its
+	// the first visible surface of each camera path, while an auxiliary output is on
+	// (docs/plans/completed/pbrt-aovs-and-image-output.md). A sample's filter weight rides in the w of its
 	// radiance slot, so the film plan did not allocate it
+	PixelState = 29,
 	// the selected pixel filter's sampling table (docs/plans/completed/pbrt-film-and-reconstruction.md)
 	FilterTable = 30,
 	// the compensated film's per-pixel sums, variance and accepted count (the roadmap's name for the
 	// plan's AccumulationError)
 	AccumulationError = 31,
-	// 32 to 45 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+	// the auxiliary outputs' sums: a 2D array image with a layer of four floats for each layer the render keeps
+	AovImages = 32,
+	// 33 to 44 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+	// the light groups' sums by pixel, and the weight sum they divide by (the roadmap's LightGroups)
+	ChannelSums = 45,
 	// pbrt's Sobol matrices and the other tables the samplers read, uploaded once
 	SamplerTables = 46,
 	// 47 to 61 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
@@ -248,6 +254,10 @@ struct KernelVariant {
 	// with the specialization constant CRT_SAMPLE_RECORD (constant_id 0) set to whether the selected
 	// sampler writes a record, so a kernel run without one is the code it always was
 	bool readsRecord { false };
+	// kernels 00, 03, 04, 06, 08 and 09: the kernel writes or folds the render's optional outputs, and is built
+	// with the specialization constants CRT_AOV (constant_id 1) and CRT_LIGHT_GROUPS (constant_id 2) set to
+	// whether the render keeps auxiliary outputs and light groups. Off, it is the code it always was
+	bool usesOutputs { false };
 };
 
 // A traversal: how every kernel that traces searches the scene. A scene-wide choice rather than a

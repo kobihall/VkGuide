@@ -7,7 +7,7 @@ The request ends with what should be buildable, in four stages: a camera lens, a
 ## How a scene is checked
 
 - Every scene starts from the **Optical bench** template ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)) and is a saved scene file with its optics, mounts, beam axes, detectors and, where it renders an image, a camera.
-- `tools/verify_optics.py` opens each with the batch mode of [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md), renders to its sample target, exports its detectors and the solver's tables ([physoptics-data-export.md](physoptics-data-export.md)), computes the scene's quantities, and compares them with the reference within the tolerance. It writes the results tables below.
+- `tools/verify_optics.py` opens each with the batch mode of [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md), renders to its sample target, exports its detectors and the solver's tables ([physoptics-data-export.md](physoptics-data-export.md)), computes the scene's quantities, and compares them with the reference within the tolerance. It writes the results tables below.
 - Each scene is checked twice where it can be: by the beam solver's analytic readout, and by light tracing on its detectors. The two must agree within the Monte Carlo noise, which the script estimates from 20 independent seeds.
 - References that need OpticStudio are run on the Windows machine through the comparison scripts' input and output files ([physoptics-data-export.md](physoptics-data-export.md)).
 

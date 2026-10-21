@@ -1,0 +1,59 @@
+#version 460
+
+// GPU SELF-TEST: the albedo estimate of the auxiliary outputs (aovCapture() in crt_surface.glsl) on a batch of
+// fixed surfaces, to be compared with its C++ mirror, bsdfAlbedoEstimate() in src/bsdf.cpp. The 16 samples are pbrt's
+// fixed ones (crt_samples.glsl), which sampleDimension() answers from while g_albedoSample is set, so the build runs
+// with CRT_AOV on, and with the specialization constant CRT_SAMPLE_RECORD off and on: with a record it must still
+// answer from the table. Not part of any render. Bindings 90 and 91 are the test's own.
+
+#extension GL_GOOGLE_include_directive : require
+#include "rt/include/crt_common.glsl"
+#include "rt/include/crt_interaction.glsl"
+#include "rt/include/crt_random.glsl"
+#include "rt/include/crt_samples.glsl"
+#include "rt/include/crt_scatter.glsl"
+
+layout (local_size_x = 64) in;
+
+// src/gpu_selftest_aov.cpp AlbedoCase, 64 bytes
+struct AlbedoCase {
+	// the base colour, and the material's param
+	vec4 albedoParam;
+	vec4 inDir;
+	vec4 normal;
+	// metallic, roughness, frontFace (0 or 1), type
+	vec4 materialValues;
+};
+
+layout (std430, set = 0, binding = 90) readonly buffer AlbedoCaseBuffer { AlbedoCase albedoCases[]; };
+layout (std430, set = 0, binding = 91) writeonly buffer AlbedoResultBuffer { vec4 albedoResults[]; };
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= albedoCases.length()) {
+		return;
+	}
+	const AlbedoCase c = albedoCases[index];
+
+	ClassicMaterial m;
+	m.albedo = c.albedoParam.xyz;
+	m.param = c.albedoParam.w;
+	m.type = uint(c.materialValues.w);
+	m.metallic = c.materialValues.x;
+	m.roughness = c.materialValues.y;
+
+	// the loop of aovCapture() in crt_surface.glsl
+	vec3 albedo = vec3(0.0);
+	for (int i = 0; i < CRT_ALBEDO_SAMPLES; i++) {
+		g_albedoSample = i;
+		uint rng = 0x9E3779B9u * uint(i + 1);
+		vec3 attenuation;
+		vec3 outDir;
+		if (scatterSurface(m, c.inDir.xyz, c.normal.xyz, c.materialValues.z > 0.5, index, rng, attenuation, outDir)) {
+			albedo += attenuation;
+		}
+	}
+	g_albedoSample = -1;
+	albedoResults[index] = vec4(albedo * (1.0 / float(CRT_ALBEDO_SAMPLES)), 0.0);
+}

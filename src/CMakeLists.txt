@@ -71,15 +71,29 @@ if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
     target_compile_options(rt_bsdf PRIVATE -O2)
 endif()
 
-# Image files as plain C++: OpenEXR through tinyexr (v1.0.13, ../CPPLibraries/tinyexr/, with the system zlib)
-# and PFM, plus the image error measures. Used by the app's reference images, and by
-# tests/image_diff.cpp
+# The auxiliary outputs as plain C++: the layers of AovImages, one pixel's accumulation and its resolve, the
+# line-for-line mirror of shaders/rt/include/crt_aov.glsl. Checked on its own by tests/aov_test.cpp and against the
+# GPU by the self-test in the Windows menu
+add_library(rt_aov STATIC
+    aov.cpp
+    aov.h
+    render_export.cpp
+    render_export.h)
+target_include_directories(rt_aov PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(rt_aov PUBLIC glm rt_image fmt::fmt)
+if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
+    target_compile_options(rt_aov PRIVATE -O2)
+endif()
+
+# Image files as plain C++: OpenEXR through tinyexr (v1.0.13, ../CPPLibraries/tinyexr/, with the system zlib),
+# PFM, Radiance HDR and PNG (../CPPLibraries/stb_image_write.h), plus the image error measures. Used by the
+# app's reference images and render export, and by tests/image_diff.cpp
 find_package(ZLIB REQUIRED)
 add_library(rt_image STATIC
     image_io.cpp
     image_io.h)
 target_include_directories(rt_image PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_include_directories(rt_image PRIVATE "${CMAKE_SOURCE_DIR}/../CPPLibraries/tinyexr")
+target_include_directories(rt_image PRIVATE "${CMAKE_SOURCE_DIR}/../CPPLibraries/tinyexr" "${CMAKE_SOURCE_DIR}/../CPPLibraries")
 target_link_libraries(rt_image PUBLIC ZLIB::ZLIB fmt::fmt)
 if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
     target_compile_options(rt_image PRIVATE -O2)
@@ -88,6 +102,8 @@ endif()
 # Add source to this project's executable.
 add_executable(vulkan_guide
     main.cpp
+    command_line.cpp
+    command_line.h
     vk_engine.cpp
     vk_engine.h
     vk_images.cpp
@@ -110,6 +126,8 @@ add_executable(vulkan_guide
     vk_loader.h
     vk_tonemap.cpp
     vk_tonemap.h
+    vk_readback.cpp
+    vk_readback.h
     rt_scene_types.h
     shape_mesh.cpp
     shape_mesh.h
@@ -145,6 +163,7 @@ add_executable(vulkan_guide
     gpu_selftest.h
     gpu_selftest_bsdf.cpp
     gpu_selftest_film.cpp
+    gpu_selftest_aov.cpp
     camera.cpp
     camera.h)
 
@@ -153,7 +172,7 @@ set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGE
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide PUBLIC rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_image vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
+target_link_libraries(vulkan_guide PUBLIC rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_aov rt_image vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
 
 target_link_libraries(vulkan_guide PRIVATE GPUOpen::VulkanMemoryAllocator)
 

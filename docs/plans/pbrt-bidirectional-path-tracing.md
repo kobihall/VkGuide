@@ -70,7 +70,7 @@ PBR 3ed §16.3, faithfully:
 - Both subpaths trace through the path tracer's 01 and 02 and the same queues. The camera subpath starts at kernel 00 and the light subpath at `light`'s stage 11. Stage 17, store vertices and scatter, records each hit as a `Vertex` and samples the BSDF, in radiance or importance mode by a flag in the path state.
 - Stage 18, connect subpaths, then evaluates every strategy (s, t): the unshadowed contribution, pbrt's MIS weight (`MISWeight()`, which walks both subpaths with the reverse densities, PBR 3ed §16.3.4), and the visibility. Visibility is tested inline with `occluded()`, one call per strategy, because queueing up to 20 shadow rays per slot would cost more memory than the vertices. It traces, so the build compiles it for every traversal. The strategies with `t = 1` splat; the rest add to the slot's pixel.
 - Infinite lights follow PBR 3ed §16.3.5.
-- pbrt's debugging outputs `visualizestrategies` and `visualizeweights` become an option that writes each (s, t) strategy's weighted or unweighted contribution to its own auxiliary image, through the `ChannelSums` buffer of [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md).
+- pbrt's debugging outputs `visualizestrategies` and `visualizeweights` become an option that writes each (s, t) strategy's weighted or unweighted contribution to its own auxiliary image, through the `ChannelSums` buffer of [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md).
 
 ### Media
 

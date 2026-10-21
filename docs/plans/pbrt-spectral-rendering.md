@@ -128,7 +128,7 @@ void filmAdd(uint slot, PathState path, Spectrum L);   // crt_spectrum.glsl
 
 Converting at every add, rather than once at the film as pbrt does, also removes the extra color noise pbrt's chapter 13 exercise describes: contributions added before a dispersive event keep the wavelength densities they had when they were added. The radiance slot stays a `vec4`, so kernel 09, the accumulation image and everything after them are unchanged in every family.
 
-The color-matching functions are the CIE 1931 2° tables at 1 nm, 360 to 830 nm, stored in `SpectralData`. The film plan can replace them with a camera's sensor response curves (pbrt's `PixelSensor`, PBR 4ed §5.4.2), which is a different table in the same place. Outside the visible range XYZ says nothing, so [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) writes band images directly (pbrt's `SpectralFilm`) and the display maps them to false color.
+The color-matching functions are the CIE 1931 2° tables at 1 nm, 360 to 830 nm, stored in `SpectralData`. The film plan can replace them with a camera's sensor response curves (pbrt's `PixelSensor`, PBR 4ed §5.4.2), which is a different table in the same place. Outside the visible range XYZ says nothing, so [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) writes band images directly (pbrt's `SpectralFilm`) and the display maps them to false color.
 
 ### Dispersion
 
@@ -188,7 +188,7 @@ Nothing here builds toward wave optics, but four choices keep the path open:
 3. `rt_spectrum` (CIE tables, the sigmoid table generator and evaluator, blackbody, `.spd` loading) and `bin/spectrum_test`.
 4. Hero wavelengths with four lanes, `filmAdd()`, and uplifting of materials, textures, lights and the environment.
 5. RGB Gaussians.
-6. Spectral bands and the 8-, 16- and 32-lane families, with lazy pipeline builds.
+6. Spectral bands and the 8-, 16- and 32-lane families, with lazy pipeline builds. The band images that [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) left unbuilt come with it: `nBuckets` sums in `ChannelSums` after the light groups, and the OpenEXR spectral layout on export.
 7. Named spectra, blackbody, tabulated and dispersion-model kinds, and the **Spectral** menu.
 8. Dispersion, with [pbrt-bsdf-library.md](pbrt-bsdf-library.md)'s dielectric.
 

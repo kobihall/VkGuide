@@ -2,7 +2,7 @@
 
 The strongest test of a physically based renderer is the same scene rendered by a trusted one. pbrt-v4 is that renderer here: its source is in `../pbr-book-website/pbrt-v4`, it builds on this Mac, and the scenes published with it (the separate `pbrt-v4-scenes` repository) cover every feature the other plans add. Comparing the two renderers needs a scene both can read. This plan adds an importer for a subset of pbrt-v4's scene format that grows with the features, and a comparison workflow built on OpenEXR export.
 
-*Not implemented. Depends on [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) (EXR reference loading). What it can import grows with every other plan. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) (EXR reference loading). What it can import grows with every other plan. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -36,10 +36,10 @@ Each pbrt feature maps to the plan that adds it. Until that plan lands, the impo
 | pbrt | Here | Until then |
 |---|---|---|
 | `perspective`, `orthographic`, `spherical`, `realistic` cameras | [pbrt-cameras.md](pbrt-cameras.md) | perspective with the same pose |
-| `rgb`, `gbuffer`, `spectral` films; `iso`, `exposuretime`, `whitebalance`, `sensor` | [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md), [pbrt-display-and-color.md](pbrt-display-and-color.md), [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) | resolution only |
+| `rgb`, `gbuffer`, `spectral` films; `iso`, `exposuretime`, `whitebalance`, `sensor` | [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md), [pbrt-display-and-color.md](pbrt-display-and-color.md), [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) | resolution only |
 | samplers, `pixelsamples` | [pbrt-sample-generation.md](completed/pbrt-sample-generation.md) | PCG, and the sample count |
 | filters | [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md), implemented: `box`, `triangle`, `gaussian`, `mitchell` and `sinc` (as `lanczos`) map to `RenderSettings::pixelFilter` | the file's filter kind and its radius |
-| `path`, `volpath`, `bdpt`, `lightpath`, `sppm`, `mlt`, `ambientocclusion` | the integrators of the other plans; `ambientocclusion` is [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md)'s debug view | `path` |
+| `path`, `volpath`, `bdpt`, `lightpath`, `sppm`, `mlt`, `ambientocclusion` | the integrators of the other plans; `ambientocclusion` is [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md)'s debug view | `path` |
 | `trianglemesh`, `plymesh` (with `displacement`), `loopsubdiv` | meshes; [pbrt-subdivision-and-displacement.md](pbrt-subdivision-and-displacement.md) | meshes without refinement |
 | `sphere`, `cylinder`, `disk`, `bilinearmesh`, `curve` | [pbrt-analytic-shapes.md](pbrt-analytic-shapes.md), [pbrt-curves-and-hair.md](pbrt-curves-and-hair.md) | full spheres; others skipped |
 | materials, `interface` | [pbrt-bsdf-library.md](pbrt-bsdf-library.md), [pbrt-layered-materials.md](pbrt-layered-materials.md), [pbrt-measured-bsdfs.md](pbrt-measured-bsdfs.md), [pbrt-curves-and-hair.md](pbrt-curves-and-hair.md), [pbrt-subsurface-scattering.md](pbrt-subsurface-scattering.md), [pbrt-material-system.md](completed/pbrt-material-system.md) | a `pbr` material with the closest parameters, or gray Lambertian |
@@ -63,7 +63,7 @@ A `.pbrt` file imports as a model, like a glTF file: **File** → **Import pbrt 
 
 ### Comparing with pbrt
 
-A script, `tools/compare_with_pbrt.sh`, renders a scene with a locally built pbrt-v4 to EXR, renders it here in batch mode ([pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md)), and reports the relative MSE and the mean relative error between them. **Compare to reference** does the same interactively after **Load reference**. Both renderers need enough samples that their noise is below the difference being looked for; the script reports each image's own variance estimate beside the difference.
+A script, `tools/compare_with_pbrt.sh`, renders a scene with a locally built pbrt-v4 to EXR, renders it here in batch mode ([pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md)), and reports the relative MSE and the mean relative error between them. **Compare to reference** does the same interactively after **Load reference**. Both renderers need enough samples that their noise is below the difference being looked for; the script reports each image's own variance estimate beside the difference.
 
 ## Registry, bindings and data
 

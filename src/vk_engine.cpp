@@ -1,5 +1,7 @@
 #include "vk_engine.h"
 
+#include <algorithm>
+#include <image_io.h>
 #include <rt_scene.h>
 #include <scene_io.h>
 #include <shape_mesh.h>
@@ -477,7 +479,7 @@ void VulkanEngine::run()
 		return;
 	}
 
-	if (getenv("VKGUIDE_VERIFY") != nullptr && !beginVerify()) {
+	if (m_commandLine.batch() && !beginBatch()) {
 		return;
 	}
 
@@ -527,8 +529,8 @@ void VulkanEngine::run()
 		//its output on screen this frame rather than the next one
 		m_raytracer.update(this, m_raytraceScene);
 
-		if (m_verify) {
-			stepVerify();
+		if (m_batch) {
+			stepBatch();
 		}
 
 		if (ImGui::BeginMainMenuBar()) {
@@ -1089,6 +1091,8 @@ void VulkanEngine::newScene()
 	camera.name = "render_camera";
 	m_raytraceScene.replaceCameras({ camera });
 	m_raytracer.setSettings(RenderSettings {});
+	m_raytracer.setExportSettings(ExportSettings {});
+	m_raytraceScene.setLightGroups({}, 0);
 	m_raytracer.setKernels(defaultKernelSelection());
 	m_raytracer.setAccelSettings(this, defaultAccelSettings());
 	m_environmentIntensity = 1.f;
@@ -1119,12 +1123,13 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 			continue;
 		}
 		const auto model = modelIndices.find(material.origin->modelKey);
-		if (material.edited.empty() || model == modelIndices.end()) {
+		if ((material.edited.empty() && material.lightGroup == 0) || model == modelIndices.end()) {
 			continue;
 		}
 		SceneMaterialOverride edit;
 		edit.model = model->second;
 		edit.gltfIndex = material.origin->index;
+		edit.lightGroup = material.lightGroup;
 		for (const std::string& name : material.edited) {
 			edit.params[name] = materialValue(material, name);
 		}
@@ -1188,6 +1193,9 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 		}
 	}
 	scene.render = m_raytracer.settings();
+	scene.lightGroupNames = m_raytraceScene.lightGroupNames();
+	scene.environmentGroup = m_raytraceScene.environmentGroup();
+	scene.exportSettings = m_raytracer.exportSettings();
 	//which wavefront kernel runs in each slot, and how the BVH they read is built
 	scene.kernels = m_raytracer.kernels();
 	scene.accel = m_raytracer.accelSettings();
@@ -1257,6 +1265,7 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 			material->params[name] = value;
 			material->edited.insert(name);
 		}
+		material->lightGroup = edit.lightGroup;
 	}
 	std::vector<uint64_t> userIds;
 	for (MaterialDef& material : scene.materials) {
@@ -1327,6 +1336,9 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	}
 	m_raytraceScene.replaceShapes(std::move(shapes));
 	m_raytraceScene.replaceCameras(std::move(scene.cameras));
+	//the light groups last of the objects that name one: a light or material in a group the file does not list moves to group 0
+	m_raytraceScene.setLightGroups(scene.lightGroupNames, scene.environmentGroup);
+	m_raytracer.setExportSettings(scene.exportSettings);
 	m_raytracer.setSettings(scene.render);
 	//the kernel selection first: it is what decides the BLAS node layout, so setAccelSettings()
 	//below sees the layout the file's traversal actually needs
@@ -1354,21 +1366,42 @@ IoResult VulkanEngine::loadEnvironmentMap(const std::filesystem::path& path)
 {
 	const std::string pathString = path.string();
 
-	if (!stbi_is_hdr(pathString.c_str())) {
-		//stbi_is_hdr is also false for a file that is not there, so tell the two apart
-		std::error_code ec;
-		if (!std::filesystem::exists(path, ec)) {
-			return IoResult::failure(fmt::format("No file at '{}'", pathString));
-		}
-		return IoResult::failure(fmt::format("'{}' is not a Radiance .hdr image (only .hdr is supported)", pathString));
-	}
-
+	//a Radiance .hdr through stb_image, or an OpenEXR file through tinyexr (src/image_io.h); either way float rgba
 	int width = 0;
 	int height = 0;
-	int channels = 0;
-	float* pixels = stbi_loadf(pathString.c_str(), &width, &height, &channels, 4);
-	if (pixels == nullptr) {
-		return IoResult::failure(fmt::format("Failed to decode '{}': {}", pathString, stbi_failure_reason()));
+	float* pixels = nullptr;
+	std::vector<float> exrPixels;
+	std::string extension = path.extension().string();
+	std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+	if (extension == ".exr") {
+		Image image;
+		const ImageIoStatus status = loadImage(path, image);
+		if (!status.ok) {
+			return IoResult::failure(status.message);
+		}
+		width = (int)image.width;
+		height = (int)image.height;
+		exrPixels.resize(image.pixelCount() * 4, 1.f);
+		for (size_t i = 0; i < image.pixelCount(); i++) {
+			exrPixels[i * 4 + 0] = image.rgb[i * 3 + 0];
+			exrPixels[i * 4 + 1] = image.rgb[i * 3 + 1];
+			exrPixels[i * 4 + 2] = image.rgb[i * 3 + 2];
+		}
+		pixels = exrPixels.data();
+	} else {
+		if (!stbi_is_hdr(pathString.c_str())) {
+			//stbi_is_hdr is also false for a file that is not there, so tell the two apart
+			std::error_code ec;
+			if (!std::filesystem::exists(path, ec)) {
+				return IoResult::failure(fmt::format("No file at '{}'", pathString));
+			}
+			return IoResult::failure(fmt::format("'{}' is not a Radiance .hdr or OpenEXR .exr image", pathString));
+		}
+		int channels = 0;
+		pixels = stbi_loadf(pathString.c_str(), &width, &height, &channels, 4);
+		if (pixels == nullptr) {
+			return IoResult::failure(fmt::format("Failed to decode '{}': {}", pathString, stbi_failure_reason()));
+		}
 	}
 
 	//the path tracer's sampling tables, from the full-precision pixels before they are halved: a
@@ -1384,7 +1417,9 @@ IoResult VulkanEngine::loadEnvironmentMap(const std::filesystem::path& path)
 	const float peak = environmentPeak(pixels, pixelCount);
 	const float storageScale = environmentStorageScale(peak);
 	std::vector<uint32_t> halves = packEnvironmentTexels(pixels, pixelCount, storageScale);
-	stbi_image_free(pixels);
+	if (exrPixels.empty()) {
+		stbi_image_free(pixels);
+	}
 
 	//only now that the new data is known good does the old resource go
 	destroyEnvironmentMap();
@@ -1458,71 +1493,90 @@ void VulkanEngine::drawFileMenu()
 		if (ImGui::MenuItem("Clear Environment Map", nullptr, false, m_environmentMap.image != VK_NULL_HANDLE)) {
 			m_pendingFileAction = FileAction::ClearEnvironmentMap;
 		}
+		ImGui::Separator();
+		if (ImGui::MenuItem("Export Render...", nullptr, false, m_raytracer.hasRender())) {
+			m_pendingFileAction = FileAction::ExportRender;
+		}
 		ImGui::EndMenu();
 	}
 }
 
-bool VulkanEngine::beginVerify()
+bool VulkanEngine::beginBatch()
 {
-	//<scene>:<samples>:<output>, split from the right so a scene path may hold a colon
-	const std::string spec = getenv("VKGUIDE_VERIFY");
-	const size_t second = spec.rfind(':');
-	const size_t first = second == std::string::npos || second == 0 ? std::string::npos : spec.rfind(':', second - 1);
-	if (first == std::string::npos) {
-		fmt::println("VKGUIDE_VERIFY must be <scene>:<samples>:<output.exr|pfm>, not '{}'", spec);
-		m_exitCode = 2;
-		return false;
-	}
-	VerifyRun run;
-	run.samples = (uint32_t)std::max(1, atoi(spec.substr(first + 1, second - first - 1).c_str()));
-	run.output = spec.substr(second + 1);
-	if (const char* timeout = getenv("VKGUIDE_VERIFY_TIMEOUT")) {
-		run.timeoutSeconds = atof(timeout);
-	}
-	std::filesystem::path scenePath = spec.substr(0, first);
-	if (scenePath.is_relative()) {
+	BatchRun run;
+	run.samples = m_commandLine.samples;
+	run.output = m_commandLine.output;
+	run.timeoutSeconds = m_commandLine.timeoutSeconds;
+	std::filesystem::path scenePath = m_commandLine.renderScene;
+	if (scenePath.is_relative() && !std::filesystem::exists(scenePath)) {
 		scenePath = absoluteNormalized(m_rootPath + "assets/scenes") / scenePath;
 	}
 	const IoResult opened = openScene(scenePath);
-	fmt::println("verify: {}", opened.message);
+	fmt::println("render: {}", opened.message);
 	if (!opened.ok) {
 		m_exitCode = 2;
 		return false;
 	}
 
-	//the scene file's settings, with the sample target, a fixed seed and no restarts imposed
+	//the scene file's settings, with the sample target, a fixed seed and no restarts imposed, and what the
+	//command line asked to keep
 	RenderSettings settings = m_raytracer.settings();
-	settings.maxSamples = (int)run.samples;
+	if (run.samples > 0) {
+		settings.maxSamples = (int)run.samples;
+	}
+	run.samples = (uint32_t)std::max(settings.maxSamples, 1);
 	settings.unlimitedSamples = false;
 	settings.useFixedSeed = true;
-	settings.seed = 1;
+	settings.seed = m_commandLine.seed;
 	settings.restartOnChange = false;
 	settings.matchViewport = false;
-	if (const char* seed = getenv("VKGUIDE_VERIFY_SEED")) {
-		settings.seed = (uint32_t)strtoul(seed, nullptr, 10);
+	if (m_commandLine.size.has_value()) {
+		settings.width = m_commandLine.size->first;
+		settings.height = m_commandLine.size->second;
 	}
-	if (const char* size = getenv("VKGUIDE_VERIFY_SIZE")) {
-		int w = 0;
-		int h = 0;
-		if (sscanf(size, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
-			settings.width = w;
-			settings.height = h;
+	for (const std::string& id : m_commandLine.aov) {
+		settings.aov.set(aovOutputFromId(id), true);
+	}
+	settings.aov.captureThroughSpecular = settings.aov.captureThroughSpecular || m_commandLine.captureThroughSpecular;
+	settings.lightGroups = settings.lightGroups || m_commandLine.lightGroups;
+	m_raytracer.setSettings(settings);
+	//the display-side controls: a debug view, the ambient occlusion distance, and Relight with the scales given
+	if (!m_commandLine.debugView.empty()) {
+		const CrtDebugView view = crtDebugViewFromId(m_commandLine.debugView);
+		if (view == CrtDebugView::Count) {
+			fmt::println("render: '{}' is not a debug view; see --help", m_commandLine.debugView);
+			m_exitCode = 2;
+			return false;
+		}
+		m_raytracer.gpu().debugView = view;
+	}
+	m_raytracer.gpu().aoDistance = m_commandLine.aoDistance;
+	if (!m_commandLine.relight.empty()) {
+		m_raytracer.gpu().relight = true;
+		if (SceneCamera* camera = m_raytraceScene.findCamera(m_raytracer.renderCameraId())) {
+			for (size_t g = 0; g < m_commandLine.relight.size() && g < camera->relight.size(); g++) {
+				camera->relight[g].scale = m_commandLine.relight[g];
+			}
 		}
 	}
-	m_raytracer.setSettings(settings);
+	//the batch writes the file itself, once, and never saves a second copy to the scene's own path
+	ExportSettings exportSettings = m_raytracer.exportSettings();
+	exportSettings.saveWhenFinished = false;
+	exportSettings.halfFloat = exportSettings.halfFloat || m_commandLine.halfFloat;
+	m_raytracer.setExportSettings(exportSettings);
 	run.started = std::chrono::steady_clock::now();
-	m_verify = run;
+	m_batch = run;
 	return true;
 }
 
-void VulkanEngine::stepVerify()
+void VulkanEngine::stepBatch()
 {
-	VerifyRun& run = *m_verify;
+	BatchRun& run = *m_batch;
 	auto finish = [&](int code, const std::string& message) {
-		fmt::println("verify: {}", message);
+		fmt::println("render: {}", message);
 		m_exitCode = code;
 		glfwSetWindowShouldClose(m_window, GLFW_TRUE);
-		m_verify.reset();
+		m_batch.reset();
 	};
 	const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - run.started).count();
 	if (elapsed > run.timeoutSeconds) {
@@ -1530,26 +1584,26 @@ void VulkanEngine::stepVerify()
 		return;
 	}
 	switch (run.phase) {
-	case VerifyRun::Phase::Start:
+	case BatchRun::Phase::Start:
 		m_raytracer.render(this, m_raytraceScene);
 		if (!m_raytracer.renderRunning()) {
 			finish(2, "the render did not start: " + (m_raytracer.blockedReason().empty() ? std::string("no scene camera") : m_raytracer.blockedReason()));
 			return;
 		}
-		run.phase = VerifyRun::Phase::Rendering;
+		run.phase = BatchRun::Phase::Rendering;
 		break;
-	case VerifyRun::Phase::Rendering:
+	case BatchRun::Phase::Rendering:
 		if (!m_raytracer.renderRunning()) {
 			//the film's last frame and the counters it fed arrive FRAME_OVERLAP frames after it ends
-			run.phase = VerifyRun::Phase::Settling;
+			run.phase = BatchRun::Phase::Settling;
 			run.settleFrame = m_frameNumber + 4;
 		}
 		break;
-	case VerifyRun::Phase::Settling:
+	case BatchRun::Phase::Settling:
 		if (m_frameNumber < run.settleFrame) {
 			break;
 		}
-		const IoResult saved = m_raytracer.saveRender(this, run.output);
+		const IoResult saved = m_raytracer.exportRender(this, m_raytraceScene, run.output);
 		const std::string summary = fmt::format("{} samples, {} dropped, {:.0f} ms of GPU time, {:.1f} s wall", m_raytracer.samplesAccumulated(), m_raytracer.droppedSamples(), m_raytracer.totalGpuMs(), elapsed);
 		finish(saved.ok ? 0 : 2, saved.message + "; " + summary);
 		break;
@@ -1595,7 +1649,7 @@ void VulkanEngine::runPendingFileAction()
 		}
 		break;
 	case FileAction::SetEnvironmentMap:
-		if (auto chosen = showOpenFileDialog("Set Environment Map", { "hdr" }, assetsDirectory)) {
+		if (auto chosen = showOpenFileDialog("Set Environment Map", { "hdr", "exr" }, assetsDirectory)) {
 			m_lastFileResult = loadEnvironmentMap(*chosen);
 		}
 		break;
@@ -1613,6 +1667,11 @@ void VulkanEngine::runPendingFileAction()
 		if (auto chosen = showOpenFileDialog("Load Reference", { "exr", "pfm" }, sceneDirectory)) {
 			m_lastFileResult = m_raytracer.loadReference(this, *chosen);
 			m_raytracer.setReferenceIo(m_lastFileResult);
+		}
+		break;
+	case FileAction::ExportRender:
+		if (auto chosen = showSaveFileDialog("Export Render", { "exr", "pfm", "hdr", "png" }, sceneDirectory, "render.exr")) {
+			m_lastFileResult = m_raytracer.exportRender(this, m_raytraceScene, *chosen);
 		}
 		break;
 	}
@@ -1658,6 +1717,9 @@ void VulkanEngine::initVulkan()
 		.add_required_extension(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)
 		.add_required_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME)
 		.add_required_extension(VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME)
+		//float atomics on buffers: kernels 03, 04 and 08 add to the light groups' sums with them
+		//(shaders/rt/include/crt_light_groups.glsl). Image float atomics are missing on this GPU
+		.add_required_extension(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)
 		.set_required_features_12(features)
 		.set_surface(m_surface)
 		.select();
@@ -1668,11 +1730,17 @@ void VulkanEngine::initVulkan()
 	dynamic_rendering_features.dynamicRendering = VK_TRUE;
 	dynamic_rendering_features.pNext = &sync2_features;
 
+	VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomic_float_features{};
+	atomic_float_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+	atomic_float_features.shaderBufferFloat32Atomics = VK_TRUE;
+	atomic_float_features.shaderBufferFloat32AtomicAdd = VK_TRUE;
+
 	//create the final vulkan device
 	vkb::PhysicalDevice physicalDevice = physdev_ret.value();
 	vkb::DeviceBuilder deviceBuilder{ physicalDevice };
 	auto dev_ret = deviceBuilder
 		.add_pNext(&dynamic_rendering_features)
+		.add_pNext(&atomic_float_features)
 		.build();
 	vkbErr(dev_ret);
 	vkb::Device vkbDevice = dev_ret.value();
@@ -1820,6 +1888,27 @@ AllocatedImage VulkanEngine::createImage(VkExtent3D size, VkFormat format, VkIma
 
 	checkVkResult(vkCreateImageView(m_device, &view_info, nullptr, &newImage.imageView));
 
+	return newImage;
+}
+
+AllocatedImage VulkanEngine::createImageArray(VkExtent3D size, uint32_t layers, VkFormat format, VkImageUsageFlags usage)
+{
+	AllocatedImage newImage;
+	newImage.imageFormat = format;
+	newImage.imageExtent = size;
+
+	VkImageCreateInfo img_info = vkinit::image_create_info(format, usage, size);
+	img_info.arrayLayers = layers;
+
+	VmaAllocationCreateInfo allocinfo = {};
+	allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	checkVkResult(vmaCreateImage(m_memAllocator, &img_info, &allocinfo, &newImage.image, &newImage.allocation, nullptr));
+
+	VkImageViewCreateInfo view_info = vkinit::imageview_create_info(format, newImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
+	view_info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+	view_info.subresourceRange.layerCount = layers;
+	checkVkResult(vkCreateImageView(m_device, &view_info, nullptr, &newImage.imageView));
 	return newImage;
 }
 

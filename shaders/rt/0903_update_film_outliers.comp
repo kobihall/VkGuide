@@ -16,4 +16,5 @@
 #include "include/crt_common.glsl"
 #define CRT_FILM_CASCADE
 #include "include/crt_film.glsl"
+#include "include/crt_aov.glsl"
 #include "include/crt_film_update.glsl"

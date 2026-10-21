@@ -2,10 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <random>
 
 #include <imgui.h>
 
+#include <file_dialog.h>
+#include <render_export.h>
+#include <vk_readback.h>
 #include <rt_scene.h>
 #include <rt_schedule.h>
 #include <rt_scene_editor.h>
@@ -54,6 +58,8 @@ RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, c
 	key.backgroundColor = engine->m_backgroundColor;
 	key.width = m_settings.matchViewport ? engine->m_drawExtent.width : (uint32_t)m_settings.width;
 	key.height = m_settings.matchViewport ? engine->m_drawExtent.height : (uint32_t)m_settings.height;
+	key.lightGroupCount = (uint32_t)editor.lightGroupNames().size();
+	key.environmentGroup = editor.environmentGroup();
 	return key;
 }
 
@@ -64,6 +70,13 @@ void RaytraceRenderer::update(VulkanEngine* engine, const RaytraceSceneEditor& e
 		m_lastRenderMs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - m_renderStart).count() / 1000.f;
 		m_lastRenderSamples = (int)m_gpu.samplesAccumulated();
 		m_hasLastRender = true;
+		//Save when finished: a render that reached its sample target writes itself, a stopped one does not. Its last
+		//frame was submitted at the end of the frame before this one, and the readback waits for the device
+		const bool reachedTarget = m_gpu.maxSamples() > 0 && m_gpu.samplesAccumulated() >= m_gpu.maxSamples();
+		if (m_exportSettings.saveWhenFinished && reachedTarget && !m_exportSettings.saveWhenFinishedPath.empty()) {
+			m_exportIo = exportRender(engine, editor, m_exportSettings.saveWhenFinishedPath);
+			fmt::println("RaytraceRenderer: save when finished: {}", m_exportIo.message);
+		}
 	}
 	m_wasRunning = m_gpu.isRunning();
 
@@ -135,7 +148,7 @@ void RaytraceRenderer::setSettings(const RenderSettings& settings)
 	}
 }
 
-void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor& editor)
+void RaytraceRenderer::drawPanel(VulkanEngine* engine, RaytraceSceneEditor& editor)
 {
 	if (!m_showPanel) {
 		return;
@@ -306,6 +319,8 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, const RaytraceSceneEditor
 
 	drawSamplerSettings(engine);
 	drawFilmSettings(engine);
+	drawOutputsSettings(engine, editor);
+	drawExportSettings(engine, editor);
 	drawAccelSettings(engine);
 	drawIntersectionSettings();
 
@@ -413,6 +428,14 @@ void RaytraceRenderer::drawSettings(VulkanEngine* engine)
 	}
 	if (ImGui::IsItemHovered()) {
 		ImGui::SetTooltip("Replaces shading inside the path tracer. Samples taken after a change show the view, and the earlier ones stay in the average: restart the render for a clean one.");
+	}
+	if (m_gpu.debugView == CrtDebugView::AmbientOcclusion) {
+		//the ray length is read every frame: a longer one reaches farther, and 0 is a tenth of the scene's size
+		ImGui::DragFloat("AO distance", &m_gpu.aoDistance, 0.01f, 0.f, 1000.f, m_gpu.aoDistance > 0.f ? "%.3f" : "auto");
+		m_gpu.aoDistance = std::max(m_gpu.aoDistance, 0.f);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("How far an ambient occlusion ray travels before it counts as unoccluded, in scene units.\n0 is automatic: a tenth of the scene's size (%.3f here). Applies from the next sample.", m_gpu.autoAoDistance());
+		}
 	}
 
 	//the measurements of the film: display only, so they switch live and work on a finished render
@@ -535,6 +558,9 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	snapshot.environmentMapScale = engine->m_environmentMapScale;
 	snapshot.solidBackground = engine->m_solidBackground;
 	snapshot.backgroundColor = engine->m_backgroundColor;
+	//the light groups the render keeps sums for: every group the scene names, while the setting is on
+	snapshot.lightGroupCount = settings.lightGroups ? (uint32_t)editor.lightGroupNames().size() : 0u;
+	snapshot.environmentGroup = editor.environmentGroup();
 
 	keepConvergenceCurve();
 	m_curveLabel = convergenceLabel();
@@ -559,6 +585,10 @@ void RaytraceRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const R
 	//restarting the render
 	const SceneCamera* camera = editor.findCamera(m_renderCameraId);
 	const float exposure = camera != nullptr ? std::max(camera->exposure, 0.f) : 1.f;
+	//Relight's gains are the camera's, display only, read every frame whether or not the panel is open
+	if (camera != nullptr) {
+		m_gpu.relightGains = camera->relight;
+	}
 
 	vkutil::transition_image(cmd, m_displayImage.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 	m_gpu.record(cmd, engine, m_displayImage, exposure);
@@ -590,7 +620,8 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	//compared by value rather than by the editor's revision, which also moves for every camera
 	//change: a camera drag restarts the render each frame, and must not rebuild the TLAS each time.
 	//The lights and the background are part of it: the light list is built with the TLAS
-	const EnvironmentLight environment = environmentLight(engine);
+	EnvironmentLight environment = environmentLight(engine);
+	environment.group = editor.environmentGroup();
 	if (m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
 		&& m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelShapes == editor.shapes() && m_sceneAccelLights == editor.lights()
 		&& m_sceneAccelMaterials == editor.materials() && m_sceneAccelEnvironment == environment) {
@@ -733,13 +764,70 @@ IoResult RaytraceRenderer::loadReference(VulkanEngine* engine, const std::filesy
 	return IoResult::success(status.message + ", as the reference");
 }
 
-IoResult RaytraceRenderer::saveRender(VulkanEngine* engine, const std::filesystem::path& path)
+IoResult RaytraceRenderer::exportRender(VulkanEngine* engine, const RaytraceSceneEditor& editor, const std::filesystem::path& path)
 {
-	Image image;
-	if (!m_gpu.readAccumulation(engine, image)) {
+	std::string extension = path.extension().string();
+	std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+	//the display image as the window shows it, 8-bit: whatever the window shows, relit or an analysis view included
+	if (extension == ".png") {
+		if (!m_hasDisplayImage || !m_gpu.hasImage()) {
+			return IoResult::failure("There is no render to save");
+		}
+		Image8 display;
+		display.width = m_displayImage.imageExtent.width;
+		display.height = m_displayImage.imageExtent.height;
+		if (!readbackImage(engine, m_displayImage.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, m_displayImage.imageExtent, 1, 4, display.rgba)) {
+			return IoResult::failure("There is no render to save");
+		}
+		const ImageIoStatus status = saveImage8(path, display);
+		return status.ok ? IoResult::success(status.message) : IoResult::failure(status.message);
+	}
+
+	Image beauty;
+	if (!m_gpu.readAccumulation(engine, beauty)) {
 		return IoResult::failure("There is no render to save");
 	}
-	const ImageIoStatus status = saveImage(path, image);
+	if (extension != ".exr") {
+		//the picture alone
+		const ImageIoStatus status = saveImage(path, beauty);
+		return status.ok ? IoResult::success(status.message) : IoResult::failure(status.message);
+	}
+
+	RenderOutputsData outputs;
+	if (!m_gpu.readOutputs(engine, outputs)) {
+		return IoResult::failure("There is no render to save");
+	}
+	RenderExportInfo info;
+	info.scenePath = engine->m_scenePath.string();
+	{
+		const KernelSelectionIds ids = kernelSelectionToIds(m_renderKey.kernels);
+		info.kernels = fmt::format("integrator={} traversal={}", ids.integrator, ids.traversal);
+		for (const auto& [slot, variant] : ids.stages) {
+			info.kernels += fmt::format(" {}={}", slot, variant);
+		}
+	}
+	const RenderSettings& r = m_renderKey.settings;
+	info.settings = fmt::format(R"({{"width":{},"height":{},"samplesPerPixel":{},"rayDepth":{},"seed":{},"antialiasing":{},"pixelFilter":"{}","russianRoulette":{},"clampSamples":{},"clampValue":{}}})",
+		beauty.width, beauty.height, outputs.samplesPerPixel, r.rayDepth, r.seed, r.antialiasing, pixelFilterId(r.pixelFilter.kind), r.russianRoulette, r.clampSamples, r.clampValue);
+	info.renderSeconds = m_hasLastRender ? m_lastRenderMs / 1000.f : std::chrono::duration<float>(std::chrono::steady_clock::now() - m_renderStart).count();
+	if (m_hasRender) {
+		const RTCameraSnapshot& camera = m_renderKey.camera;
+		info.cameraFromWorld = glm::lookAt(camera.lookFrom, camera.lookAt, camera.vUp);
+		const float aspect = (float)beauty.width / (float)beauty.height;
+		const glm::mat4 projection = glm::perspective(glm::radians(camera.vfovDegrees), aspect, 0.01f, 1000.f);
+		//clip space to normalized device coordinates, x right and y down over [0, 1] as pbrt's NDC is
+		const glm::mat4 toNdc(0.5f, 0.f, 0.f, 0.f, 0.f, -0.5f, 0.f, 0.f, 0.f, 0.f, 0.5f, 0.f, 0.5f, 0.5f, 0.5f, 1.f);
+		info.ndcFromWorld = toNdc * projection * info.cameraFromWorld;
+	}
+	if (m_gpu.hasReference() && m_gpu.referenceExtent().width == beauty.width && m_gpu.referenceExtent().height == beauty.height && m_gpu.referenceError().valid) {
+		info.hasMse = true;
+		info.mse = (float)(m_gpu.referenceError().rmse * m_gpu.referenceError().rmse);
+	}
+	info.lightGroupNames = editor.lightGroupNames();
+
+	const ChannelImage image = buildExportImage(beauty, outputs, info);
+	const ImageIoStatus status = saveChannelImage(path, image, ExrOptions { m_exportSettings.halfFloat });
 	return status.ok ? IoResult::success(status.message) : IoResult::failure(status.message);
 }
 
@@ -1374,6 +1462,122 @@ void RaytraceRenderer::drawIntersectionSettings()
 	if (ImGui::IsItemHovered()) {
 		ImGui::SetTooltip("A triangle test that cannot let a ray through the edge or vertex two triangles share, and box\ntests widened so rounding cannot cull a ray grazing one. Off, Moller-Trumbore and plain box\ntests: a little faster, with rare pinholes along edges. Saved with the scene.");
 	}
+}
+
+void RaytraceRenderer::drawOutputsSettings(VulkanEngine* engine, RaytraceSceneEditor& editor)
+{
+	if (!ImGui::CollapsingHeader("Outputs")) {
+		return;
+	}
+	//the size a render started now would have, for the memory each output takes
+	const RenderSettings now = renderSettings(engine);
+	const uint32_t width = (uint32_t)now.width;
+	const uint32_t height = (uint32_t)now.height;
+
+	ImGui::TextDisabled("What a render keeps beside its picture. Turning one on restarts the render.");
+	for (uint32_t i = 0; i < (uint32_t)AovOutput::Count; i++) {
+		const AovOutput output = (AovOutput)i;
+		bool on = m_settings.aov.has(output);
+		if (ImGui::Checkbox(aovOutputName(output), &on)) {
+			m_settings.aov.set(output, on);
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s\n\nEach one shows in its own window under Windows while the render keeps it.", aovOutputDescription(output));
+		}
+	}
+	ImGui::BeginDisabled(!m_settings.aov.accumulates());
+	ImGui::Checkbox("Capture through specular", &m_settings.aov.captureThroughSpecular);
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+		ImGui::SetTooltip("Record the first surface that is not a mirror or glass instead of the first, so a mirror or a window\nshows what it reflects. Denoisers expect that; pbrt records the first surface. Off by default.");
+	}
+	if (m_settings.aov.accumulates()) {
+		const uint64_t bytes = aovImageBytes(m_settings.aov, width, height);
+		ImGui::TextDisabled("Auxiliary outputs: %.0f MB at %u x %u", double(bytes) / (1024.0 * 1024.0), width, height);
+	}
+
+	ImGui::Separator();
+	ImGui::Checkbox("Light groups", &m_settings.lightGroups);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Keep the light of each group apart, so a lamp can be dimmed or the sky tinted after the render (Relight below)\nand each group can be exported. A light is put in a group in the Scene panel, an emissive material in the\nMaterials window, and the background below. Turning it on restarts the render.");
+	}
+	if (m_settings.lightGroups) {
+		editor.drawLightGroupEditor();
+		const uint64_t bytes = lightGroupSumBytes((uint32_t)editor.lightGroupNames().size(), width, height);
+		ImGui::TextDisabled("Light group sums: %.0f MB at %u x %u", double(bytes) / (1024.0 * 1024.0), width, height);
+	}
+	if (!m_gpu.outputsNote().empty()) {
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
+		ImGui::TextWrapped("%s", m_gpu.outputsNote().c_str());
+		ImGui::PopStyleColor();
+	}
+
+	//Relight: display only, like the exposure, and saved with the camera
+	if (m_gpu.hasImage() && m_gpu.lightGroupCount() > 0) {
+		ImGui::Separator();
+		ImGui::Checkbox("Relight", &m_gpu.relight);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Show the picture the light groups make, each group's sum times its scale and tint, in place of the film.\nDisplay only: it needs no new samples, and the picture is exported as the film holds it.");
+		}
+		if (m_gpu.relight) {
+			if (SceneCamera* camera = editor.findCamera(m_renderCameraId)) {
+				for (uint32_t g = 0; g < m_gpu.lightGroupCount() && g < MAX_LIGHT_GROUPS && g < editor.lightGroupNames().size(); g++) {
+					ImGui::PushID((int)g);
+					ImGui::TextUnformatted(editor.lightGroupNames()[g].c_str());
+					ImGui::SetNextItemWidth(ImGui::CalcItemWidth() * 0.6f);
+					ImGui::SliderFloat("##scale", &camera->relight[g].scale, 0.f, 8.f, "scale %.2f", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+					ImGui::SameLine();
+					ImGui::ColorEdit3("##tint", &camera->relight[g].tint.x, ImGuiColorEditFlags_NoInputs);
+					ImGui::PopID();
+				}
+				if (ImGui::SmallButton("Reset gains")) {
+					camera->relight = SceneCamera {}.relight;
+				}
+			}
+		}
+	}
+}
+
+void RaytraceRenderer::drawExportSettings(VulkanEngine* engine, RaytraceSceneEditor& editor)
+{
+	if (!ImGui::CollapsingHeader("Export")) {
+		return;
+	}
+	ImGui::Checkbox("Half floats in EXR", &m_exportSettings.halfFloat);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Store an EXR file's channels as 16-bit half floats: half the size, and a value above 65504 clamps.");
+	}
+
+	ImGui::Checkbox("Save when finished", &m_exportSettings.saveWhenFinished);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Write the render to this file when it reaches its sample target (not when it is stopped).\nThe extension picks the format: .exr with every output as named channels, .pfm, .hdr, or .png (the display image).");
+	}
+	char path[512];
+	std::snprintf(path, sizeof(path), "%s", m_exportSettings.saveWhenFinishedPath.c_str());
+	ImGui::SetNextItemWidth(ImGui::CalcItemWidth() * 0.75f);
+	if (ImGui::InputText("##savePath", path, sizeof(path))) {
+		m_exportSettings.saveWhenFinishedPath = path;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Browse...")) {
+		const std::filesystem::path directory = engine->m_scenePath.empty() ? std::filesystem::path(engine->m_rootPath) / "assets" : engine->m_scenePath.parent_path();
+		if (auto chosen = showSaveFileDialog("Save when finished", { "exr", "pfm", "hdr", "png" }, directory, "render.exr")) {
+			m_exportSettings.saveWhenFinishedPath = chosen->string();
+		}
+	}
+	if (m_exportSettings.saveWhenFinished && m_exportSettings.saveWhenFinishedPath.empty()) {
+		ImGui::TextDisabled("Choose a file to save to");
+	}
+
+	ImGui::BeginDisabled(!m_gpu.hasImage());
+	if (ImGui::Button("Export Render...")) {
+		const std::filesystem::path directory = engine->m_scenePath.empty() ? std::filesystem::path(engine->m_rootPath) / "assets" : engine->m_scenePath.parent_path();
+		if (auto chosen = showSaveFileDialog("Export Render", { "exr", "pfm", "hdr", "png" }, directory, "render.exr")) {
+			m_exportIo = exportRender(engine, editor, *chosen);
+		}
+	}
+	ImGui::EndDisabled();
+	drawIoResultLine(m_exportIo);
 }
 
 void RaytraceRenderer::ensureDisplayImage(VulkanEngine* engine, uint32_t width, uint32_t height)

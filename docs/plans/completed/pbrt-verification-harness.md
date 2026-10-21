@@ -9,8 +9,8 @@ Several plans add sampling code whose bugs do not show as crashes or obvious art
 On 2026-10-20 the user chose:
 
 - The Cornell reference is an independent CPU solve and closed forms, plus a render by their own pbrt-v4 build. No published image exists on disk.
-- Reference images are saved and loaded as EXR now, so tinyexr is added in this plan instead of in [pbrt-aovs-and-image-output.md](../pbrt-aovs-and-image-output.md). PFM comes with it.
-- The scene-level checks render through a small permanent headless mode, `VKGUIDE_VERIFY`, instead of a temporary hook. [pbrt-aovs-and-image-output.md](../pbrt-aovs-and-image-output.md) can replace it with its batch mode.
+- Reference images are saved and loaded as EXR now, so tinyexr is added in this plan instead of in [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md). PFM comes with it.
+- The scene-level checks render through a small permanent headless mode, `VKGUIDE_VERIFY`, instead of a temporary hook. [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) replaced it with its batch mode on 2026-10-21: `vulkan_guide --render <scene> --spp N --out <file>`.
 - A bug the harness finds is reported first, and the user decides on each finding. On 2026-10-20 they chose to fix findings 1, 2 and 5 and to note 3 and 4 in the plans that will address them.
 
 ## What exists today
@@ -54,7 +54,7 @@ Two scenes in `assets/scenes/`, rendered by a script through the headless smoke-
 
 - A log–log plot of relative MSE against samples per pixel, kept for each render compared against the same reference, so that two strategies can be compared on one plot. An unbiased estimator draws a line of slope −1; a flatter line past about 1000 spp points to accumulation precision, which [pbrt-film-and-reconstruction.md](pbrt-film-and-reconstruction.md) fixes (PBR 4ed Figure 5.24).
 - Mean absolute percentage error beside RMSE and relative MSE.
-- Saving and loading the reference as an EXR (through [pbrt-aovs-and-image-output.md](../pbrt-aovs-and-image-output.md)), so that a reference rendered once can be reused across sessions and compared against pbrt's own output ([pbrt-scene-import.md](../pbrt-scene-import.md)).
+- Saving and loading the reference as an EXR (through [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md)), so that a reference rendered once can be reused across sessions and compared against pbrt's own output ([pbrt-scene-import.md](../pbrt-scene-import.md)).
 
 ### Optics
 

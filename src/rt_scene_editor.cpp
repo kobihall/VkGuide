@@ -518,6 +518,105 @@ void RaytraceSceneEditor::replaceMeshObjects(std::vector<SceneMeshObject>&& obje
 	markChanged();
 }
 
+void RaytraceSceneEditor::setLightGroups(std::vector<std::string> names, uint32_t environmentGroup)
+{
+	if (names.empty()) {
+		names.push_back("Default");
+	}
+	if (names.size() > MAX_LIGHT_GROUPS) {
+		names.resize(MAX_LIGHT_GROUPS);
+	}
+	m_lightGroupNames = std::move(names);
+	const uint32_t last = (uint32_t)m_lightGroupNames.size() - 1u;
+	m_environmentGroup = std::min(environmentGroup, last);
+	for (SceneLight& light : m_lights) {
+		light.lightGroup = std::min(light.lightGroup, last);
+	}
+	for (MaterialDef& material : m_materials) {
+		material.lightGroup = std::min(material.lightGroup, last);
+	}
+	markChanged();
+}
+
+bool RaytraceSceneEditor::drawLightGroupCombo(const char* label, uint32_t& group) const
+{
+	const uint32_t shown = std::min(group, (uint32_t)m_lightGroupNames.size() - 1u);
+	bool changed = false;
+	if (ImGui::BeginCombo(label, m_lightGroupNames[shown].c_str())) {
+		for (uint32_t g = 0; g < (uint32_t)m_lightGroupNames.size(); g++) {
+			ImGui::PushID((int)g);
+			if (ImGui::Selectable(m_lightGroupNames[g].c_str(), g == shown) && g != group) {
+				group = g;
+				changed = true;
+			}
+			ImGui::PopID();
+		}
+		ImGui::EndCombo();
+	}
+	return changed;
+}
+
+void RaytraceSceneEditor::drawLightGroupEditor()
+{
+	bool changed = false;
+	std::optional<uint32_t> removed;
+	for (uint32_t g = 0; g < (uint32_t)m_lightGroupNames.size(); g++) {
+		ImGui::PushID((int)g);
+		char name[64];
+		std::snprintf(name, sizeof(name), "%s", m_lightGroupNames[g].c_str());
+		ImGui::SetNextItemWidth(ImGui::CalcItemWidth() * 0.7f);
+		//a name is not part of what renders, so renaming restarts nothing
+		if (ImGui::InputText("##name", name, sizeof(name)) && name[0] != '\0') {
+			m_lightGroupNames[g] = name;
+		}
+		ImGui::SameLine();
+		ImGui::BeginDisabled(m_lightGroupNames.size() <= 1);
+		if (ImGui::SmallButton("Remove")) {
+			removed = g;
+		}
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::TextDisabled("group %u", g);
+		ImGui::PopID();
+	}
+	if (removed.has_value()) {
+		//everything in the group moves to group 0, and the groups above it move down one
+		const uint32_t gone = *removed;
+		auto shift = [gone](uint32_t& group) {
+			if (group == gone) {
+				group = 0;
+			} else if (group > gone) {
+				group--;
+			}
+		};
+		for (SceneLight& light : m_lights) {
+			shift(light.lightGroup);
+		}
+		for (MaterialDef& material : m_materials) {
+			shift(material.lightGroup);
+		}
+		shift(m_environmentGroup);
+		m_lightGroupNames.erase(m_lightGroupNames.begin() + gone);
+		changed = true;
+	}
+	ImGui::BeginDisabled(m_lightGroupNames.size() >= MAX_LIGHT_GROUPS);
+	if (ImGui::Button("Add group")) {
+		m_lightGroupNames.push_back(fmt::format("Group {}", m_lightGroupNames.size()));
+		changed = true;
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	ImGui::TextDisabled("%zu of %u", m_lightGroupNames.size(), MAX_LIGHT_GROUPS);
+
+	changed |= drawLightGroupCombo("Background", m_environmentGroup);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("The group the environment map, the sky gradient or the solid background colour belongs to.\nA light is put in a group in the Scene panel, and an emissive material in the Materials window.");
+	}
+	if (changed) {
+		markChanged();
+	}
+}
+
 void RaytraceSceneEditor::replaceMaterials(std::vector<MaterialDef>&& materials)
 {
 	m_materials.clear();
@@ -1168,6 +1267,10 @@ void RaytraceSceneEditor::drawSelectedLight(VulkanEngine* engine, SceneLight& li
 		ImGui::TextDisabled("imported with %s", light.modelKey.c_str());
 	}
 	bool changed = drawLightParams(light);
+	changed |= drawLightGroupCombo("light group", light.lightGroup);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("The group this light's contribution is kept in when a render keeps light groups: Raytrace Render > Outputs.");
+	}
 
 	TransformGizmo& gizmo = engine->m_transformGizmo;
 	const bool editing = gizmo.isEditing(gizmoTargetId(light.id));
@@ -1472,6 +1575,14 @@ void RaytraceSceneEditor::drawMaterialDetails(VulkanEngine* engine, MaterialDef&
 	ImGui::EndDisabled();
 
 	changed |= drawMaterialParams(material, imported.has_value() ? &*imported : nullptr);
+
+	//a material that emits is a light, and its light is kept in a group
+	if (material.type == MaterialType::Emissive || material.type == MaterialType::Pbr) {
+		changed |= drawLightGroupCombo("light group", material.lightGroup);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("The group this material's emission is kept in when a render keeps light groups: Raytrace Render > Outputs.");
+		}
+	}
 
 	if (changed) {
 		markChanged();

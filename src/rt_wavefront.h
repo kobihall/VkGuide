@@ -36,6 +36,9 @@ inline constexpr VkDeviceSize CRT_SHADOW_RAY_SIZE = 48;
 // (src/sampler.h SAMPLE_RECORD_BYTES)
 inline constexpr VkDeviceSize CRT_SAMPLE_RECORD_SIZE = 48;
 inline constexpr VkDeviceSize CRT_SAMPLE_RECORD_STUB_SIZE = 16;
+// PixelState (src/rt_gpu_types.h CrtPixelState): one per pool slot while an auxiliary output is on, a single one
+// that nothing reads otherwise
+inline constexpr VkDeviceSize CRT_PIXEL_STATE_SIZE = 72;
 
 class WavefrontPool {
 public:
@@ -43,9 +46,9 @@ public:
 	// after a device-wide wait (the frames in flight may still read the old one - rare, since it
 	// happens only when the resolution or the samples per frame change), and publishes the buffers.
 	// `sampleRecord` is whether the selected sampler writes the RaySamples record: it exists at full
-	// size only then, and is a stub otherwise (a change reallocates just that buffer). True when it
-	// reallocated
-	bool ensure(VulkanEngine* engine, CrtResourceTable& resources, uint32_t width, uint32_t height, uint32_t samplesPerFrame, bool sampleRecord);
+	// size only then, and is a stub otherwise (a change reallocates just that buffer). `pixelState` is the
+	// same for the PixelState buffer, which the auxiliary outputs need. True when it reallocated
+	bool ensure(VulkanEngine* engine, CrtResourceTable& resources, uint32_t width, uint32_t height, uint32_t samplesPerFrame, bool sampleRecord, bool pixelState);
 	// requires the pool to be out of use
 	void destroy(VulkanEngine* engine, CrtResourceTable& resources);
 
@@ -85,4 +88,7 @@ private:
 	// one RaySamples per pool slot (indexed by path index), or the stub
 	AllocatedBuffer m_raySamples {};
 	bool m_hasSampleRecord { false };
+	// one CrtPixelState per pool slot, or the stub
+	AllocatedBuffer m_pixelStates {};
+	bool m_hasPixelState { false };
 };

@@ -61,8 +61,45 @@ vec2 sampleRecordField2D(uint pathIndex, uint field)
 	return vec2(sampleRecordField(pathIndex, field), sampleRecordField(pathIndex, field + 1u));
 }
 
+// THE ALBEDO ESTIMATE'S SAMPLES. Under CRT_AOV, kernel 06 estimates the BSDF's directional albedo at the first
+// surface a camera path meets by sampling the BSDF 16 times with the fixed numbers pbrt-v4's surfscatter.cpp uses
+// (ucRho, uRho: the lobe choice and the direction), and averaging the weights. While g_albedoSample is the index of
+// one of them, sampleDimension() returns them instead of the path's own numbers, so the estimate needs no sampling
+// code of its own and never touches the path's stream or its record. -1 the rest of the time, and with CRT_AOV off
+// the branch is gone
+#define CRT_ALBEDO_SAMPLES 16
+int g_albedoSample = -1;
+
+const float CRT_ALBEDO_UC[CRT_ALBEDO_SAMPLES] = float[CRT_ALBEDO_SAMPLES](
+	0.75741637, 0.37870818, 0.7083487, 0.18935409, 0.9149363, 0.35417435, 0.5990858, 0.09467703,
+	0.8578725, 0.45746812, 0.686759, 0.17708716, 0.9674518, 0.2995429, 0.5083201, 0.047338516);
+const vec2 CRT_ALBEDO_U[CRT_ALBEDO_SAMPLES] = vec2[CRT_ALBEDO_SAMPLES](
+	vec2(0.855985, 0.570367), vec2(0.381823, 0.851844), vec2(0.285328, 0.764262), vec2(0.733380, 0.114073),
+	vec2(0.542663, 0.344465), vec2(0.127274, 0.414848), vec2(0.964700, 0.947162), vec2(0.594089, 0.643463),
+	vec2(0.095109, 0.170369), vec2(0.825444, 0.263359), vec2(0.429467, 0.454469), vec2(0.244460, 0.816459),
+	vec2(0.756135, 0.731258), vec2(0.516165, 0.152852), vec2(0.180888, 0.214174), vec2(0.898579, 0.503897));
+
+// the albedo estimate's value for a field of the record: the lobe, then the two direction numbers; the fields the
+// BSDF samples do not read answer the middle
+float albedoSampleField(int sampleIndex, uint field)
+{
+	if (field == CRT_SAMPLE_INDIRECT_LOBE) {
+		return CRT_ALBEDO_UC[sampleIndex];
+	}
+	if (field == CRT_SAMPLE_INDIRECT_DIRECTION) {
+		return CRT_ALBEDO_U[sampleIndex].x;
+	}
+	if (field == CRT_SAMPLE_INDIRECT_DIRECTION + 1u) {
+		return CRT_ALBEDO_U[sampleIndex].y;
+	}
+	return 0.5;
+}
+
 float sampleDimension(uint pathIndex, inout uint rng, uint field)
 {
+	if (CRT_AOV && g_albedoSample >= 0) {
+		return albedoSampleField(g_albedoSample, field);
+	}
 	if (!CRT_SAMPLE_RECORD) {
 		return randomFloat(rng);
 	}

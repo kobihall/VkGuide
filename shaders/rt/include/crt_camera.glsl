@@ -3,7 +3,7 @@
 // Everything after the sample's place in the image plane is the same for both, so it is written once; the
 // including .comp holds the version, the extension and the includes below. A change here changes both
 // kernels, and 0001's compiled shader is checked against the commit before for exactly that reason.
-// Requires crt_common.glsl, crt_random.glsl, crt_samples.glsl, and crt_filter.glsl for CRT_PIXEL_FILTER.
+// Requires crt_common.glsl, crt_random.glsl, crt_samples.glsl, crt_aov.glsl, and crt_filter.glsl for CRT_PIXEL_FILTER.
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
@@ -23,6 +23,9 @@ void main()
 
 		spawn = k < min(sampleBudget[pixel], pc.samplesPerFrame);
 		radiance[index] = vec4(0.0, 0.0, 0.0, spawn ? 1.0 : 0.0);
+		if (CRT_AOV) {
+			aovClear(index);
+		}
 
 		if (spawn) {
 			// the stream depends only on the pixel, which sample of that pixel this is, and the render

@@ -9,6 +9,7 @@
 // struct compares with ==, which is how the renderer notices that the thing it is rendering has
 // changed under it.
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -19,6 +20,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <aov.h>
 #include <film.h>
 #include <rt_material.h>
 #include <sampler.h>
@@ -138,6 +140,18 @@ inline SceneShape makeShape(ShapeKind kind)
 // free camera is not one of these - it is a tool for looking at the scene - but "first-person
 // edit" lets it drive one. Orientation is a quaternion so the gizmo can rotate it freely; the
 // identity looks down -z with +y up, the same as the free camera at yaw 0, pitch 0
+// the most light groups a scene holds: a group is the high 8 bits of a shadow ray's word and the index into the
+// sums, and eight keeps the sums' memory in step with what a relight needs
+inline constexpr uint32_t MAX_LIGHT_GROUPS = 8;
+
+// what Relight does to one light group: its sums times `scale`, times `tint` per channel
+struct LightGroupGain {
+	float scale { 1.f };
+	glm::vec3 tint { 1.f };
+
+	bool operator==(const LightGroupGain&) const = default;
+};
+
 struct SceneCamera {
 	// stable across edits and reorders, assigned by the editor and never saved
 	uint64_t id { 0 };
@@ -151,6 +165,9 @@ struct SceneCamera {
 	// display only: TonemapPass's scale for renders from this camera. Scales the picture, not
 	// the light (that is the scene's environmentIntensity)
 	float exposure { 1.f };
+	// display only, like the exposure: what Relight multiplies each light group's sums by, so a lamp can be dimmed
+	// or the sky tinted without new samples (docs/plans/completed/pbrt-aovs-and-image-output.md)
+	std::array<LightGroupGain, MAX_LIGHT_GROUPS> relight {};
 
 	glm::vec3 forward() const { return orientation * glm::vec3(0.f, 0.f, -1.f); }
 	glm::vec3 up() const { return orientation * glm::vec3(0.f, 1.f, 0.f); }
@@ -235,6 +252,8 @@ struct SceneLight {
 	// the model this light was imported with, which removing the model removes it with; empty for a
 	// light made in the editor
 	std::string modelKey;
+	// the light group (0 to 7) its contributions are kept in beside the picture
+	uint32_t lightGroup { 0 };
 
 	// the direction the light shines (spot) or travels (directional)
 	glm::vec3 direction() const { return orientation * glm::vec3(0.f, 0.f, -1.f); }
@@ -453,6 +472,24 @@ struct RenderSettings {
 	// and 4 took a glass caustic's relative MSE at 256 samples from 0.069 to 0.0045 for 4 percent of its
 	// energy. Zirr et al. use 20 to 32 at 1000 samples and more
 	float outlierKappa { 4.f };
+	// OUTPUTS (docs/plans/completed/pbrt-aovs-and-image-output.md). What the render keeps beside its picture: turning
+	// one on restarts the render, since it has to accumulate from the first sample. All off by default, and a render
+	// with none allocates nothing for them and runs the code it ran before
+	AovSettings aov;
+	// keep the sums of each light group, so the groups can be exported and relit after the render
+	bool lightGroups { false };
 
 	bool operator==(const RenderSettings&) const = default;
+};
+
+// What File > Export Render does, and when a render saves itself. Saved with the scene, and display-side: changing
+// it restarts nothing (docs/plans/completed/pbrt-aovs-and-image-output.md)
+struct ExportSettings {
+	// an EXR file stores 16-bit half floats instead of 32-bit floats: half the size, and a pixel above 65504 clamps
+	bool halfFloat { false };
+	// write the render to `saveWhenFinishedPath` when it reaches its sample target. The format is the extension
+	bool saveWhenFinished { false };
+	std::string saveWhenFinishedPath;
+
+	bool operator==(const ExportSettings&) const = default;
 };

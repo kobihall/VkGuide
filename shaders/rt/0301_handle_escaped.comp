@@ -16,12 +16,14 @@
 // appended to the next ray queue and the last workgroup's overhang can simply return.
 
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_atomic_float : require
 #include "include/crt_common.glsl"
 #include "include/crt_random.glsl"
 #include "equirect.glsl"
 #include "include/crt_background.glsl"
 #include "include/crt_light.glsl"
 #include "include/crt_debug.glsl"
+#include "include/crt_light_groups.glsl"
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
@@ -76,4 +78,8 @@ void main()
 		contribution *= weight;
 	}
 	radiance[path.radianceSlot].rgb += contribution;
+	// the background, whatever it is (the map, the sky gradient, a solid colour), is one group's
+	if (CRT_LIGHT_GROUPS) {
+		lightGroupAdd(path.radianceSlot, pc.environmentGroup, contribution);
+	}
 }

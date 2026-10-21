@@ -1,0 +1,115 @@
+#version 460
+
+// One auxiliary output as a picture: reads the AOV sums kernel 09 keeps (the layers of AovImages) and writes an
+// rgba8 image for its window under Windows, resolved the way an exported file resolves it (src/aov.h resolveAov()).
+// A pixel that never met a surface is black. Display only: it touches nothing the render keeps.
+// docs/plans/completed/pbrt-aovs-and-image-output.md.
+
+#extension GL_GOOGLE_include_directive : require
+#include "rt/include/crt_aov_color.glsl"
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (rgba32f, set = 0, binding = 0) uniform readonly image2DArray aovImages;
+layout (r32ui, set = 0, binding = 1) uniform readonly uimage2D samplesTaken;
+layout (rgba8, set = 0, binding = 2) uniform writeonly image2D displayImage;
+
+// src/rt_gpu.cpp AovViewPushConstants
+layout (push_constant) uniform constants {
+	uint view;
+	// the AovLayout, a nibble per layer (src/aov.h AovLayout::pack())
+	uint layers;
+	// the render's sample target, for the sample-count view
+	uint maxSamples;
+	// the farthest depth the depth view shows, as black
+	float depthScale;
+} pc;
+
+// the views, src/rt_gpu.h CrtAovView
+#define VIEW_POSITION 0u
+#define VIEW_DEPTH 1u
+#define VIEW_NORMAL 2u
+#define VIEW_SHADING_NORMAL 3u
+#define VIEW_UV 4u
+#define VIEW_ALBEDO 5u
+#define VIEW_INSTANCE 6u
+#define VIEW_MATERIAL 7u
+#define VIEW_VARIANCE 8u
+#define VIEW_SAMPLE_COUNT 9u
+
+#define LAYER_WEIGHTS 0u
+#define LAYER_POSITION_DEPTH 1u
+#define LAYER_NORMAL 2u
+#define LAYER_SHADING_NORMAL 3u
+#define LAYER_UV 4u
+#define LAYER_ALBEDO 5u
+#define LAYER_VARIANCE_MEAN 6u
+#define LAYER_VARIANCE_M2 7u
+
+vec4 layer(ivec2 coord, uint which)
+{
+	const uint index = (pc.layers >> (4u * which)) & 0xFu;
+	return index == 0xFu ? vec4(0.0) : imageLoad(aovImages, ivec3(coord, int(index)));
+}
+
+void main()
+{
+	const ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+	if (coord.x >= imageSize(displayImage).x || coord.y >= imageSize(displayImage).y) {
+		return;
+	}
+
+	vec3 color = vec3(0.0);
+	if (pc.view == VIEW_SAMPLE_COUNT) {
+		color = vec3(float(imageLoad(samplesTaken, coord).r) / float(max(pc.maxSamples, 1u)));
+		imageStore(displayImage, coord, vec4(clamp(color, 0.0, 1.0), 1.0));
+		return;
+	}
+
+	const vec4 weights = layer(coord, LAYER_WEIGHTS);
+	const float surfaceWeight = weights.x;
+	const float totalWeight = weights.y;
+	const bool hit = surfaceWeight != 0.0;
+
+	switch (pc.view) {
+	case VIEW_POSITION:
+		// a unit grid over the scene, so the position's structure shows without a scale to choose
+		color = hit ? fract(layer(coord, LAYER_POSITION_DEPTH).xyz / surfaceWeight) : vec3(0.0);
+		break;
+	case VIEW_DEPTH:
+		// near is bright, and the scene's far side black
+		color = hit ? vec3(1.0 - layer(coord, LAYER_POSITION_DEPTH).w / surfaceWeight / pc.depthScale) : vec3(0.0);
+		break;
+	case VIEW_NORMAL: {
+		const vec3 n = layer(coord, LAYER_NORMAL).xyz;
+		color = dot(n, n) > 0.0 ? normalize(n) * 0.5 + 0.5 : vec3(0.0);
+		break;
+	}
+	case VIEW_SHADING_NORMAL: {
+		const vec3 n = layer(coord, LAYER_SHADING_NORMAL).xyz;
+		color = dot(n, n) > 0.0 ? normalize(n) * 0.5 + 0.5 : vec3(0.0);
+		break;
+	}
+	case VIEW_UV:
+		color = hit ? vec3(layer(coord, LAYER_UV).xy / surfaceWeight, 0.0) : vec3(0.0);
+		break;
+	case VIEW_ALBEDO:
+		// the same display curve as the picture
+		color = totalWeight != 0.0 ? sqrt(clamp(layer(coord, LAYER_ALBEDO).xyz / totalWeight, 0.0, 1.0)) : vec3(0.0);
+		break;
+	case VIEW_INSTANCE:
+		color = weights.z > 0.0 ? aovIdColor(uint(weights.z) - 1u) : vec3(0.0);
+		break;
+	case VIEW_MATERIAL:
+		color = weights.w > 0.0 ? aovIdColor(uint(weights.w) - 1u) : vec3(0.0);
+		break;
+	case VIEW_VARIANCE: {
+		// the samples' variance per channel, squeezed into [0, 1) so any scale shows
+		const float n = layer(coord, LAYER_VARIANCE_MEAN).w;
+		const vec3 variance = n > 1.0 ? layer(coord, LAYER_VARIANCE_M2).xyz / (n - 1.0) : vec3(0.0);
+		color = variance / (1.0 + variance);
+		break;
+	}
+	}
+	imageStore(displayImage, coord, vec4(clamp(color, 0.0, 1.0), 1.0));
+}

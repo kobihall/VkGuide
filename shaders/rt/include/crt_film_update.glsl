@@ -2,7 +2,7 @@
 // 0903 (CRT_FILM_CASCADE) also splats each sample into the pixel's cascade, and resolves in a second pass
 // that reads the neighbors' cascades, so that no pixel reads what another is still writing. The including
 // .comp holds the version, the extension, the comments and the includes below.
-// Requires crt_common.glsl and crt_film.glsl.
+// Requires crt_common.glsl, crt_film.glsl and crt_aov.glsl.
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
@@ -53,6 +53,11 @@ void main()
 	}
 	if (dropped > 0u) {
 		atomicAdd(traversalStats[CRT_STAT_DROPPED_SAMPLES], dropped);
+	}
+	// the auxiliary outputs and the light groups' weight sum, from the same slots. Once per frame: in the outlier
+	// film's first pass
+	if (CRT_AOV || CRT_LIGHT_GROUPS) {
+		aovFoldPixel(pixel, coord);
 	}
 	if (spawned == 0u) {
 		return;

@@ -22,6 +22,41 @@ float bsdfRandomFloat(uint32_t& state)
 	return bsdfWordToFloat(word);
 }
 
+namespace {
+
+// pbrt-v4 src/pbrt/wavefront/surfscatter.cpp
+constexpr float ALBEDO_UC[BSDF_ALBEDO_SAMPLES] = {
+	0.75741637f, 0.37870818f, 0.7083487f, 0.18935409f, 0.9149363f, 0.35417435f, 0.5990858f, 0.09467703f,
+	0.8578725f, 0.45746812f, 0.686759f, 0.17708716f, 0.9674518f, 0.2995429f, 0.5083201f, 0.047338516f };
+constexpr glm::vec2 ALBEDO_U[BSDF_ALBEDO_SAMPLES] = {
+	{ 0.855985f, 0.570367f }, { 0.381823f, 0.851844f }, { 0.285328f, 0.764262f }, { 0.733380f, 0.114073f },
+	{ 0.542663f, 0.344465f }, { 0.127274f, 0.414848f }, { 0.964700f, 0.947162f }, { 0.594089f, 0.643463f },
+	{ 0.095109f, 0.170369f }, { 0.825444f, 0.263359f }, { 0.429467f, 0.454469f }, { 0.244460f, 0.816459f },
+	{ 0.756135f, 0.731258f }, { 0.516165f, 0.152852f }, { 0.180888f, 0.214174f }, { 0.898579f, 0.503897f } };
+
+}
+
+glm::vec3 bsdfAlbedoEstimate(const BsdfMaterial& m, glm::vec3 inDir, glm::vec3 normal, bool frontFace)
+{
+	glm::vec3 sum(0.f);
+	for (int i = 0; i < BSDF_ALBEDO_SAMPLES; i++) {
+		//the shader's sampleDimension() answers from the table while the estimate runs, whatever the sampler: the
+		//draws are a record whose fields are the table's, and the stream is the fuzz radius's alone
+		BsdfDraws draws;
+		draws.record = true;
+		draws.rng = 0x9E3779B9u * (uint32_t)(i + 1);
+		draws.fields[4] = ALBEDO_UC[i];
+		draws.fields[5] = ALBEDO_U[i].x;
+		draws.fields[6] = ALBEDO_U[i].y;
+		glm::vec3 attenuation(0.f);
+		glm::vec3 outDir(0.f);
+		if (scatterSurface(m, inDir, normal, frontFace, draws, attenuation, outDir)) {
+			sum += attenuation;
+		}
+	}
+	return sum * (1.0f / (float)BSDF_ALBEDO_SAMPLES);
+}
+
 float bsdfSampleDimension(BsdfDraws& draws, uint32_t field)
 {
 	if (!draws.record) {

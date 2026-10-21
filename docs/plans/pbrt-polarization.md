@@ -50,7 +50,7 @@ Legacy materials as depolarizers are an approximation. It has one useful propert
 
 A **Polarizing filter** setting on the camera ([pbrt-cameras.md](pbrt-cameras.md)): none, or a linear polarizer at an angle to the camera's up vector. Kernel 00 sets `d` to the filter's first row, rotated into each camera ray's canonical frame. Rotating the filter dims reflections off water and glass as a real filter does, and darkens a polarized sky once there is one.
 
-A polarimetric camera, which outputs the four Stokes images `s0` to `s3` as auxiliary outputs ([pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md)), needs all four rows of the product instead of one. That is a later `CRT_POLARIZED = 2` family carrying 16 floats per lane.
+A polarimetric camera, which outputs the four Stokes images `s0` to `s3` as auxiliary outputs ([pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md)), needs all four rows of the product instead of one. That is a later `CRT_POLARIZED = 2` family carrying 16 floats per lane.
 
 ### Toward the electromagnetic goal
 

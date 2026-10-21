@@ -36,7 +36,7 @@ void PathSchedule::start(GpuRenderer& renderer, VulkanEngine* engine)
 	//the sample record exists only while the selected sampler writes one
 	const KernelVariant* sampler = snapshot.kernels.selected(KernelSlot::GenerateSamples);
 	const bool sampleRecord = sampler != nullptr && sampler->implemented && sampler->writesRecord;
-	renderer.wavefrontPool().ensure(engine, renderer.resources(), snapshot.width, snapshot.height, samplesPerFrame, sampleRecord);
+	renderer.wavefrontPool().ensure(engine, renderer.resources(), snapshot.width, snapshot.height, samplesPerFrame, sampleRecord, renderer.aovSettings().accumulates());
 
 	if (m_headerReadback.buffer == VK_NULL_HANDLE) {
 		m_headerReadback = engine->createBuffer((VkDeviceSize)FRAME_OVERLAP * READBACK_HEADERS_PER_SLOT * sizeof(CrtQueueHeader), VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_TO_CPU);

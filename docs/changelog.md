@@ -13,6 +13,15 @@
 - **Windows** → **GPU self-tests** gains three tests: the film's shaders against `src/film.cpp`, kernel 09's accounting over synthetic frames (a dropped sample, a constant fed for 65536 frames, signed weights, the clamp), and the outlier kernel against its mirror.
 - `tools/verify/filter_check.py` compares box filtering through the table with the unfiltered jitter and renders a checkerboard to the horizon under three filters. `film_check.py` measures the compensated film's precision and the outlier film against a clamp. `furnace_check.py` renders every pixel filter, where a mirror or glass sphere must stay exactly 1 in every pixel. `run_all.py` runs all three.
 - `assets/scenes/caustic_glass.gltf` is a glass sphere on a floor under a small lamp, a caustic made of fireflies.
+- **File** → **Export Render...** writes the render as the file's extension says: `.exr` with the picture and every output the render kept as named channels (pbrt's `GBufferFilm` names, and pbrt's metadata in the header), `.pfm`, `.hdr`, or `.png`, the display image as the window shows it. **Raytrace Render** → **Export** sets **Half floats in EXR** and **Save when finished**, which writes the render to a chosen path when it reaches its sample target. The scene file saves both.
+- `./bin/vulkan_guide --render <scene> --spp N --out <file>` renders a scene headless, writes the result and quits, with exit code 0, 2 (refused) or 3 (timeout). `--seed`, `--size`, `--timeout`, `--aov`, `--capture-through-specular`, `--light-groups`, `--half`, `--debug-view`, `--ao-distance` and `--relight` set the rest, and `--help` lists them.
+- **Raytrace Render** → **Outputs** keeps auxiliary outputs beside the picture: position, depth, normal, shading normal, uv, albedo, ids, variance and the sample count. Each shows in its own window under **Windows** and exports as channels. Albedo is the BSDF's directional albedo from pbrt's 16 fixed samples, and **Capture through specular** records the first surface that is not a mirror or glass. A render that keeps none runs as before and allocates nothing for them: the four older scenes, a scene with a fuzzy metal, glass and `pbr` under each of four samplers, and Sponza matched the build before byte for byte.
+- **Light groups** keeps the light of each group apart. A light's group is in the **Scene** panel, an emissive material's in the **Materials** window, and the background's under **Outputs**. Each group exports as `LightGroup.<name>.R`, and **Relight** shows the picture rebuilt from the groups with a scale and a tint for each, without new samples. The gains are saved with the camera. Four groups sum to the picture within 1.6e-6 relative.
+- **Raytrace Render** → **Debug view** → **ambient occlusion** shows the fraction of cosine-distributed rays from the first hit that travel the **AO distance** unoccluded, after pbrt's `AOIntegrator`. Inside a sphere of radius 2 it gives 0.9375, 0.7500 and 0.4375 for lengths 1, 2 and 3, the values of the closed form.
+- **Set Environment Map...** reads OpenEXR files as well as Radiance `.hdr`, and a multi-channel EXR loads as a reference.
+- `bin/aov_test` checks the auxiliary outputs on the CPU, and **--selfcheck** plants an albedo over the wrong weight and a variance over `n` and fails unless both are caught. `bin/exr_dump` lists the channels and attributes of an EXR file and writes each channel as `.npy`, and `bin/image_convert` converts between EXR, PFM and HDR.
+- **Windows** → **GPU self-tests** gains three tests: kernel 09's fold of the outputs against `src/aov.cpp`, the 16-sample albedo of `crt_scatter.glsl` against `bsdfAlbedoEstimate()` in `src/bsdf.cpp` (0 of 6144 cases past 0.002), and the output windows' shader against their definitions.
+- `tools/verify/aov_check.py` renders a quad, a glass sphere, a multi-light scene, the ambient occlusion sphere and the file formats through the batch mode, and compares them with what they must give. `run_all.py` runs it and `aov_test`.
 
 ### Changed
 
@@ -20,6 +29,10 @@
 - Scene files are payload version 15, which adds `"pixelFilter"`, `"clampSamples"`, `"clampValue"` and `"outlierKappa"` to `"render"`. A file without `"pixelFilter"` reads a box.
 - Kernel 00's existing variant is named **Thin lens (box pixels)**, and kernel 09's **Running mean** ignores the sign of a filter's negative lobes. A render that needs the signs or the clamp runs the compensated mean instead, and the **Film** section says so.
 - **Analysis view** → **Dropped samples** compares the samples taken with the samples accepted under the compensated film, and the render's target under the running mean.
+- Scene files are payload version 16: `"aov"` and `"lightGroups"` in `"render"`, `"lightGroupNames"`, `"environmentGroup"` and `"export"` at the top, `"lightGroup"` on a light, a material and a material override, and `"relight"` on a camera. An older file opens with no outputs and one light group.
+- The device requires `VK_EXT_shader_atomic_float` (buffer float add), which kernels 03, 04 and 08 use to add to the light groups' sums.
+- `VKGUIDE_VERIFY`, `VKGUIDE_VERIFY_SEED`, `_SIZE` and `_TIMEOUT` are gone, replaced by `--render`, `--seed`, `--size` and `--timeout`. `tools/verify/vkscene.py` runs the batch mode, and its log lines start with `render:` instead of `verify:`.
+- The PNG export is the display image with today's gamma 2 curve. Its bytes change when the sRGB display curve lands.
 
 ### Fixed
 
@@ -34,6 +47,12 @@
 - `CrtParams` stays 208 bytes: `filmClamp` and `outlierKappa` take two padding words.
 - `KernelVariant` gains `keepsFilmRecord`, `keepsFilmCascade` and `passes`. A stage with `passes` above 1 is dispatched that many times per frame with a barrier between, and `params.bounce` is the pass. `KernelSettings` gains `PixelFilter` and `Film`.
 - `analysis_view.comp` reads the film record through binding 5 and a `hasFilmRecord` push constant.
+- `src/aov.h/.cpp` is the static library `rt_aov`, the line-for-line mirror of `shaders/rt/include/crt_aov.glsl` (the layers of `AovImages`, one pixel's accumulation and its resolve), with `src/render_export.h/.cpp`, which builds an export's channels.
+- Bindings 29 `PixelState`, 32 `AovImages` and 45 `ChannelSums`, each a stub while its feature is off. A kernel with `KernelVariant::usesOutputs` is built with the specialization constants `CRT_AOV` (id 1) and `CRT_LIGHT_GROUPS` (id 2), and the pipeline cache key carries them. A kernel that declares the three bindings must be given them wherever it is built: the film self-test builds kernel 09 from raw bindings and binds stubs.
+- `CrtParams` is 224 bytes. `GpuLight::group` takes a padding word, and the high 8 bits of `ShadowRay::mediumAndGroup` hold the light group.
+- `src/vk_readback.h` copies GPU images and buffers to the host and invalidates the staging memory, for every export. `VulkanEngine::createImageArray()` makes a 2D array image.
+- `sampleDimension()` in `crt_samples.glsl` answers from pbrt's 16 albedo numbers while `g_albedoSample` is set, and the fuzzy metal's direction in `crt_scatter.glsl` reads the same table. Both are behind `CRT_AOV`, and `src/bsdf.cpp` mirrors the metal case.
+- `src/command_line.h/.cpp` parses the command line with no Vulkan. `VulkanEngine::beginBatch()` and `stepBatch()` replace `beginVerify()` and `stepVerify()`.
 
 ## 2026-10-20
 

@@ -2,7 +2,7 @@
 
 The environment is an equirectangular Radiance `.hdr` map, fixed in world space, sampled by a piecewise-constant distribution with pbrt's MIS compensation. That covers pbrt-v4's `ImageInfiniteLight` except for its map parameterization. pbrt adds a portal light for interiors lit through a window, and its `imgtool makesky` generates a physically based sky. This plan adds those, map rotation, the equal-area parameterization pbrt uses for every spherical image, and a sun with a finite disk.
 
-*Not implemented. Depends on [pbrt-light-types.md](pbrt-light-types.md) (photometric units for the environment) and, for the sky's spectral form, [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). OpenEXR maps load through [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-light-types.md](pbrt-light-types.md) (photometric units for the environment) and, for the sky's spectral form, [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). OpenEXR maps load through [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 

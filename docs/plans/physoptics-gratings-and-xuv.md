@@ -7,7 +7,7 @@ The request's spectral goals are prism dispersion, lens chromatic aberration, XU
 ## What the renderer will have
 
 - Exact surfaces of the conic and even-asphere kinds, intersected in `crt_optic.glsl` and `rt_optics` ([physoptics-optical-surfaces.md](physoptics-optical-surfaces.md)).
-- Spectral lanes over any range, with hero wavelengths uniform outside the visible range and band images for non-visible results ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md), [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md)).
+- Spectral lanes over any range, with hero wavelengths uniform outside the visible range and band images for non-visible results ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md), [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md)).
 - Glasses with dispersion formulas, a vacuum surrounding medium, thin-film stacks with complex indices, and a surface finish with an rms roughness ([physoptics-optical-materials.md](physoptics-optical-materials.md)).
 
 ## Design

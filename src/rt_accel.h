@@ -176,6 +176,8 @@ struct RaytraceSceneAccel {
 struct EnvironmentLight {
 	std::shared_ptr<const EnvironmentDistribution> distribution;
 	float intensity { 1.f };
+	// the light group (0 to 7) the background is kept in
+	uint32_t group { 0 };
 
 	bool operator==(const EnvironmentLight&) const = default;
 };

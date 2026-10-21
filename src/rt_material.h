@@ -131,6 +131,9 @@ struct MaterialDef {
 	// for a glTF material: the parameters the user changed from the imported values, which are all
 	// the scene file saves of it
 	std::set<std::string, std::less<>> edited;
+	// the light group (0 to 7) what the material emits is kept in, beside the picture
+	// (docs/plans/completed/pbrt-aovs-and-image-output.md). A material that does not emit has none to use
+	uint32_t lightGroup { 0 };
 
 	bool operator==(const MaterialDef&) const = default;
 };

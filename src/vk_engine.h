@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <command_line.h>
 #include <vk_types.h>
 #include <vk_descriptors.h>
 #include <vk_display.h>
@@ -343,7 +344,8 @@ public:
 		SetEnvironmentMap,
 		ClearEnvironmentMap,
 		SaveReference,
-		LoadReference
+		LoadReference,
+		ExportRender
 	};
 	FileAction m_pendingFileAction { FileAction::None };
 
@@ -363,6 +365,8 @@ public:
 	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
 	void destroyBuffer(const AllocatedBuffer& buffer);
 	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+	// a 2D array image of `layers` layers, viewed as one array (an image2DArray in a shader)
+	AllocatedImage createImageArray(VkExtent3D size, uint32_t layers, VkFormat format, VkImageUsageFlags usage);
 	AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
 	void destroyImage(const AllocatedImage& img);
 
@@ -401,29 +405,30 @@ public:
 
 	//run main loop
 	void run();
+	// the arguments main() parsed, before init(): --render asks for the batch mode
+	void setCommandLine(CommandLine commandLine) { m_commandLine = std::move(commandLine); }
 	//what main() returns: nonzero when VKGUIDE_SELFTEST=1 ran and a self-test failed
 	int exitCode() const { return m_exitCode; }
 
 private:
 	int m_exitCode { 0 };
 
-	// VKGUIDE_VERIFY=<scene>:<samples>:<output.exr|pfm>: opens the scene, renders it to that many
-	// samples per pixel with a fixed seed, writes the accumulation and quits. For the verification
-	// scripts (tools/verify/); VKGUIDE_VERIFY_SEED, _SIZE (WxH) and _TIMEOUT (seconds) adjust it
-	struct VerifyRun {
+	// THE BATCH MODE (--render, src/command_line.h): opens the scene, renders it to its sample target with a fixed
+	// seed, writes the result and quits. For the verification scripts (tools/verify/)
+	struct BatchRun {
 		std::filesystem::path output;
 		uint32_t samples { 1 };
 		enum class Phase { Start, Rendering, Settling } phase { Phase::Start };
-		uint64_t startFrame { 0 };
 		uint64_t settleFrame { 0 };
 		double timeoutSeconds { 1800.0 };
 		std::chrono::steady_clock::time_point started;
 	};
-	std::optional<VerifyRun> m_verify;
-	// reads VKGUIDE_VERIFY and opens the scene; false (with m_exitCode set) when it cannot run
-	bool beginVerify();
-	// once per frame while a verify run is active
-	void stepVerify();
+	std::optional<BatchRun> m_batch;
+	CommandLine m_commandLine;
+	// opens the scene the command line names and applies its options; false (with m_exitCode set) when it cannot run
+	bool beginBatch();
+	// once per frame while a batch run is active
+	void stepBatch();
 	void initGLFW();
 	void initVulkan();
 	void initSwapchain();

@@ -27,6 +27,7 @@ void LightListBuilder::addPunctual(const SceneLight& light)
 
 	GpuLight record;
 	record.radiance = intensity;
+	record.group = std::min(light.lightGroup, MAX_LIGHT_GROUPS - 1u);
 	const glm::vec3 direction = glm::normalize(light.direction());
 	float crossSection = 0.f;
 	switch (light.kind) {
@@ -62,7 +63,7 @@ void LightListBuilder::addPunctual(const SceneLight& light)
 	m_list.punctualLights++;
 }
 
-uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance)
+uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance, uint32_t group)
 {
 	const float luminance = luminanceOf(radiance);
 	const std::vector<AreaLightGeometry> surfaces = shapeLightGeometry(kind, objectToWorld);
@@ -75,6 +76,7 @@ uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWor
 		GpuLight record;
 		record.kind = (uint32_t)surface.kind;
 		record.radiance = radiance;
+		record.group = group;
 		switch (surface.kind) {
 		case AreaLightKind::Sphere:
 			record.a = glm::vec4(surface.a, surface.radius);
@@ -105,7 +107,7 @@ uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWor
 	return first;
 }
 
-uint32_t LightListBuilder::addTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, const glm::vec3& radiance, uint32_t attributeIndex, uint32_t material, int emissiveLayer, float textureMean)
+uint32_t LightListBuilder::addTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, const glm::vec3& radiance, uint32_t attributeIndex, uint32_t material, int emissiveLayer, float textureMean, uint32_t group)
 {
 	const float area = 0.5f * glm::length(glm::cross(v1 - v0, v2 - v0));
 	//two-sided, as the tracer's triangles are, and as bright as its texture is on average over it
@@ -120,13 +122,14 @@ uint32_t LightListBuilder::addTriangle(const glm::vec3& v0, const glm::vec3& v1,
 	record.c = glm::vec4(v2, std::bit_cast<float>(material));
 	record.radiance = radiance;
 	record.power = power;
+	record.group = group;
 	m_list.lights.push_back(record);
 	m_crossSectionPower.push_back(0.f);
 	m_list.triangleLightCount++;
 	return (uint32_t)m_list.lights.size() - 1;
 }
 
-void LightListBuilder::addEnvironment(float luminanceIntegral, float intensity)
+void LightListBuilder::addEnvironment(float luminanceIntegral, float intensity, uint32_t group)
 {
 	const float crossSection = luminanceIntegral * std::max(intensity, 0.f);
 	if (!(crossSection > 0.f) || !std::isfinite(crossSection)) {
@@ -134,6 +137,7 @@ void LightListBuilder::addEnvironment(float luminanceIntegral, float intensity)
 	}
 	GpuLight record;
 	record.kind = (uint32_t)GpuLightKind::Environment;
+	record.group = group;
 	m_list.header.environment = (uint32_t)m_list.lights.size();
 	m_list.lights.push_back(record);
 	m_crossSectionPower.push_back(crossSection);

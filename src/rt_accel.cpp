@@ -274,12 +274,15 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	//a mesh, without them for a shape. Id 0 is a glTF surface with no material at all, white
 	//lambertian as the tracer has always shaded it
 	std::map<std::pair<uint64_t, bool>, uint32_t> packedIndex;
+	//the light group of each packed material, for the light records of what it emits
+	std::vector<uint32_t> materialGroups;
 	auto materialIndex = [&](uint64_t id, bool textures) -> uint32_t {
 		const auto [it, inserted] = packedIndex.try_emplace({ id, textures }, (uint32_t)accel->materials.size());
 		if (inserted) {
 			const auto found = std::find_if(materials.begin(), materials.end(), [id](const MaterialDef& m) { return m.id == id; });
 			const MaterialDef fallback = makeMaterial(MaterialType::Lambertian, id == 0 ? glm::vec3(1.f) : glm::vec3(0.7f));
 			accel->materials.push_back(packMaterial(found != materials.end() ? *found : fallback, PackContext { .textures = textures }));
+			materialGroups.push_back(found != materials.end() ? std::min(found->lightGroup, MAX_LIGHT_GROUPS - 1u) : 0u);
 		}
 		return it->second;
 	};
@@ -306,7 +309,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		instance.objectToWorld = shapes[i].objectToWorld();
 		instances.push_back(instance);
 		materialBase.push_back(material);
-		lightBase.push_back(lightList.addShape(shapes[i].kind, instance.objectToWorld, accel->materials[material].emission));
+		lightBase.push_back(lightList.addShape(shapes[i].kind, instance.objectToWorld, accel->materials[material].emission, materialGroups[material]));
 	}
 	accel->shapeCount = (uint32_t)shapes.size();
 
@@ -361,7 +364,8 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 				//a textured emitter is as bright as its texture is over this triangle; the GPU applies
 				//the texel itself, this only prices the triangle for the light selection
 				const float textureMean = material.emissiveLayer >= 0 ? textures.meanLuminance(material.emissiveLayer, uv(ia), uv(ib), uv(ic)) : 1.f;
-				const uint32_t light = lightList.addTriangle(world(ia), world(ib), world(ic), emission, attributeBase + triangle, accel->instanceMaterials[tableBase + surfaceIndex], material.emissiveLayer, textureMean);
+				const uint32_t light = lightList.addTriangle(world(ia), world(ib), world(ic), emission, attributeBase + triangle, accel->instanceMaterials[tableBase + surfaceIndex], material.emissiveLayer, textureMean,
+					materialGroups[accel->instanceMaterials[tableBase + surfaceIndex]]);
 				lightList.setTriangleLight(meshLightBase, triangle, light);
 			});
 		}
@@ -425,7 +429,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	//the environment last, then every light priced: a directional light and the environment by the
 	//scene's size, a sphere around its bounded geometry (1 for a scene with none)
 	if (environment.distribution != nullptr) {
-		lightList.addEnvironment(environment.distribution->luminanceIntegral, environment.intensity);
+		lightList.addEnvironment(environment.distribution->luminanceIntegral, environment.intensity, std::min(environment.group, MAX_LIGHT_GROUPS - 1u));
 	}
 	const Aabb& bounds = accel->tlas.bounds;
 	const bool hasBounds = bounds.min.x <= bounds.max.x && bounds.min.y <= bounds.max.y && bounds.min.z <= bounds.max.z;

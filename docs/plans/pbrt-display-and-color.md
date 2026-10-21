@@ -62,7 +62,7 @@ Spectral rendering can produce colors outside Rec. 709, carried as negative comp
 
 The piecewise sRGB transfer function replaces the square root. The storage image stays `R8G8B8A8_UNORM`, since sRGB formats cannot be storage images on most drivers, and the swapchain stays `UNORM`, so the shader writes encoded values.
 
-Wide-gamut output (Display P3 on this Mac's panel, through `VK_EXT_swapchain_colorspace` if MoltenVK exposes it) is a later option: the working space stays Rec. 709, and a P3 display matrix follows the gamut mapping. Saved images take the color spaces `imgtool convert --colorspace` offers (sRGB, DCI-P3, Rec. 2020, ACES2065-1), which [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) writes into EXR metadata.
+Wide-gamut output (Display P3 on this Mac's panel, through `VK_EXT_swapchain_colorspace` if MoltenVK exposes it) is a later option: the working space stays Rec. 709, and a P3 display matrix follows the gamut mapping. Saved images take the color spaces `imgtool convert --colorspace` offers (sRGB, DCI-P3, Rec. 2020, ACES2065-1), which [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) writes into EXR metadata.
 
 ### Wavelength display colors
 

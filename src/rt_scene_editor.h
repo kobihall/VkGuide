@@ -68,6 +68,20 @@ public:
 	void replaceMeshObjects(std::vector<SceneMeshObject>&& objects);
 	void replaceMaterials(std::vector<MaterialDef>&& materials);
 
+	// THE LIGHT GROUPS (docs/plans/completed/pbrt-aovs-and-image-output.md): up to MAX_LIGHT_GROUPS named groups.
+	// A light, an emissive material and the background each carry the index of one, so a render that keeps the
+	// groups' sums can export and relight them apart. Group 0 is the default, so a scene that touches none has one
+	const std::vector<std::string>& lightGroupNames() const { return m_lightGroupNames; }
+	// the group the background belongs to (the environment map, the sky gradient or the solid colour)
+	uint32_t environmentGroup() const { return m_environmentGroup; }
+	// the load path: the names and the background's group. A light or material in a group the list does not have
+	// moves to group 0
+	void setLightGroups(std::vector<std::string> names, uint32_t environmentGroup);
+	// the group list's editor, in the Raytrace Render panel: rename, add, remove, and the background's group
+	void drawLightGroupEditor();
+	// a combo over the names; true when the choice changed. A group the list no longer has shows as group 0
+	bool drawLightGroupCombo(const char* label, uint32_t& group) const;
+
 	// appends a library entry, gives it an id and returns the id
 	uint64_t addMaterial(MaterialDef material);
 	// the model-removal path: drops the entries that model's import made. One an object still
@@ -172,6 +186,8 @@ private:
 	std::vector<SceneLight> m_lights;
 	std::vector<SceneMeshObject> m_meshObjects;
 	std::vector<MaterialDef> m_materials;
+	std::vector<std::string> m_lightGroupNames { "Default" };
+	uint32_t m_environmentGroup { 0 };
 
 	SelectionKind m_selectionKind { SelectionKind::None };
 	uint64_t m_selectionId { 0 };

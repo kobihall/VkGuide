@@ -45,6 +45,11 @@ bool debugTerminalValue(vec3 normal, vec3 geometricNormal, float traversalCost, 
 	case CRT_DEBUG_TRAVERSAL_COST:
 		value = traversalHeat(traversalCost);
 		return true;
+	case CRT_DEBUG_AMBIENT_OCCLUSION:
+		// kernel 06 casts the rays and kernel 08 adds what reaches; a miss is black and a light seen straight is
+		// unoccluded, so white. Neither has a ray of its own to cast (kernels 03 and 04 hold no shadow queue)
+		value = isHit ? vec3(1.0) : vec3(0.0);
+		return true;
 	case CRT_DEBUG_NORMAL_DISAGREEMENT:
 		if (isHit) {
 			const float cosine = dot(normal, geometricNormal);

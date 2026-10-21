@@ -2,7 +2,7 @@
 
 This roadmap covers every feature that *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* describe and this renderer lacks or implements weakly. Each feature has a plan in `docs/plans/`, named `pbrt-*.md` since 2026-10-18. This file records the decisions that shape all of them and reserves the resources they share, so that the plans can be implemented in any order without colliding.
 
-*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, the material system, robust intersections and sample generation on 2026-10-19, the verification harness on 2026-10-20, and the film and reconstruction on 2026-10-21; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
+*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, the material system, robust intersections and sample generation on 2026-10-19, the verification harness on 2026-10-20, and the film and reconstruction and the auxiliary outputs on 2026-10-21; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
 
 *Revised 2026-10-18 for the [laser optics plan](physoptics-laser-optics.md), whose `physoptics-*.md` plans build on these. That plan's roadmap gives one linear order for both sets of plans; it pulls several of these forward (the foundations, the BSDF library, light types, image output, the display transform, the light integrator of bidirectional path tracing, cameras and polarization). The reservations below gain the laser optics plan's rows, and every rule here applies to its plans too.*
 
@@ -70,7 +70,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 | [pbrt-bump-mapping.md](pbrt-bump-mapping.md) | Displacement-texture bump mapping, normal maps in the material kernel, shadow-terminator fixes |
 | [pbrt-cameras.md](pbrt-cameras.md) | Orthographic, spherical, realistic lens systems, aperture shapes, tilt-shift, click-to-focus |
 | [pbrt-display-and-color.md](pbrt-display-and-color.md) | sRGB display curve, tone mapping operators, photographic exposure, white balance, output gamut |
-| [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) | Auxiliary outputs, per-light-group images, EXR, PFM and PNG export |
+| [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) | Implemented: auxiliary outputs, light groups and Relight, EXR, PFM, HDR and PNG export, the ambient occlusion view and the batch mode. Spectral band images wait for spectral rendering |
 
 ### Lights and direct lighting
 
@@ -130,7 +130,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 
 ### Considered and not planned
 
-- Denoising, at the user's request. The auxiliary outputs in [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md) are what a denoiser would need later.
+- Denoising, at the user's request. The auxiliary outputs in [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) are what a denoiser would need later.
 - Neural representations of materials, lights or radiance (PBR 4ed §16.3.2), light-field cameras and focal stacks (4th edition, chapter 5 exercises), point-sampled geometry, sensor noise simulation and a shading language. None of these is a feature pbrt implements, and none fits the tracer without a large detour.
 - The stochastic alpha test (PBR 4ed §7.1.1). The user chose the deterministic alpha test on 2026-09-25.
 - Deformation motion blur (PBR 4ed exercise 6.15). The user chose rigid two-pose motion; [pbrt-motion-blur.md](pbrt-motion-blur.md) notes what deformation would need.
@@ -181,7 +181,7 @@ Every plan must leave a scene that does not use its feature rendering bit-identi
 
 ### Binding numbers
 
-Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Numbers 0 to 21, 23, 26, 30, 31, 46 and 62 exist. These are reserved so that plans landing in any order never collide. A plan that is never built leaves a gap, which is legal.
+Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Numbers 0 to 21, 23, 26, 29 to 32, 45, 46 and 62 exist. These are reserved so that plans landing in any order never collide. A plan that is never built leaves a gap, which is legal.
 
 | Binding | Resource | Plan |
 |---|---|---|
@@ -192,10 +192,10 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 26 | `MaterialParams` | material-system |
 | 27 | `Textures` (descriptor array) | textures |
 | 28 | `LightBvh` | bvh-light-sampler |
-| 29 | `PixelState` | not allocated: a sample's filter weight rides in its radiance slot's `w` ([completed/pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md)); aovs-and-image-output allocates it |
+| 29 | `PixelState` | aovs-and-image-output (implemented): 72 bytes a pool slot while an output is on. A sample's filter weight rides in its radiance slot's `w` ([completed/pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md)) |
 | 30 | `FilterTable` | film-and-reconstruction (implemented) |
 | 31 | `AccumulationError` | film-and-reconstruction (implemented) |
-| 32 | `AovImages` | aovs-and-image-output |
+| 32 | `AovImages` | aovs-and-image-output (implemented) |
 | 33 | `MediumGrids` | participating-media |
 | 34 | `Curves` | curves-and-hair |
 | 35 | `TextureNodes` | procedural-textures |
@@ -208,7 +208,7 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 42 | `SplatAccumulation` | bidirectional-path-tracing |
 | 43 | `PhotonGrid` | photon-mapping |
 | 44 | `MarkovChains` | metropolis-light-transport |
-| 45 | `ChannelSums` | aovs-and-image-output |
+| 45 | `ChannelSums` | aovs-and-image-output (implemented): the light groups, then `sum(w)`; spectral bands will follow |
 | 46 | `SamplerTables` | sample-generation |
 | 47 | `BsdfTables` | appearance-extras |
 | 48 | `GuidingVertices` | path-guiding |
@@ -265,7 +265,7 @@ The radiance slot (`radiance[]`, binding 4) stays a `vec4` in film space in ever
 | Field | Type | Owner |
 |---|---|---|
 | `origin` | `vec3` | thin-hit-record (implemented) |
-| `mediumAndGroup` | `uint`: the medium the ray starts in (low 24 bits) and the light group (high 8 bits) | participating-media, aovs-and-image-output |
+| `mediumAndGroup` | `uint`: the medium the ray starts in (low 24 bits) and the light group (high 8 bits) | participating-media, aovs-and-image-output (the group is implemented) |
 | `direction`, `tMax` | `vec3`, `float` | existing |
 | `contribution` | `Spectrum` (was `vec3`) | spectral-rendering |
 | `radianceSlot` | `uint` | existing |

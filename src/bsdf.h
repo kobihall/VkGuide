@@ -80,6 +80,14 @@ bool scatterSurface(const BsdfMaterial& m, glm::vec3 inDir, glm::vec3 normal, bo
 // true for a material whose scattering is a delta distribution
 bool isSpecularMaterial(const BsdfMaterial& m);
 
+// THE ALBEDO THE AUXILIARY OUTPUTS REPORT (crt_surface.glsl aovCapture(), docs/plans/completed/pbrt-aovs-and-image-output.md):
+// the mean of the weights scatterSurface() returns over pbrt-v4's 16 fixed samples (surfscatter.cpp's ucRho and uRho, which
+// crt_samples.glsl holds as CRT_ALBEDO_UC and CRT_ALBEDO_U), an absorbed sample counting 0. A Lambertian surface gives its
+// colour, glass about 1, a mirror its tint, a fuzzy metal its tint times the share of samples that do not go below the
+// surface. The fuzz radius draws from a stream seeded by the sample's index, as the shader's does
+inline constexpr int BSDF_ALBEDO_SAMPLES = 16;
+glm::vec3 bsdfAlbedoEstimate(const BsdfMaterial& m, glm::vec3 inDir, glm::vec3 normal, bool frontFace);
+
 // f(wo, wi) |cos theta_i| for a direction someone else chose. Zero for a specular material and for a
 // direction below the surface
 glm::vec3 evalSurface(const BsdfMaterial& m, glm::vec3 inDir, glm::vec3 normal, glm::vec3 wi);

@@ -1,0 +1,39 @@
+#version 460
+
+// RELIGHT. The picture rebuilt from the light groups' sums instead of the film: each group's sum(w L) times its scale
+// and its tint, added, over sum(w), the weight sum kernel 09 keeps beside them. With every group at scale 1 and tint
+// 1 it is the sum the groups make of the picture; a lamp dimmed or a sky tinted needs no new samples. Display only:
+// it writes a linear image of its own for the tonemap to read, and touches nothing the render keeps.
+// docs/plans/completed/pbrt-aovs-and-image-output.md.
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (std430, set = 0, binding = 0) readonly buffer ChannelSumBuffer { float channelSums[]; };
+layout (rgba32f, set = 0, binding = 1) uniform writeonly image2D relitImage;
+
+// src/rt_gpu.cpp RelightPushConstants
+layout (push_constant) uniform constants {
+	uint width;
+	uint height;
+	uint groupCount;
+	uint pad;
+	// scale x tint per group, rgb; w unused
+	vec4 gain[8];
+} pc;
+
+void main()
+{
+	const ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+	if (coord.x >= int(pc.width) || coord.y >= int(pc.height)) {
+		return;
+	}
+	const uint pixel = uint(coord.y) * pc.width + uint(coord.x);
+	const uint stride = 3u * pc.groupCount + 1u;
+	const uint base = pixel * stride;
+	const float weight = channelSums[base + 3u * pc.groupCount];
+	vec3 sum = vec3(0.0);
+	for (uint g = 0u; g < pc.groupCount; g++) {
+		sum += pc.gain[g].rgb * vec3(channelSums[base + 3u * g], channelSums[base + 3u * g + 1u], channelSums[base + 3u * g + 2u]);
+	}
+	imageStore(relitImage, coord, vec4(weight != 0.0 ? sum / weight : vec3(0.0), 1.0));
+}

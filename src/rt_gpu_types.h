@@ -15,6 +15,7 @@
 
 #include <glm/glm.hpp>
 
+#include <aov.h>
 #include <rt_kernels.h>
 #include <vk_types.h>
 
@@ -81,6 +82,23 @@ struct CrtFilmPixel {
 };
 static_assert(sizeof(CrtFilmPixel) == 48);
 
+// binding 29, one per pool slot while an auxiliary output is on: the first visible surface the camera path in the slot
+// met (crt_common.glsl PixelState; src/aov.h AovSample has the same fields). 18 four-byte words, 72 bytes
+struct CrtPixelState {
+	glm::vec3 position;
+	// along the camera's forward axis
+	float depth;
+	glm::vec3 normal;
+	glm::vec3 shadingNormal;
+	glm::vec2 uv;
+	glm::vec3 albedo;
+	uint32_t instance;
+	uint32_t material;
+	// AOV_STATE_HIT once a surface is recorded
+	uint32_t state;
+};
+static_assert(sizeof(CrtPixelState) == 72 && alignof(CrtPixelState) == 4, "PixelState is scalars only, so std430 packs it to 72 bytes");
+
 struct CrtQueueHeader {
 	// == VkDispatchIndirectCommand, maintained by the allocator as ceil(rayCount / workgroup)
 	uint32_t groupCountX;
@@ -137,9 +155,18 @@ struct CrtParams {
 	float filmClamp;
 	// RenderSettings::outlierKappa, for the outlier-reweighted film
 	float outlierKappa;
-	uint32_t pad2;
+	// the auxiliary outputs (src/aov.h): one bit per AovOutput, and AOV_PARAM_CAPTURE_THROUGH_SPECULAR
+	uint32_t aovOutputs;
+	// where each AovLayer is in the AovImages array, a nibble each (AovLayout::pack()), 0xF for none
+	uint32_t aovLayers;
+	// the light groups a render keeps, 0 for none
+	uint32_t lightGroupCount;
+	// the group the background belongs to
+	uint32_t environmentGroup;
+	// the ambient occlusion view's ray length
+	float aoDistance;
 };
-static_assert(sizeof(CrtParams) == 208);
+static_assert(sizeof(CrtParams) == 224);
 
 inline constexpr uint32_t CRT_FLAG_JITTER = 1u << 0;
 inline constexpr uint32_t CRT_FLAG_ROULETTE = 1u << 1;

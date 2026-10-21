@@ -27,4 +27,5 @@
 #extension GL_GOOGLE_include_directive : require
 #include "include/crt_common.glsl"
 #include "include/crt_film.glsl"
+#include "include/crt_aov.glsl"
 #include "include/crt_film_update.glsl"

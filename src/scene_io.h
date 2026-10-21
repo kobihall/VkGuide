@@ -17,7 +17,9 @@
 // settings), 3 (no cameras), 4 (no mesh objects), 5 (spheres rather than geometry) and 6 (no
 // emissive material or background colour), 7 (no kernel selection or BVH settings), 8 (no pbr
 // material), 9 (no punctual lights), 10 (no integrator or traversal), 11 (inline materials rather
-// than a library: each object's becomes a user material named after it).
+// than a library: each object's becomes a user material named after it), 12 to 15 (render settings
+// that a file without them reads as the defaults a scene of its time had), 16 (no auxiliary outputs,
+// light groups or export settings).
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -51,6 +53,8 @@ struct SceneMaterialOverride {
 	int model { 0 };
 	uint32_t gltfIndex { 0 };
 	ParamSet params;
+	// version 16: the light group (0 to 7) the material's emission is kept in
+	uint32_t lightGroup { 0 };
 };
 
 // One placed mesh object as a file records it. Identical to SceneMeshObject except that the model
@@ -114,6 +118,11 @@ struct SceneDescription {
 	AccelSettings accel { defaultAccelSettings() };
 	// what was skipped on load: an unknown integrator, traversal, kernel slot, variant or builder
 	std::vector<std::string> kernelWarnings;
+	// version 16: the names of the light groups, the group the background belongs to, and what exporting a render
+	// does. A file before 16 has one group, "Default"
+	std::vector<std::string> lightGroupNames { "Default" };
+	uint32_t environmentGroup { 0 };
+	ExportSettings exportSettings;
 };
 
 IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);

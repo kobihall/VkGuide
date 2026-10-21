@@ -81,6 +81,7 @@ std::vector<CrtBinding> scatterBindings(bool allLights)
 		CrtBinding::Lights,
 		CrtBinding::ShadowRays,
 		CrtBinding::RaySamples,
+		CrtBinding::PixelState,
 	}));
 	if (allLights) {
 		bindings.push_back(CrtBinding::EnvironmentMap);
@@ -104,8 +105,9 @@ const std::vector<KernelVariant>& registry()
 			.description = "One primary ray per pool slot, jittered uniformly in the pixel and over the aperture. What a scene saved before pixel filters opens with.",
 			.shader = "rt/0001_generate_camera_rays.comp",
 			.domain = KernelDomain::Pool,
-			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples }),
+			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples, CrtBinding::PixelState }),
 			.readsRecord = true,
+			.usesOutputs = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::GenerateCameraRays,
@@ -114,10 +116,11 @@ const std::vector<KernelVariant>& registry()
 			.description = "One primary ray per pool slot, placed by importance sampling the pixel filter, and jittered over the aperture. pbrt-v4's way of filtering.",
 			.shader = "rt/0002_generate_camera_rays_filtered.comp",
 			.domain = KernelDomain::Pool,
-			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples, CrtBinding::FilterTable }),
+			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples, CrtBinding::FilterTable, CrtBinding::PixelState }),
 			.isDefault = true,
 			.settings = KernelSettings::PixelFilter,
 			.readsRecord = true,
+			.usesOutputs = true,
 		});
 
 		//---------------------------------------------------------------- 01 generate samples
@@ -194,7 +197,8 @@ const std::vector<KernelVariant>& registry()
 			.shader = "rt/0301_handle_escaped.comp",
 			.domain = KernelDomain::FixedQueue,
 			.queue = QUEUE_ESCAPED,
-			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Radiance, CrtBinding::EnvironmentMap, CrtBinding::Lights, CrtBinding::EnvironmentSampling }),
+			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Radiance, CrtBinding::EnvironmentMap, CrtBinding::Lights, CrtBinding::EnvironmentSampling, CrtBinding::ChannelSums }),
+			.usesOutputs = true,
 		});
 
 		//---------------------------------------------------------------- 04 handle emissive
@@ -208,7 +212,8 @@ const std::vector<KernelVariant>& registry()
 			.shader = "rt/0401_handle_emissive.comp",
 			.domain = KernelDomain::FixedQueue,
 			.queue = QUEUE_EMISSIVE,
-			.bindings = withInteraction(withCore({ CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::MaterialParams, CrtBinding::MaterialTextures, CrtBinding::Lights })),
+			.bindings = withInteraction(withCore({ CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::MaterialParams, CrtBinding::MaterialTextures, CrtBinding::Lights, CrtBinding::PixelState, CrtBinding::ChannelSums })),
+			.usesOutputs = true,
 		});
 
 		//---------------------------------------------------------------- 05 sample medium interaction
@@ -239,6 +244,7 @@ const std::vector<KernelVariant>& registry()
 			.perMaterialClass = true,
 			.nextEvent = NextEvent::DeltaLights,
 			.readsRecord = true,
+			.usesOutputs = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::SurfaceScattering,
@@ -252,6 +258,7 @@ const std::vector<KernelVariant>& registry()
 			.perMaterialClass = true,
 			.nextEvent = NextEvent::AllLights,
 			.readsRecord = true,
+			.usesOutputs = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::SurfaceScattering,
@@ -265,6 +272,7 @@ const std::vector<KernelVariant>& registry()
 			.perMaterialClass = true,
 			.nextEvent = NextEvent::AllLights,
 			.readsRecord = true,
+			.usesOutputs = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::SurfaceScattering,
@@ -279,6 +287,7 @@ const std::vector<KernelVariant>& registry()
 			.perMaterialClass = true,
 			.nextEvent = NextEvent::AllLights,
 			.readsRecord = true,
+			.usesOutputs = true,
 		});
 
 		//---------------------------------------------------------------- 07 sample medium scattering
@@ -305,8 +314,9 @@ const std::vector<KernelVariant>& registry()
 			.shader = "rt/0801_trace_shadow_rays.comp",
 			.domain = KernelDomain::FixedQueue,
 			.queue = QUEUE_SHADOW,
-			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::ShadowRays, CrtBinding::TraversalStats }),
+			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::ShadowRays, CrtBinding::TraversalStats, CrtBinding::ChannelSums }),
 			.traces = true,
+			.usesOutputs = true,
 		});
 
 		//---------------------------------------------------------------- 09 update film
@@ -317,7 +327,8 @@ const std::vector<KernelVariant>& registry()
 			.description = "Folds each pixel's samples into its float mean, skipping unspawned slots and NaNs. A scene saved before the compensated film opens with it. Ignores the sign of a filter's negative lobes.",
 			.shader = "rt/0901_update_film.comp",
 			.domain = KernelDomain::Pixels,
-			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats },
+			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::PixelState, CrtBinding::AovImages, CrtBinding::ChannelSums },
+			.usesOutputs = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::UpdateFilm,
@@ -326,10 +337,11 @@ const std::vector<KernelVariant>& registry()
 			.description = "Weighted sums with Neumaier compensation, the luminance's running variance, an optional clamp, and a count of samples taken apart from the count accepted, so a dropped sample is not drawn again.",
 			.shader = "rt/0902_update_film_compensated.comp",
 			.domain = KernelDomain::Pixels,
-			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::AccumulationError },
+			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::AccumulationError, CrtBinding::PixelState, CrtBinding::AovImages, CrtBinding::ChannelSums },
 			.isDefault = true,
 			.settings = KernelSettings::Film,
 			.keepsFilmRecord = true,
+			.usesOutputs = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::UpdateFilm,
@@ -338,11 +350,12 @@ const std::vector<KernelVariant>& registry()
 			.description = "The compensated mean, with each pixel's value resolved from a cascade of buffers by brightness: samples of a brightness too rare in the pixel and its neighbors are weighed down or dropped (Zirr et al. 2018). Removes fireflies with far less lost energy than the clamp.",
 			.shader = "rt/0903_update_film_outliers.comp",
 			.domain = KernelDomain::Pixels,
-			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::AccumulationError, CrtBinding::FilmCascade },
+			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::AccumulationError, CrtBinding::FilmCascade, CrtBinding::PixelState, CrtBinding::AovImages, CrtBinding::ChannelSums },
 			.settings = KernelSettings::Film,
 			.keepsFilmRecord = true,
 			.keepsFilmCascade = true,
 			.passes = 2,
+			.usesOutputs = true,
 		});
 
 		return v;

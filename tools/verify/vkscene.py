@@ -1,5 +1,5 @@
 """Shared helpers for the verification scripts: build scene files, run the renderer headless on
-them (VKGUIDE_VERIFY, src/vk_engine.cpp), and read what it writes.
+them (the batch mode, `vulkan_guide --render`, src/command_line.h), and read what it writes.
 
 A scene is the version-7 payload (inline materials), which the current build still reads; the
 scripts never depend on the material library.
@@ -140,8 +140,10 @@ def write_pfm(path, image):
 
 # ---------------------------------------------------------------- running the renderer
 
-def run_render(scene, samples, *, size=None, seed=None, workdir=None, timeout=900, keep_scene=None):
-    """Renders `scene` (a dict, or a path) to `samples` per pixel and returns the linear image."""
+def run_render(scene, samples, *, size=None, seed=None, workdir=None, timeout=900, keep_scene=None, extra_args=(), out_name="render.pfm"):
+    """Renders `scene` (a dict, or a path) to `samples` per pixel and returns the linear image and the count of
+    samples dropped. `extra_args` are more batch-mode options (--aov, --light-groups, ...), and `out_name` picks the
+    format: render.pfm by default, or render.exr to read the channels through read_exr()."""
     workdir = Path(workdir or tempfile.mkdtemp(prefix="vkverify_"))
     workdir.mkdir(parents=True, exist_ok=True)
     if isinstance(scene, dict):
@@ -149,26 +151,28 @@ def run_render(scene, samples, *, size=None, seed=None, workdir=None, timeout=90
         write_scene(scene_path, scene)
     else:
         scene_path = Path(scene)
-    out = workdir / "render.pfm"
+    out = workdir / out_name
     if out.exists():
         out.unlink()
     env = dict(os.environ)
     env["VKGUIDE_WINDOW"] = "background"
-    env["VKGUIDE_VERIFY"] = f"{scene_path.resolve()}:{samples}:{out}"
-    env["VKGUIDE_VERIFY_TIMEOUT"] = str(timeout)
+    command = [str(BIN / "vulkan_guide"), "--render", str(scene_path.resolve()), "--spp", str(samples), "--out", str(out), "--timeout", str(timeout)]
     if size:
-        env["VKGUIDE_VERIFY_SIZE"] = f"{size[0]}x{size[1]}"
+        command += ["--size", f"{size[0]}x{size[1]}"]
     if seed is not None:
-        env["VKGUIDE_VERIFY_SEED"] = str(seed)
-    result = subprocess.run([str(BIN / "vulkan_guide")], cwd=BIN, env=env, capture_output=True, text=True, timeout=timeout + 60)
+        command += ["--seed", str(seed)]
+    command += list(extra_args)
+    result = subprocess.run(command, cwd=BIN, env=env, capture_output=True, text=True, timeout=timeout + 60)
     log = result.stdout + result.stderr
     if result.returncode != 0 or not out.exists():
-        raise RuntimeError(f"render failed (exit {result.returncode}):\n" + "\n".join(l for l in log.splitlines() if "verify" in l or "rror" in l)[-2000:])
+        raise RuntimeError(f"render failed (exit {result.returncode}):\n" + "\n".join(l for l in log.splitlines() if "render:" in l or "rror" in l)[-2000:])
     dropped = 0
     for line in log.splitlines():
-        if "verify:" in line and "dropped" in line:
+        if "render:" in line and "dropped" in line:
             dropped = int(line.split(" samples, ")[1].split(" dropped")[0])
-    return read_pfm(out), dropped
+    if out.suffix == ".pfm":
+        return read_pfm(out), dropped
+    return out, dropped
 
 
 def save_png(path, image, exposure=1.0):

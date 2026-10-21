@@ -37,7 +37,8 @@ public:
 	// a finished render and restarts a render whose inputs changed
 	void update(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 
-	void drawPanel(VulkanEngine* engine, const RaytraceSceneEditor& editor);
+	// non-const: the Outputs section edits the scene's light groups and the camera's relight gains
+	void drawPanel(VulkanEngine* engine, RaytraceSceneEditor& editor);
 
 	// inside draw()'s command buffer, before the raster passes: this frame's path-tracing
 	// work and its tonemap into the display image
@@ -83,12 +84,21 @@ public:
 	uint64_t renderCameraId() const { return m_renderCameraId; }
 	void setRenderCamera(uint64_t id) { m_renderCameraId = id; }
 
-	// Reference images and render dumps as files (.exr or .pfm). They wait for the device, so a
-	// running render stalls for the readback
+	// Reference images and render exports as files. They wait for the device, so a running render stalls for the
+	// readback
 	IoResult saveReference(VulkanEngine* engine, const std::filesystem::path& path);
 	IoResult loadReference(VulkanEngine* engine, const std::filesystem::path& path);
-	IoResult saveRender(VulkanEngine* engine, const std::filesystem::path& path);
-	// the render, for a script (VKGUIDE_VERIFY): whether one is running, its samples, and the
+	// EXPORT (docs/plans/completed/pbrt-aovs-and-image-output.md). Writes the render as the file's extension says:
+	// .exr the picture with every output the render kept as named channels (src/render_export.h) and pbrt's
+	// metadata, .pfm and .hdr the picture, .png the display image as the window shows it, 8-bit
+	IoResult exportRender(VulkanEngine* engine, const RaytraceSceneEditor& editor, const std::filesystem::path& path);
+	// how File > Export Render writes an EXR file, and whether a render saves itself when it reaches its sample target
+	// (to the path set here): saved with the scene, and changing it restarts nothing
+	const ExportSettings& exportSettings() const { return m_exportSettings; }
+	void setExportSettings(const ExportSettings& settings) { m_exportSettings = settings; }
+	// the last export, from File > Export Render or Save when finished
+	const IoResult& exportResult() const { return m_exportIo; }
+	// the render, for the batch mode (src/command_line.h): whether one is running, its samples, and the
 	// measurements the panel would show
 	// starts a render now, as the Render button does, with the reason it was refused (if it was)
 	void render(VulkanEngine* engine, const RaytraceSceneEditor& editor) { startRender(engine, editor); }
@@ -97,6 +107,8 @@ public:
 	float totalGpuMs() const { return m_gpu.totalGpuMs(); }
 	void setReferenceIo(const IoResult& result) { m_referenceIo = result; }
 	bool renderRunning() const { return m_gpu.isRunning(); }
+	// the display-side controls the batch mode sets: the debug view, the ambient occlusion distance, Relight
+	GpuRenderer& gpu() { return m_gpu; }
 	bool hasRender() const { return m_hasRender; }
 	uint32_t samplesAccumulated() const { return m_gpu.samplesAccumulated(); }
 	uint32_t maxSamples() const { return m_gpu.maxSamples(); }
@@ -140,6 +152,9 @@ private:
 		glm::vec3 backgroundColor { 0.f };
 		uint32_t width { 0 };
 		uint32_t height { 0 };
+		// the scene's light groups, which the sums a render keeps are split by
+		uint32_t lightGroupCount { 1 };
+		uint32_t environmentGroup { 0 };
 
 		bool operator==(const RenderKey&) const = default;
 	};
@@ -157,6 +172,10 @@ private:
 	// the "Sampler" section: kernel 01's variant, its randomization, and why a render runs another
 	void drawSamplerSettings(VulkanEngine* engine);
 	void drawFilmSettings(VulkanEngine* engine);
+	// the "Outputs" section: the auxiliary outputs, the light groups and Relight
+	void drawOutputsSettings(VulkanEngine* engine, RaytraceSceneEditor& editor);
+	// the "Export" section: the file options, Save when finished and the Export Render button
+	void drawExportSettings(VulkanEngine* engine, RaytraceSceneEditor& editor);
 	// m_settings as a render started now would use them: the viewport's size under Match viewport,
 	// one sample without antialiasing, every count clamped to what the tracer allows
 	RenderSettings renderSettings(VulkanEngine* engine) const;
@@ -208,6 +227,8 @@ private:
 	std::vector<ConvergenceCurve> m_curves;
 	std::string m_curveLabel;
 	IoResult m_referenceIo;
+	ExportSettings m_exportSettings;
+	IoResult m_exportIo;
 
 	// the BVH settings, as applied (m_accelSettings) and as being edited in the panel
 	AccelSettings m_accelSettings { defaultAccelSettings() };

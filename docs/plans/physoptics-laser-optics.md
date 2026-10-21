@@ -136,7 +136,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 ### Milestone 3: light from lasers, measured
 
-21. [pbrt-aovs-and-image-output.md](pbrt-aovs-and-image-output.md). Image export and the batch mode the verification scripts use.
+21. [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md). Implemented 2026-10-21. Image export and the batch mode the verification scripts use.
 22. [pbrt-display-and-color.md](pbrt-display-and-color.md). The sRGB curve and false color for wavelengths outside the visible range.
 23. [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md). Its light tracing integrator (steps 1 and 2 of that plan) is what renders laser light; `lvc` and `bdpt` can follow at any later point.
 24. [physoptics-detectors.md](physoptics-detectors.md)
