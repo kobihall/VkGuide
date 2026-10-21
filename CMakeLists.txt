@@ -83,6 +83,14 @@ if (NOT MSVC)
     target_compile_options(pbrt_test PRIVATE -O2)
 endif()
 
+# Converts a pbrt-v4 scene to glTF 2.0 through the renderer's importer, to open in Blender, a web viewer or Unity as a
+# raster baseline: ./bin/pbrt_to_gltf scene.pbrt out.gltf [--instancing] [--weld]
+add_executable(pbrt_to_gltf tests/pbrt_to_gltf.cpp)
+target_link_libraries(pbrt_to_gltf PRIVATE rt_pbrt fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(pbrt_to_gltf PRIVATE -O2)
+endif()
+
 # Lists the channels and attributes of an EXR file and dumps them as .npy: ./bin/exr_dump
 add_executable(exr_dump tests/exr_dump.cpp)
 target_link_libraries(exr_dump PRIVATE rt_image fmt::fmt)
