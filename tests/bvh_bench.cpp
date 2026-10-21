@@ -91,7 +91,7 @@ bool loadScene(const std::filesystem::path& path, LoadedScene& scene)
 		scene.meshes.push_back(std::move(loaded));
 	}
 
-	//every node without a parent, as the app's loader places them (LoadedGLTF::topNodes), rather
+	//every node without a parent, as the app's loader places them (LoadedModel::topNodes), rather
 	//than only the default scene's roots
 	std::vector<bool> hasParent(asset->nodes.size(), false);
 	for (const fastgltf::Node& node : asset->nodes) {

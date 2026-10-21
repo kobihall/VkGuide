@@ -68,6 +68,21 @@ if (NOT MSVC)
     target_compile_options(aov_test PRIVATE -O2)
 endif()
 
+# CPU-only check of the spectra behind the pbrt import's RGB: ./bin/spectrum_test
+add_executable(spectrum_test tests/spectrum_test.cpp)
+target_link_libraries(spectrum_test PRIVATE rt_spectrum fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(spectrum_test PRIVATE -O2)
+endif()
+
+# CPU-only check of the pbrt scene import: the scanner, the parser's transforms, and every scene of a folder
+# imported with its report: ./bin/pbrt_test [--scan dir] [--report file.pbrt]
+add_executable(pbrt_test tests/pbrt_test.cpp)
+target_link_libraries(pbrt_test PRIVATE rt_pbrt fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(pbrt_test PRIVATE -O2)
+endif()
+
 # Lists the channels and attributes of an EXR file and dumps them as .npy: ./bin/exr_dump
 add_executable(exr_dump tests/exr_dump.cpp)
 target_link_libraries(exr_dump PRIVATE rt_image fmt::fmt)

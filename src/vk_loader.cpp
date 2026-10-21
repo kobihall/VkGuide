@@ -2,6 +2,10 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+#include <algorithm>
+#include <cmath>
+
+#include <image_io.h>
 #include <iostream>
 #include <span>
 
@@ -13,7 +17,7 @@
 #include <glm/gtx/quaternion.hpp>
 
 
-// A LoadedGLTF map key for a glTF object: its name, or "<kind><index>" when it has none, made
+// A LoadedModel map key for a glTF object: its name, or "<kind><index>" when it has none, made
 // unique if another object already took it. Names are optional in glTF and need not be unique;
 // keying by the bare name collapsed Sponza's 25 unnamed materials and 69 images to one entry each,
 // so the path tracer saw one texture and clearAll() destroyed one image
@@ -256,16 +260,16 @@ std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngi
 	return meshes;
 }
 
-std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::string_view filePath, std::string* outError)
+std::optional<std::shared_ptr<LoadedModel>> loadGltf(VulkanEngine* engine, std::string_view filePath, std::string* outError)
 {
 	fmt::println("Loading GLTF: {}", filePath);
 
-	std::shared_ptr<LoadedGLTF> scene = std::make_shared<LoadedGLTF>();
+	std::shared_ptr<LoadedModel> scene = std::make_shared<LoadedModel>();
 	scene->creator = engine;
-	LoadedGLTF& file = *scene.get();
+	LoadedModel& file = *scene.get();
 
 	//extensions fastgltf is not told about are skipped silently, and a file that *requires* one of
-	//them fails to load. KHR_lights_punctual is read into LoadedGLTF::lights, which importGltf() turns
+	//them fails to load. KHR_lights_punctual is read into LoadedModel::lights, which importGltf() turns
 	//into scene lights
 	fastgltf::Parser parser { fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_materials_emissive_strength };
 
@@ -697,7 +701,7 @@ std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& 
 	}
 }
 
-void LoadedGLTF::Draw(const glm::mat4& topMatrix, DrawContext& ctx)
+void LoadedModel::Draw(const glm::mat4& topMatrix, DrawContext& ctx)
 {
 	// create renderables from the scenenodes
 	for (auto& n : topNodes) {
@@ -705,7 +709,7 @@ void LoadedGLTF::Draw(const glm::mat4& topMatrix, DrawContext& ctx)
 	}
 }
 
-void LoadedGLTF::clearAll()
+void LoadedModel::clearAll()
 {
 	VkDevice dv = creator->m_device;
 
@@ -730,4 +734,234 @@ void LoadedGLTF::clearAll()
 	for (auto& sampler : samplers) {
 		vkDestroySampler(dv, sampler, nullptr);
 	}
+}
+//---------------------------------------------------------------- imported models
+
+namespace {
+
+float srgbEncode(float linear)
+{
+	linear = std::clamp(linear, 0.f, 1.f);
+	return linear <= 0.0031308f ? 12.92f * linear : 1.055f * std::pow(linear, 1.f / 2.4f) - 0.055f;
+}
+
+float srgbDecode(float encoded)
+{
+	return encoded <= 0.04045f ? encoded / 12.92f : std::pow((encoded + 0.055f) / 1.055f, 2.4f);
+}
+
+// An image file as the bytes the texture array holds: sRGB-encoded rgba8 for a color, which the shaders decode, and
+// the file's own values for data (a normal map), which they read as they are. Float files (EXR, PFM, HDR) are linear
+std::optional<AllocatedImage> loadImportedImage(VulkanEngine* engine, const ImportedImage& source, std::string& error)
+{
+	std::string extension = source.path.extension().string();
+	std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+	int width = 0;
+	int height = 0;
+	std::vector<float> linear;
+	std::vector<uint8_t> bytes;
+	if (extension == ".exr" || extension == ".pfm" || extension == ".hdr") {
+		Image image;
+		const ImageIoStatus status = loadImage(source.path, image);
+		if (!status.ok) {
+			error = status.message;
+			return std::nullopt;
+		}
+		width = (int)image.width;
+		height = (int)image.height;
+		linear.resize(image.pixelCount() * 4, 1.f);
+		for (size_t i = 0; i < image.pixelCount(); i++) {
+			for (int c = 0; c < 3; c++) {
+				linear[i * 4 + c] = image.rgb[i * 3 + c];
+			}
+		}
+	} else {
+		int channels = 0;
+		stbi_uc* data = stbi_load(source.path.string().c_str(), &width, &height, &channels, 4);
+		if (data == nullptr) {
+			error = fmt::format("{}: {}", source.path.filename().string(), stbi_failure_reason());
+			return std::nullopt;
+		}
+		bytes.assign(data, data + (size_t)width * height * 4);
+		stbi_image_free(data);
+		//an 8-bit file already in the texture array's encoding needs no conversion
+		if ((!source.data && source.encoding != ImageEncoding::Srgb) || source.invert) {
+			linear.resize(bytes.size());
+			for (size_t i = 0; i < bytes.size(); i++) {
+				const float v = (float)bytes[i] / 255.f;
+				const bool alpha = i % 4 == 3;
+				if (alpha || source.data) {
+					linear[i] = v;
+				} else if (source.encoding == ImageEncoding::Srgb) {
+					linear[i] = srgbDecode(v);
+				} else if (source.encoding == ImageEncoding::Gamma) {
+					linear[i] = std::pow(v, source.gamma);
+				} else {
+					linear[i] = v;
+				}
+			}
+		}
+	}
+	if (!linear.empty()) {
+		bytes.resize(linear.size());
+		for (size_t i = 0; i < linear.size(); i++) {
+			const bool alpha = i % 4 == 3;
+			float v = linear[i];
+			if (source.invert && !alpha) {
+				v = 1.f - v;
+			}
+			const float encoded = alpha || source.data ? std::clamp(v, 0.f, 1.f) : srgbEncode(v);
+			bytes[i] = (uint8_t)std::lround(encoded * 255.f);
+		}
+	}
+	return engine->createImage(bytes.data(), VkExtent3D { (uint32_t)width, (uint32_t)height, 1 }, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, false);
+}
+
+}
+
+std::shared_ptr<LoadedModel> loadImportedModel(VulkanEngine* engine, ImportedModel&& imported)
+{
+	auto scene = std::make_shared<LoadedModel>();
+	scene->creator = engine;
+	LoadedModel& file = *scene;
+
+	std::vector<DescriptorAllocatorGrowable::PoolSizeRatio> sizes = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 } };
+	//a model with no materials still gets one, so every surface has one to point at and the pool is never empty
+	if (imported.materials.empty()) {
+		ImportedMaterial fallback;
+		fallback.definition = makeMaterial(MaterialType::Lambertian, glm::vec3(0.5f));
+		fallback.definition.name = "default";
+		imported.materials.push_back(fallback);
+	}
+	file.descriptorPool.init(engine->m_device, (uint32_t)imported.materials.size(), sizes);
+
+	//the images, once each however many materials read them
+	std::vector<AllocatedImage> images(imported.images.size());
+	for (size_t i = 0; i < imported.images.size(); i++) {
+		std::string error;
+		std::optional<AllocatedImage> image = loadImportedImage(engine, imported.images[i], error);
+		if (!image.has_value()) {
+			imported.report.add(fmt::format("texture image is unreadable and left out: {}", error), imported.images[i].path.filename().string());
+			continue;
+		}
+		images[i] = *image;
+		file.images[uniqueKey(file.images, imported.images[i].path.filename().string(), "image", i)] = *image;
+	}
+
+	//the raster preview's materials, and what the path tracer's texture array and the library read from them
+	file.materialDataBuffer = engine->createBuffer(sizeof(GLTFMetallic_Roughness::MaterialConstants) * imported.materials.size(),
+		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+	auto* constants = (GLTFMetallic_Roughness::MaterialConstants*)file.materialDataBuffer.info.pMappedData;
+	std::vector<std::shared_ptr<GLTFMaterial>> materials;
+	for (size_t i = 0; i < imported.materials.size(); i++) {
+		const ImportedMaterial& source = imported.materials[i];
+		auto material = std::make_shared<GLTFMaterial>();
+		material->colorFactors = source.previewColor;
+		material->metalRoughFactors = glm::vec2(source.previewMetallic, source.previewRoughness);
+		auto imageOf = [&](int index) { return index >= 0 && (size_t)index < images.size() ? images[(size_t)index] : AllocatedImage {}; };
+		material->baseColorImage = imageOf(source.baseColorImage);
+		material->normalImage = imageOf(source.normalImage);
+		constants[i].colorFactors = material->colorFactors;
+		constants[i].metalRoughFactors = glm::vec4(material->metalRoughFactors, 0.f, 0.f);
+
+		GLTFMetallic_Roughness::MaterialResources resources;
+		resources.colorImage = material->baseColorImage.image != VK_NULL_HANDLE ? material->baseColorImage : engine->m_whiteImage;
+		resources.colorSampler = engine->m_defaultSamplerLinear;
+		resources.metalRoughImage = engine->m_whiteImage;
+		resources.metalRoughSampler = engine->m_defaultSamplerLinear;
+		resources.dataBuffer = file.materialDataBuffer.buffer;
+		resources.dataBufferOffset = (uint32_t)(i * sizeof(GLTFMetallic_Roughness::MaterialConstants));
+		material->data = engine->m_metalRoughMaterial.writeMaterial(engine->m_device, MaterialPass::MainColor, resources, file.descriptorPool);
+
+		const std::string key = uniqueKey(file.materials, source.definition.name, "material", i);
+		file.materials[key] = material;
+		file.materialsByIndex.push_back(material);
+		file.materialNames.push_back(key);
+		materials.push_back(material);
+	}
+	vmaFlushAllocation(engine->m_memAllocator, file.materialDataBuffer.allocation, 0, sizeof(GLTFMetallic_Roughness::MaterialConstants) * imported.materials.size());
+
+	//the meshes
+	std::vector<std::shared_ptr<MeshAsset>> meshes;
+	for (size_t m = 0; m < imported.meshes.size(); m++) {
+		ImportedMesh& source = imported.meshes[m];
+		auto mesh = std::make_shared<MeshAsset>();
+		mesh->name = source.name;
+		const bool hasNormals = source.normals.size() == source.positions.size();
+		const bool hasUvs = source.uvs.size() == source.positions.size();
+		mesh->cpuVertices.resize(source.positions.size());
+		for (size_t v = 0; v < source.positions.size(); v++) {
+			Vertex& vertex = mesh->cpuVertices[v];
+			vertex.position = source.positions[v];
+			vertex.normal = hasNormals ? source.normals[v] : glm::vec3(0.f);
+			vertex.uv_x = hasUvs ? source.uvs[v].x : 0.f;
+			vertex.uv_y = hasUvs ? source.uvs[v].y : 0.f;
+			vertex.color = glm::vec4(1.f);
+		}
+		if (!hasNormals) {
+			//smooth ones for the raster preview, weighted by area; the path tracer shades the triangles flat
+			for (size_t i = 0; i + 2 < source.indices.size(); i += 3) {
+				Vertex& a = mesh->cpuVertices[source.indices[i]];
+				Vertex& b = mesh->cpuVertices[source.indices[i + 1]];
+				Vertex& c = mesh->cpuVertices[source.indices[i + 2]];
+				const glm::vec3 n = glm::cross(b.position - a.position, c.position - a.position);
+				a.normal += n;
+				b.normal += n;
+				c.normal += n;
+			}
+			for (Vertex& vertex : mesh->cpuVertices) {
+				vertex.normal = glm::dot(vertex.normal, vertex.normal) > 0.f ? glm::normalize(vertex.normal) : glm::vec3(0.f, 0.f, 1.f);
+			}
+			mesh->cpuNormalsMissing = true;
+		}
+		mesh->cpuIndices = std::move(source.indices);
+		if (source.tangents.size() == source.positions.size()) {
+			mesh->cpuTangents = std::move(source.tangents);
+		} else if (hasUvs) {
+			mesh->cpuTangents.resize(mesh->cpuVertices.size());
+			generateTangents(mesh->cpuIndices, mesh->cpuVertices, mesh->cpuTangents, 0);
+		}
+		for (const ImportedSurface& surface : source.surfaces) {
+			GeoSurface geo;
+			geo.startIndex = surface.firstIndex;
+			geo.count = surface.indexCount;
+			geo.material = materials[std::min<size_t>(surface.material, materials.size() - 1)];
+			glm::vec3 minPos(std::numeric_limits<float>::max());
+			glm::vec3 maxPos(-std::numeric_limits<float>::max());
+			for (uint32_t i = surface.firstIndex; i < surface.firstIndex + surface.indexCount; i++) {
+				minPos = glm::min(minPos, mesh->cpuVertices[mesh->cpuIndices[i]].position);
+				maxPos = glm::max(maxPos, mesh->cpuVertices[mesh->cpuIndices[i]].position);
+			}
+			geo.bounds.origin = (maxPos + minPos) / 2.f;
+			geo.bounds.extents = (maxPos - minPos) / 2.f;
+			geo.bounds.sphereRadius = glm::length(geo.bounds.extents);
+			mesh->surfaces.push_back(geo);
+		}
+		mesh->meshBuffers = engine->uploadMesh(mesh->cpuIndices, mesh->cpuVertices);
+		file.meshes[uniqueKey(file.meshes, mesh->name, "mesh", m)] = mesh;
+		meshes.push_back(mesh);
+	}
+
+	//one top-level node per placement, so each becomes its own mesh object at its transform
+	for (size_t n = 0; n < imported.nodes.size(); n++) {
+		const ImportedNode& source = imported.nodes[n];
+		if (source.mesh >= meshes.size()) {
+			continue;
+		}
+		auto node = std::make_shared<MeshNode>();
+		node->mesh = meshes[source.mesh];
+		node->name = source.name;
+		node->localTransform = source.transform;
+		node->refreshTransform(glm::mat4(1.f));
+		file.nodes[uniqueKey(file.nodes, source.name, "node", n)] = node;
+		file.topNodes.push_back(node);
+	}
+
+	imported.meshes.clear();
+	imported.images.clear();
+	imported.nodes.clear();
+	file.imported = std::move(imported);
+	return scene;
 }

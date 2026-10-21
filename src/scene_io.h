@@ -2,7 +2,7 @@
 
 // Scene file save/load.
 //
-// One file captures the whole scene: the glTF models it is composed of (by path - the model
+// One file captures the whole scene: the glTF and pbrt models it is composed of (by path - the model
 // files themselves are untouched), the environment map (by path), the raytracer's shapes and the
 // material library they reference. The file is a minimal but valid glTF 2.0 document whose single
 // scene carries all of that in its spec-defined `extras` field, so any glTF tool can open it
@@ -17,9 +17,9 @@
 // settings), 3 (no cameras), 4 (no mesh objects), 5 (spheres rather than geometry) and 6 (no
 // emissive material or background colour), 7 (no kernel selection or BVH settings), 8 (no pbr
 // material), 9 (no punctual lights), 10 (no integrator or traversal), 11 (inline materials rather
-// than a library: each object's becomes a user material named after it), 12 to 15 (render settings
-// that a file without them reads as the defaults a scene of its time had), 16 (no auxiliary outputs,
-// light groups or export settings).
+// than a library: each object's becomes a user material named after it), 12 to 14 (render settings
+// that a file without them reads as the defaults a scene of its time had), 15 (no auxiliary outputs,
+// light groups or export settings) and 16 (no shape or environment brought by a model).
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -39,19 +39,21 @@
 struct SceneMaterialRef {
 	int user { -1 };
 	int model { -1 };
-	uint32_t gltfIndex { 0 };
+	uint32_t modelMaterial { 0 };
 };
 
 // one shape as a file records it: the shape, and its material by reference
 struct SceneShapeRecord {
 	SceneShape shape;
 	SceneMaterialRef material;
+	// version 17: the model it was imported with (a pbrt file's sphere), -1 for the scene's own
+	int model { -1 };
 };
 
 // the parameters the user changed on a glTF material: all a file records of one
 struct SceneMaterialOverride {
 	int model { 0 };
-	uint32_t gltfIndex { 0 };
+	uint32_t modelMaterial { 0 };
 	ParamSet params;
 	// version 16: the light group (0 to 7) the material's emission is kept in
 	uint32_t lightGroup { 0 };
@@ -67,7 +69,7 @@ struct SceneMeshObjectRecord {
 	std::string name;
 	glm::mat4 transform { 1.f };
 	bool visible { true };
-	MeshMaterialMode materialMode { MeshMaterialMode::Gltf };
+	MeshMaterialMode materialMode { MeshMaterialMode::Model };
 	// the override's material; unset in glTF mode
 	SceneMaterialRef material;
 };
@@ -85,6 +87,9 @@ struct SceneDescription {
 	std::vector<std::filesystem::path> modelPaths;
 	// empty when the scene has no environment map
 	std::filesystem::path environmentMapPath;
+	// version 17: the model whose environment the scene shows (a pbrt file's infinite light), -1 for none. Its
+	// import recreates the map, so the file holds no path for it
+	int environmentModel { -1 };
 	std::vector<SceneShapeRecord> shapes;
 	// version 12: the user materials, in full, with unassigned ids (RaytraceSceneEditor::addMaterial()
 	// gives them theirs), and the edits to glTF materials. An older file's inline materials arrive

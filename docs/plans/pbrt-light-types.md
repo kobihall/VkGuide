@@ -78,6 +78,16 @@ The C++ mirrors go into `light_sampling.cpp`, and `bin/light_test` gains a check
 - Light images live in the texture array, binding 27 ([pbrt-textures.md](pbrt-textures.md)). No new binding.
 - Scene file: the new kinds and their images, IES paths, each light's specification units, falloff, color temperature and sidedness.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **One-sided area lights.** pbrt's `diffuse` area light emits from the front only unless `"bool twosided" true`; 2405 of the 2688 in `pbrt-v4-scenes` are one-sided. The importer makes every emitter a two-sided `Emissive` material and reports it (`areaLightRadiance()`). In `ganesha` two lights face the statue from either side, and their backs light the room behind them, which pbrt leaves dark. To restore pbrt's behavior: add a one-sided flag to the emissive material (a `CRT_MATERIAL_FLAG_*` bit packed by `packClassic()`), make kernel 04 return no emission when the ray arrives at the back (`frontFace` false), make `sampleLight()` give zero for a point whose normal faces away from the shading point, and halve the light list's power for a one-sided emitter (`LightListBuilder`). Then set the flag in `shapeMaterial()` from `twosided`, flip it with `PbrtShape::reverseOrientation`, and remove the report. With the flag off, existing scenes must stay bit-identical.
+- **An emitter's own reflection.** pbrt's area light is a property of a shape whose material still reflects; the `Emissive` type absorbs. `shapeMaterial()` reports "an emitter's own reflectance is dropped" when the shape's material is not black (`crown`, `book`, `ganesha`, `pavilion-night`). An emission parameter on `lambertian` and `pbr` (pbr has one, which does not end the path) would remove the substitution: have `shapeMaterial()` keep the resolved material and set its emission instead of switching to `Emissive`.
+- **Spot falloff.** pbrt's spot light falls off as `smoothstep(cosTotalWidth, cosFalloffStart, cos)`; `spotFalloff()` in `crt_light.glsl` squares a linear ramp. `lights()` reports it (four spots in `villa-lights-on`). Add pbrt's falloff as a per-light choice and select it on import.
+- **Lights the importer approximates.** `goniometric` and `projection` lights become point lights with their `I` and `scale` and lose their image. Area lights with a `filename` lose their image and keep `L`. Map them to this plan's goniometric, projection and textured area lights. No scene in `pbrt-v4-scenes` uses them, so a comparison needs a hand-written one.
+- **Photometric units.** `power` on point, spot and area lights and `illuminance` on distant lights are converted with pbrt's formulas (`lights()`, `areaLightRadiance()`). Keep them when this plan's photometric units arrive; they are the comparison's check that both agree.
+
 ## Verification
 
 - With no new kind or option in use, every scene renders bit-identical.

@@ -57,7 +57,12 @@ namespace {
 //   "outlier_reweighted". A file without a "00" or "09"
 //   entry in "kernels" reads with "thin_lens" and "running_mean", the only variants there were, and one
 //   without "pixelFilter" with a box, so it renders as it always did rather than as a new scene does
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 16;
+//16: adds "aov" and "lightGroups" to "render", "lightGroupNames", "environmentGroup" and "export" at the top,
+//   "lightGroup" on a light, a material and a material override, and "relight" on a camera
+//17: a model may be a pbrt-v4 scene file (.pbrt or .pbrt.gz), re-imported on load like a glTF file. A shape
+//   the model brought carries its "model" index, and "environmentModel" names the model whose environment
+//   the scene shows. Both absent in an older file, whose shapes are its own
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 17;
 
 //---------------------------------------------------------------- writing
 
@@ -137,7 +142,7 @@ std::string materialParamsJson(const MaterialDef& material, const std::set<std::
 std::string materialRefJson(const SceneMaterialRef& ref)
 {
 	if (ref.model >= 0) {
-		return fmt::format(R"({{"model":{},"material":{}}})", ref.model, ref.gltfIndex);
+		return fmt::format(R"({{"model":{},"material":{}}})", ref.model, ref.modelMaterial);
 	}
 	return fmt::format("{}", ref.user);
 }
@@ -176,6 +181,9 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 
 	if (!scene.environmentMapPath.empty()) {
 		json += fmt::format(R"(,"environmentMap":{})", jsonString(portablePath(scene.environmentMapPath, sceneDirectory)));
+	}
+	if (scene.environmentModel >= 0) {
+		json += fmt::format(R"(,"environmentModel":{})", scene.environmentModel);
 	}
 
 	json += fmt::format(R"(,"environmentIntensity":{})", jsonNumber(scene.environmentIntensity));
@@ -307,7 +315,7 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		for (const auto& [name, value] : edit.params) {
 			names.insert(name);
 		}
-		json += fmt::format(R"({{"model":{},"material":{}{}{}}})", edit.model, edit.gltfIndex, materialParamsJson(edited, &names),
+		json += fmt::format(R"({{"model":{},"material":{}{}{}}})", edit.model, edit.modelMaterial, materialParamsJson(edited, &names),
 			edit.lightGroup != 0 ? fmt::format(R"(,"lightGroup":{})", edit.lightGroup) : std::string());
 	}
 	json += ']';
@@ -327,6 +335,9 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		}
 		for (const ShapeParam& param : traits.params) {
 			json += fmt::format(R"(,"{}":{})", param.name, jsonNumber(shapeParamValue(shape, param)));
+		}
+		if (scene.shapes[i].model >= 0) {
+			json += fmt::format(R"(,"model":{})", scene.shapes[i].model);
 		}
 		json += fmt::format(R"(,"material":{}}})", materialRefJson(scene.shapes[i].material));
 	}
@@ -995,7 +1006,7 @@ SceneMaterialRef readMaterialRef(JsonElement element, size_t materialCount, size
 	if (element["model"].get_int64().get(model) == simdjson::SUCCESS && element["material"].get_uint64().get(index) == simdjson::SUCCESS
 		&& model >= 0 && model < (int64_t)modelCount) {
 		ref.model = (int)model;
-		ref.gltfIndex = (uint32_t)index;
+		ref.modelMaterial = (uint32_t)index;
 	}
 	return ref;
 }
@@ -1087,6 +1098,12 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 	std::string_view environmentMap;
 	if (root["environmentMap"].get_string().get(environmentMap) == simdjson::SUCCESS && !environmentMap.empty()) {
 		ctx.scene.environmentMapPath = resolvePath(environmentMap, ctx.sceneDirectory);
+	}
+
+	int64_t environmentModel = -1;
+	if (root["environmentModel"].get_int64().get(environmentModel) == simdjson::SUCCESS && environmentModel >= 0
+		&& environmentModel < (int64_t)ctx.scene.modelPaths.size()) {
+		ctx.scene.environmentModel = (int)environmentModel;
 	}
 
 	//version 3: both optional, defaults otherwise
@@ -1208,15 +1225,15 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 		for (simdjson::dom::element entry : overrides) {
 			simdjson::dom::object overrideObject;
 			int64_t model = -1;
-			uint64_t gltfIndex = 0;
+			uint64_t modelMaterial = 0;
 			if (entry.get_object().get(overrideObject) != simdjson::SUCCESS || overrideObject["model"].get_int64().get(model) != simdjson::SUCCESS
-				|| overrideObject["material"].get_uint64().get(gltfIndex) != simdjson::SUCCESS || model < 0 || model >= (int64_t)ctx.scene.modelPaths.size()) {
+				|| overrideObject["material"].get_uint64().get(modelMaterial) != simdjson::SUCCESS || model < 0 || model >= (int64_t)ctx.scene.modelPaths.size()) {
 				//an override of a model the file does not list has nothing to apply to
 				continue;
 			}
 			SceneMaterialOverride edit;
 			edit.model = (int)model;
-			edit.gltfIndex = (uint32_t)gltfIndex;
+			edit.modelMaterial = (uint32_t)modelMaterial;
 			readMaterialParams(overrideObject, MaterialType::Pbr, edit.params);
 			readOptionalUint(overrideObject["lightGroup"], edit.lightGroup);
 			edit.lightGroup = std::min(edit.lightGroup, MAX_LIGHT_GROUPS - 1u);
@@ -1240,6 +1257,10 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 		if (!readObjectMaterial(shapeObject["material"], version, record.shape.name, ctx.scene, record.material, materialError)) {
 			ctx.error = fmt::format("{} \"{}\": {}", shapeTraits(record.shape.kind).name, record.shape.name, materialError);
 			return;
+		}
+		int64_t model = -1;
+		if (shapeObject["model"].get_int64().get(model) == simdjson::SUCCESS && model >= 0 && model < (int64_t)ctx.scene.modelPaths.size()) {
+			record.model = (int)model;
 		}
 		ctx.scene.shapes.push_back(std::move(record));
 		index++;

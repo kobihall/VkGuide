@@ -57,8 +57,8 @@ public:
 	MaterialDef* findMaterial(uint64_t id);
 	const MaterialDef* findMaterial(uint64_t id) const;
 	// the entry a model's import made for its glTF material at `index`, or null
-	MaterialDef* findGltfMaterial(std::string_view modelKey, uint32_t index);
-	const MaterialDef* findGltfMaterial(std::string_view modelKey, uint32_t index) const;
+	MaterialDef* findModelMaterial(std::string_view modelKey, uint32_t index);
+	const MaterialDef* findModelMaterial(std::string_view modelKey, uint32_t index) const;
 
 	// the load path: swaps in whole new lists. Every object gets a fresh id, and both go
 	// through the same change tracking every manual edit uses, so consumers cannot miss it
@@ -89,7 +89,7 @@ public:
 	std::vector<std::string> removeMaterialsOf(const std::string& modelKey);
 	// the texture-array rebuild path: `refresh` re-derives a glTF entry's read-only parameters and
 	// says whether it changed anything
-	void refreshGltfMaterials(const std::function<bool(MaterialDef&)>& refresh);
+	void refreshModelMaterials(const std::function<bool(MaterialDef&)>& refresh);
 	// the shapes and override mesh objects that reference the entry
 	size_t materialUsers(uint64_t id) const;
 	// shows the Materials window with the entry selected
@@ -104,6 +104,9 @@ public:
 	void removeMeshObjectsOf(const std::string& modelKey);
 	// the import path's lights: the KHR_lights_punctual lights a freshly loaded model carries
 	void addLights(std::vector<SceneLight>&& lights);
+	// the analytic shapes an imported model brings (a pbrt file's spheres), and their removal with it
+	void addShapes(std::vector<SceneShape>&& shapes);
+	void removeShapesOf(const std::string& modelKey);
 	// and the removal path's: the lights imported with that model go with it
 	void removeLightsOf(const std::string& modelKey);
 
@@ -118,6 +121,9 @@ public:
 	// shapes' material buffers) stores the last revision it acted on and compares. Nothing ever
 	// resets it, so adding a consumer cannot starve another
 	uint64_t revision() const { return m_revision; }
+	// moves with every change but a camera's: what the acceleration structure and the light list depend on, so the
+	// renderer can tell in one compare that a frame changed nothing it builds from
+	uint64_t contentRevision() const { return m_contentRevision; }
 
 	bool* visibilityFlag() { return &m_showPanel; }
 
@@ -179,7 +185,13 @@ private:
 	void deleteSelection();
 	void select(SelectionKind kind, uint64_t id);
 
-	void markChanged() { m_revision++; }
+	void markChanged()
+	{
+		m_revision++;
+		m_contentRevision++;
+	}
+	// a change to a camera alone (its pose, lens or exposure), which restarts a render but rebuilds nothing
+	void markCameraChanged() { m_revision++; }
 
 	std::vector<SceneShape> m_shapes;
 	std::vector<SceneCamera> m_cameras;
@@ -207,5 +219,9 @@ private:
 	// target id cannot collide
 	uint64_t m_nextId { 1 };
 	uint64_t m_revision { 1 };
+	uint64_t m_contentRevision { 1 };
+	// drawModelRows()'s list of each model's mesh objects, by index into m_meshObjects, as of m_modelRowsRevision
+	std::map<std::string, std::vector<size_t>> m_modelRows;
+	uint64_t m_modelRowsRevision { 0 };
 	bool m_showPanel { true };
 };

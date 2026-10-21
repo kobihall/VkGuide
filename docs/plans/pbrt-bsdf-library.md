@@ -95,6 +95,16 @@ fastgltf parses the material extensions; the importer maps them onto these types
 
 A glTF material with none of these keeps becoming `pbr`, so no existing import changes.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Conductors** become `pbr` with metallic 1, the metal's color at normal incidence and Schlick's Fresnel (`mapMaterial()` and `conductorColor()` in `src/pbrt_import.cpp`). Map `conductor` to this plan's conductor with eta and k (RGB until [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)) and its anisotropic roughness, which `roughnessOf()` averages today. 78 conductors, in 13 scenes; `killeroo-gold` is the comparison scene.
+- **Rough dielectrics** are smooth (`setDielectric()` reports them; `lte-orb-rough-glass`). `thindielectric` is a solid dielectric (`villa`). Map both to this plan's dielectric and thin dielectric.
+- **Diffuse transmission** is Lambertian with its transmittance dropped (326 materials, mostly foliage, in `barcelona-pavilion`, `bunny-fur`, `kroken`, `landscape`, `sanmiguel`, `villa` and `watercolor`). Map it to this plan's diffuse transmission with `reflectance`, `transmittance` and `scale`.
+- **Mix** picks whichever of its two materials pbrt chooses more often, from a constant `amount`; an `amount` texture is read as its constant (`bmw-m6`, `crown`, `kroken`, `watercolor`). Map it to this plan's mix with the amount as a texture once [pbrt-textures.md](pbrt-textures.md) can carry one.
+- **Roughness.** pbrt's `roughness` becomes GGX alpha through `RoughnessToAlpha()` (`sqrt` when `remaproughness` is true), and `pbr` takes the square root of that. Give the new BxDFs alpha directly.
+
 ## Verification
 
 - Every existing scene renders bit-identical.

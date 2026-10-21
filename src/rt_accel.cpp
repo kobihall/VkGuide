@@ -103,6 +103,14 @@ std::shared_ptr<const RaytraceBlas> buildMeshBlas(const MeshAsset& mesh, const A
 		attributes.n0 = glm::vec4(a.normal, a.uv_x);
 		attributes.n1 = glm::vec4(b.normal, b.uv_x);
 		attributes.n2 = glm::vec4(c.normal, c.uv_x);
+		if (mesh.cpuNormalsMissing) {
+			//no vertex normals in the file: the triangle shades flat, with its own normal at every corner
+			const glm::vec3 face = glm::cross(b.position - a.position, c.position - a.position);
+			const glm::vec3 n = glm::dot(face, face) > 0.f ? glm::normalize(face) : glm::vec3(0.f, 0.f, 1.f);
+			attributes.n0 = glm::vec4(n, a.uv_x);
+			attributes.n1 = glm::vec4(n, b.uv_x);
+			attributes.n2 = glm::vec4(n, c.uv_x);
+		}
 		attributes.vAndSurface = glm::vec4(a.uv_y, b.uv_y, c.uv_y, std::bit_cast<float>(surfaceIndex));
 		auto missing = [](const glm::vec4& t) { return glm::dot(glm::vec3(t), glm::vec3(t)) < 1e-12f; };
 		attributes.tangents = glm::uvec4(packUnitVector(ta), packUnitVector(tb), packUnitVector(tc),
@@ -227,7 +235,7 @@ namespace {
 
 // the glTF material's texture layers and alpha cutoff: what its library entry takes from the file
 // and never lets the user edit
-void setGltfReadOnlyParams(MaterialDef& entry, const GLTFMaterial& material, const RaytraceTextureArray& textures)
+void setModelReadOnlyParams(MaterialDef& entry, const GLTFMaterial& material, const RaytraceTextureArray& textures)
 {
 	entry.params["baseColorTexture"] = TexRef { textures.layerOf(material.baseColorImage.image) };
 	entry.params["normalTexture"] = TexRef { textures.layerOf(material.normalImage.image) };
@@ -255,18 +263,29 @@ MaterialDef gltfMaterialDef(const GLTFMaterial& material, const RaytraceTextureA
 	entry.params["emission"] = SpectrumRef { material.emissiveFactor };
 	entry.params["strength"] = 1.f;
 	entry.params["normalScale"] = material.normalScale;
-	setGltfReadOnlyParams(entry, material, textures);
+	setModelReadOnlyParams(entry, material, textures);
 	return entry;
 }
 
-void refreshGltfMaterialDef(MaterialDef& entry, const GLTFMaterial& material, const RaytraceTextureArray& textures)
+MaterialDef modelMaterialDef(const LoadedModel& model, uint32_t index, const RaytraceTextureArray& textures)
 {
-	setGltfReadOnlyParams(entry, material, textures);
+	const GLTFMaterial& material = *model.materialsByIndex[index];
+	if (!model.imported.has_value() || index >= model.imported->materials.size()) {
+		return gltfMaterialDef(material, textures);
+	}
+	MaterialDef entry = model.imported->materials[index].definition;
+	setModelReadOnlyParams(entry, material, textures);
+	return entry;
+}
+
+void refreshModelMaterialDef(MaterialDef& entry, const GLTFMaterial& material, const RaytraceTextureArray& textures)
+{
+	setModelReadOnlyParams(entry, material, textures);
 }
 
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
-	const std::vector<MaterialDef>& materials, const GltfMaterialIds& gltfMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures)
+	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures)
 {
 	auto accel = std::make_shared<RaytraceSceneAccel>();
 
@@ -339,8 +358,8 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 				accel->instanceMaterials.push_back(overrideMaterial);
 			} else {
 				//the library entry the glTF material's import made
-				const auto entry = gltfMaterialIds.find(surface.material.get());
-				accel->instanceMaterials.push_back(materialIndex(entry != gltfMaterialIds.end() ? entry->second : 0, true));
+				const auto entry = modelMaterialIds.find(surface.material.get());
+				accel->instanceMaterials.push_back(materialIndex(entry != modelMaterialIds.end() ? entry->second : 0, true));
 			}
 			const glm::vec3 emission = accel->materials[accel->instanceMaterials.back()].emission;
 			anyEmits |= emission.r > 0.f || emission.g > 0.f || emission.b > 0.f;

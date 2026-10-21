@@ -62,13 +62,19 @@ Hachisuka et al. 2014, as pbrt 3's `MLTIntegrator`, over the `bdpt` integrator:
 - Settings: **Chains**, **Large step probability**, **Sigma**, **Bootstrap samples**.
 - C++ mirror: `MLTSampler`'s lazy mutation in `rt_sampler`, with its test in `bin/sampler_test`.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **`mlt`** renders with the path tracer, reported, and its parameters (`bootstrapsamples`, `chains`, `mutationsperpixel`, `largestepprobability`, `sigma`) are read and ignored (`settings()` in `src/pbrt_import.cpp`). No scene in `pbrt-v4-scenes` uses it. Select `mmlt` from it and map the parameters.
+
 ## Verification
 
 - The path tracer and the BDPT integrators render bit-identical.
 - `bin/sampler_test`: lazy mutation matches eager mutation coordinate for coordinate; a large step's coordinates are uniform (χ²); a small step's offsets are normal with the given σ.
 - `pssmlt` and `mmlt` converge to the path tracer's reference on the Cornell box (means within 0.1 % after long runs).
 - Veach's door-ajar scene (a room lit only through a slightly open door) and the mirrored caustic of [pbrt-photon-mapping.md](pbrt-photon-mapping.md): equal-time relative MSE for `path`, `lvc`, `bdpt`, `sppm`, `pssmlt` and `mmlt`.
-- `mmlt` against pbrt-v4's `mlt` integrator on the same scene through [pbrt-scene-import.md](pbrt-scene-import.md): the images converge together.
+- `mmlt` against pbrt-v4's `mlt` integrator on the same scene through [pbrt-scene-import.md](completed/pbrt-scene-import.md): the images converge together.
 
 ## Order of work
 

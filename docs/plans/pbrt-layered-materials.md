@@ -41,6 +41,13 @@ Shared parameters: thickness (default 0.01), slab albedo (default black, no scat
 
 `KHR_materials_clearcoat` maps to `coated_conductor` or `coated_diffuse` depending on the base's metallic factor, with the clearcoat factor as the top interface's weight and the clearcoat roughness as its roughness. A base that is neither fully metallic nor fully dielectric uses a mix of the two, which the mix material resolves stochastically ([pbrt-bsdf-library.md](pbrt-bsdf-library.md)).
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Coated diffuse** is the most common material in `pbrt-v4-scenes` (936 uses in 20 scenes). `mapMaterial()` in `src/pbrt_import.cpp` makes it `pbr` with metallic 0: a GGX coat with F0 0.04 over Lambertian. It reports a coat `eta` other than 1.5 and any `thickness`, `albedo`, `g`, `maxdepth` or `nsamples`, which `pbr` has no equivalent of. On `ganesha` the result is within 0.7 percent of pbrt's mean but visibly lighter on the statue, where pbrt's interreflection between the layers darkens the base. Map `coateddiffuse` to this plan's coated diffuse with every parameter, and remove the reports.
+- **Coated conductor** (17 uses: `bistro`, `bmw-m6`, `killeroos`, `kroken`, `watercolor`) is `pbr` with metallic 1 and the conductor's color; the dielectric coat is dropped. Map it to this plan's coated conductor with `interface.*` and `conductor.*`.
+
 ## Verification
 
 - `bin/bsdf_test` runs its tests on the stochastic BSDFs by averaging `f()` and `pdf()` over 256 evaluations per cell before comparing. The χ² test is against the averaged density.

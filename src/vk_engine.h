@@ -114,6 +114,24 @@ struct MeshNode : public Node {
 	virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx) override;
 };
 
+// The scene's mesh objects as the raster pass draws them (src/raster_draw_list.cpp, compiled -O2 in every
+// configuration, since a pbrt scene places 160,000 objects). Built only when the scene or the models change, not every
+// frame: every visible object's surfaces in draw order (by material, then index buffer), each opaque one with its box
+// in world space, which cull() tests against the view frustum each frame. Raw pointers into the models, valid as long
+// as VulkanEngine::m_meshNodes is
+struct MeshDrawList {
+	std::vector<RenderObject> opaque;
+	std::vector<std::pair<glm::vec3, glm::vec3>> boxes;
+	std::vector<RenderObject> transparent;
+	// what it was built from: RaytraceSceneEditor::contentRevision() and VulkanEngine::m_sceneRevision
+	uint64_t editorRevision { ~0ull };
+	uint64_t sceneRevision { ~0ull };
+
+	void rebuild(const std::vector<SceneMeshObject>& objects, const std::map<std::pair<std::string, uint32_t>, const MeshNode*>& nodes);
+	// the opaque surfaces whose box is inside the frustum of `viewproj`, appended in draw order
+	void cull(const glm::mat4& viewproj, std::vector<const RenderObject*>& out) const;
+};
+
 struct GLTFMetallic_Roughness {
 	MaterialPipeline opaquePipeline;
 	MaterialPipeline transparentPipeline;
@@ -238,7 +256,7 @@ public:
 	// the browser, the mesh data and a saved file list them stably. Each is placed as authored
 	// (identity root transform); the shapes in m_raytraceScene and m_environmentMap are the
 	// rest of the scene, and openScene()/saveScene() move all three together
-	std::map<std::string, std::shared_ptr<LoadedGLTF>> m_models;
+	std::map<std::string, std::shared_ptr<LoadedModel>> m_models;
 
 	// the models as the raytracer sees them, rebuilt by rebuildSceneDerivedData() exactly when
 	// m_models changes and shared immutably with every render snapshot - see RaytraceMeshData
@@ -247,6 +265,9 @@ public:
 	// the geometry it places without re-walking every node tree each frame. Raw pointers into
 	// m_models, so this is rebuilt by the same path, and only by it
 	std::map<std::pair<std::string, uint32_t>, const MeshNode*> m_meshNodes;
+	// the mesh objects' surfaces as the raster pass draws them, rebuilt in updateScene() only when the editor's content
+	// revision or m_sceneRevision moves
+	MeshDrawList m_meshDrawList;
 	// every model's base-colour textures in one array image, for the path tracer's triangles.
 	// Rebuilt alongside the mesh data, so the layers a triangle's material names always exist
 	RaytraceTextureArray m_raytraceTextures;
@@ -267,6 +288,14 @@ public:
 	// the map's sampling tables for the path tracer's light sampling (light_sampling.h), built from
 	// the decoded pixels when the map loads and shared immutably with every render that samples it
 	std::shared_ptr<const EnvironmentDistribution> m_environmentDistribution;
+	// the model whose environment m_environmentMap is (a pbrt file's infinite light), which removing the model
+	// removes; empty for a map from a file or none
+	std::string m_environmentModelKey;
+	// the camera each pbrt model's import added, which "Use pbrt settings" renders from
+	std::map<std::string, uint64_t> m_modelCameras;
+	// the import report window (Windows -> Import Report): which model it shows
+	bool m_showImportReport { false };
+	std::string m_importReportModel;
 	// scales the map as a light source, so the viewport and the render agree on how bright the
 	// sky is. A scene property, saved with the scene; the picture's brightness is the
 	// renderer's exposure setting
@@ -341,6 +370,7 @@ public:
 		SaveScene,
 		SaveSceneAs,
 		ImportGltf,
+		ImportPbrt,
 		SetEnvironmentMap,
 		ClearEnvironmentMap,
 		SaveReference,
@@ -388,11 +418,18 @@ public:
 	void beginFirstPersonEdit(uint64_t cameraId);
 	void endFirstPersonEdit();
 
-	// the scene's parts. importGltf() adds a model (models are keyed uniquely, so the same file
-	// can be imported twice); loadEnvironmentMap() takes a Radiance .hdr into m_environmentMap
-	// (rgba16f), replacing any previous one
+	// the scene's parts. importModel() adds a model, a glTF file or a pbrt-v4 scene (.pbrt, .pbrt.gz) by its name
+	// (models are keyed uniquely, so the same file can be imported twice); loadEnvironmentMap() takes a Radiance
+	// .hdr or an OpenEXR file into m_environmentMap (rgba16f), replacing any previous one
+	IoResult importModel(const std::filesystem::path& path);
 	IoResult importGltf(const std::filesystem::path& path);
-	void removeGltf(const std::string& name);
+	// a pbrt-v4 scene (docs/plans/completed/pbrt-scene-import.md): its meshes, materials, lights, shapes, camera and
+	// environment, with the import report shown in its window
+	IoResult importPbrt(const std::filesystem::path& path);
+	// applies what a pbrt model's file asks a render to be (resolution, samples, sampler, filter, depth, clamp) and
+	// renders from its camera: "Use pbrt settings" in the import report, and the batch mode for a .pbrt file
+	void usePbrtSettings(const std::string& modelKey);
+	void removeModel(const std::string& name);
 	void clearModels();
 	IoResult loadEnvironmentMap(const std::filesystem::path& path);
 	void clearEnvironmentMap();
@@ -452,6 +489,12 @@ private:
 
 	void drawFileMenu();
 	void runPendingFileAction();
+	// what every import does once its file is a model: key it, rebuild what derives from the models, add its
+	// materials to the library and place its nodes. Returns the key
+	std::string addModel(std::shared_ptr<LoadedModel> model, const std::filesystem::path& path);
+	// float rgba pixels as the environment map; `path` is what a saved scene records, empty for a map a model brought
+	IoResult installEnvironmentMap(const float* pixels, uint32_t width, uint32_t height, const std::string& label, const std::filesystem::path& path);
+	void drawImportReport();
 	void destroyEnvironmentMap();
 	// m_raytraceMeshData and m_sceneRevision, after any change to m_models
 	void rebuildSceneDerivedData();

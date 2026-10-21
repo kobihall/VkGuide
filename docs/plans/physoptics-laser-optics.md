@@ -189,7 +189,7 @@ In the order below, which respects the [pbrt roadmap](pbrt-roadmap.md)'s depende
 57. [pbrt-metropolis-light-transport.md](pbrt-metropolis-light-transport.md)
 58. [pbrt-path-guiding.md](pbrt-path-guiding.md)
 59. [pbrt-resampled-direct-lighting.md](pbrt-resampled-direct-lighting.md)
-60. [pbrt-scene-import.md](pbrt-scene-import.md)
+60. [pbrt-scene-import.md](completed/pbrt-scene-import.md)
 
 [pbrt-camera-relative-space.md](pbrt-camera-relative-space.md) is not in this order. It starts when a scene has coordinates beyond about 10 km, which no laser optics goal does.
 

@@ -82,6 +82,16 @@ The traversal's alpha test keeps reading the finest level, so cut-outs do not ch
 - `PathState.coneWidth`, `coneSpread`.
 - Settings: **Texture storage**, **Maximum texture size**, **Texture filtering**. Scene file: those, plus each user texture's path, color space and sampler.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **One image per material.** `textureValue()` in `src/pbrt_import.cpp` resolves a material's `reflectance` (or `color`) texture to a constant factor times at most one image, which becomes the material's base color texture through the texture array. `scale` textures multiply into the factor; a `scale` of two images keeps the first. Float textures, such as `roughness` and `amount`, are read as their constant: an `imagemap` float texture is read as its `scale` (`floatParam()` reports each). With this plan, give `TexRef`s to every texturable parameter.
+- **Mappings.** pbrt's `uv` mapping (`uscale`, `vscale`, `udelta`, `vdelta`) is baked into each mesh's uvs, with v flipped to run down the image (`buildMesh()`). `spherical`, `cylindrical` and `planar` mappings (`villa`) are read as `uv` and reported. `wrap` other than `repeat` is reported. Map both to this plan's mappings and wrap modes, and stop baking the uv transform.
+- **Encodings.** 8-bit images are decoded to sRGB bytes for the texture array (`loadImportedImage()` in `src/vk_loader.cpp`): `encoding "linear"` and `"gamma g"` are converted, and float images (EXR, PFM) are clamped to 1, losing HDR texels. Native-size images with their own formats remove the conversion. The texture array's 256-layer cap drops textures past it: `sanmiguel` has 231 images, `landscape` 125.
+- **Shape alpha.** A shape's `alpha` (a float or a texture) is ignored and reported: 707 shapes in `barcelona-pavilion`, `bistro`, `landscape`, `sanmiguel` and `watercolor`, so leaves render as solid quads. The renderer's alpha test reads the base color's alpha (glTF's cutout). Map pbrt's per-shape alpha texture to this plan's texture references with the traversal's cutout test.
+- **Shapes without uvs.** pbrt gives each triangle of a mesh without uvs the coordinates (0, 0), (1, 0), (1, 1); the importer gives zeros. A textured material on such a mesh shows one texel.
+
 ## Verification
 
 - The spike's results decide the storage path, and are recorded in this file.

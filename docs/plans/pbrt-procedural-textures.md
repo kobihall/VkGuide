@@ -39,6 +39,12 @@ Whichever representation wins, these are shared and can be written in advance if
 - `crt_noise.glsl` with Perlin noise, fBm and turbulence, mirrored in `rt_texture` for testing, following PBR 3ed §10.6 and Kensler's permutation-free hashing so no permutation table has to be uploaded.
 - The 3D texture mapping (object or world space) in `TexRef.mapping`, which [pbrt-textures.md](pbrt-textures.md) reserves.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Procedural textures are constants.** `textureValue()` in `src/pbrt_import.cpp` reads `checkerboard` and `bilerp` as their mean, `mix` and `directionmix` of constants as their blend (of images, as the one with the larger share), and every other class (`wrinkled` and `windy` in `villa`, `fbm`, `marble`, `dots`, `ptex`) as 0.5. Each is reported. When the representation is decided, map each class to it with its parameters and its texture mapping.
+
 ## Sources
 
 PBR 3ed §10.3.4, §10.5 and §10.6 (procedural and solid textures, noise, polka dots, spectral synthesis, bumpy and wrinkled textures, windy waves, marble); PBR 4ed §10.3 (texture interface, scale and mix textures), §15.3.9 (why complex textures are evaluated in a separate kernel); Shirley, *Ray Tracing: The Next Week*, "Solid Textures" and "Perlin Noise"; pbrt-v4 `src/pbrt/textures.h`.

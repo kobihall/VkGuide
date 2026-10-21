@@ -183,17 +183,22 @@ struct EnvironmentLight {
 };
 
 struct GLTFMaterial;
+struct LoadedModel;
 
 // A glTF material as a library entry: the pbr type with the file's factors and its textures' layers.
 // The caller names it and sets its origin
 MaterialDef gltfMaterialDef(const GLTFMaterial& material, const RaytraceTextureArray& textures);
-// re-derives the parameters a glTF entry takes from its file and never lets the user edit (its
+// a model's material `index` as its file defines it: the importer's definition for a model another importer built
+// (a pbrt file's), else gltfMaterialDef(), with its textures' layers either way. What import adds to the library
+// and what the Materials window marks edits against and reverts to
+MaterialDef modelMaterialDef(const LoadedModel& model, uint32_t index, const RaytraceTextureArray& textures);
+// re-derives the parameters a model's entry takes from its file and never lets the user edit (its
 // texture layers and its alpha cutoff), after the texture array was rebuilt and the layers moved
-void refreshGltfMaterialDef(MaterialDef& entry, const GLTFMaterial& material, const RaytraceTextureArray& textures);
+void refreshModelMaterialDef(MaterialDef& entry, const GLTFMaterial& material, const RaytraceTextureArray& textures);
 
 // which library entry each glTF material of the loaded models became, for the surfaces of mesh
 // objects shaded with their glTF materials
-using GltfMaterialIds = std::unordered_map<const GLTFMaterial*, uint64_t>;
+using ModelMaterialIds = std::unordered_map<const GLTFMaterial*, uint64_t>;
 
 // Builds the top level over the visible mesh objects and the shapes, and the light list over them,
 // the punctual lights and the environment, with every material they reference packed from the
@@ -201,4 +206,4 @@ using GltfMaterialIds = std::unordered_map<const GLTFMaterial*, uint64_t>;
 // set, not per edit
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
-	const std::vector<MaterialDef>& materials, const GltfMaterialIds& gltfMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures);
+	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures);

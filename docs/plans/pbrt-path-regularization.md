@@ -40,6 +40,12 @@ pbrt's regularization is biased and stays biased at any sample count. Kaplanyan 
 - Settings: **Regularize**, **Shrink with samples**.
 - No new binding or variant.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **`regularize`** on the `path`, `volpath` and `bdpt` integrators is reported as off (`settings()` in `src/pbrt_import.cpp`; `bmw-m6` and `sportscar-area-lights`). Map it to this plan's setting.
+
 ## Verification
 
 - With **Regularize** off, every scene renders bit-identical.

@@ -2,7 +2,7 @@
 
 This roadmap covers every feature that *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* describe and this renderer lacks or implements weakly. Each feature has a plan in `docs/plans/`, named `pbrt-*.md` since 2026-10-18. This file records the decisions that shape all of them and reserves the resources they share, so that the plans can be implemented in any order without colliding.
 
-*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, the material system, robust intersections and sample generation on 2026-10-19, the verification harness on 2026-10-20, and the film and reconstruction and the auxiliary outputs on 2026-10-21; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
+*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, the material system, robust intersections and sample generation on 2026-10-19, the verification harness on 2026-10-20, and the film and reconstruction, the auxiliary outputs and the pbrt scene import on 2026-10-21; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
 
 *Revised 2026-10-18 for the [laser optics plan](physoptics-laser-optics.md), whose `physoptics-*.md` plans build on these. That plan's roadmap gives one linear order for both sets of plans; it pulls several of these forward (the foundations, the BSDF library, light types, image output, the display transform, the light integrator of bidirectional path tracing, cameras and polarization). The reservations below gain the laser optics plan's rows, and every rule here applies to its plans too.*
 
@@ -126,7 +126,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 |---|---|
 | [pbrt-wavefront-performance.md](pbrt-wavefront-performance.md) | Path regeneration, subgroup queue allocation, shared-memory traversal stacks, ray sorting |
 | [pbrt-adaptive-sampling.md](pbrt-adaptive-sampling.md) | Variance-driven sample budgets (revised) |
-| [pbrt-scene-import.md](pbrt-scene-import.md) | A subset of pbrt-v4's scene format, for comparing against pbrt |
+| [pbrt-scene-import.md](completed/pbrt-scene-import.md) | Implemented: pbrt-v4 scene files as models, with an import report of every substitution and `tools/verify/pbrt_compare.py`. Every plan for a feature pbrt scenes use has an "Importing pbrt scenes" section saying what to change in the importer |
 
 ### Considered and not planned
 
@@ -295,7 +295,11 @@ A kernel that traces includes `crt_trace.glsl` and is compiled once per traversa
 
 ### Scene files
 
-Every plan that saves something bumps `SCENE_FILE_FORMAT_VERSION` by one when it lands (15 today), and every older version keeps loading. Plans do not pre-assign version numbers, since the order they land in is unknown.
+Every plan that saves something bumps `SCENE_FILE_FORMAT_VERSION` by one when it lands (17 today), and every older version keeps loading. Plans do not pre-assign version numbers, since the order they land in is unknown.
+
+### pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes and substitutes for every feature the renderer lacks, with a line in the import report for each. A plan for a feature that pbrt's format has does three things when it lands: it changes `src/pbrt_import.cpp` as its "Importing pbrt scenes" section says, it removes the report lines that no longer apply, and it adds a run of `tools/verify/pbrt_compare.py` on a scene that uses the feature to its verification.
 
 ### CPU mirrors and tests
 
@@ -303,7 +307,7 @@ Every GLSL module that holds sampling or scattering mathematics gets a line-for-
 
 | Library | GLSL | Test | Plan |
 |---|---|---|---|
-| `rt_spectrum` | `crt_spectrum.glsl` | `bin/spectrum_test` | spectral-rendering |
+| `rt_spectrum` | `crt_spectrum.glsl` | `bin/spectrum_test` | spectral-rendering; the CPU half (pbrt's tables, blackbodies, the projection to RGB) exists, from pbrt-scene-import |
 | `rt_bsdf` | `crt_scatter.glsl` now, then `crt_bsdf_*.glsl`, `crt_microfacet.glsl` | `bin/bsdf_test`, and the GPU self-test | verification-harness (implemented), bsdf-library |
 | `rt_sampler` | `crt_sampler.glsl` | `bin/sampler_test` | sample-generation (implemented) |
 | `rt_film` | `crt_filter.glsl`, `crt_film.glsl` | `bin/film_test`, and the GPU self-tests | film-and-reconstruction (implemented) |

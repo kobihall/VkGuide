@@ -50,6 +50,12 @@ Every strategy maintains the traversal counters (`g_nodesVisited`, `g_primitives
 - Traversals `kdtree` and `grid`: two strategy files, two `crt_trace.glsl` branches, two `TraversalVariant` rows.
 - `bvh_bench` flags: `--builders` gains `e` and `l`, `--layouts` gains `k` and `g`, `--restructure`.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **The `Accelerator` directive** is reported and the scene's BVH is used (`settings()` in `src/pbrt_import.cpp`). Map pbrt's `kdtree` to this plan's kd-tree traversal and `bvh`'s `splitmethod` to the BVH builder.
+
 ## Verification
 
 - The existing strategies render bit-identical, and scenes saved with them load unchanged.

@@ -13,7 +13,7 @@ void visitNode(const std::shared_ptr<Node>& node, uint32_t& nodeIndex, std::stri
 		return;
 	}
 
-	//same tree walk LoadedGLTF::Draw()/Node::Draw() use, collecting nodes instead of RenderObjects
+	//same tree walk LoadedModel::Draw()/Node::Draw() use, collecting nodes instead of RenderObjects
 	if (const MeshNode* meshNode = dynamic_cast<const MeshNode*>(node.get())) {
 		visit(modelKey, nodeIndex++, *meshNode);
 	}

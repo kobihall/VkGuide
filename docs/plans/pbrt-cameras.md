@@ -70,13 +70,20 @@ With [pbrt-motion-blur.md](pbrt-motion-blur.md), every camera kind takes a time 
 
 Light tracing and bidirectional path tracing need the camera's response to a ray arriving at it: `We()`, `Pdf_We()` and `Sample_Wi()`. [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md) adds them to `crt_camera.glsl` for the thin-lens perspective camera only, as pbrt does, and those integrators are unavailable with the other kinds.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Perspective cameras** import with their pose, `fov` (pbrt's spans the shorter image axis; `camera()` in `src/pbrt_import.cpp` converts it to a vertical field of view), `frameaspectratio`, `lensradius` (as the aperture's diameter, `2 * lensradius`) and `focaldistance`. `bin/pbrt_test` checks that a point lands at the same place on the screen in both renderers, with and without a mirroring `Scale -1 1 1` in front of `LookAt`.
+- **Other cameras** (`orthographic`, `spherical`, `realistic` in `sanmiguel-realistic-courtyard`) are perspective cameras with the same pose, and `screenwindow` is ignored. Map each to this plan's `SceneCamera` kinds, and `realistic`'s `lensfile`, `aperturediameter` and `focusdistance` to its lens assembly.
+
 ## Verification
 
 - The perspective camera with a circular aperture and the concentric mapping converges to the same image as today; with the old polar mapping, retained for comparison, it renders bit-identical.
 - An orthographic render of the Cornell box shows parallel walls parallel.
 - An equirectangular render of a scene, loaded as that scene's environment map, lights a mirror sphere at the camera's position identically to the scene itself.
 - A realistic camera with the wide-angle prescription shows barrel distortion and corner vignetting, and focuses at the requested distance to within 1 %.
-- The double Gauss imported from `dgauss.50mm.dat` renders, through its assembly, the same image as pbrt-v4's realistic camera with the same file, through [pbrt-scene-import.md](pbrt-scene-import.md)'s comparison workflow, and its real ray intercepts match OpticStudio's for the same lens ([physoptics-verification-scenes.md](physoptics-verification-scenes.md), `camera_35mm`).
+- The double Gauss imported from `dgauss.50mm.dat` renders, through its assembly, the same image as pbrt-v4's realistic camera with the same file, through [pbrt-scene-import.md](completed/pbrt-scene-import.md)'s comparison workflow, and its real ray intercepts match OpticStudio's for the same lens ([physoptics-verification-scenes.md](physoptics-verification-scenes.md), `camera_35mm`).
 
 ## Order of work
 

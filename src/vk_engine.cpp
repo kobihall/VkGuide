@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <image_io.h>
 #include <rt_scene.h>
+#include <pbrt_import.h>
 #include <scene_io.h>
 #include <shape_mesh.h>
 #include <file_dialog.h>
@@ -21,6 +22,7 @@
 #include <iostream>
 #include <vector>
 #include <thread>
+#include <set>
 
 #include <vk_types.h>
 #include <vk_initializers.h>
@@ -87,6 +89,7 @@ void VulkanEngine::init()
 	m_isInitialized = true;
 }
 
+namespace tp { inline double t[8] = {}; inline int frames = 0; inline size_t uniquePairs = 0; inline auto now() { return std::chrono::steady_clock::now(); } inline double ms(std::chrono::steady_clock::time_point a) { return std::chrono::duration<double, std::milli>(tp::now() - a).count(); } }
 void VulkanEngine::draw()
 {
 	// wait until the gpu has finished rendering the last frame. Timeout of 1
@@ -94,7 +97,9 @@ void VulkanEngine::draw()
 	// cpu-only, so it overlaps the gpu finishing the previous frame
 	updateScene();
 
+	auto tf = tp::now();
 	checkVkResult(vkWaitForFences(m_device, 1, &getCurrentFrame().renderFence, true, 1000000000));
+	tp::t[0] += tp::ms(tf);
 
 	getCurrentFrame().deletionQueue.flush();
 	getCurrentFrame().frameDescriptors.clearPools(m_device);
@@ -183,7 +188,9 @@ void VulkanEngine::draw()
 
 	//submit command buffer to the queue and execute it.
 	// renderFence will now block until the graphic commands finish execution
+	auto ts = tp::now();
 	checkVkResult(vkinit::VkFunctionLoader::get_instance().vkQueueSubmit2KHR(m_graphicsQueue, 1, &submit, getCurrentFrame().renderFence));
+	tp::t[3] += tp::ms(ts);
 
 	//prepare present
 	// this will put the image we just rendered to into the visible window.
@@ -218,19 +225,12 @@ void VulkanEngine::updateScene()
 
 	m_mainDrawContext.opaqueSurfaces.clear();
 
-	//the viewport draws the scene's mesh objects, not the loaded models: an object's transform is
-	//the node's world transform, a deleted object draws nothing, and a hidden one is skipped. That
-	//is what makes the gizmo and the outliner agree with what is on screen, and it is the same
-	//list the raytracer traces
-	for (const SceneMeshObject& object : m_raytraceScene.meshObjects()) {
-		if (!object.visible) {
-			continue;
-		}
-		const auto found = m_meshNodes.find({ object.modelKey, object.nodeIndex });
-		if (found == m_meshNodes.end() || found->second == nullptr) {
-			continue;
-		}
-		found->second->drawSurfaces(object.transform, m_mainDrawContext);
+	//the mesh objects' surfaces change only when the scene or the models do, so the list is rebuilt then and not
+	//every frame: a pbrt scene places tens of thousands of objects
+	if (m_meshDrawList.editorRevision != m_raytraceScene.contentRevision() || m_meshDrawList.sceneRevision != m_sceneRevision) {
+		m_meshDrawList.rebuild(m_raytraceScene.meshObjects(), m_meshNodes);
+		m_meshDrawList.editorRevision = m_raytraceScene.contentRevision();
+		m_meshDrawList.sceneRevision = m_sceneRevision;
 	}
 
 	glm::mat4 view = m_mainCamera.getViewMatrix();
@@ -278,26 +278,23 @@ void VulkanEngine::recordDrawImageEffect(VkCommandBuffer cmd, const ComputePass&
 
 void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 {
-	std::vector<uint32_t> opaque_draws;
-	opaque_draws.reserve(m_mainDrawContext.opaqueSurfaces.size());
+	//the mesh objects' surfaces in view, already in draw order
+	std::vector<const RenderObject*> opaque_draws;
+	auto tc = tp::now(); m_meshDrawList.cull(m_sceneData.viewproj, opaque_draws); tp::t[1] += tp::ms(tc);
+	{ std::set<std::pair<const void*, const void*>> pairs; for (auto* r : opaque_draws) pairs.insert({ r->material, (const void*)r->indexBuffer }); tp::uniquePairs = pairs.size(); }
+	auto trec = tp::now();
 
-	for (uint32_t i = 0; i < m_mainDrawContext.opaqueSurfaces.size(); i++) {
-		if (is_visible(m_mainDrawContext.opaqueSurfaces[i], m_sceneData.viewproj)) {
-			opaque_draws.push_back(i);
+	//the raytracer's shapes, built every frame (drawRaytraceShapes()), after them
+	std::vector<const RenderObject*> shapeDraws;
+	for (const RenderObject& object : m_mainDrawContext.opaqueSurfaces) {
+		if (is_visible(object, m_sceneData.viewproj)) {
+			shapeDraws.push_back(&object);
 		}
 	}
-
-	// sort the opaque surfaces by material and mesh
-	std::sort(opaque_draws.begin(), opaque_draws.end(), [&](const auto& iA, const auto& iB) {
-		const RenderObject& A = m_mainDrawContext.opaqueSurfaces[iA];
-		const RenderObject& B = m_mainDrawContext.opaqueSurfaces[iB];
-		if (A.material == B.material) {
-			return A.indexBuffer < B.indexBuffer;
-		}
-		else {
-			return A.material < B.material;
-		}
+	std::sort(shapeDraws.begin(), shapeDraws.end(), [](const RenderObject* a, const RenderObject* b) {
+		return a->material == b->material ? a->indexBuffer < b->indexBuffer : a->material < b->material;
 	});
+	opaque_draws.insert(opaque_draws.end(), shapeDraws.begin(), shapeDraws.end());
 
 	//reset counters
 	m_stats.drawcallCount = 0;
@@ -411,14 +408,35 @@ void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 		m_stats.triangleCount += r.indexCount / 3;
 	};
 
-	for (auto& r : opaque_draws) {
-		draw(m_mainDrawContext.opaqueSurfaces[r]);
+	static const char* experiment = getenv("VKGUIDE_PROFILE_EXPERIMENT");
+	for (const RenderObject* r : opaque_draws) {
+		if (experiment != nullptr && std::string(experiment) == "onemesh" && !opaque_draws.empty()) {
+			RenderObject copy = *r;
+			copy.indexBuffer = opaque_draws[0]->indexBuffer;
+			copy.vertexBufferAddress = opaque_draws[0]->vertexBufferAddress;
+			copy.firstIndex = opaque_draws[0]->firstIndex;
+			copy.indexCount = opaque_draws[0]->indexCount;
+			draw(copy);
+			continue;
+		}
+		if (experiment != nullptr && std::string(experiment) == "nopush") {
+			//every draw as the first: same push constants, so nothing changes between draws
+			RenderObject copy = *opaque_draws[0];
+			copy.material = r->material;
+			draw(copy);
+			continue;
+		}
+		draw(*r);
 	}
-	for (auto& r : m_mainDrawContext.transparentSurfaces) {
+	for (const RenderObject& r : m_meshDrawList.transparent) {
+		draw(r);
+	}
+	for (const RenderObject& r : m_mainDrawContext.transparentSurfaces) {
 		draw(r);
 	}
 
 	vkinit::VkFunctionLoader::get_instance().vkCmdEndRenderingKHR(cmd);
+	tp::t[2] += tp::ms(trec);
 
 	// we delete the draw commands now that we processed them
 	m_mainDrawContext.opaqueSurfaces.clear();
@@ -479,6 +497,17 @@ void VulkanEngine::run()
 		return;
 	}
 
+	if (const char* n = getenv("VKGUIDE_PROFILE_EXTRA_BUFFERS")) {
+		for (int i = 0; i < atoi(n); i++) {
+			AllocatedBuffer b = createBuffer(256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+			(void)b;
+		}
+	}
+	if (const char* r = getenv("VKGUIDE_PROFILE_RENDER_SCALE")) { m_renderScale = (float)atof(r); }
+	if (const char* p = getenv("VKGUIDE_PROFILE_SCENE")) {
+		fmt::println("profile: {}", importModel(p).message);
+		for (const auto& [key, id] : m_modelCameras) { beginFirstPersonEdit(id); endFirstPersonEdit(); }
+	}
 	if (m_commandLine.batch() && !beginBatch()) {
 		return;
 	}
@@ -543,6 +572,7 @@ void VulkanEngine::run()
 				ImGui::MenuItem("Raytrace Render", nullptr, m_raytracer.visibilityFlag());
 				ImGui::MenuItem("Raytracer Shaders", nullptr, m_raytracer.kernelPanelVisibilityFlag());
 				ImGui::MenuItem("GPU self-tests", nullptr, m_selfTests.visibilityFlag());
+				ImGui::MenuItem("Import Report", nullptr, &m_showImportReport);
 				ImGui::MenuItem("ImGui Demo", nullptr, &m_showDemoWindow);
 				ImGui::Separator();
 				m_displayRegistry.drawWindowsMenu();
@@ -583,6 +613,7 @@ void VulkanEngine::run()
 		m_raytracer.drawPanel(this, m_raytraceScene);
 		m_raytracer.drawKernelPanel(this);
 		m_selfTests.drawWindow(this);
+		drawImportReport();
 
 		//some imgui UI to test
 		if (m_showDemoWindow) {
@@ -612,6 +643,8 @@ void VulkanEngine::run()
 		//convert to microseconds (integer), and then come back to miliseconds
 		auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 		m_stats.frameTime = elapsed.count() / 1000.f;
+		tp::t[4] += m_stats.frameTime;
+		if (++tp::frames % 20 == 0) { fmt::println("profile: frame {:.1f} | fence wait {:.1f} | cull {:.2f} | record draws {:.1f} | submit {:.1f} | draws {} | tris {} | unique (material, mesh) {}", tp::t[4] / 20, tp::t[0] / 20, tp::t[1] / 20, tp::t[2] / 20, tp::t[3] / 20, m_stats.drawcallCount, m_stats.triangleCount, tp::uniquePairs); for (double& v : tp::t) v = 0; if (tp::frames >= 100) bQuit = true; }
 	}
 }
 
@@ -975,13 +1008,13 @@ void VulkanEngine::rebuildSceneDerivedData()
 	//and the array it indexes are always built together
 	m_raytraceTextures.rebuild(this);
 	//and the glTF materials' library entries, whose texture layers just moved
-	m_raytraceScene.refreshGltfMaterials([this](MaterialDef& material) {
+	m_raytraceScene.refreshModelMaterials([this](MaterialDef& material) {
 		const auto model = m_models.find(material.origin->modelKey);
 		if (model == m_models.end() || model->second == nullptr || material.origin->index >= model->second->materialsByIndex.size()) {
 			return false;
 		}
 		const MaterialDef before = material;
-		refreshGltfMaterialDef(material, *model->second->materialsByIndex[material.origin->index], m_raytraceTextures);
+		refreshModelMaterialDef(material, *model->second->materialsByIndex[material.origin->index], m_raytraceTextures);
 		return !(before == material);
 	});
 
@@ -992,32 +1025,31 @@ void VulkanEngine::rebuildSceneDerivedData()
 	m_sceneRevision++;
 }
 
-IoResult VulkanEngine::importGltf(const std::filesystem::path& path)
+std::string VulkanEngine::addModel(std::shared_ptr<LoadedModel> model, const std::filesystem::path& path)
 {
-	std::string error;
-	auto loaded = loadGltf(this, path.string(), &error);
-	if (!loaded.has_value()) {
-		return IoResult::failure(error);
-	}
-	(*loaded)->sourcePath = absoluteNormalized(path);
+	model->sourcePath = absoluteNormalized(path);
 
-	//keyed by file stem, made unique so the same file can be in the scene twice
-	const std::string stem = path.stem().string().empty() ? "model" : path.stem().string();
+	//keyed by file stem, made unique so the same file can be in the scene twice. A .pbrt.gz keeps its stem's stem
+	std::filesystem::path stemPath = path.stem();
+	if (stemPath.extension() == ".pbrt") {
+		stemPath = stemPath.stem();
+	}
+	const std::string stem = stemPath.string().empty() ? "model" : stemPath.string();
 	std::string key = stem;
 	for (int suffix = 2; m_models.count(key) != 0; suffix++) {
 		key = fmt::format("{}_{}", stem, suffix);
 	}
-	m_models[key] = *loaded;
+	m_models[key] = std::move(model);
 
 	rebuildSceneDerivedData();
 
-	//one library entry per glTF material, named as the file names it, which is what its objects are
-	//shaded with and what the Materials window edits in place
-	const LoadedGLTF& model = *m_models[key];
-	for (uint32_t i = 0; i < model.materialsByIndex.size(); i++) {
-		MaterialDef material = gltfMaterialDef(*model.materialsByIndex[i], m_raytraceTextures);
-		material.name = i < model.materialNames.size() ? model.materialNames[i] : fmt::format("material{}", i);
-		material.origin = GltfMaterialOrigin { key, i };
+	//one library entry per material, named as the file names it, which is what its objects are shaded with and what
+	//the Materials window edits in place
+	const LoadedModel& loaded = *m_models[key];
+	for (uint32_t i = 0; i < loaded.materialsByIndex.size(); i++) {
+		MaterialDef material = modelMaterialDef(loaded, i, m_raytraceTextures);
+		material.name = i < loaded.materialNames.size() ? loaded.materialNames[i] : fmt::format("material{}", i);
+		material.origin = ModelMaterialOrigin { key, i };
 		m_raytraceScene.addMaterial(std::move(material));
 	}
 
@@ -1025,6 +1057,24 @@ IoResult VulkanEngine::importGltf(const std::filesystem::path& path)
 	//authored with, so importing looks exactly as it always did - the objects are what makes each
 	//of those nodes movable and deletable afterwards
 	m_raytraceScene.addMeshObjects(defaultMeshObjects(*m_raytraceMeshData, key));
+	return key;
+}
+
+IoResult VulkanEngine::importModel(const std::filesystem::path& path)
+{
+	const std::string name = path.filename().string();
+	const bool pbrt = name.ends_with(".pbrt") || name.ends_with(".pbrt.gz");
+	return pbrt ? importPbrt(path) : importGltf(path);
+}
+
+IoResult VulkanEngine::importGltf(const std::filesystem::path& path)
+{
+	std::string error;
+	auto loaded = loadGltf(this, path.string(), &error);
+	if (!loaded.has_value()) {
+		return IoResult::failure(error);
+	}
+	const std::string key = addModel(*loaded, path);
 
 	//and one scene light per KHR_lights_punctual light, where its node puts it
 	std::vector<SceneLight> lights;
@@ -1039,7 +1089,104 @@ IoResult VulkanEngine::importGltf(const std::filesystem::path& path)
 		lightCount > 0 ? fmt::format(", and the file's {} light(s)", lightCount) : ""));
 }
 
-void VulkanEngine::removeGltf(const std::string& name)
+IoResult VulkanEngine::importPbrt(const std::filesystem::path& path)
+{
+	const auto started = std::chrono::steady_clock::now();
+	ImportedModel imported;
+	std::string error;
+	if (!importPbrtFile(path, imported, &error)) {
+		return IoResult::failure(fmt::format("'{}' is not a scene pbrt can read: {}", path.filename().string(), error));
+	}
+	const std::string key = addModel(loadImportedModel(this, std::move(imported)), path);
+	const ImportedModel& model = *m_models[key]->imported;
+
+	//its lights and shapes belong to it, as a glTF file's lights do; its camera is the scene's
+	std::vector<SceneLight> lights = model.lights;
+	for (SceneLight& light : lights) {
+		light.modelKey = key;
+	}
+	m_raytraceScene.addLights(std::move(lights));
+	std::vector<SceneShape> shapes;
+	for (const ImportedShape& imported : model.shapes) {
+		SceneShape shape = imported.shape;
+		shape.modelKey = key;
+		const MaterialDef* material = m_raytraceScene.findModelMaterial(key, imported.material);
+		shape.materialId = material != nullptr ? material->id : 0;
+		shapes.push_back(std::move(shape));
+	}
+	m_raytraceScene.addShapes(std::move(shapes));
+	m_modelCameras.erase(key);
+	for (const SceneCamera& camera : model.cameras) {
+		m_modelCameras[key] = m_raytraceScene.addCamera(camera);
+	}
+	if (model.environment.has_value()) {
+		IoResult environment = installEnvironmentMap(model.environment->rgba.data(), model.environment->width, model.environment->height, model.environment->label, {});
+		if (environment.ok) {
+			m_environmentModelKey = key;
+			m_environmentIntensity = model.environment->intensity;
+			m_solidBackground = false;
+		}
+	} else if (m_environmentMap.image == VK_NULL_HANDLE) {
+		//pbrt's world without an infinite light is black past its geometry, where the renderer would show its sky
+		m_solidBackground = true;
+		m_backgroundColor = glm::vec3(0.f);
+	}
+	m_showImportReport = true;
+	m_importReportModel = key;
+
+	const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+	return IoResult::success(fmt::format("Imported pbrt scene '{}' as '{}' in {:.1f} s: {} mesh object(s), {} triangles, {} shape(s), {} light(s){}. {} line(s) in its import report",
+		path.filename().string(), key, seconds, m_raytraceScene.meshObjects().size(), m_raytraceMeshData->triangleCount, model.shapes.size(), model.lights.size(),
+		model.environment.has_value() ? ", an environment" : "", model.report.messages.size()));
+}
+
+void VulkanEngine::usePbrtSettings(const std::string& modelKey)
+{
+	const auto model = m_models.find(modelKey);
+	if (model == m_models.end() || model->second == nullptr || !model->second->imported.has_value() || !model->second->imported->settings.has_value()) {
+		return;
+	}
+	const ImportedSettings& settings = *model->second->imported->settings;
+	RenderSettings render = settings.render;
+	//what the file does not decide stays the scene's
+	const RenderSettings current = m_raytracer.settings();
+	render.matchViewport = false;
+	render.samplesPerFrame = current.samplesPerFrame;
+	render.restartOnChange = current.restartOnChange;
+	render.errorBoundedOffsets = current.errorBoundedOffsets;
+	render.watertightTriangles = current.watertightTriangles;
+	render.outlierKappa = current.outlierKappa;
+	render.lightGroups = current.lightGroups;
+	m_raytracer.setSettings(render);
+	KernelSelection kernels = m_raytracer.kernels();
+	if (!settings.sampler.empty()) {
+		const std::span<const KernelVariant> samplers = kernelVariants(KernelSlot::GenerateSamples);
+		for (uint32_t i = 0; i < (uint32_t)samplers.size(); i++) {
+			if (settings.sampler == samplers[i].id) {
+				kernels[KernelSlot::GenerateSamples] = i;
+			}
+		}
+	}
+	//pbrt filters every sample by importance and sums them with signed weights: kernel 00's filtered camera and a
+	//film that keeps sums, which are a new scene's defaults
+	const KernelSelection defaults = defaultKernelSelection();
+	kernels[KernelSlot::GenerateCameraRays] = defaults[KernelSlot::GenerateCameraRays];
+	kernels[KernelSlot::UpdateFilm] = defaults[KernelSlot::UpdateFilm];
+	m_raytracer.setKernels(kernels);
+	m_raytracer.setAccelSettings(this, m_raytracer.accelSettings());
+	if (const auto camera = m_modelCameras.find(modelKey); camera != m_modelCameras.end() && m_raytraceScene.findCamera(camera->second) != nullptr) {
+		m_raytracer.setRenderCamera(camera->second);
+	}
+	//pbrt's "ambientocclusion" integrator is the ambient occlusion debug view
+	if (settings.ambientOcclusionDistance.has_value()) {
+		m_raytracer.gpu().debugView = CrtDebugView::AmbientOcclusion;
+		m_raytracer.gpu().aoDistance = std::isfinite(*settings.ambientOcclusionDistance) ? *settings.ambientOcclusionDistance : 0.f;
+	}
+	m_lastFileResult = IoResult::success(fmt::format("Render settings from '{}': {} x {}, {} samples, {}", modelKey, render.width, render.height, render.maxSamples,
+		settings.sampler.empty() ? "the scene's sampler" : "the " + settings.sampler + " sampler"));
+}
+
+void VulkanEngine::removeModel(const std::string& name)
 {
 	auto it = m_models.find(name);
 	if (it == m_models.end()) {
@@ -1047,7 +1194,7 @@ void VulkanEngine::removeGltf(const std::string& name)
 	}
 
 	//frames in flight may still reference the model's buffers, images and descriptor pools, and
-	//LoadedGLTF::clearAll() destroys them the moment the last reference goes. A wait is the
+	//LoadedModel::clearAll() destroys them the moment the last reference goes. A wait is the
 	//simple, obviously-correct way to retire them for a menu-driven action
 	vkDeviceWaitIdle(m_device);
 	m_models.erase(it);
@@ -1055,6 +1202,11 @@ void VulkanEngine::removeGltf(const std::string& name)
 	//So do the lights it brought, which belong to it the same way
 	m_raytraceScene.removeMeshObjectsOf(name);
 	m_raytraceScene.removeLightsOf(name);
+	m_raytraceScene.removeShapesOf(name);
+	m_modelCameras.erase(name);
+	if (m_environmentModelKey == name) {
+		clearEnvironmentMap();
+	}
 	//and its materials, except the ones a shape or an override still uses, which become the user's
 	const std::vector<std::string> kept = m_raytraceScene.removeMaterialsOf(name);
 	rebuildSceneDerivedData();
@@ -1071,9 +1223,14 @@ void VulkanEngine::clearModels()
 	vkDeviceWaitIdle(m_device);
 	for (const auto& [name, model] : m_models) {
 		m_raytraceScene.removeLightsOf(name);
+		m_raytraceScene.removeShapesOf(name);
 		m_raytraceScene.removeMaterialsOf(name);
 	}
+	if (!m_environmentModelKey.empty()) {
+		clearEnvironmentMap();
+	}
 	m_models.clear();
+	m_modelCameras.clear();
 	m_raytraceScene.replaceMeshObjects({});
 	rebuildSceneDerivedData();
 }
@@ -1128,7 +1285,7 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 		}
 		SceneMaterialOverride edit;
 		edit.model = model->second;
-		edit.gltfIndex = material.origin->index;
+		edit.modelMaterial = material.origin->index;
 		edit.lightGroup = material.lightGroup;
 		for (const std::string& name : material.edited) {
 			edit.params[name] = materialValue(material, name);
@@ -1145,7 +1302,7 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 			ref.user = userIndices[id];
 		} else if (const auto model = modelIndices.find(material->origin->modelKey); model != modelIndices.end()) {
 			ref.model = model->second;
-			ref.gltfIndex = material->origin->index;
+			ref.modelMaterial = material->origin->index;
 		}
 		return ref;
 	};
@@ -1171,8 +1328,18 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 	}
 
 	scene.environmentMapPath = m_environmentMapPath;
+	if (const auto found = modelIndices.find(m_environmentModelKey); !m_environmentModelKey.empty() && found != modelIndices.end()) {
+		scene.environmentModel = found->second;
+	}
 	for (const SceneShape& shape : m_raytraceScene.shapes()) {
-		scene.shapes.push_back(SceneShapeRecord { shape, materialRef(shape.materialId) });
+		SceneShapeRecord record { shape, materialRef(shape.materialId) };
+		//a shape of a model that is not in the file becomes the user's own
+		const auto found = modelIndices.find(shape.modelKey);
+		record.model = shape.modelKey.empty() || found == modelIndices.end() ? -1 : found->second;
+		if (record.model < 0) {
+			record.shape.modelKey.clear();
+		}
+		scene.shapes.push_back(std::move(record));
 	}
 	scene.cameras = m_raytraceScene.cameras();
 	scene.hasLights = true;
@@ -1235,7 +1402,7 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	std::vector<std::string> modelKeys;
 	for (const std::filesystem::path& modelPath : scene.modelPaths) {
 		const size_t before = m_models.size();
-		IoResult imported = importGltf(modelPath);
+		IoResult imported = importModel(modelPath);
 		if (!imported.ok) {
 			problems.push_back(imported.message);
 			modelKeys.push_back({});
@@ -1257,7 +1424,7 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	//the library: the edits to the glTF materials the imports just made, then the user materials
 	for (const SceneMaterialOverride& edit : scene.materialOverrides) {
 		const std::string& key = edit.model < (int)modelKeys.size() ? modelKeys[edit.model] : std::string();
-		MaterialDef* material = key.empty() ? nullptr : m_raytraceScene.findGltfMaterial(key, edit.gltfIndex);
+		MaterialDef* material = key.empty() ? nullptr : m_raytraceScene.findModelMaterial(key, edit.modelMaterial);
 		if (material == nullptr) {
 			continue;
 		}
@@ -1278,7 +1445,7 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 			return userIds[ref.user];
 		}
 		if (ref.model >= 0 && ref.model < (int)modelKeys.size() && !modelKeys[ref.model].empty()) {
-			if (const MaterialDef* material = m_raytraceScene.findGltfMaterial(modelKeys[ref.model], ref.gltfIndex)) {
+			if (const MaterialDef* material = m_raytraceScene.findModelMaterial(modelKeys[ref.model], ref.modelMaterial)) {
 				return material->id;
 			}
 		}
@@ -1311,6 +1478,12 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 		}
 		m_raytraceScene.replaceMeshObjects(std::move(objects));
 	}
+	//the environment the file names: a map by path, or the one a model's import just recreated. A model's environment
+	//the file does not name was removed before the save, so it goes again
+	const std::string environmentModel = scene.environmentModel >= 0 && scene.environmentModel < (int)modelKeys.size() ? modelKeys[scene.environmentModel] : std::string();
+	if (!m_environmentModelKey.empty() && m_environmentModelKey != environmentModel) {
+		clearEnvironmentMap();
+	}
 	if (!scene.environmentMapPath.empty()) {
 		IoResult mapLoaded = loadEnvironmentMap(scene.environmentMapPath);
 		if (!mapLoaded.ok) {
@@ -1332,6 +1505,7 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	std::vector<SceneShape> shapes;
 	for (SceneShapeRecord& record : scene.shapes) {
 		record.shape.materialId = resolveMaterial(record.material, record.shape.name);
+		record.shape.modelKey = record.model >= 0 && record.model < (int)modelKeys.size() ? modelKeys[record.model] : std::string();
 		shapes.push_back(std::move(record.shape));
 	}
 	m_raytraceScene.replaceShapes(std::move(shapes));
@@ -1404,10 +1578,22 @@ IoResult VulkanEngine::loadEnvironmentMap(const std::filesystem::path& path)
 		}
 	}
 
+	IoResult result = installEnvironmentMap(pixels, (uint32_t)width, (uint32_t)height, path.filename().string(), absoluteNormalized(path));
+	if (exrPixels.empty()) {
+		stbi_image_free(pixels);
+	}
+	return result;
+}
+
+IoResult VulkanEngine::installEnvironmentMap(const float* pixels, uint32_t width, uint32_t height, const std::string& label, const std::filesystem::path& path)
+{
+	if (pixels == nullptr || width == 0 || height == 0) {
+		return IoResult::failure(fmt::format("'{}' has no pixels", label));
+	}
 	//the path tracer's sampling tables, from the full-precision pixels before they are halved: a
 	//piecewise-constant distribution over the texels, at most 2048 cells wide, and its MIS-compensated
 	//copy (light_sampling.h). A 4k map's tables are ~33 MB and take a fraction of a second
-	auto distribution = std::make_shared<EnvironmentDistribution>(buildEnvironmentDistribution(pixels, (uint32_t)width, (uint32_t)height, 2048));
+	auto distribution = std::make_shared<EnvironmentDistribution>(buildEnvironmentDistribution(pixels, width, height, 2048));
 
 	//half float: the usual precision for environment lighting, half the memory of rgba32f (an 8k
 	//map is 256 MB rather than 512), and linearly filterable everywhere - 32-bit float filtering
@@ -1417,25 +1603,24 @@ IoResult VulkanEngine::loadEnvironmentMap(const std::filesystem::path& path)
 	const float peak = environmentPeak(pixels, pixelCount);
 	const float storageScale = environmentStorageScale(peak);
 	std::vector<uint32_t> halves = packEnvironmentTexels(pixels, pixelCount, storageScale);
-	if (exrPixels.empty()) {
-		stbi_image_free(pixels);
-	}
 
 	//only now that the new data is known good does the old resource go
 	destroyEnvironmentMap();
 
-	const VkExtent3D extent { (uint32_t)width, (uint32_t)height, 1 };
+	const VkExtent3D extent { width, height, 1 };
 	m_environmentMap = createImage(halves.data(), extent, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT);
 	m_environmentMapExtent = { extent.width, extent.height };
 	m_environmentMapScale = storageScale;
-	m_environmentMapPath = absoluteNormalized(path);
+	m_environmentMapPath = path;
+	//a map from a file is the scene's own; importPbrt() marks one a model brought after this returns
+	m_environmentModelKey.clear();
 	m_environmentDistribution = std::move(distribution);
 
 	//a preview window, so a loaded map can be seen even though nothing renders with it yet.
 	//Values above 1 show clipped
 	m_displayRegistry.registerImage(ENVIRONMENT_MAP_DISPLAY_NAME, m_environmentMap.imageView, m_environmentMapExtent);
 
-	std::string message = fmt::format("Loaded '{}': {} x {}, rgba16f", path.filename().string(), width, height);
+	std::string message = fmt::format("Loaded '{}': {} x {}, rgba16f", label, width, height);
 	if (storageScale > 1.f) {
 		message += fmt::format(", stored at 1/{:g} so its peak of {:g} fits in half float", storageScale, peak);
 	}
@@ -1446,6 +1631,7 @@ void VulkanEngine::clearEnvironmentMap()
 {
 	destroyEnvironmentMap();
 	m_environmentMapPath.clear();
+	m_environmentModelKey.clear();
 }
 
 void VulkanEngine::destroyEnvironmentMap()
@@ -1468,6 +1654,78 @@ void VulkanEngine::destroyEnvironmentMap()
 	m_environmentDistribution.reset();
 }
 
+void VulkanEngine::drawImportReport()
+{
+	if (!m_showImportReport) {
+		return;
+	}
+	ImGui::SetNextWindowSize(ImVec2(760.f, 420.f), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Import Report", &m_showImportReport)) {
+		ImGui::End();
+		return;
+	}
+	//the models an importer other than glTF's brought, each with what it substituted and left out
+	std::vector<std::string> keys;
+	for (const auto& [key, model] : m_models) {
+		if (model != nullptr && model->imported.has_value()) {
+			keys.push_back(key);
+		}
+	}
+	if (keys.empty()) {
+		ImGui::TextDisabled("No pbrt scene is imported. File -> Import pbrt Scene... brings one in.");
+		ImGui::End();
+		return;
+	}
+	if (std::find(keys.begin(), keys.end(), m_importReportModel) == keys.end()) {
+		m_importReportModel = keys.front();
+	}
+	if (ImGui::BeginCombo("model", m_importReportModel.c_str())) {
+		for (const std::string& key : keys) {
+			if (ImGui::Selectable(key.c_str(), key == m_importReportModel)) {
+				m_importReportModel = key;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	const LoadedModel& model = *m_models[m_importReportModel];
+	const ImportedModel& imported = *model.imported;
+	if (imported.settings.has_value()) {
+		const RenderSettings& r = imported.settings->render;
+		ImGui::SameLine();
+		if (ImGui::Button("Use pbrt settings")) {
+			usePbrtSettings(m_importReportModel);
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Render from the file's camera at %d x %d with %d samples, its sampler, pixel filter and ray depth %d%s",
+				r.width, r.height, r.maxSamples, r.rayDepth, r.clampSamples ? fmt::format(", clamping samples at {:g}", r.clampValue).c_str() : "");
+		}
+	}
+	ImGui::TextWrapped("%s", model.sourcePath.string().c_str());
+	ImGui::TextDisabled("Every substitution and everything the import left out, once each with how often and where it first happened. "
+		"The plan in docs/plans/ adds what is missing.");
+	if (ImGui::BeginTable("report", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY)) {
+		ImGui::TableSetupScrollFreeze(0, 1);
+		ImGui::TableSetupColumn("count", ImGuiTableColumnFlags_WidthFixed, 50.f);
+		ImGui::TableSetupColumn("what", ImGuiTableColumnFlags_WidthStretch);
+		ImGui::TableSetupColumn("first at", ImGuiTableColumnFlags_WidthFixed, 160.f);
+		ImGui::TableSetupColumn("plan", ImGuiTableColumnFlags_WidthFixed, 200.f);
+		ImGui::TableHeadersRow();
+		for (const ImportMessage& message : imported.report.messages) {
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn();
+			ImGui::Text("%zu", message.count);
+			ImGui::TableNextColumn();
+			ImGui::TextWrapped("%s", message.text.c_str());
+			ImGui::TableNextColumn();
+			ImGui::TextUnformatted(message.where.c_str());
+			ImGui::TableNextColumn();
+			ImGui::TextDisabled("%s", message.plan.c_str());
+		}
+		ImGui::EndTable();
+	}
+	ImGui::End();
+}
+
 void VulkanEngine::drawFileMenu()
 {
 	if (ImGui::BeginMenu("File")) {
@@ -1486,6 +1744,9 @@ void VulkanEngine::drawFileMenu()
 		ImGui::Separator();
 		if (ImGui::MenuItem("Import glTF Model...")) {
 			m_pendingFileAction = FileAction::ImportGltf;
+		}
+		if (ImGui::MenuItem("Import pbrt Scene...")) {
+			m_pendingFileAction = FileAction::ImportPbrt;
 		}
 		if (ImGui::MenuItem("Set Environment Map...")) {
 			m_pendingFileAction = FileAction::SetEnvironmentMap;
@@ -1511,11 +1772,30 @@ bool VulkanEngine::beginBatch()
 	if (scenePath.is_relative() && !std::filesystem::exists(scenePath)) {
 		scenePath = absoluteNormalized(m_rootPath + "assets/scenes") / scenePath;
 	}
-	const IoResult opened = openScene(scenePath);
+	//a pbrt file is a new scene of that one model, rendered the way the file asks
+	const std::string sceneName = scenePath.filename().string();
+	const bool pbrt = sceneName.ends_with(".pbrt") || sceneName.ends_with(".pbrt.gz");
+	if (pbrt) {
+		newScene();
+	}
+	const IoResult opened = pbrt ? importPbrt(scenePath) : openScene(scenePath);
 	fmt::println("render: {}", opened.message);
 	if (!opened.ok) {
 		m_exitCode = 2;
 		return false;
+	}
+	if (pbrt) {
+		std::string key;
+		for (const auto& [name, model] : m_models) {
+			key = name;
+		}
+		usePbrtSettings(key);
+		//what pbrt multiplies its image by and the EXR leaves out, for tools/verify/pbrt_compare.py
+		fmt::println("render: pbrt imaging ratio {:.9g}", m_models[key]->imported->settings.has_value() ? m_models[key]->imported->settings->imagingRatio : 1.f);
+		for (const ImportMessage& message : m_models[key]->imported->report.messages) {
+			fmt::println("render: import: {}{} ({}){}", message.text, message.count > 1 ? fmt::format(" x{}", message.count) : "", message.where,
+				message.plan.empty() ? "" : " -> " + message.plan);
+		}
 	}
 
 	//the scene file's settings, with the sample target, a fixed seed and no restarts imposed, and what the
@@ -1646,6 +1926,11 @@ void VulkanEngine::runPendingFileAction()
 	case FileAction::ImportGltf:
 		if (auto chosen = showOpenFileDialog("Import glTF Model", { "gltf", "glb" }, assetsDirectory)) {
 			m_lastFileResult = importGltf(*chosen);
+		}
+		break;
+	case FileAction::ImportPbrt:
+		if (auto chosen = showOpenFileDialog("Import pbrt Scene", { "pbrt", "gz" }, assetsDirectory)) {
+			m_lastFileResult = importPbrt(*chosen);
 		}
 		break;
 	case FileAction::SetEnvironmentMap:

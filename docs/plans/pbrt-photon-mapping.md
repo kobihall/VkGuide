@@ -48,6 +48,12 @@ From PBR 3ed's chapter 16 exercises:
 - Bindings 43 `PhotonGrid` and 54 `VisiblePoints`.
 - Settings: **Photons per iteration**, **Initial radius**.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **`sppm`** renders with the path tracer, reported (`contemporary-bathroom`); its `radius`, `photonsperiteration` and `seed` are read and ignored. Select this plan's integrator and map the parameters.
+
 ## Verification
 
 - The path tracer renders bit-identical.

@@ -67,6 +67,14 @@ Paraboloids and hyperboloids have no closed-form area sampling, and pbrt 3 never
 - `SceneShape::values`; `ShapeParam` value kinds. The scene file names each value by its traits, so a shape record gains fields such as `"phiMax"` and `"innerRadius"` only when they differ from the defaults.
 - No new kernel or variant.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Disks and cylinders are triangles.** `diskMesh()` and `cylinderMesh()` in `src/pbrt_import.cpp` tessellate them with 128 segments a full circle, the radius scaled so a disk keeps its area and a cylinder its circumference; an area light on one keeps its power. `villa-lights-on` and `killeroos` light their scenes with disks. Map `disk` (`height`, `radius`, `innerradius`, `phimax`) and `cylinder` (`radius`, `zmin`, `zmax`, `phimax`) to this plan's shapes.
+- **Spheres.** A whole sphere under a transform that scales it along its axes is the `sphere` shape. A partial sphere (`zmin`, `zmax`, `phimax`) is whole, and reported; a sheared one is triangles. Map partial spheres to this plan's partial quadrics.
+- **Bilinear patches.** `bilinearmesh` (`bunny-fur`, `sportscar`, `watercolor`) and the quads of a `plymesh` are two triangles each, which is exact only for a planar quad. Map them to this plan's bilinear patches.
+
 ## Verification
 
 - A scene without the new kinds or values renders bit-identical.

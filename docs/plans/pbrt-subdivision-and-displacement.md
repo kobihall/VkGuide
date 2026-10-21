@@ -27,7 +27,7 @@ pbrt's `LoopSubdivide()` (PBR 3ed §3.8.1 and §3.8.2; pbrt-v4 `util/loopsubdiv.
 
 A **Subdivision levels** setting per mesh object, 0 (off) by default, up to 5. Each level multiplies the triangle count by 4, and the panel shows the count before it is applied: a 10,000-triangle mesh at level 4 is 2.56 million triangles.
 
-glTF files have no subdivision flag, so the user sets it per object. Scenes imported from pbrt ([pbrt-scene-import.md](pbrt-scene-import.md)) bring their `loopsubdiv` shapes with their `levels`.
+glTF files have no subdivision flag, so the user sets it per object. Scenes imported from pbrt ([pbrt-scene-import.md](completed/pbrt-scene-import.md)) bring their `loopsubdiv` shapes with their `levels`.
 
 ### Displacement
 
@@ -53,6 +53,13 @@ Refinement runs on a worker thread when the settings change, and the object keep
 - `src/mesh_refine.cpp`: Loop subdivision and edge-length displacement, pure CPU and unit-tested.
 - Per mesh object: **Subdivision levels**, **Displacement** mode, **Edge length**; the global **Displacement detail**. All in the scene file.
 - The BLAS cache key gains the refinement settings.
+
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Loop subdivision** is its control mesh, unsubdivided and flat-shaded (`shapeGeometry()` in `src/pbrt_import.cpp` reads `loopsubdiv`'s `P` and `indices` and reports `levels`): the `killeroos` render faceted where pbrt's are smooth. Set this plan's **Subdivision levels** on the mesh object from `levels` (default 3).
+- **Displacement.** A `plymesh`'s `displacement` texture and `edgelength` (14, in `kroken` and `watercolor`) are reported and dropped. Map them to this plan's displacement.
 
 ## Verification
 

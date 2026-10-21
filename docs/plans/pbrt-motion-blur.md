@@ -64,6 +64,12 @@ Deformation motion blur, where each vertex has its own start and end position (P
 - The traversal contract's `traceScene()` and `occluded()` take a time.
 - Scene file: `"shutterOpen"`, `"shutterClose"` and `"rollingShutter"` per camera; `"endPose"` per shape, mesh object and camera.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Animated transforms keep the shutter-open pose.** The parser keeps pbrt's two transforms (`ActiveTransform StartTime`, `EndTime`, `All`) and flags a shape, an instance or the camera whose two differ (`PbrtShape::animated`, `PbrtInstance::animated`); the importer uses the first and reports it (`killeroo-moving`). `TransformTimes` lands in `PbrtScene::transformStartTime` and `transformEndTime`, and the camera's `shutteropen` and `shutterclose` set only the imaging ratio. Map the second pose and the shutter times to this plan's two-pose instances and cameras.
+
 ## Verification
 
 - A scene with no end pose and equal shutter times renders bit-identical.

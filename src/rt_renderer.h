@@ -248,6 +248,8 @@ private:
 	EnvironmentLight m_sceneAccelEnvironment;
 	uint64_t m_sceneAccelModelRevision { 0 };
 	uint64_t m_sceneAccelRevision { 0 };
+	// the editor's content revision the scene acceleration structure was built or last checked at
+	uint64_t m_sceneAccelContentRevision { 0 };
 	bool m_hasSceneAccel { false };
 
 	AllocatedImage m_displayImage {};

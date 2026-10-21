@@ -617,32 +617,39 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 		prepareGeometry(engine);
 	}
 
-	//compared by value rather than by the editor's revision, which also moves for every camera
-	//change: a camera drag restarts the render each frame, and must not rebuild the TLAS each time.
-	//The lights and the background are part of it: the light list is built with the TLAS
+	//keyed by the editor's content revision, which a camera change does not move: a camera drag restarts the render
+	//each frame, and must not rebuild the TLAS each time. The lights and the background are part of it: the light list
+	//is built with the TLAS
 	EnvironmentLight environment = environmentLight(engine);
 	environment.group = editor.environmentGroup();
-	if (m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
-		&& m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelShapes == editor.shapes() && m_sceneAccelLights == editor.lights()
-		&& m_sceneAccelMaterials == editor.materials() && m_sceneAccelEnvironment == environment) {
+	const bool sameBuild = m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
+		&& m_sceneAccelEnvironment == environment;
+	if (sameBuild && m_sceneAccelContentRevision == editor.contentRevision()) {
+		return;
+	}
+	//an edit happened, but one that leaves the scene as it was (a slider let go where it started) still rebuilds
+	//nothing. Compared by value only here, since a scene of tens of thousands of objects takes milliseconds to compare
+	if (sameBuild && m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelShapes == editor.shapes() && m_sceneAccelLights == editor.lights()
+		&& m_sceneAccelMaterials == editor.materials()) {
+		m_sceneAccelContentRevision = editor.contentRevision();
 		return;
 	}
 
 	static const RaytraceMeshData noMeshes;
 	const RaytraceMeshData& meshData = engine->m_raytraceMeshData != nullptr ? *engine->m_raytraceMeshData : noMeshes;
 	//which library entry each loaded glTF material became, for the surfaces shaded with their own
-	GltfMaterialIds gltfMaterialIds;
+	ModelMaterialIds modelMaterialIds;
 	for (const auto& [key, model] : engine->m_models) {
 		if (model == nullptr) {
 			continue;
 		}
 		for (uint32_t i = 0; i < model->materialsByIndex.size(); i++) {
-			if (const MaterialDef* material = editor.findGltfMaterial(key, i)) {
-				gltfMaterialIds[model->materialsByIndex[i].get()] = material->id;
+			if (const MaterialDef* material = editor.findModelMaterial(key, i)) {
+				modelMaterialIds[model->materialsByIndex[i].get()] = material->id;
 			}
 		}
 	}
-	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), editor.lights(), editor.materials(), gltfMaterialIds,
+	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), editor.lights(), editor.materials(), modelMaterialIds,
 		environment, engine->m_raytraceTextures);
 
 	m_sceneAccelObjects = editor.meshObjects();
@@ -652,6 +659,7 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	m_sceneAccelEnvironment = environment;
 	m_sceneAccelModelRevision = engine->m_sceneRevision;
 	m_sceneAccelRevision = m_accelRevision;
+	m_sceneAccelContentRevision = editor.contentRevision();
 	m_hasSceneAccel = true;
 }
 

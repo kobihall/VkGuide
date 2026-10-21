@@ -41,6 +41,12 @@ PBR 3ed §8.6 renders isotropic BSDFs stored as Fourier series in azimuth over a
 
 The Materials window's `measured` type has one parameter, a file picker for a `.bsdf` file. The scene file stores the path relative to the scene, like model paths.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Measured materials** (14 uses: `barcelona-pavilion`, `contemporary-bathroom`, `lte-orb`, `sportscar`) are gray Lambertian, and their `filename` is read and ignored (`mapMaterial()` in `src/pbrt_import.cpp`). Map `measured` to this plan's RGL BSDF, resolving `filename` against the scene's directory (`PbrtScene::directory`), as every other path is.
+
 ## Verification
 
 - `bin/bsdf_test` on three RGL materials (one isotropic metal, one anisotropic, one paint): the χ² test against the warp's own density, and energy at or below 1.

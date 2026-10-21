@@ -51,7 +51,7 @@ The C++ mirror joins `rt_bsdf`, and `bin/bsdf_test` ports pbrt's own hair tests 
 ### Loading hair
 
 - cyHair (`.hair`, Yuksel's format): a header, then per strand a point count and points, with optional per-point widths and colors. `src/hair_loader.cpp` turns each strand's polyline into Bézier segments, as `cyhair2pbrt` does, and makes one curve set per file. The Scene panel gains a **Hair** folder beside **Models**, placed with the gizmo.
-- pbrt scene files' `curve` shapes load through [pbrt-scene-import.md](pbrt-scene-import.md).
+- pbrt scene files' `curve` shapes load through [pbrt-scene-import.md](completed/pbrt-scene-import.md).
 - glTF has no curve primitive, so imported models bring none.
 
 ### As lights
@@ -63,6 +63,13 @@ pbrt-v4 does not sample curves as lights. An emissive curve set stays out of the
 - Binding 34 `Curves`.
 - `testCurves()` in `crt_traverse.glsl`; a primitive-type field per BLAS in `bvh_layout`.
 - The `hair` material type; `src/hair_loader.cpp`; the **Hair** folder and its scene-file records (path, pose, curve type, material).
+
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Curves are counted, not kept.** `importPbrtFile()` passes `curve` in `PbrtParseOptions::skipShapes`, so the parser skips each curve's parameters and counts it: 5.9 million curves in `bunny-fur` and the `hair` scenes, whose parameters would take gigabytes. The report says how many were skipped. When this plan lands, remove `curve` from `skipShapes` and map each curve in `shapeGeometry()` (or a sibling of it) to a curve set: `P`, `type` (`flat`, `cylinder`, `ribbon`), `width0` and `width1` (or `width`), `basis`, `degree` and `splitdepth`. Group a file's curves into one curve set per material, since a scene of millions of objects would not fit the scene model.
+- **Hair material** is Lambertian with its `color`, or gray (`mapMaterial()`). Map `hair` to this plan's BSDF with `sigma_a`, `color`, `eumelanin`, `pheomelanin`, `eta`, `beta_m`, `beta_n` and `alpha`.
 
 ## Verification
 

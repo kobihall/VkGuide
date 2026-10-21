@@ -93,6 +93,9 @@ struct SceneShape {
 	// the library entry it is shaded with (RaytraceSceneEditor::materials()). On a shape a material is
 	// packed without its textures, which shapes cannot carry until docs/plans/pbrt-textures.md
 	uint64_t materialId { 0 };
+	// the model this shape was imported with (a pbrt file's sphere), which removing the model removes it with;
+	// empty for a shape made in the editor
+	std::string modelKey;
 
 	// the unit primitive -> world
 	glm::mat4 objectToWorld() const
@@ -305,7 +308,7 @@ struct RTMeshNode {
 // mesh-bearing node. Built once per change to VulkanEngine::m_models by buildRaytraceMeshData()
 // and shared immutably (shared_ptr<const>), so moving an object never re-reads the models.
 //
-// The MeshAssets are held alive here past a scene replacement, but LoadedGLTF::clearAll() will
+// The MeshAssets are held alive here past a scene replacement, but LoadedModel::clearAll() will
 // already have destroyed their GPU buffers by then. Raytracer code must NEVER read
 // MeshAsset::meshBuffers through this - only cpuVertices and cpuIndices, which stay valid.
 struct RaytraceMeshData {
@@ -329,9 +332,9 @@ struct RaytraceMeshData {
 
 // How the raytracer shades a placed mesh object
 enum class MeshMaterialMode : uint8_t {
-	// the library entry each of its surfaces' glTF materials became when the model was imported
-	Gltf,
-	// one library material for the whole object, in place of every surface's glTF material
+	// the library entry each of its surfaces' materials became when the model was imported (glTF or pbrt)
+	Model,
+	// one library material for the whole object, in place of every surface's model material
 	Override
 };
 
@@ -353,7 +356,7 @@ struct SceneMeshObject {
 	// world transform, seeded from the node's authored transform at import and owned here after
 	glm::mat4 transform { 1.f };
 	bool visible { true };
-	MeshMaterialMode materialMode { MeshMaterialMode::Gltf };
+	MeshMaterialMode materialMode { MeshMaterialMode::Model };
 	// the override's library entry; 0 until the object is first switched to override
 	uint64_t materialId { 0 };
 

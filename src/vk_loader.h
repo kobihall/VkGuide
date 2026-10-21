@@ -9,6 +9,8 @@
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
 
+#include <imported_model.h>
+
 // how a glTF material's base-colour alpha is read (glTF 2.0 alphaMode)
 enum class GltfAlphaMode : uint8_t {
 	Opaque,
@@ -72,6 +74,9 @@ struct MeshAsset {
 	// which the raster shaders read by buffer address, because only the path tracer's normal maps
 	// use it. May be empty for a mesh built outside the loader
 	std::vector<glm::vec4> cpuTangents;
+	// the file gave no vertex normals: the path tracer shades each triangle with its own (glTF requires flat normals
+	// then, and pbrt uses the geometric normal). cpuVertices still hold smooth ones for the raster preview
+	bool cpuNormalsMissing { false };
 };
 
 // A KHR_lights_punctual light as the file places it. VulkanEngine::importGltf() turns each into a
@@ -101,7 +106,7 @@ struct GltfPunctualLight {
 //forward declaration
 class VulkanEngine;
 
-struct LoadedGLTF : public IRenderable {
+struct LoadedModel : public IRenderable {
 
 	// storage for all the data on a given glTF file
 	std::unordered_map<std::string, std::shared_ptr<MeshAsset>> meshes;
@@ -109,7 +114,7 @@ struct LoadedGLTF : public IRenderable {
 	std::unordered_map<std::string, AllocatedImage> images;
 	std::unordered_map<std::string, std::shared_ptr<GLTFMaterial>> materials;
 	// the same materials by their index in the file, and the key each has in `materials`: what a
-	// material library entry names its glTF material by (GltfMaterialOrigin)
+	// material library entry names its glTF material by (ModelMaterialOrigin)
 	std::vector<std::shared_ptr<GLTFMaterial>> materialsByIndex;
 	std::vector<std::string> materialNames;
 
@@ -130,7 +135,12 @@ struct LoadedGLTF : public IRenderable {
 	// the file this was loaded from, absolute - what a saved scene records for it
 	std::filesystem::path sourcePath;
 
-	~LoadedGLTF() { clearAll(); };
+	// what an importer other than glTF's brought beyond the geometry (pbrt_import.h): each material's library
+	// definition by index in materialsByIndex, the lights, shapes and cameras, an environment, the file's render
+	// settings and the import report. Empty for a glTF model. Its meshes and images are cleared once on the GPU
+	std::optional<ImportedModel> imported;
+
+	~LoadedModel() { clearAll(); };
 
 	virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx);
 
@@ -141,9 +151,14 @@ private:
 
 std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngine* engine, std::filesystem::path filePath);
 
+// a model another importer built as plain data (imported_model.h), as the same in-engine model a glTF file
+// becomes: its meshes uploaded, its images decoded into textures, and a raster material per material. An image
+// that cannot be read is reported in the model's import report and left out
+std::shared_ptr<LoadedModel> loadImportedModel(VulkanEngine* engine, ImportedModel&& imported);
+
 // callable at any time, not just at init. On failure outError (if given) receives a message
 // suitable for showing to the user
-std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::string_view filePath, std::string* outError = nullptr);
+std::optional<std::shared_ptr<LoadedModel>> loadGltf(VulkanEngine* engine, std::string_view filePath, std::string* outError = nullptr);
 
 // directory is the glTF file's own folder, which relative image uris are resolved against
 std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& asset, fastgltf::Image& image, const std::filesystem::path& directory);

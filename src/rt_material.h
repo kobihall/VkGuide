@@ -113,10 +113,10 @@ struct MaterialParam {
 
 // a glTF material: its model's key in VulkanEngine::m_models and its index in the file's materials.
 // The physoptics plans add an optical element's slot as a second kind of origin
-struct GltfMaterialOrigin {
+struct ModelMaterialOrigin {
 	std::string modelKey;
 	uint32_t index { 0 };
-	bool operator==(const GltfMaterialOrigin&) const = default;
+	bool operator==(const ModelMaterialOrigin&) const = default;
 };
 
 struct MaterialDef {
@@ -127,7 +127,7 @@ struct MaterialDef {
 	// by parameter name, every value ever set. A name missing here reads as its default
 	ParamSet params;
 	// empty for a user material, else the glTF material it was imported from
-	std::optional<GltfMaterialOrigin> origin;
+	std::optional<ModelMaterialOrigin> origin;
 	// for a glTF material: the parameters the user changed from the imported values, which are all
 	// the scene file saves of it
 	std::set<std::string, std::less<>> edited;

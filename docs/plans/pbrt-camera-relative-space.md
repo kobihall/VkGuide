@@ -6,7 +6,7 @@ A scene far from the origin loses precision in every float the tracer computes, 
 
 ## When to build it
 
-Build it when a scene you want to render has coordinates beyond about 10 km, or about 100 m with detail under a millimeter. The robust-intersection work measured the edge: a Cornell box 55 units wide moved 10,000 units from the origin renders the same as the unshifted box once error-bounded offsets are on, and moved 100,000 units it does not, with or without them. The likely sources are the pbrt-v4 scenes in `assets/models/` that [pbrt-scene-import.md](pbrt-scene-import.md) brings in, and terrain or architecture authored in absolute coordinates. The laser optics scenes sit within a meter of the origin and do not need it.
+Build it when a scene you want to render has coordinates beyond about 10 km, or about 100 m with detail under a millimeter. The robust-intersection work measured the edge: a Cornell box 55 units wide moved 10,000 units from the origin renders the same as the unshifted box once error-bounded offsets are on, and moved 100,000 units it does not, with or without them. The likely sources are the pbrt-v4 scenes in `assets/models/` that [pbrt-scene-import.md](completed/pbrt-scene-import.md) brings in, and terrain or architecture authored in absolute coordinates. The laser optics scenes sit within a meter of the origin and do not need it.
 
 ## What the renderer does today
 

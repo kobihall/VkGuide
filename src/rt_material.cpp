@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cstring>
 
-#include <rt_gpu_types.h>
+#include <rt_material_record.h>
 
 namespace {
 
@@ -13,8 +13,11 @@ namespace {
 // starts where one did then
 const SpectrumRef DEFAULT_ALBEDO { glm::vec3(0.7f) };
 
+// the textures only an imported model's material sets (a pbrt "diffuse" with an image), as on pbr
 const MaterialParam LAMBERTIAN_PARAMS[] = {
 	{ "albedo", "albedo", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR | PARAM_TEXTURABLE, nullptr },
+	{ "baseColorTexture", "albedo texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "sRGB, multiplies the albedo" },
+	{ "normalTexture", "normal texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "Tangent space; applied on meshes with tangents" },
 };
 
 const MaterialParam METAL_PARAMS[] = {
@@ -72,6 +75,11 @@ void packClassic(const MaterialDef& material, const PackContext& context, Materi
 	switch (material.type) {
 	case MaterialType::Lambertian:
 		out.param = 0.f;
+		//-1 unless an imported model's material names a texture, so every other material packs as it always did
+		if (context.textures) {
+			out.albedoLayer = materialTextureLayer(material, "baseColorTexture");
+			out.normalLayer = materialTextureLayer(material, "normalTexture");
+		}
 		break;
 	case MaterialType::Metal:
 		out.param = std::min(materialFloat(material, "fuzz"), 1.f);

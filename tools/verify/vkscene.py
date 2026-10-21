@@ -140,10 +140,11 @@ def write_pfm(path, image):
 
 # ---------------------------------------------------------------- running the renderer
 
-def run_render(scene, samples, *, size=None, seed=None, workdir=None, timeout=900, keep_scene=None, extra_args=(), out_name="render.pfm"):
+def run_render(scene, samples, *, size=None, seed=None, workdir=None, timeout=900, keep_scene=None, extra_args=(), out_name="render.pfm", log=None):
     """Renders `scene` (a dict, or a path) to `samples` per pixel and returns the linear image and the count of
     samples dropped. `extra_args` are more batch-mode options (--aov, --light-groups, ...), and `out_name` picks the
-    format: render.pfm by default, or render.exr to read the channels through read_exr()."""
+    format: render.pfm by default, or render.exr to read the channels through read_exr(). A list passed as `log`
+    receives the renderer's "render:" lines."""
     workdir = Path(workdir or tempfile.mkdtemp(prefix="vkverify_"))
     workdir.mkdir(parents=True, exist_ok=True)
     if isinstance(scene, dict):
@@ -163,12 +164,14 @@ def run_render(scene, samples, *, size=None, seed=None, workdir=None, timeout=90
         command += ["--seed", str(seed)]
     command += list(extra_args)
     result = subprocess.run(command, cwd=BIN, env=env, capture_output=True, text=True, timeout=timeout + 60)
-    log = result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    if log is not None:
+        log.extend(line for line in output.splitlines() if line.startswith("render:"))
     if result.returncode != 0 or not out.exists():
-        raise RuntimeError(f"render failed (exit {result.returncode}):\n" + "\n".join(l for l in log.splitlines() if "render:" in l or "rror" in l)[-2000:])
+        raise RuntimeError(f"render failed (exit {result.returncode}):\n" + "\n".join(l for l in output.splitlines() if "render:" in l or "rror" in l)[-2000:])
     dropped = 0
-    for line in log.splitlines():
-        if "render:" in line and "dropped" in line:
+    for line in output.splitlines():
+        if "render:" in line and " samples, " in line and " dropped" in line:
             dropped = int(line.split(" samples, ")[1].split(" dropped")[0])
     if out.suffix == ".pfm":
         return read_pfm(out), dropped

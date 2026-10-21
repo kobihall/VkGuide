@@ -65,6 +65,15 @@ Environment × BSDF product sampling (Conty Estevez and Lecocq 2018) samples a d
 - The environment's rotation in the push constants, three `vec4`s.
 - Scene file: an `"environment"` object with kind, map path, parameterization, rotation, sampling choice, portal shape id, sky parameters and sun. The loose `m_environmentIntensity`, `m_solidBackground` and `m_backgroundColor` fields move into it, and older files still read.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **The map is baked into the renderer's layout.** `environment()` and `resampleEqualArea()` in `src/pbrt_import.cpp` resample pbrt's square equal-area map (`equalAreaSphereToSquare()`, a port of pbrt's) into an equirectangular map, 2N by N for an N-square map, with the light's transform and the world mirror baked into the texels. The model owns the map (`VulkanEngine::m_environmentModelKey`), and the scene file records `"environmentModel"` instead of a path. When this plan adds equal-area maps and map rotation, store the file and the rotation instead and drop the resampling, which blurs a map with 2 by 2 nearest lookups per texel.
+- **Portals.** `"point3 portal"` is ignored and reported (5 lights, in `kroken` and `watercolor`). Map it to this plan's portal light.
+- **One environment.** A second `infinite` light is reported and dropped. Sky models (pbrt-v4 has none built in) need nothing from the importer.
+- **Uniform infinite lights** (`"rgb L"` without a file) become a 64 by 32 constant map. They could become a constant environment if this plan adds one.
+
 ## Verification
 
 - With identity rotation, an equirectangular map and whole-map sampling, every scene renders bit-identical.

@@ -28,7 +28,7 @@ The photographic modes apply to radiance × 683, undoing the import's division b
 | Mode | Multiplier | Use |
 |---|---|---|
 | Scale | `exposure` | today's, the default |
-| pbrt sensor | `shutter × ISO / 100` | pbrt-v4's imaging ratio (`film.cpp`, PBR 4ed §5.4.2), which ignores the f-number; for matching pbrt renders ([pbrt-scene-import.md](pbrt-scene-import.md)) |
+| pbrt sensor | `shutter × ISO / 100` | pbrt-v4's imaging ratio (`film.cpp`, PBR 4ed §5.4.2), which ignores the f-number; for matching pbrt renders ([pbrt-scene-import.md](completed/pbrt-scene-import.md)) |
 | Camera | `1 / (1.2 × 2^EV100)`, `EV100 = log2(N² / t × 100 / ISO)` | the saturation-based sensitivity of ISO 12232 as Lagarde and de Rousiers 2014 use it: f-number, shutter and ISO behave as on a camera |
 
 The thin lens's aperture radius, which sets depth of field, stays independent of the f-number in the **Camera** mode, as on a real camera whose focal length is not modeled. The realistic camera computes its aperture's effect on irradiance physically ([pbrt-cameras.md](pbrt-cameras.md)), so with it only the shutter and ISO terms apply.
@@ -71,6 +71,15 @@ Wide-gamut output (Display P3 on this Mac's panel, through `VK_EXT_swapchain_col
 ### Glare
 
 pbrt's `imgtool bloom` adds a thresholded, blurred copy of the bright pixels. It is a post effect, not a physical one, and is off by default. It needs a separable blur over the image before the tone curve: two extra dispatches in the pass.
+
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **The imaging ratio is the camera's exposure.** pbrt multiplies its image by shutter x ISO / 100 (`iso` on 52 films). `camera()` in `src/pbrt_import.cpp` makes that the `SceneCamera::exposure`, which is display only, so the window matches pbrt and an EXR export holds the radiance; `tools/verify/pbrt_compare.py` divides pbrt's image by it, read from the batch mode's `render: pbrt imaging ratio` line. With this plan's **pbrt sensor** mode, select it on import and set the ISO and shutter instead.
+- **Sensor and white balance.** `sensor` (16 films) and `whitebalance` (18) are reported and ignored: the image is CIE 1931 XYZ to sRGB without adaptation, as pbrt's default sensor gives it. pbrt white-balances a named sensor to 6500 K by default. Map both to this plan.
+- **Color spaces.** A `ColorSpace` other than `srgb` is read as sRGB and reported.
+- **The film.** `maxcomponentvalue` sets the film's clamp (`RenderSettings::clampSamples`). `cropwindow` and `pixelbounds` are reported and the whole image is rendered.
 
 ## Verification
 

@@ -44,7 +44,7 @@ bool drawOrientation(glm::quat& orientation)
 
 const char* meshMaterialModeName(MeshMaterialMode mode)
 {
-	return mode == MeshMaterialMode::Gltf ? "glTF materials" : "override";
+	return mode == MeshMaterialMode::Model ? "glTF materials" : "override";
 }
 
 // one parameter's widget, by its kind. Returns whether the value changed
@@ -289,6 +289,26 @@ void RaytraceSceneEditor::removeLightsOf(const std::string& modelKey)
 	}
 }
 
+void RaytraceSceneEditor::addShapes(std::vector<SceneShape>&& shapes)
+{
+	if (shapes.empty()) {
+		return;
+	}
+	for (SceneShape& shape : shapes) {
+		addShape(std::move(shape));
+	}
+	markChanged();
+}
+
+void RaytraceSceneEditor::removeShapesOf(const std::string& modelKey)
+{
+	const size_t before = m_shapes.size();
+	std::erase_if(m_shapes, [&modelKey](const SceneShape& shape) { return !shape.modelKey.empty() && shape.modelKey == modelKey; });
+	if (m_shapes.size() != before) {
+		markChanged();
+	}
+}
+
 void RaytraceSceneEditor::addMeshObjects(std::vector<SceneMeshObject>&& objects)
 {
 	if (objects.empty()) {
@@ -372,7 +392,7 @@ const MaterialDef* RaytraceSceneEditor::findMaterial(uint64_t id) const
 	return found == m_materials.end() ? nullptr : &(*found);
 }
 
-MaterialDef* RaytraceSceneEditor::findGltfMaterial(std::string_view modelKey, uint32_t index)
+MaterialDef* RaytraceSceneEditor::findModelMaterial(std::string_view modelKey, uint32_t index)
 {
 	auto found = std::find_if(m_materials.begin(), m_materials.end(), [&](const MaterialDef& m) {
 		return m.origin.has_value() && m.origin->index == index && m.origin->modelKey == modelKey;
@@ -380,9 +400,9 @@ MaterialDef* RaytraceSceneEditor::findGltfMaterial(std::string_view modelKey, ui
 	return found == m_materials.end() ? nullptr : &(*found);
 }
 
-const MaterialDef* RaytraceSceneEditor::findGltfMaterial(std::string_view modelKey, uint32_t index) const
+const MaterialDef* RaytraceSceneEditor::findModelMaterial(std::string_view modelKey, uint32_t index) const
 {
-	return const_cast<RaytraceSceneEditor*>(this)->findGltfMaterial(modelKey, index);
+	return const_cast<RaytraceSceneEditor*>(this)->findModelMaterial(modelKey, index);
 }
 
 uint64_t RaytraceSceneEditor::addMaterial(MaterialDef material)
@@ -412,10 +432,13 @@ MaterialDef RaytraceSceneEditor::userCopyOf(const MaterialDef& source, std::stri
 	copy.origin.reset();
 	copy.edited.clear();
 	//a texture layer means something only for as long as the array is not rebuilt, and nothing in a
-	//scene file: a user material keeps none until texture references exist (pbrt-textures.md)
-	for (const MaterialParam& param : materialTraits(copy.type).params) {
-		if ((param.flags & PARAM_READ_ONLY) != 0) {
-			copy.params.erase(param.name);
+	//scene file: a user material keeps none until texture references exist (pbrt-textures.md). Every type's,
+	//since a model's material carries its file's textures whatever its type, and the copy may change type
+	for (const MaterialType type : MATERIAL_TYPES) {
+		for (const MaterialParam& param : materialTraits(type).params) {
+			if ((param.flags & PARAM_READ_ONLY) != 0) {
+				copy.params.erase(param.name);
+			}
 		}
 	}
 	return copy;
@@ -442,7 +465,7 @@ std::vector<std::string> RaytraceSceneEditor::removeMaterialsOf(const std::strin
 	return converted;
 }
 
-void RaytraceSceneEditor::refreshGltfMaterials(const std::function<bool(MaterialDef&)>& refresh)
+void RaytraceSceneEditor::refreshModelMaterials(const std::function<bool(MaterialDef&)>& refresh)
 {
 	bool changed = false;
 	for (MaterialDef& material : m_materials) {
@@ -639,7 +662,7 @@ void RaytraceSceneEditor::setCameraPose(uint64_t id, const glm::vec3& position, 
 	}
 	camera->position = position;
 	camera->orientation = orientation;
-	markChanged();
+	markCameraChanged();
 }
 
 //---------------------------------------------------------------- creating and removing
@@ -1092,28 +1115,42 @@ void RaytraceSceneEditor::drawModelRows(VulkanEngine* engine)
 		}
 
 		if (open) {
-			bool any = false;
-			for (size_t i = 0; i < m_meshObjects.size(); i++) {
-				if (m_meshObjects[i].modelKey != key) {
-					continue;
+			//each model's objects by index, found once per edit rather than every frame
+			if (m_modelRowsRevision != m_contentRevision) {
+				m_modelRows.clear();
+				for (size_t i = 0; i < m_meshObjects.size(); i++) {
+					m_modelRows[m_meshObjects[i].modelKey].push_back(i);
 				}
-				any = true;
-				//a hidden object still lists, just greyed, so it can be found and shown again
-				const bool visible = m_meshObjects[i].visible;
-				if (!visible) {
-					ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-				}
-				const bool alive = drawObjectRow(SelectionKind::MeshObject, m_meshObjects[i].id, m_meshObjects[i].name);
-				if (!visible) {
-					ImGui::PopStyleColor();
-				}
-				if (!alive) {
-					break;
-				}
+				m_modelRowsRevision = m_contentRevision;
 			}
-			if (!any) {
+			static const std::vector<size_t> none;
+			const auto found = m_modelRows.find(key);
+			const std::vector<size_t>& rows = found != m_modelRows.end() ? found->second : none;
+			if (rows.empty()) {
 				ImGui::TextDisabled("no objects - right-click to restore");
 			}
+			//only the rows in view are built: a pbrt scene's model places tens of thousands of objects
+			ImGuiListClipper clipper;
+			clipper.Begin((int)rows.size());
+			bool alive = true;
+			while (alive && clipper.Step()) {
+				for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+					const SceneMeshObject& object = m_meshObjects[rows[(size_t)row]];
+					//a hidden object still lists, just greyed, so it can be found and shown again
+					const bool visible = object.visible;
+					if (!visible) {
+						ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+					}
+					alive = drawObjectRow(SelectionKind::MeshObject, object.id, object.name);
+					if (!visible) {
+						ImGui::PopStyleColor();
+					}
+					if (!alive) {
+						break;
+					}
+				}
+			}
+			clipper.End();
 			ImGui::TreePop();
 		}
 
@@ -1136,7 +1173,7 @@ void RaytraceSceneEditor::drawModelRows(VulkanEngine* engine)
 	}
 
 	if (!toRemove.empty()) {
-		engine->removeGltf(toRemove);
+		engine->removeModel(toRemove);
 	}
 }
 
@@ -1252,7 +1289,7 @@ void RaytraceSceneEditor::drawSelectedCamera(VulkanEngine* engine, SceneCamera& 
 	}
 
 	if (changed) {
-		markChanged();
+		markCameraChanged();
 	}
 
 	ImGui::PopID();
@@ -1311,7 +1348,7 @@ void RaytraceSceneEditor::drawSelectedMeshObject(VulkanEngine* engine, SceneMesh
 
 	ImGui::Spacing();
 	if (ImGui::BeginCombo("shading", meshMaterialModeName(object.materialMode))) {
-		for (MeshMaterialMode mode : { MeshMaterialMode::Gltf, MeshMaterialMode::Override }) {
+		for (MeshMaterialMode mode : { MeshMaterialMode::Model, MeshMaterialMode::Override }) {
 			if (ImGui::Selectable(meshMaterialModeName(mode), mode == object.materialMode) && mode != object.materialMode) {
 				object.materialMode = mode;
 				//the first switch to an override gives the object a material of its own
@@ -1334,7 +1371,7 @@ void RaytraceSceneEditor::drawSelectedMeshObject(VulkanEngine* engine, SceneMesh
 			for (const RTMeshSurface& surface : node->surfaces) {
 				const auto& byIndex = model->second->materialsByIndex;
 				const auto index = std::find(byIndex.begin(), byIndex.end(), surface.material);
-				const MaterialDef* material = index != byIndex.end() ? findGltfMaterial(object.modelKey, (uint32_t)(index - byIndex.begin())) : nullptr;
+				const MaterialDef* material = index != byIndex.end() ? findModelMaterial(object.modelKey, (uint32_t)(index - byIndex.begin())) : nullptr;
 				if (material == nullptr || std::find(listed.begin(), listed.end(), material->id) != listed.end()) {
 					continue;
 				}
@@ -1527,18 +1564,18 @@ void RaytraceSceneEditor::drawMaterialDetails(VulkanEngine* engine, MaterialDef&
 	ImGui::PushID((int)material.id);
 	bool changed = false;
 
-	//the entry as its glTF file defines it, which edits are marked against and reverted to
+	//the entry as its model's file defines it, which edits are marked against and reverted to
 	std::optional<MaterialDef> imported;
 	if (material.origin.has_value()) {
 		const auto model = engine->m_models.find(material.origin->modelKey);
 		if (model != engine->m_models.end() && model->second != nullptr && material.origin->index < model->second->materialsByIndex.size()) {
-			imported = gltfMaterialDef(*model->second->materialsByIndex[material.origin->index], engine->m_raytraceTextures);
+			imported = modelMaterialDef(*model->second, material.origin->index, engine->m_raytraceTextures);
 		}
 	}
 
 	if (material.origin.has_value()) {
 		ImGui::SeparatorText(material.name.c_str());
-		ImGui::TextDisabled("glTF material %u of %s, edited in place", material.origin->index, material.origin->modelKey.c_str());
+		ImGui::TextDisabled("material %u of %s, edited in place", material.origin->index, material.origin->modelKey.c_str());
 		if (!material.edited.empty() && imported.has_value()) {
 			ImGui::SameLine();
 			if (ImGui::SmallButton("Revert all")) {
@@ -1682,7 +1719,7 @@ void RaytraceSceneEditor::beginCameraGizmo(TransformGizmo& gizmo, uint64_t id)
 			}
 			c->position = glm::vec3(m[3]);
 			c->orientation = orientationOf(m);
-			markChanged();
+			markCameraChanged();
 		},
 		//a camera is placed and aimed; its size is its fov. Local mode so the rotation rings
 		//follow the camera's own axes

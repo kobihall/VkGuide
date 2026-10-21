@@ -22,6 +22,12 @@
 - `bin/aov_test` checks the auxiliary outputs on the CPU, and **--selfcheck** plants an albedo over the wrong weight and a variance over `n` and fails unless both are caught. `bin/exr_dump` lists the channels and attributes of an EXR file and writes each channel as `.npy`, and `bin/image_convert` converts between EXR, PFM and HDR.
 - **Windows** → **GPU self-tests** gains three tests: kernel 09's fold of the outputs against `src/aov.cpp`, the 16-sample albedo of `crt_scatter.glsl` against `bsdfAlbedoEstimate()` in `src/bsdf.cpp` (0 of 6144 cases past 0.002), and the output windows' shader against their definitions.
 - `tools/verify/aov_check.py` renders a quad, a glass sphere, a multi-light scene, the ambient occlusion sphere and the file formats through the batch mode, and compares them with what they must give. `run_all.py` runs it and `aov_test`.
+- **File** → **Import pbrt Scene...** imports a pbrt-v4 scene file (`.pbrt` or `.pbrt.gz`) as a model: its meshes and PLY files, materials, image textures, normal maps, lights, spheres, camera and environment map. All 98 scene files in `assets/models/pbrt-v4-scenes` import. What the renderer lacks is substituted: coated diffuse is `pbr`, a disk is triangles with its area kept, a blackbody is its RGB.
+- **Windows** → **Import Report** lists every substitution and every parameter the import did not read, once each, with how often it happened, where in the file it first did, and the plan in `docs/plans/` that adds what is missing. **Use pbrt settings** renders from the file's camera with its resolution, samples, sampler, pixel filter, ray depth and sample clamp.
+- `./bin/vulkan_guide --render <file.pbrt>` renders a pbrt file in a new scene with the file's own settings and prints its import report.
+- `tools/verify/pbrt_compare.py` renders a pbrt file with pbrt and with this renderer, twice each, and reports each channel's mean ratio and the relative MSE beside both images' own noise. The Cornell box written as a `.pbrt` file agrees with pbrt to within noise, and within 0.3 percent in each channel's mean.
+- `bin/pbrt_test` checks the import on the CPU: pbrt-v4's tokenizer cases, every transform directive, `Import` and instancing, cameras against pbrt's projection, and the mapping of settings, materials, shapes and lights. `--scan <dir>` imports every scene file in a folder and `--report <file>` prints one file's import report.
+- `bin/spectrum_test` checks the spectra behind the import's colors: pbrt-v4's CIE tables and named spectra, its normalizations, and ten spectra against pbrt's own renders, which agree within 3e-3.
 
 ### Changed
 
@@ -33,10 +39,14 @@
 - The device requires `VK_EXT_shader_atomic_float` (buffer float add), which kernels 03, 04 and 08 use to add to the light groups' sums.
 - `VKGUIDE_VERIFY`, `VKGUIDE_VERIFY_SEED`, `_SIZE` and `_TIMEOUT` are gone, replaced by `--render`, `--seed`, `--size` and `--timeout`. `tools/verify/vkscene.py` runs the batch mode, and its log lines start with `render:` instead of `verify:`.
 - The PNG export is the display image with today's gamma 2 curve. Its bytes change when the sRGB display curve lands.
+- Scene files are payload version 17. A model may be a `.pbrt` file, re-imported when the scene opens. A shape the model brought records its `"model"`, and `"environmentModel"` names the model whose environment the scene shows. An older file opens as before.
+- A `lambertian` material shows a base color texture and a normal map when an imported model's material has them; pbrt's textured `diffuse` is one. Every other material renders as before: the ten scenes in `assets/scenes` match the previous build byte for byte.
+- The **Materials** window calls a model's material "material N of <model>" rather than "glTF material", since a model may be a pbrt file.
 
 ### Fixed
 
 - Fixed a sample dropped as non-finite being drawn again every frame at one sample per frame, which left its pixel short of samples. The compensated film counts every sample taken apart from the ones it accepts, so a pixel that drops one carries on. The running mean keeps the old behavior, so a scene that selects it renders bit-identical.
+- Fixed the viewport slowing to over 700 ms a frame on scenes of tens of thousands of objects, such as pbrt's `sanmiguel-courtyard` with 69,408, before any render had started. Every frame rebuilt and re-sorted the raster draw list, compared every object against the last TLAS build, and laid out a Scene panel row per object. Each now happens only when the scene changes, and the panel builds only the rows in view: the scene draws in about 4 ms a frame.
 
 ### Internal
 
@@ -53,6 +63,13 @@
 - `src/vk_readback.h` copies GPU images and buffers to the host and invalidates the staging memory, for every export. `VulkanEngine::createImageArray()` makes a 2D array image.
 - `sampleDimension()` in `crt_samples.glsl` answers from pbrt's 16 albedo numbers while `g_albedoSample` is set, and the fuzzy metal's direction in `crt_scatter.glsl` reads the same table. Both are behind `CRT_AOV`, and `src/bsdf.cpp` mirrors the metal case.
 - `src/command_line.h/.cpp` parses the command line with no Vulkan. `VulkanEngine::beginBatch()` and `stepBatch()` replace `beginVerify()` and `stepVerify()`.
+- `src/pbrt_parser.h/.cpp` (pbrt's scanner and directive switch, with the graphics state), `src/ply_mesh.h/.cpp` (rply, vendored in `../CPPLibraries/rply` from pbrt-v4) and `src/pbrt_import.h/.cpp` (the mapping and the report) are the static library `rt_pbrt`. They produce an `ImportedModel` (`src/imported_model.h`), which `loadImportedModel()` in `src/vk_loader.cpp` turns into a `LoadedModel` like a glTF file's. The design and as-built record is `docs/plans/completed/pbrt-scene-import.md`.
+- `src/spectrum.h/.cpp` is the static library `rt_spectrum`: pbrt-v4's CIE tables and 88 named spectra in `src/spectrum_tables.cpp`, generated by `tools/spectrum_tables/extract_pbrt_spectra.py`, and their projection to linear sRGB. `tools/spectrum_tables/pbrt_reference.py` renders the reference values `bin/spectrum_test` reads from `tests/spectrum_pbrt_reference.inc`. `docs/plans/pbrt-spectral-rendering.md` extends the library.
+- The material model is the static library `rt_material`, and its GPU records (`CrtMaterialHeader`, `CrtClassicMaterial`, `CRT_MATERIAL_FLAG_*`) moved from `rt_gpu_types.h` to the Vulkan-free `src/rt_material_record.h`.
+- Names that were glTF-only and now cover any imported model: `LoadedGLTF` is `LoadedModel`, `GltfMaterialOrigin` is `ModelMaterialOrigin`, `MeshMaterialMode::Gltf` is `MeshMaterialMode::Model`, `findGltfMaterial()` is `findModelMaterial()`, `refreshGltfMaterials()` is `refreshModelMaterials()`, `GltfMaterialIds` is `ModelMaterialIds`, `removeGltf()` is `removeModel()`, and `SceneMaterialRef::gltfIndex` is `modelMaterial`. The scene file's keys did not change.
+- `VulkanEngine::importModel()` picks the importer by the file's name, and `addModel()` is what every import shares. `modelMaterialDef()` gives a model's material as its file defines it. `installEnvironmentMap()` takes float pixels, so a model's environment loads without a file. `SceneShape::modelKey` ties a shape to its model, and `MeshAsset::cpuNormalsMissing` makes the path tracer shade a mesh without vertex normals flat.
+- Every plan for a feature pbrt scenes use has an "Importing pbrt scenes" section saying what to change in `src/pbrt_import.cpp` when it lands.
+- `MeshDrawList` (`src/raster_draw_list.cpp`, compiled `-O2` in every configuration) holds the raster pass's draw list of mesh objects, rebuilt when `RaytraceSceneEditor::contentRevision()` or `m_sceneRevision` moves and culled each frame by its world-space boxes against the frustum's planes. `contentRevision()` moves with every edit but a camera's: camera edits call `markCameraChanged()`, and `RaytraceRenderer::ensureSceneAccel()` compares the scene by value only after the content revision moves.
 
 ## 2026-10-20
 

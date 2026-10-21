@@ -84,13 +84,19 @@ Both BDPT integrators start with surfaces only. pbrt 3's BDPT handles media, wit
 - `We()`, `Pdf_We()` and `Sample_Wi()` in `crt_camera.glsl`, mirrored in C++.
 - Settings: **Connections** (`lvc`), **Light vertex cache budget**, **Visualize strategies** (`bdpt`).
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **`bdpt` and `lightpath` integrators** render with the path tracer, reported (`settings()` in `src/pbrt_import.cpp`; `pavilion-night` uses `bdpt`). Their parameters (`maxdepth`, `regularize`, `visualizestrategies`, `visualizeweights`) are read and ignored. Select this plan's integrators from them, and map `visualizestrategies` to **Visualize strategies**.
+
 ## Verification
 
 - The path tracer renders bit-identical; nothing here touches its kernels.
 - A C++ test for the camera functions: `Sample_Wi()`'s raster position projects back to the same point, and `We()` integrates to 1 over the film for a pinhole.
 - Every integrator converges to the path tracer's reference on the Cornell box and the Veach scene (**Compare to reference**, means within 0.1 %).
 - A caustic scene (a glass sphere on a diffuse floor under a small light): equal-time relative MSE for `path`, `light`, `lvc` and `bdpt`.
-- `bdpt` against pbrt-v4 itself on the Cornell box through [pbrt-scene-import.md](pbrt-scene-import.md): the images converge together, and **Visualize strategies** matches pbrt's per-strategy images.
+- `bdpt` against pbrt-v4 itself on the Cornell box through [pbrt-scene-import.md](completed/pbrt-scene-import.md): the images converge together, and **Visualize strategies** matches pbrt's per-strategy images.
 
 ## Order of work
 

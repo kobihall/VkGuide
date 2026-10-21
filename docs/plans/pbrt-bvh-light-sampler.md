@@ -74,6 +74,12 @@ pbrt gives the tree and each infinite light an equal share. This plan keeps toda
 - The **Light selection** setting, saved with the render settings. The render panel shows the tree's node count, depth and build time.
 - `rt_light` gains `LightBounds`, the importance function, the build, sampling and the pmf walk, mirrored line for line in `crt_light.glsl`.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **pbrt's default light sampler is `bvh`.** `settings()` in `src/pbrt_import.cpp` reports the integrator's `lightsampler` (default `bvh`) as the power sampler, on every pbrt scene. The noise differs, not the converged image. When this plan adds the setting, set it from `lightsampler` (`uniform`, `power`, `bvh`) and remove the report; a comparison at equal samples then measures the same estimator.
+
 ## Verification
 
 - With **Power** selected, every scene renders bit-identical.

@@ -40,6 +40,13 @@ The first is a per-light-sample weight in kernel 06; the second changes the spaw
 
 When the shading and geometric normals disagree about which side a direction is on, a BSDF sample can leave on the wrong side, and a light sample can light a surface from behind. pbrt handles this per BxDF by checking the geometric normal for reflection versus transmission. The new BxDFs of [pbrt-bsdf-library.md](pbrt-bsdf-library.md) do the same: a sampled direction is rejected when the geometric normal says it crosses the surface and the lobe is reflective, or does not cross and the lobe is transmissive. The legacy materials keep today's behavior.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Displacement is ignored.** A material's `displacement` texture (213 named materials and 287 inline ones, in 10 scenes) is reported and dropped (`mapMaterial()` in `src/pbrt_import.cpp`). Map it to this plan's bump mapping with the texture's scale; pbrt's `scale` textures often wrap the bump map (`pbrt-book`).
+- **Normal maps are imported.** `normalmap` becomes the material's normal texture (on `lambertian` and `pbr`), read as raw bytes. Tangents come from the importer in pbrt's frame (`normalMapTangents()`: x along dp/du, the shader's bitangent `cross(n, t)` with w = +1), so the map is applied as pbrt applies it. Keep that convention when normal maps move into this plan's material evaluation.
+
 ## Verification
 
 - Every scene with neither feature renders bit-identical.

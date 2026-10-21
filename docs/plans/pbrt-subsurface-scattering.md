@@ -69,6 +69,12 @@ A BSSRDF assumes a locally flat, semi-infinite, homogeneous slab. It is faster t
 - The `subsurface` material type and its parameters; the named measured table, shared with media.
 - The roadmap's slot rule records slot 10.
 
+## Importing pbrt scenes
+
+[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+
+- **Subsurface materials** (`head`, `sssdragon`) are Lambertian with their `reflectance`, or gray, and every other parameter is read and ignored (`mapMaterial()` in `src/pbrt_import.cpp`). Map `subsurface` to this plan's material: `name` (a named medium of pbrt's measured set), `sigma_a` and `sigma_s`, or `reflectance` with `mfp`, plus `scale`, `eta`, `g` and the roughness of its boundary.
+
 ## Verification
 
 - With no `subsurface` material in the scene, every scene renders bit-identical, and slot 10 is never dispatched.
