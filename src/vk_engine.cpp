@@ -22,7 +22,6 @@
 #include <iostream>
 #include <vector>
 #include <thread>
-#include <set>
 
 #include <vk_types.h>
 #include <vk_initializers.h>
@@ -89,17 +88,15 @@ void VulkanEngine::init()
 	m_isInitialized = true;
 }
 
-namespace tp { inline double t[8] = {}; inline int frames = 0; inline size_t uniquePairs = 0; inline auto now() { return std::chrono::steady_clock::now(); } inline double ms(std::chrono::steady_clock::time_point a) { return std::chrono::duration<double, std::milli>(tp::now() - a).count(); } }
 void VulkanEngine::draw()
 {
-	// wait until the gpu has finished rendering the last frame. Timeout of 1
-	// second
+	// wait until the gpu has finished rendering the last frame (below)
 	// cpu-only, so it overlaps the gpu finishing the previous frame
 	updateScene();
 
-	auto tf = tp::now();
-	checkVkResult(vkWaitForFences(m_device, 1, &getCurrentFrame().renderFence, true, 1000000000));
-	tp::t[0] += tp::ms(tf);
+	//30 seconds, not vkguide's 1: a frame of a scene of billions of triangles (pbrt's landscape) takes 2.5 s on the GPU, and
+	//a timeout here aborts. A hung GPU still ends in an error, from the timeout or from macOS resetting the device
+	checkVkResult(vkWaitForFences(m_device, 1, &getCurrentFrame().renderFence, true, 30000000000ull));
 
 	getCurrentFrame().deletionQueue.flush();
 	getCurrentFrame().frameDescriptors.clearPools(m_device);
@@ -132,6 +129,16 @@ void VulkanEngine::draw()
 	m_drawExtent.width = std::min(m_drawImage.imageExtent.width, m_swapchainExtent.width)*m_renderScale;
 	m_drawExtent.height = std::min(m_drawImage.imageExtent.height, m_swapchainExtent.height)*m_renderScale;
 
+	//the raster preview pauses, keeping last frame's picture in the draw image, once nothing it shows has changed for
+	//FRAME_OVERLAP + 1 frames: a frame skips the surfaces its occlusion queries of FRAME_OVERLAP frames before found
+	//hidden, so only after that many still frames is the last picture drawn from queries made at the same view
+	const RasterKey rasterNow = rasterKey();
+	m_rasterStableFrames = rasterNow == m_lastRasterKey ? m_rasterStableFrames + 1 : 0;
+	m_lastRasterKey = rasterNow;
+	const bool pauseAllowed = m_rasterPauseMode == RasterPauseMode::Always
+		|| (m_rasterPauseMode == RasterPauseMode::WhileRendering && m_raytracer.renderRunning());
+	m_rasterPaused = pauseAllowed && m_rasterStableFrames > FRAME_OVERLAP;
+
 	//start the command buffer recording
 	checkVkResult(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
 
@@ -139,21 +146,28 @@ void VulkanEngine::draw()
 	// display image, which it leaves readable for drawImgui()
 	m_raytracer.record(cmd, this, m_raytraceScene);
 
-	// transition our main draw image into general layout so we can write into it
-	// we will overwrite it all so we don't care about what was the older layout
-	vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-	//also set depth image layout. ideally only once, but we do every frame for now
-	vkutil::transition_image(cmd, m_depthImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+	if (m_rasterPaused) {
+		//last frame's picture, which every frame leaves in SHADER_READ_ONLY_OPTIMAL (below)
+		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		m_stats.meshDrawTime = 0.f;
+	} else {
+		// transition our main draw image into general layout so we can write into it
+		// we will overwrite it all so we don't care about what was the older layout
+		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+		//also set depth image layout. ideally only once, but we do every frame for now
+		vkutil::transition_image(cmd, m_depthImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 
-	// flash the background color
-	drawBackground(cmd);
+		// flash the background color
+		drawBackground(cmd);
 
-	vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-	drawGeometry(cmd);
+		drawGeometry(cmd);
 
-	// transition the draw image and the swapchain image into their correct transfer layouts
-	vkutil::transition_image(cmd, m_drawImage.image,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	}
+
+	// transition the swapchain image into its transfer layout
 	vkutil::transition_image(cmd, m_swapchainImages[swapchainImageIndex],VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
 	// execute a copy from the draw image into the swapchain
@@ -188,9 +202,7 @@ void VulkanEngine::draw()
 
 	//submit command buffer to the queue and execute it.
 	// renderFence will now block until the graphic commands finish execution
-	auto ts = tp::now();
 	checkVkResult(vkinit::VkFunctionLoader::get_instance().vkQueueSubmit2KHR(m_graphicsQueue, 1, &submit, getCurrentFrame().renderFence));
-	tp::t[3] += tp::ms(ts);
 
 	//prepare present
 	// this will put the image we just rendered to into the visible window.
@@ -255,6 +267,25 @@ void VulkanEngine::updateScene()
 	m_stats.sceneUpdateTime = elapsed.count() / 1000.f;
 }
 
+RasterKey VulkanEngine::rasterKey() const
+{
+	RasterKey key;
+	key.viewproj = m_sceneData.viewproj;
+	key.width = m_drawExtent.width;
+	key.height = m_drawExtent.height;
+	key.drawImages = m_drawImagesCreated;
+	//every edit, cameras included (a camera edit can move the viewport through First-Person Edit), and every model change
+	key.editorRevision = m_raytraceScene.revision();
+	key.sceneRevision = m_sceneRevision;
+	key.backgroundEffect = m_currentBackgroundEffect;
+	key.gradient = m_gradientParams;
+	key.sky = m_skyParams;
+	key.environmentMaps = m_environmentMapsLoaded;
+	key.environmentExposure = m_environmentIntensity * m_environmentMapScale;
+	key.occlusionCulling = m_occlusionCulling;
+	return key;
+}
+
 void VulkanEngine::drawBackground(VkCommandBuffer cmd)
 {
 	BackgroundEffect& effect = m_backgroundEffects[m_currentBackgroundEffect];
@@ -276,29 +307,96 @@ void VulkanEngine::recordDrawImageEffect(VkCommandBuffer cmd, const ComputePass&
 	dispatchComputePassOver(cmd, pass, set, &params, m_drawImage.imageExtent);
 }
 
+namespace {
+
+//the raster pass's draw order: by material, then by surface, so a frame binds each as few times as it can and the
+//draws of one surface with one material sit together (MeshDrawList::rebuild() sorts the same way)
+bool drawsBefore(const RenderObject* a, const RenderObject* b)
+{
+	if (a->material != b->material) {
+		return a->material < b->material;
+	}
+	if (a->indexBuffer != b->indexBuffer) {
+		return a->indexBuffer < b->indexBuffer;
+	}
+	return a->firstIndex < b->firstIndex;
+}
+
+//whether two draws can be one instanced draw: the same triangles with the same material
+bool sameSurface(const RenderObject& a, const RenderObject& b)
+{
+	return a.material == b.material && a.indexBuffer == b.indexBuffer && a.vertexBuffer == b.vertexBuffer
+		&& a.firstIndex == b.firstIndex && a.indexCount == b.indexCount;
+}
+
+}
+
 void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 {
-	//the mesh objects' surfaces in view, already in draw order
-	std::vector<const RenderObject*> opaque_draws;
-	auto tc = tp::now(); m_meshDrawList.cull(m_sceneData.viewproj, opaque_draws); tp::t[1] += tp::ms(tc);
-	{ std::set<std::pair<const void*, const void*>> pairs; for (auto* r : opaque_draws) pairs.insert({ r->material, (const void*)r->indexBuffer }); tp::uniquePairs = pairs.size(); }
-	auto trec = tp::now();
-
-	//the raytracer's shapes, built every frame (drawRaytraceShapes()), after them
-	std::vector<const RenderObject*> shapeDraws;
-	for (const RenderObject& object : m_mainDrawContext.opaqueSurfaces) {
-		if (is_visible(object, m_sceneData.viewproj)) {
-			shapeDraws.push_back(&object);
+	//the occlusion queries this frame slot issued two frames ago have finished (draw() waited for its fence). A surface
+	//whose box passed no samples is skipped this frame; it is queried again below, so it reappears two frames after it
+	//comes into view. Results for an older draw list are dropped, as is everything when the culling is off
+	FrameData& frame = getCurrentFrame();
+	std::fill(m_meshDrawList.occluded.begin(), m_meshDrawList.occluded.end(), 0);
+	if (m_occlusionCulling && !frame.occlusionEntries.empty() && frame.occlusionGeneration == m_meshDrawList.generation) {
+		std::vector<uint64_t> samples(frame.occlusionEntries.size());
+		const VkResult got = vkGetQueryPoolResults(m_device, frame.occlusionQueries, 0, (uint32_t)samples.size(), samples.size() * sizeof(uint64_t),
+			samples.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+		if (got == VK_SUCCESS) {
+			for (size_t i = 0; i < samples.size(); i++) {
+				m_meshDrawList.occluded[frame.occlusionEntries[i]] = samples[i] == 0 ? 1 : 0;
+			}
 		}
 	}
-	std::sort(shapeDraws.begin(), shapeDraws.end(), [](const RenderObject* a, const RenderObject* b) {
-		return a->material == b->material ? a->indexBuffer < b->indexBuffer : a->material < b->material;
-	});
-	opaque_draws.insert(opaque_draws.end(), shapeDraws.begin(), shapeDraws.end());
+
+	//the mesh objects' surfaces in view, already in draw order
+	std::vector<const RenderObject*> draws;
+	std::vector<uint32_t> queries;
+	const glm::vec3 eye = glm::vec3(glm::inverse(m_sceneData.view)[3]);
+	const MeshDrawList::CullResult culled = m_meshDrawList.cull(m_sceneData.viewproj, eye, m_occlusionCulling, draws, queries);
+	if (!m_occlusionCulling) {
+		queries.clear();
+	}
+
+	//the raytracer's shapes, built every frame (drawRaytraceShapes()), after them
+	const size_t shapesBegin = draws.size();
+	for (const RenderObject& object : m_mainDrawContext.opaqueSurfaces) {
+		if (is_visible(object, m_sceneData.viewproj)) {
+			draws.push_back(&object);
+		}
+	}
+	std::sort(draws.begin() + (ptrdiff_t)shapesBegin, draws.end(), drawsBefore);
+
+	//then the transparent surfaces, which blend additively without writing depth, so their order does not matter
+	for (const RenderObject& r : m_meshDrawList.transparent) {
+		draws.push_back(&r);
+	}
+	for (const RenderObject& r : m_mainDrawContext.transparentSurfaces) {
+		draws.push_back(&r);
+	}
 
 	//reset counters
 	m_stats.drawcallCount = 0;
 	m_stats.triangleCount = 0;
+	m_stats.occludedCount = (int)culled.occluded;
+	m_stats.occludedTriangles = culled.occludedTriangles;
+
+	//this frame's queries, one per entry, reset outside the rendering they are counted in
+	if (queries.size() > frame.occlusionCapacity) {
+		if (frame.occlusionQueries != VK_NULL_HANDLE) {
+			vkDestroyQueryPool(m_device, frame.occlusionQueries, nullptr);
+		}
+		frame.occlusionCapacity = std::max<uint32_t>((uint32_t)(queries.size() + queries.size() / 2), 256);
+		VkQueryPoolCreateInfo poolInfo { .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+		poolInfo.queryType = VK_QUERY_TYPE_OCCLUSION;
+		poolInfo.queryCount = frame.occlusionCapacity;
+		checkVkResult(vkCreateQueryPool(m_device, &poolInfo, nullptr, &frame.occlusionQueries));
+	}
+	if (!queries.empty()) {
+		vkCmdResetQueryPool(cmd, frame.occlusionQueries, 0, (uint32_t)queries.size());
+	}
+	frame.occlusionEntries = queries;
+	frame.occlusionGeneration = m_meshDrawList.generation;
 	//begin clock
 	auto start = std::chrono::system_clock::now();
 
@@ -350,12 +448,36 @@ void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 		writer.updateSet(m_device, globalDescriptor);
 	}
 
+	//every surface's world matrix, in draw order: a run of draws of one surface with one material is a single
+	//instanced draw, and its instances' matrices are the run's slice of this buffer, which mesh.vert reads as
+	//per-instance vertex attributes. One vkCmdDrawIndexed per (material, surface) rather than per object: a pbrt
+	//scene places the same few hundred meshes tens of thousands of times
+	if (draws.size() > frame.instanceCapacity) {
+		if (frame.instanceBuffer.buffer != VK_NULL_HANDLE) {
+			//the fence wait in draw() means this frame slot's last use of it is over
+			destroyBuffer(frame.instanceBuffer);
+		}
+		frame.instanceCapacity = std::max<size_t>(draws.size() + draws.size() / 2, 1024);
+		frame.instanceBuffer = createBuffer(frame.instanceCapacity * sizeof(glm::mat4), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+	}
+	if (!draws.empty()) {
+		glm::mat4* instances = (glm::mat4*)frame.instanceBuffer.allocation->GetMappedData();
+		for (size_t i = 0; i < draws.size(); i++) {
+			instances[i] = draws[i]->transform;
+		}
+		vmaFlushAllocation(m_memAllocator, frame.instanceBuffer.allocation, 0, draws.size() * sizeof(glm::mat4));
+		const VkDeviceSize zero = 0;
+		vkCmdBindVertexBuffers(cmd, 1, 1, &frame.instanceBuffer.buffer, &zero);
+	}
+
 	//defined outside of the draw function, this is the state we will try to skip
 	MaterialPipeline* lastPipeline = nullptr;
 	MaterialInstance* lastMaterial = nullptr;
 	VkBuffer lastIndexBuffer = VK_NULL_HANDLE;
+	VkBuffer lastVertexBuffer = VK_NULL_HANDLE;
 
-	auto draw = [&](const RenderObject& r) {
+	//the draws [first, first + count), all of one surface with one material
+	auto draw = [&](const RenderObject& r, uint32_t first, uint32_t count) {
 		if (r.material != lastMaterial) {
 			lastMaterial = r.material;
 			//rebind pipeline and descriptors if the material changed
@@ -390,53 +512,49 @@ void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.material->pipeline->layout, 1, 1,
 				&r.material->materialSet, 0, nullptr);
 		}
-		//rebind index buffer if needed
+		//rebind index and vertex buffers if needed
 		if (r.indexBuffer != lastIndexBuffer) {
 			lastIndexBuffer = r.indexBuffer;
 			vkCmdBindIndexBuffer(cmd, r.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 		}
-		// calculate final mesh matrix
-		GPUDrawPushConstants push_constants;
-		push_constants.worldMatrix = r.transform;
-		push_constants.vertexBuffer = r.vertexBufferAddress;
+		if (r.vertexBuffer != lastVertexBuffer) {
+			lastVertexBuffer = r.vertexBuffer;
+			const VkDeviceSize zero = 0;
+			vkCmdBindVertexBuffers(cmd, 0, 1, &r.vertexBuffer, &zero);
+		}
 
-		vkCmdPushConstants(cmd, r.material->pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &push_constants);
-
-		vkCmdDrawIndexed(cmd, r.indexCount, 1, r.firstIndex, 0, 0);
+		//firstInstance offsets the per-instance attributes to this run's matrices
+		vkCmdDrawIndexed(cmd, r.indexCount, count, r.firstIndex, 0, first);
 		//stats
 		m_stats.drawcallCount++;
-		m_stats.triangleCount += r.indexCount / 3;
+		m_stats.triangleCount += (r.indexCount / 3) * count;
 	};
 
-	static const char* experiment = getenv("VKGUIDE_PROFILE_EXPERIMENT");
-	for (const RenderObject* r : opaque_draws) {
-		if (experiment != nullptr && std::string(experiment) == "onemesh" && !opaque_draws.empty()) {
-			RenderObject copy = *r;
-			copy.indexBuffer = opaque_draws[0]->indexBuffer;
-			copy.vertexBufferAddress = opaque_draws[0]->vertexBufferAddress;
-			copy.firstIndex = opaque_draws[0]->firstIndex;
-			copy.indexCount = opaque_draws[0]->indexCount;
-			draw(copy);
-			continue;
+	for (size_t first = 0; first < draws.size();) {
+		const RenderObject& r = *draws[first];
+		size_t end = first + 1;
+		while (end < draws.size() && sameSurface(*draws[end], r)) {
+			end++;
 		}
-		if (experiment != nullptr && std::string(experiment) == "nopush") {
-			//every draw as the first: same push constants, so nothing changes between draws
-			RenderObject copy = *opaque_draws[0];
-			copy.material = r->material;
-			draw(copy);
-			continue;
+		draw(r, (uint32_t)first, (uint32_t)(end - first));
+		first = end;
+	}
+
+	//each queried surface's box against everything drawn, which the next use of this frame slot reads back
+	if (!queries.empty()) {
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_occlusionBoxPipeline.pipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_occlusionBoxPipeline.layout, 0, 1, &globalDescriptor, 0, nullptr);
+		for (uint32_t q = 0; q < (uint32_t)queries.size(); q++) {
+			const auto& [lo, hi] = m_meshDrawList.boxes[queries[q]];
+			const glm::vec4 box[2] = { glm::vec4(lo, 1.f), glm::vec4(hi, 1.f) };
+			vkCmdPushConstants(cmd, m_occlusionBoxPipeline.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(box), box);
+			vkCmdBeginQuery(cmd, frame.occlusionQueries, q, 0);
+			vkCmdDraw(cmd, 36, 1, 0, 0);
+			vkCmdEndQuery(cmd, frame.occlusionQueries, q);
 		}
-		draw(*r);
-	}
-	for (const RenderObject& r : m_meshDrawList.transparent) {
-		draw(r);
-	}
-	for (const RenderObject& r : m_mainDrawContext.transparentSurfaces) {
-		draw(r);
 	}
 
 	vkinit::VkFunctionLoader::get_instance().vkCmdEndRenderingKHR(cmd);
-	tp::t[2] += tp::ms(trec);
 
 	// we delete the draw commands now that we processed them
 	m_mainDrawContext.opaqueSurfaces.clear();
@@ -497,17 +615,6 @@ void VulkanEngine::run()
 		return;
 	}
 
-	if (const char* n = getenv("VKGUIDE_PROFILE_EXTRA_BUFFERS")) {
-		for (int i = 0; i < atoi(n); i++) {
-			AllocatedBuffer b = createBuffer(256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-			(void)b;
-		}
-	}
-	if (const char* r = getenv("VKGUIDE_PROFILE_RENDER_SCALE")) { m_renderScale = (float)atof(r); }
-	if (const char* p = getenv("VKGUIDE_PROFILE_SCENE")) {
-		fmt::println("profile: {}", importModel(p).message);
-		for (const auto& [key, id] : m_modelCameras) { beginFirstPersonEdit(id); endFirstPersonEdit(); }
-	}
 	if (m_commandLine.batch() && !beginBatch()) {
 		return;
 	}
@@ -604,6 +711,19 @@ void VulkanEngine::run()
 				ImGui::Text("update time %f ms", m_stats.sceneUpdateTime);
 				ImGui::Text("triangles %i", m_stats.triangleCount);
 				ImGui::Text("draws %i", m_stats.drawcallCount);
+				const char* pauseModes[] = { "Always", "While rendering", "Never" };
+				int pauseMode = (int)m_rasterPauseMode;
+				if (ImGui::Combo("Pause raster preview", &pauseMode, pauseModes, IM_ARRAYSIZE(pauseModes))) {
+					m_rasterPauseMode = (RasterPauseMode)pauseMode;
+				}
+				ImGui::SetItemTooltip("Keep the last picture instead of drawing an identical one, once the camera, the scene and the background have been still for %u frames. Always, only while the raytracer renders, or never", FRAME_OVERLAP + 1);
+				if (m_rasterPaused) {
+					ImGui::SameLine();
+					ImGui::TextDisabled("(paused)");
+				}
+				ImGui::Checkbox("Occlusion culling", &m_occlusionCulling);
+				ImGui::SetItemTooltip("Skip a surface of %u or more triangles whose box was hidden two frames ago. A surface that comes out from behind another appears two frames late", MeshDrawList::OCCLUSION_MIN_TRIANGLES);
+				ImGui::Text("occluded %i (%llu triangles)", m_stats.occludedCount, (unsigned long long)m_stats.occludedTriangles);
 			}
 			ImGui::End();
 		}
@@ -643,8 +763,6 @@ void VulkanEngine::run()
 		//convert to microseconds (integer), and then come back to miliseconds
 		auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 		m_stats.frameTime = elapsed.count() / 1000.f;
-		tp::t[4] += m_stats.frameTime;
-		if (++tp::frames % 20 == 0) { fmt::println("profile: frame {:.1f} | fence wait {:.1f} | cull {:.2f} | record draws {:.1f} | submit {:.1f} | draws {} | tris {} | unique (material, mesh) {}", tp::t[4] / 20, tp::t[0] / 20, tp::t[1] / 20, tp::t[2] / 20, tp::t[3] / 20, m_stats.drawcallCount, m_stats.triangleCount, tp::uniquePairs); for (double& v : tp::t) v = 0; if (tp::frames >= 100) bQuit = true; }
 	}
 }
 
@@ -1609,6 +1727,7 @@ IoResult VulkanEngine::installEnvironmentMap(const float* pixels, uint32_t width
 
 	const VkExtent3D extent { width, height, 1 };
 	m_environmentMap = createImage(halves.data(), extent, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT);
+	m_environmentMapsLoaded++;
 	m_environmentMapExtent = { extent.width, extent.height };
 	m_environmentMapScale = storageScale;
 	m_environmentMapPath = path;
@@ -1649,6 +1768,7 @@ void VulkanEngine::destroyEnvironmentMap()
 	vkDeviceWaitIdle(m_device);
 	destroyImage(m_environmentMap);
 	m_environmentMap = {};
+	m_environmentMapsLoaded++;
 	m_environmentMapExtent = { 0, 0 };
 	m_environmentMapScale = 1.f;
 	m_environmentDistribution.reset();
@@ -2013,7 +2133,6 @@ void VulkanEngine::initVulkan()
 	VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic_rendering_features{};
 	dynamic_rendering_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
 	dynamic_rendering_features.dynamicRendering = VK_TRUE;
-	dynamic_rendering_features.pNext = &sync2_features;
 
 	VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomic_float_features{};
 	atomic_float_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
@@ -2024,7 +2143,10 @@ void VulkanEngine::initVulkan()
 	vkb::PhysicalDevice physicalDevice = physdev_ret.value();
 	vkb::DeviceBuilder deviceBuilder{ physicalDevice };
 	auto dev_ret = deviceBuilder
+		//each feature struct gets its own add_pNext: vk-bootstrap rewrites every struct's pNext as it
+		//joins them, so a struct hung off another's pNext by hand is dropped
 		.add_pNext(&dynamic_rendering_features)
+		.add_pNext(&sync2_features)
 		.add_pNext(&atomic_float_features)
 		.build();
 	vkbErr(dev_ret);
@@ -2035,10 +2157,22 @@ void VulkanEngine::initVulkan()
 	m_chosenGPU = physicalDevice.physical_device;
 
 	vkGetPhysicalDeviceProperties(m_chosenGPU, &m_gpuProperties);
+	VkPhysicalDeviceMaintenance3Properties maintenance3 { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES };
+	VkPhysicalDeviceProperties2 properties2 { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &maintenance3 };
+	vkGetPhysicalDeviceProperties2(m_chosenGPU, &properties2);
+	m_maxAllocationBytes = maintenance3.maxMemoryAllocationSize;
+	VkPhysicalDeviceMemoryProperties memoryProperties;
+	vkGetPhysicalDeviceMemoryProperties(m_chosenGPU, &memoryProperties);
+	for (uint32_t i = 0; i < memoryProperties.memoryHeapCount; i++) {
+		if ((memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+			m_deviceLocalBytes = std::max(m_deviceLocalBytes, memoryProperties.memoryHeaps[i].size);
+		}
+	}
 	const VkPhysicalDeviceLimits& limits = m_gpuProperties.limits;
-	fmt::println("GPU: {} - maxPushConstantsSize {} bytes, maxComputeWorkGroupInvocations {}, maxComputeWorkGroupSize {}x{}x{}",
+	fmt::println("GPU: {} - maxPushConstantsSize {} bytes, maxComputeWorkGroupInvocations {}, maxComputeWorkGroupSize {}x{}x{}, largest allocation {} MB, device-local {} MB",
 		m_gpuProperties.deviceName, limits.maxPushConstantsSize, limits.maxComputeWorkGroupInvocations,
-		limits.maxComputeWorkGroupSize[0], limits.maxComputeWorkGroupSize[1], limits.maxComputeWorkGroupSize[2]);
+		limits.maxComputeWorkGroupSize[0], limits.maxComputeWorkGroupSize[1], limits.maxComputeWorkGroupSize[2],
+		m_maxAllocationBytes >> 20, m_deviceLocalBytes >> 20);
 
 	vkinit::VkFunctionLoader::get_instance().load_functions(m_device);
 
@@ -2268,13 +2402,8 @@ GPUMeshBuffers VulkanEngine::uploadMesh(std::span<uint32_t> indices, std::span<V
 	GPUMeshBuffers newSurface;
 
 	//create vertex buffer
-	newSurface.vertexBuffer = createBuffer(vertexBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-
-	//find the adress of the vertex buffer
-	VkBufferDeviceAddressInfo deviceAdressInfo{
-		.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-		.buffer = newSurface.vertexBuffer.buffer};
-	newSurface.vertexBufferAddress = vkGetBufferDeviceAddress(m_device, &deviceAdressInfo);
+	//a vertex buffer the pipeline reads through its vertex input, not by device address (see mesh.vert)
+	newSurface.vertexBuffer = createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 
 	//create index buffer
 	newSurface.indexBuffer = createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
@@ -2322,6 +2451,7 @@ void VulkanEngine::initSwapchain()
 
 void VulkanEngine::createDrawImages(VkExtent2D extent)
 {
+	m_drawImagesCreated++;
 	//the draw image is the window's size in points (the swapchain is the framebuffer, 2x that on
 	//a retina display, and the blit scales up). Same aspect as the swapchain by construction,
 	//so m_drawExtent, the raster viewport and the blit region always agree
@@ -2503,6 +2633,7 @@ void VulkanEngine::initPipeline()
 {
 	initComputePipelines();
 	initMeshPipeline();
+	initOcclusionPipeline();
 	m_metalRoughMaterial.buildPipelines(this);
 
 	m_tonemapPass.init(this);
@@ -2703,6 +2834,50 @@ void VulkanEngine::initMeshPipeline()
 	});
 }
 
+void VulkanEngine::initOcclusionPipeline()
+{
+	VkShaderModule vertexShader;
+	VkShaderModule fragmentShader;
+	if (!vkutil::load_shader_module(m_rootPath + "shaders/occlusion_box.vert.spv", m_device, &vertexShader)
+		|| !vkutil::load_shader_module(m_rootPath + "shaders/occlusion_box.frag.spv", m_device, &fragmentShader)) {
+		fmt::println("Error when building the occlusion box shader modules");
+	}
+
+	//set 0 for the view-projection, the box's two corners in push constants
+	VkPushConstantRange boxRange {};
+	boxRange.size = 2 * sizeof(glm::vec4);
+	boxRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	VkPipelineLayoutCreateInfo layoutInfo = vkinit::pipelineLayoutCreateInfo();
+	layoutInfo.setLayoutCount = 1;
+	layoutInfo.pSetLayouts = &m_gpuSceneDataDescriptorLayout;
+	layoutInfo.pushConstantRangeCount = 1;
+	layoutInfo.pPushConstantRanges = &boxRange;
+	checkVkResult(vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &m_occlusionBoxPipeline.layout));
+
+	//tested against the depth the surfaces left, writing neither depth nor color
+	PipelineBuilder pipelineBuilder;
+	pipelineBuilder.m_pipelineLayout = m_occlusionBoxPipeline.layout;
+	pipelineBuilder.setShaders(vertexShader, fragmentShader);
+	pipelineBuilder.setInputTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	pipelineBuilder.setPolygonMode(VK_POLYGON_MODE_FILL);
+	pipelineBuilder.setCullMode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+	pipelineBuilder.setMultisamplingNone();
+	pipelineBuilder.disableBlending();
+	pipelineBuilder.m_colorBlendAttachment.colorWriteMask = 0;
+	pipelineBuilder.enableDepthtest(false, VK_COMPARE_OP_LESS_OR_EQUAL);
+	pipelineBuilder.setColorAttachmentFormat(m_drawImage.imageFormat);
+	pipelineBuilder.setDepthFormat(m_depthImage.imageFormat);
+	m_occlusionBoxPipeline.pipeline = pipelineBuilder.buildPipeline(m_device);
+
+	vkDestroyShaderModule(m_device, vertexShader, nullptr);
+	vkDestroyShaderModule(m_device, fragmentShader, nullptr);
+
+	m_mainDeletionQueue.push_function([this]() {
+		vkDestroyPipelineLayout(m_device, m_occlusionBoxPipeline.layout, nullptr);
+		vkDestroyPipeline(m_device, m_occlusionBoxPipeline.pipeline, nullptr);
+	});
+}
+
 void VulkanEngine::initIMGUI()
 {
 	// 1: create descriptor pool for IMGUI
@@ -2874,7 +3049,7 @@ void VulkanEngine::drawRaytraceShapes()
 		obj.material = &slot.materials[i];
 		obj.bounds = surface.bounds;
 		obj.transform = shape.objectToWorld();
-		obj.vertexBufferAddress = mesh.meshBuffers.vertexBufferAddress;
+		obj.vertexBuffer = mesh.meshBuffers.vertexBuffer.buffer;
 
 		m_mainDrawContext.opaqueSurfaces.push_back(obj);
 	}
@@ -2987,6 +3162,12 @@ void VulkanEngine::cleanup()
 			vkDestroySemaphore(m_device ,m_frames[i].swapchainSemaphore, nullptr);
 
 			m_frames[i].deletionQueue.flush();
+			if (m_frames[i].instanceBuffer.buffer != VK_NULL_HANDLE) {
+				destroyBuffer(m_frames[i].instanceBuffer);
+			}
+			if (m_frames[i].occlusionQueries != VK_NULL_HANDLE) {
+				vkDestroyQueryPool(m_device, m_frames[i].occlusionQueries, nullptr);
+			}
 		}
 
 		m_mainDeletionQueue.flush();
@@ -3023,7 +3204,7 @@ void MeshNode::drawSurfaces(const glm::mat4& worldMatrix, DrawContext& ctx) cons
 		def.material = &s.material->data;
 		def.bounds = s.bounds;
 		def.transform = worldMatrix;
-		def.vertexBufferAddress = mesh->meshBuffers.vertexBufferAddress;
+		def.vertexBuffer = mesh->meshBuffers.vertexBuffer.buffer;
 
 		if (s.material->data.passType == MaterialPass::Transparent) {
 			ctx.transparentSurfaces.push_back(def);
@@ -3055,11 +3236,6 @@ void GLTFMetallic_Roughness::buildPipelines(VulkanEngine* engine)
 		fmt::println("Error when building the triangle vertex shader module");
 	}
 
-	VkPushConstantRange matrixRange{};
-	matrixRange.offset = 0;
-	matrixRange.size = sizeof(GPUDrawPushConstants);
-	matrixRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
 	DescriptorLayoutBuilder layoutBuilder;
 	layoutBuilder.addBinding(0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 	layoutBuilder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
@@ -3072,8 +3248,6 @@ void GLTFMetallic_Roughness::buildPipelines(VulkanEngine* engine)
 	VkPipelineLayoutCreateInfo mesh_layout_info = vkinit::pipelineLayoutCreateInfo();
 	mesh_layout_info.setLayoutCount = 2;
 	mesh_layout_info.pSetLayouts = layouts;
-	mesh_layout_info.pPushConstantRanges = &matrixRange;
-	mesh_layout_info.pushConstantRangeCount = 1;
 
 	VkPipelineLayout newLayout;
 	checkVkResult(vkCreatePipelineLayout(engine->m_device, &mesh_layout_info, nullptr, &newLayout));
@@ -3085,6 +3259,24 @@ void GLTFMetallic_Roughness::buildPipelines(VulkanEngine* engine)
 	// the pipeline know the shader modules per stage
 	PipelineBuilder pipelineBuilder;
 	pipelineBuilder.setShaders(meshVertexShader, meshFragShader);
+	//binding 0 is the mesh's vertices, binding 1 the instances' world matrices (VulkanEngine::drawGeometry()),
+	//as mesh.vert declares them
+	const VkVertexInputBindingDescription bindings[] = {
+		{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX },
+		{ 1, sizeof(glm::mat4), VK_VERTEX_INPUT_RATE_INSTANCE },
+	};
+	const VkVertexInputAttributeDescription attributes[] = {
+		{ 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+		{ 1, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, uv_x) },
+		{ 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+		{ 3, 0, VK_FORMAT_R32_SFLOAT, offsetof(Vertex, uv_y) },
+		{ 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, color) },
+		{ 5, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
+		{ 6, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 16 },
+		{ 7, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 32 },
+		{ 8, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 48 },
+	};
+	pipelineBuilder.setVertexInput(bindings, attributes);
 	pipelineBuilder.setInputTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 	pipelineBuilder.setPolygonMode(VK_POLYGON_MODE_FILL);
 	pipelineBuilder.setCullMode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);

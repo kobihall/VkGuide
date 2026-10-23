@@ -50,7 +50,6 @@ struct AllocatedBuffer {
 struct GPUMeshBuffers {
 	AllocatedBuffer indexBuffer;
 	AllocatedBuffer vertexBuffer;
-	VkDeviceAddress vertexBufferAddress;
 };
 
 struct GPUDrawPushConstants {

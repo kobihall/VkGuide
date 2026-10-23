@@ -38,6 +38,8 @@ The user also asked that the tokenizer and parser stay as simple as pbrt's. The 
 
 pbrt's world is left-handed and its camera looks down +z; the renderer's world is right-handed and its camera looks down -z. A camera point maps by `M = diag(1, 1, -1)`. A world point also maps by `M`, unless the camera's own transform has a negative determinant. Many pbrt-v4 scenes start with `Scale -1 1 1` before `LookAt` for this reason. Then world points map unchanged (`Importer::chooseWorldMirror()`). Either way the camera stays a rotation, and a point lands at the same place on the screen in both renderers, which `bin/pbrt_test` checks for both cases.
 
+pbrt has no up axis, and its scenes use +y (`barcelona-pavilion`, `bistro`, `crown`) or +z (`sanmiguel`, `killeroos`, `villa`, `sssdragon`). The raster viewport's free camera has no roll and takes +y as up, so after the mirror `W` rotates the scene's up axis to +y by quarter turns. The up axis comes from the camera: the axis nearest its up vector when that is pbrt's +y or +z; otherwise, for a camera within 25 degrees of looking along an axis, the opposite of its view (a plan view such as `watercolor/camera-12.pbrt`); otherwise its up vector's axis. A quarter turn only permutes and negates coordinates, so a render from the scene's camera is unchanged.
+
 The renderer orients a triangle by its object-space winding transformed by the inverse transpose, and so does pbrt after its `transformSwapsHandedness` correction, so the mirror needs no winding change. `ReverseOrientation` flips a mesh's vertex normals when it has them and its winding when it does not, as pbrt does.
 
 pbrt looks up image textures at `1 - v`, so its v runs up the image, and glTF's runs down: the importer writes `1 - v`.
@@ -86,7 +88,7 @@ An `AreaLightSource "diffuse"` makes the shape's material an `Emissive` one with
 
 - `point`, `spot` and `distant` become scene lights. Their spectrum is normalized to luminance 1 and multiplied by `scale`, with `power` and `illuminance` converted by pbrt's formulas.
 - `goniometric` and `projection` become point lights without their image.
-- `infinite` becomes the environment. A square map in pbrt's equal-area octahedral layout is resampled to 2N by N equirectangular texels, each the mean of four nearest lookups, through the light's transform and the world mirror (`resampleEqualArea()`, with pbrt's `EqualAreaSphereToSquare()` ported). A map without a file, `"rgb L"`, is a constant map. `illuminance` is converted as pbrt measures it. The scene file records the model that owns the environment (`"environmentModel"`) and no path, and removing the model removes the map.
+- `infinite` becomes the environment. A square map in pbrt's equal-area octahedral layout is resampled to 2N by N equirectangular texels, each from four nearest lookups, through the light's transform and the world transform (`resampleEqualArea()`, with pbrt's `EqualAreaSphereToSquare()` ported). Each lookup is weighed by its source texel's solid angle over the solid angle of all the lookups landing on that texel, so every source texel gives exactly its light: unweighted, `sanmiguel`'s two-texel sun made its sky 15 percent too bright or 1.5 percent too dark depending on how the grids lined up. A map without a file, `"rgb L"`, is a constant map. `illuminance` is converted as pbrt measures it. The scene file records the model that owns the environment (`"environmentModel"`) and no path, and removing the model removes the map.
 
 ### Spectra
 

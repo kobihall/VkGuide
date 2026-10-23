@@ -43,20 +43,29 @@ void MeshDrawList::rebuild(const std::vector<SceneMeshObject>& objects, const st
 		(*objectNodes)[object.nodeIndex]->drawSurfaces(object.transform, surfaces);
 	}
 
-	//in the order they are drawn, by material and then by mesh, so a frame binds each as few times as it can. The keys
-	//are sorted rather than the records, which are ten times their size
+	//in the order they are drawn, by material, then by mesh, then by surface, so a frame binds each as few times as it
+	//can and drawGeometry() draws each run of one surface as one instanced draw. The keys are sorted rather than the
+	//records, which are ten times their size
 	struct DrawKey {
 		const void* material;
 		const void* indexBuffer;
+		uint32_t firstIndex;
 		uint32_t index;
 	};
 	std::vector<DrawKey> order;
 	order.reserve(surfaces.opaqueSurfaces.size());
 	for (uint32_t i = 0; i < (uint32_t)surfaces.opaqueSurfaces.size(); i++) {
-		order.push_back({ surfaces.opaqueSurfaces[i].material, surfaces.opaqueSurfaces[i].indexBuffer, i });
+		const RenderObject& object = surfaces.opaqueSurfaces[i];
+		order.push_back({ object.material, object.indexBuffer, object.firstIndex, i });
 	}
 	std::sort(order.begin(), order.end(), [](const DrawKey& a, const DrawKey& b) {
-		return a.material == b.material ? a.indexBuffer < b.indexBuffer : a.material < b.material;
+		if (a.material != b.material) {
+			return a.material < b.material;
+		}
+		if (a.indexBuffer != b.indexBuffer) {
+			return a.indexBuffer < b.indexBuffer;
+		}
+		return a.firstIndex < b.firstIndex;
 	});
 
 	//each surface's object-space box carried to a box in world space: its center through the transform, its half
@@ -82,9 +91,28 @@ void MeshDrawList::rebuild(const std::vector<SceneMeshObject>& objects, const st
 		boxes.emplace_back(lo, hi);
 	}
 	transparent = std::move(surfaces.transparentSurfaces);
+	//the surfaces worth an occlusion query, and of those the ones of the most triangles when there are too many
+	queried.assign(opaque.size(), 0);
+	std::vector<uint32_t> candidates;
+	for (uint32_t i = 0; i < (uint32_t)opaque.size(); i++) {
+		if (opaque[i].indexCount / 3 >= OCCLUSION_MIN_TRIANGLES) {
+			candidates.push_back(i);
+		}
+	}
+	if (candidates.size() > OCCLUSION_MAX_QUERIES) {
+		std::nth_element(candidates.begin(), candidates.begin() + OCCLUSION_MAX_QUERIES, candidates.end(), [this](uint32_t a, uint32_t b) {
+			return opaque[a].indexCount > opaque[b].indexCount;
+		});
+		candidates.resize(OCCLUSION_MAX_QUERIES);
+	}
+	for (uint32_t i : candidates) {
+		queried[i] = 1;
+	}
+	occluded.assign(opaque.size(), 0);
+	generation++;
 }
 
-void MeshDrawList::cull(const glm::mat4& viewproj, std::vector<const RenderObject*>& out) const
+MeshDrawList::CullResult MeshDrawList::cull(const glm::mat4& viewproj, const glm::vec3& eye, bool skipOccluded, std::vector<const RenderObject*>& out, std::vector<uint32_t>& queries) const
 {
 	//the frustum's six planes from the rows of the view-projection (Gribb and Hartmann): left, right, bottom, top,
 	//near and far. Vulkan keeps clip z from 0 to w, so the near plane is the third row alone
@@ -104,6 +132,10 @@ void MeshDrawList::cull(const glm::mat4& viewproj, std::vector<const RenderObjec
 		planes[4][c] = rows[2][c];
 		planes[5][c] = rows[3][c] - rows[2][c];
 	}
+	//a box within this of the eye may be cut by the near plane (0.1, rasterProjection()), and its query would then miss
+	//the parts in front of the camera: such a surface is drawn and not queried
+	constexpr float EYE_MARGIN = 0.5f;
+	CullResult result;
 	out.reserve(out.size() + opaque.size());
 	for (size_t i = 0; i < opaque.size(); i++) {
 		const glm::vec3& lo = boxes[i].first;
@@ -119,8 +151,19 @@ void MeshDrawList::cull(const glm::mat4& viewproj, std::vector<const RenderObjec
 				break;
 			}
 		}
-		if (inside) {
-			out.push_back(&opaque[i]);
+		if (!inside) {
+			continue;
 		}
+		const bool holdsEye = glm::all(glm::greaterThan(eye, lo - EYE_MARGIN)) && glm::all(glm::lessThan(eye, hi + EYE_MARGIN));
+		if (queried[i] != 0 && !holdsEye) {
+			queries.push_back((uint32_t)i);
+			if (skipOccluded && occluded[i] != 0) {
+				result.occluded++;
+				result.occludedTriangles += opaque[i].indexCount / 3;
+				continue;
+			}
+		}
+		out.push_back(&opaque[i]);
 	}
+	return result;
 }

@@ -197,6 +197,9 @@ public:
 	// any pipeline the selection needs that is not built yet, and has the schedule size its own
 	// buffers. Cheap enough to call on every camera move
 	void start(VulkanEngine* engine, GpuRenderSnapshot snapshot);
+	// the bytes uploadGeometry() allocates for `geometry` (nodes, triangles and attributes in one buffer), once on
+	// the device and once for staging
+	static VkDeviceSize geometryUploadBytes(const RaytraceGeometry* geometry, VkDeviceSize alignment);
 	// keeps the image
 	void stop();
 

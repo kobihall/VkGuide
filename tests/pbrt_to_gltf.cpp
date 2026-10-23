@@ -13,11 +13,13 @@
 //  - OUT_environment.hdr: the environment map, equirectangular, for a viewer's world or background.
 //
 // --instancing groups the placements of a mesh used at least twice into one node with EXT_mesh_gpu_instancing, which
-// three.js, Babylon.js, glTFast and Blender (4.0 and later) read as hardware instances. --weld merges vertices that
+// three.js, Babylon.js and glTFast read as hardware instances. A viewer that does not know the extension shows one
+// copy of each such mesh; leave the option out for one, and every placement is its own node sharing the mesh. --weld merges vertices that
 // are identical in position, normal and uv, which many pbrt PLY files never share between triangles.
 //
 // Run:  ./bin/pbrt_to_gltf SCENE.pbrt OUT.gltf [--instancing] [--weld]
 
+#define GLM_ENABLE_EXPERIMENTAL
 #include <pbrt_import.h>
 
 #include <image_io.h>
@@ -348,8 +350,14 @@ int main(int argc, char** argv)
 			glm::vec3 skew;
 			glm::vec4 perspective;
 			const glm::mat4& m = placements[index].transform;
-			//a mirrored transform has no TRS without a negative scale, and a sheared one none at all
-			decomposable = glm::determinant(glm::mat3(m)) > 0.f && glm::decompose(m, scale, rotation, translation, skew, perspective);
+			//a mirrored transform (every one, when the import mirrors pbrt's world) is a rotation and a scale with one
+			//negative axis: decompose it mirrored back in z, then negate that scale. A sheared one has no TRS at all
+			const bool mirrored = glm::determinant(glm::mat3(m)) < 0.f;
+			const glm::mat4 unmirrored = mirrored ? m * glm::scale(glm::mat4(1.f), glm::vec3(1.f, 1.f, -1.f)) : m;
+			decomposable = glm::decompose(unmirrored, scale, rotation, translation, skew, perspective);
+			if (mirrored) {
+				scale.z = -scale.z;
+			}
 			const glm::mat4 rebuilt = glm::translate(glm::mat4(1.f), translation) * glm::mat4_cast(rotation) * glm::scale(glm::mat4(1.f), scale);
 			for (int c = 0; c < 4 && decomposable; c++) {
 				decomposable = glm::length(rebuilt[c] - m[c]) <= 1e-3f * std::max(1.f, glm::length(m[c]));

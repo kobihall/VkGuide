@@ -68,6 +68,9 @@ void PipelineBuilder::clear()
 	m_renderInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
 
 	m_shaderStages.clear();
+
+	m_vertexBindings.clear();
+	m_vertexAttributes.clear();
 }
 
 VkPipeline PipelineBuilder::buildPipeline(VkDevice device)
@@ -92,8 +95,12 @@ VkPipeline PipelineBuilder::buildPipeline(VkDevice device)
 	colorBlending.attachmentCount = 1;
 	colorBlending.pAttachments = &m_colorBlendAttachment;
 
-	// completely clear VertexInputStateCreateInfo, as we have no need for it
+	// no vertex input unless setVertexInput() gave some
 	VkPipelineVertexInputStateCreateInfo m_vertexInputInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+	m_vertexInputInfo.vertexBindingDescriptionCount = (uint32_t)m_vertexBindings.size();
+	m_vertexInputInfo.pVertexBindingDescriptions = m_vertexBindings.data();
+	m_vertexInputInfo.vertexAttributeDescriptionCount = (uint32_t)m_vertexAttributes.size();
+	m_vertexInputInfo.pVertexAttributeDescriptions = m_vertexAttributes.data();
 
 	// build the actual pipeline
 	// we now use all of the info structs we have been writing into into this one
@@ -142,6 +149,12 @@ void PipelineBuilder::setShaders(VkShaderModule vertexShader, VkShaderModule fra
 
 	m_shaderStages.push_back(
 		vkinit::pipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragmentShader, "main"));
+}
+
+void PipelineBuilder::setVertexInput(std::span<const VkVertexInputBindingDescription> bindings, std::span<const VkVertexInputAttributeDescription> attributes)
+{
+	m_vertexBindings.assign(bindings.begin(), bindings.end());
+	m_vertexAttributes.assign(attributes.begin(), attributes.end());
 }
 
 void PipelineBuilder::setInputTopology(VkPrimitiveTopology topology)

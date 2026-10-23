@@ -537,6 +537,19 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 		m_gpu.stop();
 		return;
 	}
+
+	//the BVH geometry is one buffer on the device and one for staging. Past what the device allocates at once or holds,
+	//the allocation fails and the app aborts, so the render is refused: pbrt's landscape needs 4.2 GB on a 4 GB GPU whose
+	//MoltenVK allocates at most 3 GB at once
+	const VkDeviceSize alignment = std::max<VkDeviceSize>(engine->m_gpuProperties.limits.minStorageBufferOffsetAlignment, 16);
+	const VkDeviceSize geometryBytes = GpuRenderer::geometryUploadBytes(m_sceneAccel != nullptr ? m_sceneAccel->geometry.get() : nullptr, alignment);
+	if (geometryBytes > engine->m_maxAllocationBytes || geometryBytes > engine->m_deviceLocalBytes) {
+		m_blockedReason = fmt::format("The scene's BVH geometry is {} MB, more than the GPU allocates in one buffer ({} MB) or holds ({} MB). Hide some objects or remove a model",
+			geometryBytes >> 20, engine->m_maxAllocationBytes >> 20, engine->m_deviceLocalBytes >> 20);
+		fmt::println("RaytraceRenderer: render refused - {}", m_blockedReason);
+		m_gpu.stop();
+		return;
+	}
 	m_blockedReason.clear();
 
 	ensureDisplayImage(engine, (uint32_t)settings.width, (uint32_t)settings.height);

@@ -9,11 +9,13 @@
 // struct compares with ==, which is how the renderer notices that the thing it is rendering has
 // changed under it.
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -316,13 +318,18 @@ struct RaytraceMeshData {
 	std::vector<RTMeshNode> nodes;
 	size_t triangleCount { 0 };
 
-	// the node a SceneMeshObject names, or null once its model has been removed
+	// the node a SceneMeshObject names, or null once its model has been removed. A binary search: buildRaytraceMeshData()
+	// leaves the nodes sorted by model key (VulkanEngine::m_models is a std::map) and then by node index, and a scan
+	// per object made building the scene quadratic in its objects (hours for pbrt's landscape)
 	const RTMeshNode* findNode(const std::string& modelKey, uint32_t nodeIndex) const
 	{
-		for (const RTMeshNode& node : nodes) {
-			if (node.nodeIndex == nodeIndex && node.modelKey == modelKey) {
-				return &node;
-			}
+		const auto found = std::lower_bound(nodes.begin(), nodes.end(), std::pair<const std::string&, uint32_t>(modelKey, nodeIndex),
+			[](const RTMeshNode& node, const std::pair<const std::string&, uint32_t>& key) {
+				const int order = node.modelKey.compare(key.first);
+				return order != 0 ? order < 0 : node.nodeIndex < key.second;
+			});
+		if (found != nodes.end() && found->nodeIndex == nodeIndex && found->modelKey == modelKey) {
+			return &*found;
 		}
 		return nullptr;
 	}

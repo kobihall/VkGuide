@@ -135,7 +135,7 @@ public:
 private:
 	const PbrtScene& s;
 	ImportedModel& m;
-	// pbrt world -> renderer world: M or the identity (chooseWorldMirror)
+	// pbrt world -> renderer world: a mirror or the identity, then the rotation that stands the scene up (chooseWorldMirror)
 	glm::dmat4 W { 1.0 };
 
 	std::map<std::string, int> m_images;
@@ -163,7 +163,50 @@ private:
 	{
 		const glm::dmat4 cameraFromWorld = s.camera.has_value() ? s.camera->cameraFromWorld : glm::dmat4(1.0);
 		const bool cameraMirrors = glm::determinant(glm::dmat3(cameraFromWorld)) < 0.0;
-		W = cameraMirrors ? glm::dmat4(1.0) : glm::scale(glm::dmat4(1.0), glm::dvec3(1.0, 1.0, -1.0));
+		const glm::dmat3 mirror = cameraMirrors ? glm::dmat3(1.0) : glm::dmat3(glm::scale(glm::dmat4(1.0), glm::dvec3(1.0, 1.0, -1.0)));
+
+		//pbrt has no up axis; a scene's camera says which way is up, and the raster viewport's free camera (no roll)
+		//needs it to be +y. The axis nearest the camera's up is the scene's up when it is pbrt's +y or +z, the two that
+		//scenes use. Otherwise a camera within 25 degrees of looking along an axis is taken to look down it (a plan view
+		//with a sideways up, as in watercolor and kroken), and failing that the camera's up is used as it is. A rotation
+		//by quarter turns moves no value by more than a sign, so a render from the scene's camera does not change
+		const glm::dmat3 pbrtFromCamera = glm::inverse(glm::dmat3(cameraFromWorld));
+		const glm::dvec3 forward = glm::normalize(pbrtFromCamera * glm::dvec3(0.0, 0.0, 1.0));
+		const auto nearestAxis = [](const glm::dvec3& v) {
+			const glm::dvec3 a = glm::abs(v);
+			const int axis = a.x >= a.y && a.x >= a.z ? 0 : (a.y >= a.z ? 1 : 2);
+			glm::dvec3 unit(0.0);
+			unit[axis] = v[axis] < 0.0 ? -1.0 : 1.0;
+			return unit;
+		};
+		glm::dvec3 pbrtUp = nearestAxis(pbrtFromCamera * glm::dvec3(0.0, 1.0, 0.0));
+		bool planView = false;
+		if (pbrtUp != glm::dvec3(0.0, 1.0, 0.0) && pbrtUp != glm::dvec3(0.0, 0.0, 1.0)
+			&& glm::length(nearestAxis(forward) - forward) < 2.0 * std::sin(glm::radians(25.0) / 2.0)) {
+			pbrtUp = -nearestAxis(forward);
+			planView = true;
+		}
+		const glm::dvec3 up = mirror * pbrtUp;
+		const int axis = up.x != 0.0 ? 0 : (up.y != 0.0 ? 1 : 2);
+		const bool negative = up[axis] < 0.0;
+
+		//the quarter-turn rotation taking that axis to +y, by columns (where the renderer's x, y and z come from)
+		glm::dmat3 stand(1.0);
+		if (axis == 0) {
+			stand = negative ? glm::dmat3(0, -1, 0, 1, 0, 0, 0, 0, 1) : glm::dmat3(0, 1, 0, -1, 0, 0, 0, 0, 1);
+		} else if (axis == 1 && negative) {
+			stand = glm::dmat3(1, 0, 0, 0, -1, 0, 0, 0, -1);
+		} else if (axis == 2) {
+			stand = negative ? glm::dmat3(1, 0, 0, 0, 0, 1, 0, -1, 0) : glm::dmat3(1, 0, 0, 0, 0, -1, 0, 1, 0);
+		}
+		W = glm::dmat4(stand * mirror);
+
+		if (axis != 1 || negative) {
+			const char* names[3] = { "x", "y", "z" };
+			report(fmt::format("the scene's up is pbrt's {}{} axis, which becomes +y ({})", pbrtUp[axis] < 0.0 ? "-" : "+", names[axis],
+					   planView ? "the camera looks down it" : "the camera's up"),
+				s.camera.has_value() ? s.camera->loc : PbrtLoc {});
+		}
 	}
 
 	glm::dvec3 worldPoint(const glm::dmat4& worldFromObject, const glm::dvec3& p) const
@@ -1376,7 +1419,11 @@ private:
 		return true;
 	}
 
-	// each equirectangular texel takes the mean of 2 x 2 nearest lookups in pbrt's map, as pbrt looks up its texels
+	// each equirectangular texel takes 2 x 2 nearest lookups in pbrt's map, as pbrt looks up its texels. Nearest lookups
+	// alone do not keep the map's energy: sanmiguel's sun is two texels holding half the sky's light, and how many lookups
+	// land on them depends on how the two grids line up (its sky came out 15 percent bright stood on pbrt's y, 1.5 percent
+	// dark on z). So a lookup is weighed by its source texel's solid angle, 4 pi / n^2 in the equal-area square, over the
+	// solid angle of all the lookups that land on that texel, and every source texel gives exactly its own light
 	void resampleEqualArea(const Image& image, const glm::dmat4& worldFromLight, ImportedEnvironment& env)
 	{
 		const uint32_t n = image.width;
@@ -1385,9 +1432,17 @@ private:
 		env.rgba.assign((size_t)env.width * env.height * 4, 1.f);
 		const glm::dmat3 lightFromWorld = glm::inverse(glm::dmat3(worldFromLight));
 		const glm::dmat3 pbrtFromRenderer = glm::inverse(glm::dmat3(W));
+
+		//every lookup's source texel, and the solid angle that lands on each source texel
+		std::vector<uint32_t> source((size_t)env.width * env.height * 4);
+		std::vector<double> covered((size_t)n * n, 0.0);
+		std::vector<double> lookupSolidAngle(env.height);
 		for (uint32_t y = 0; y < env.height; y++) {
+			//a row's texel spans latitudes (0.5 - y / height) pi to (0.5 - (y + 1) / height) pi (equirectDirectionOf())
+			const double top = std::sin((0.5 - (double)y / env.height) * glm::pi<double>());
+			const double bottom = std::sin((0.5 - (double)(y + 1) / env.height) * glm::pi<double>());
+			lookupSolidAngle[y] = (top - bottom) * 2.0 * glm::pi<double>() / env.width / 4.0;
 			for (uint32_t x = 0; x < env.width; x++) {
-				glm::dvec3 sum(0.0);
 				for (int sy = 0; sy < 2; sy++) {
 					for (int sx = 0; sx < 2; sx++) {
 						const glm::vec2 uv((x + (sx + 0.5f) / 2.f) / env.width, (y + (sy + 0.5f) / 2.f) / env.height);
@@ -1396,9 +1451,22 @@ private:
 						const glm::vec2 st = equalAreaSphereToSquare(local);
 						const uint32_t px = std::min((uint32_t)(st.x * n), n - 1);
 						const uint32_t py = std::min((uint32_t)(st.y * n), n - 1);
-						const float* t = &image.rgb[((size_t)py * n + px) * 3];
-						sum += glm::dvec3(t[0], t[1], t[2]);
+						const uint32_t texel = py * n + px;
+						source[((size_t)y * env.width + x) * 4 + (size_t)(sy * 2 + sx)] = texel;
+						covered[texel] += lookupSolidAngle[y];
 					}
+				}
+			}
+		}
+
+		const double texelSolidAngle = 4.0 * glm::pi<double>() / ((double)n * n);
+		for (uint32_t y = 0; y < env.height; y++) {
+			for (uint32_t x = 0; x < env.width; x++) {
+				glm::dvec3 sum(0.0);
+				for (int k = 0; k < 4; k++) {
+					const uint32_t texel = source[((size_t)y * env.width + x) * 4 + (size_t)k];
+					const float* t = &image.rgb[(size_t)texel * 3];
+					sum += glm::dvec3(t[0], t[1], t[2]) * (texelSolidAngle / covered[texel]);
 				}
 				float* out = &env.rgba[((size_t)y * env.width + x) * 4];
 				out[0] = (float)std::max(sum.x / 4.0, 0.0);

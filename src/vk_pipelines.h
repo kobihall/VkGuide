@@ -18,6 +18,9 @@ public:
 	VkPipelineDepthStencilStateCreateInfo m_depthStencil;
 	VkPipelineRenderingCreateInfo m_renderInfo;
 	VkFormat m_colorAttachmentformat;
+	// empty unless setVertexInput() is called: most pipelines here read no vertex attributes
+	std::vector<VkVertexInputBindingDescription> m_vertexBindings;
+	std::vector<VkVertexInputAttributeDescription> m_vertexAttributes;
 
 	PipelineBuilder(){ clear(); }
 
@@ -26,6 +29,7 @@ public:
 	VkPipeline buildPipeline(VkDevice device);
 
 	void setShaders(VkShaderModule vertexShader, VkShaderModule fragmentShader);
+	void setVertexInput(std::span<const VkVertexInputBindingDescription> bindings, std::span<const VkVertexInputAttributeDescription> attributes);
 	void setInputTopology(VkPrimitiveTopology topology);
 	void setPolygonMode(VkPolygonMode mode);
 	void setCullMode(VkCullModeFlags cullMode, VkFrontFace frontFace);

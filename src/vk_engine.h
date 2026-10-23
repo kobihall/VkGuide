@@ -48,6 +48,16 @@ struct FrameData {
 	VkSemaphore swapchainSemaphore, renderSemaphore;
 	VkFence renderFence;
 	DeletionQueue deletionQueue;
+	// the raster pass's per-instance world matrices (drawGeometry()), host-visible and kept mapped; grown when a
+	// frame draws more instances than it holds
+	AllocatedBuffer instanceBuffer {};
+	size_t instanceCapacity { 0 };
+	// the occlusion queries this frame slot issued, one per entry of MeshDrawList::opaque in occlusionEntries, read
+	// back when the slot comes round again; occlusionGeneration is the MeshDrawList::generation they were issued for
+	VkQueryPool occlusionQueries { VK_NULL_HANDLE };
+	uint32_t occlusionCapacity { 0 };
+	std::vector<uint32_t> occlusionEntries;
+	uint64_t occlusionGeneration { 0 };
 };
 
 constexpr unsigned int FRAME_OVERLAP = 2;
@@ -63,6 +73,38 @@ struct ComputePushConstants {
 	glm::vec4 data2;
 	glm::vec4 data3;
 	glm::vec4 data4;
+
+	bool operator==(const ComputePushConstants&) const = default;
+};
+
+// When the raster preview stops drawing a picture identical to the last one (VulkanEngine::draw()): whenever nothing it
+// shows has changed, only while the raytracer renders, or never
+enum class RasterPauseMode : uint8_t {
+	Always,
+	WhileRendering,
+	Never,
+};
+
+// Everything the raster preview's picture depends on (VulkanEngine::rasterKey()). Equal keys draw equal pictures, so a
+// frame whose key matches the last ones keeps the draw image as it is
+struct RasterKey {
+	glm::mat4 viewproj { 0.f };
+	uint32_t width { 0 };
+	uint32_t height { 0 };
+	// VulkanEngine::m_drawImagesCreated: recreated on a resize, with undefined contents. A count, not the handle, which
+	// MoltenVK can hand out again for a new image
+	uint64_t drawImages { 0 };
+	uint64_t editorRevision { 0 };
+	uint64_t sceneRevision { 0 };
+	int backgroundEffect { -1 };
+	ComputePushConstants gradient {};
+	ComputePushConstants sky {};
+	// VulkanEngine::m_environmentMapsLoaded
+	uint64_t environmentMaps { 0 };
+	float environmentExposure { 0.f };
+	bool occlusionCulling { false };
+
+	bool operator==(const RasterKey&) const = default;
 };
 
 struct GPUSceneData {
@@ -95,7 +137,7 @@ struct RenderObject {
 	MaterialInstance* material;
 	Bounds bounds;
 	glm::mat4 transform;
-	VkDeviceAddress vertexBufferAddress;
+	VkBuffer vertexBuffer;
 };
 
 struct DrawContext {
@@ -122,14 +164,32 @@ struct MeshNode : public Node {
 struct MeshDrawList {
 	std::vector<RenderObject> opaque;
 	std::vector<std::pair<glm::vec3, glm::vec3>> boxes;
+	// per opaque surface: tested for occlusion (OCCLUSION_MIN_TRIANGLES, OCCLUSION_MAX_QUERIES), and its box passed no
+	// samples in the last occlusion query read back (VulkanEngine::drawGeometry())
+	std::vector<uint8_t> queried;
+	std::vector<uint8_t> occluded;
 	std::vector<RenderObject> transparent;
+	// moves on every rebuild, so occlusion results for an older list are dropped rather than applied to the wrong entries
+	uint64_t generation { 0 };
 	// what it was built from: RaytraceSceneEditor::contentRevision() and VulkanEngine::m_sceneRevision
 	uint64_t editorRevision { ~0ull };
 	uint64_t sceneRevision { ~0ull };
 
 	void rebuild(const std::vector<SceneMeshObject>& objects, const std::map<std::pair<std::string, uint32_t>, const MeshNode*>& nodes);
-	// the opaque surfaces whose box is inside the frustum of `viewproj`, appended in draw order
-	void cull(const glm::mat4& viewproj, std::vector<const RenderObject*>& out) const;
+	// a surface of at least this many triangles is tested for occlusion; below it, the query's draw costs about as much
+	// as the surface's own
+	static constexpr uint32_t OCCLUSION_MIN_TRIANGLES = 4096;
+	// at most this many surfaces are tested, those of the most triangles: each query is a draw of its own, and Metal's
+	// visibility buffer holds 32,768 (pbrt's landscape has 90,000 surfaces over the minimum)
+	static constexpr uint32_t OCCLUSION_MAX_QUERIES = 4096;
+	struct CullResult {
+		uint32_t occluded { 0 };
+		uint64_t occludedTriangles { 0 };
+	};
+	// the opaque surfaces whose box is inside the frustum of `viewproj`, appended in draw order to `out`, less those
+	// `occluded` marks when `skipOccluded`. `queries` gets the entries to test for occlusion this frame: those in view
+	// that `queried` marks, unless their box holds the eye
+	CullResult cull(const glm::mat4& viewproj, const glm::vec3& eye, bool skipOccluded, std::vector<const RenderObject*>& out, std::vector<uint32_t>& queries) const;
 };
 
 struct GLTFMetallic_Roughness {
@@ -166,6 +226,9 @@ struct EngineStats {
 	float frameTime;
 	int triangleCount;
 	int drawcallCount;
+	// surfaces in view the occlusion queries skipped this frame, and their triangles
+	int occludedCount;
+	uint64_t occludedTriangles;
 	float sceneUpdateTime;
 	float meshDrawTime;
 };
@@ -205,6 +268,10 @@ public:
 	// limits worth checking new work against - maxPushConstantsSize, maxComputeWorkGroup* -
 	// printed once at startup
 	VkPhysicalDeviceProperties m_gpuProperties {};
+	// the largest single allocation the device allows (maxMemoryAllocationSize) and its largest device-local heap: a
+	// render whose geometry needs more is refused (RaytraceRenderer::startRender())
+	VkDeviceSize m_maxAllocationBytes { 0 };
+	VkDeviceSize m_deviceLocalBytes { 0 };
 	VkDevice m_device;
 	VkSurfaceKHR m_surface;
 
@@ -268,6 +335,19 @@ public:
 	// the mesh objects' surfaces as the raster pass draws them, rebuilt in updateScene() only when the editor's content
 	// revision or m_sceneRevision moves
 	MeshDrawList m_meshDrawList;
+	// skip the surfaces whose box was hidden at the last occlusion query (drawGeometry()); the Stats window's checkbox
+	bool m_occlusionCulling { true };
+	// the Stats window's "Pause raster preview": draw() keeps the last picture while rasterKey() holds still
+	RasterPauseMode m_rasterPauseMode { RasterPauseMode::Always };
+	RasterKey m_lastRasterKey {};
+	// frames in a row whose key matched the one before
+	uint32_t m_rasterStableFrames { 0 };
+	bool m_rasterPaused { false };
+	// how many times createDrawImages() and the environment map upload have run, for rasterKey()
+	uint64_t m_drawImagesCreated { 0 };
+	uint64_t m_environmentMapsLoaded { 0 };
+	// draws a world-space box with no color or depth writes, for the occlusion queries (shaders/occlusion_box.vert)
+	MaterialPipeline m_occlusionBoxPipeline {};
 	// every model's base-colour textures in one array image, for the path tracer's triangles.
 	// Rebuilt alongside the mesh data, so the layers a triangle's material names always exist
 	RaytraceTextureArray m_raytraceTextures;
@@ -475,6 +555,8 @@ private:
 	void initPipeline();
 	void initComputePipelines();
 	void initMeshPipeline();
+	void initOcclusionPipeline();
+	RasterKey rasterKey() const;
 	void initIMGUI();
 	void initDefaultData();
 

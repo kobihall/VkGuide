@@ -11,7 +11,7 @@ A laser beam in a real lab is invisible. In the viewport it should be a solid yo
 
 ## What the renderer does today
 
-- `drawGeometry()` draws opaque surfaces, then transparent ones, with `MaterialPass::Transparent` through `GLTFMetallic_Roughness`'s transparent pipeline. Vertex data is pulled through a buffer device address in push constants (`shaders/mesh.vert`).
+- `drawGeometry()` draws opaque surfaces, then transparent ones, with `MaterialPass::Transparent` through `GLTFMetallic_Roughness`'s transparent pipeline. Vertices come through the pipeline's vertex input and each instance's world matrix through a per-instance binding (`shaders/mesh.vert`); each run of one surface with one material is one instanced draw.
 - Camera frustums and light markers are ImGui overlays in the foreground draw list (`drawCameraOverlays()`, `drawLightOverlays()` in `src/vk_engine.cpp`), since there is no line pipeline.
 - The preview shapes rewrite a persistent buffer per frame in flight when the scene revision changes (`drawRaytraceShapes()`), with the flush MoltenVK requires.
 
@@ -37,7 +37,7 @@ The radius is the 1/e² intensity radius `w` by default, the definition femtoPro
 A new pipeline, `shaders/optics/beam_preview.vert` and `.frag`, draws every section of every segment in one instanced draw:
 
 - One unit tube mesh, two rings of 48 vertices, uploaded once.
-- A storage buffer of section records, reached by buffer device address in push constants like `mesh.vert`'s vertices: the two ring centers, the two ring frames, the four radii, a color and an opacity. 64 bytes a section.
+- A storage buffer of section records in a descriptor set, indexed by `gl_InstanceIndex` with every section of a beam one instanced draw: the two ring centers, the two ring frames, the four radii, a color and an opacity. 64 bytes a section. Not a buffer device address: MoltenVK makes every device-address buffer resident again on each draw of a pipeline that declares the capability (CLAUDE.md, "No buffer device addresses in raster shaders").
 - The vertex shader places each ring vertex on its ellipse. The fragment shader shades the tube as a glowing volume: its opacity scales with `1 / max(|n · v|, 0.2)`, so the tube reads as denser at its silhouette, as a lit haze does, and the color is additive.
 - Additive blending, depth test `LESS_OR_EQUAL` against the opaque pass and no depth write, so optics hide the beam behind them and beams do not hide each other. It draws after the transparent pass.
 

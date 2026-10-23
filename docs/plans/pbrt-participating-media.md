@@ -118,7 +118,7 @@ A thin homogeneous fog (σs around 0.01 m⁻¹) makes a laser beam visible in a 
 
 - **Media are reported and left out.** `MakeNamedMedium` and `MediumInterface` are parsed into `PbrtScene::media` and each shape's and light's `insideMedium` and `outsideMedium` (`src/pbrt_parser.h`); the importer reports each medium and each shape or light with one (12 media in 9 scenes: `bunny-cloud`, `clouds`, `crown`, `dambreak`, `disney-cloud`, `explosion`, `kroken`, `smoke-plume`, `watercolor`).
 - **Interface shapes are not drawn.** A shape with `Material "interface"` (or `""`, `"none"`) only bounds a medium, so `shapeMaterial()` returns no material and the shape is skipped. With media, import it as a medium boundary instead.
-- **What to map.** `homogeneous` (`sigma_a`, `sigma_s`, `scale`, `g`, `Le`, `Lescale`), `uniformgrid` (`density`, `nx`, `ny`, `nz`, `p0`, `p1`, as in `smoke-plume`), `rgbgrid`, `nanovdb` (`filename`: `bunny-cloud`, `disney-cloud`, `explosion`) and `cloud`. A medium's transform is `PbrtMedium::worldFromMedium`, which needs the same world mirror the importer applies to shapes (`Importer::W`).
+- **What to map.** `homogeneous` (`sigma_a`, `sigma_s`, `scale`, `g`, `Le`, `Lescale`), `uniformgrid` (`density`, `nx`, `ny`, `nz`, `p0`, `p1`, as in `smoke-plume`), `rgbgrid`, `nanovdb` (`filename`: `bunny-cloud`, `disney-cloud`, `explosion`) and `cloud`. A medium's transform is `PbrtMedium::worldFromMedium`, which needs the same world transform, mirror and up-axis rotation, that the importer applies to shapes (`Importer::W`).
 - **Rendering pbrt's way.** pbrt's `volpath` integrator is the default of 63 scenes; with media it is this plan's kernels 05 and 07.
 
 ## Verification

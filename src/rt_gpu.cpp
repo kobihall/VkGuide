@@ -902,6 +902,16 @@ void GpuRenderer::retireBuffer(VulkanEngine* engine, AllocatedBuffer& buffer)
 	buffer = {};
 }
 
+VkDeviceSize GpuRenderer::geometryUploadBytes(const RaytraceGeometry* geometry, VkDeviceSize alignment)
+{
+	const size_t nodes = geometry != nullptr ? geometry->nodes.size() : 0;
+	const size_t triangles = geometry != nullptr ? geometry->triangles.size() : 0;
+	const size_t attributes = geometry != nullptr ? geometry->attributes.size() : 0;
+	const VkDeviceSize trianglesOffset = alignUp(sizeof(glm::uvec4) * std::max<size_t>(nodes, 1), alignment);
+	const VkDeviceSize attributesOffset = alignUp(trianglesOffset + sizeof(BvhTriangle) * std::max<size_t>(triangles, 1), alignment);
+	return attributesOffset + sizeof(GpuTriangleAttributes) * std::max<size_t>(attributes, 1);
+}
+
 void GpuRenderer::uploadGeometry(VulkanEngine* engine, const std::shared_ptr<const RaytraceGeometry>& geometry)
 {
 	if (m_uploadedGeometry == geometry && m_geometryBuffer.buffer != VK_NULL_HANDLE) {

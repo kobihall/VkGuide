@@ -265,6 +265,48 @@ void testCameras()
 	testCamera("Scale -1 1 1\n", "Scale -1 1 1 then LookAt, portrait", 30, 50);
 }
 
+//the scene stands on the axis nearest its camera's up, which becomes +y: a point light at pbrt's (1, 2, 3) lands where
+//that rotation takes it, projects to the same pixel as in pbrt, and the camera's up is near +y
+void testUpAxis()
+{
+	fmt::println("up axis");
+	struct Case {
+		const char* label;
+		const char* camera;
+		glm::vec3 light;
+	};
+	const Case cases[] = {
+		{ "y up", "LookAt 0 2 -10  0 0 0  0 1 0", glm::vec3(1.f, 2.f, -3.f) },
+		{ "z up, mirrored in z", "LookAt 0 -10 2  0 0 0  0 0 1", glm::vec3(1.f, 3.f, 2.f) },
+		{ "z up after Scale -1 1 1", "Scale -1 1 1\nLookAt 0 -10 2  0 0 0  0 0 1", glm::vec3(1.f, 3.f, -2.f) },
+		{ "x up", "LookAt 0 -10 -10  0 0 0  1 0 0", glm::vec3(-2.f, 1.f, -3.f) },
+		{ "z up looking along -y", "LookAt 0 10 0  0 0 0  0 0 1", glm::vec3(1.f, 3.f, 2.f) },
+		{ "a plan view down -y, up -z", "LookAt 0 10 0  0 0 0  0 0 -1", glm::vec3(1.f, 2.f, -3.f) },
+	};
+	for (const Case& c : cases) {
+		const std::string text = fmt::format("{}\nCamera \"perspective\" \"float fov\" 60\nFilm \"rgb\" \"integer xresolution\" 64 \"integer yresolution\" 32\n"
+											 "WorldBegin\nLightSource \"point\" \"point3 from\" [1 2 3]\n",
+			c.camera);
+		PbrtScene scene;
+		std::string error;
+		check(parsePbrtString(text, scene, &error), std::string(c.label) + " parses: " + error);
+		ImportedModel model;
+		importPbrtScene(scene, model);
+		if (model.cameras.size() != 1 || model.lights.size() != 1 || !scene.camera.has_value()) {
+			check(false, fmt::format("{}: one camera and one light", c.label));
+			continue;
+		}
+		const glm::vec3 at = model.lights[0].position;
+		check(glm::length(at - c.light) < 1e-6f, fmt::format("{}: pbrt's (1, 2, 3) is ({}, {}, {}), expected ({}, {}, {})", c.label, at.x, at.y, at.z, c.light.x, c.light.y, c.light.z));
+		const glm::dvec2 a = pbrtScreen(scene.camera->cameraFromWorld, glm::dvec3(1, 2, 3), 60.0, 2.0);
+		const glm::dvec2 b = ourScreen(model.cameras[0], glm::dvec3(at), 2.0);
+		check(glm::length(a - b) < 1e-5, fmt::format("{}: the light is at ({:.6f}, {:.6f}) for pbrt and ({:.6f}, {:.6f}) here", c.label, a.x, a.y, b.x, b.y));
+		const glm::vec3 up = model.cameras[0].orientation * glm::vec3(0.f, 1.f, 0.f);
+		const glm::vec3 view = model.cameras[0].orientation * glm::vec3(0.f, 0.f, -1.f);
+		check(up.y > 0.9f || view.y < -0.9f, fmt::format("{}: the camera's up is ({:.3f}, {:.3f}, {:.3f})", c.label, up.x, up.y, up.z));
+	}
+}
+
 //---------------------------------------------------------------- what maps where
 
 void testMapping()
@@ -462,6 +504,7 @@ int main(int argc, char** argv)
 	testScanner();
 	testParser();
 	testCameras();
+	testUpAxis();
 	testMapping();
 	if (g_failures > 0) {
 		fmt::println("pbrt_test: {} check(s) FAILED", g_failures);

@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-10-23
+
+### Fixed
+
+- Fixed the `synchronization2` device feature being off since the image outputs change (2026-10-21). The feature struct hung off the dynamic-rendering struct's `pNext`, and vk-bootstrap rewrites each struct's `pNext` when it joins the chain, so adding the float-atomics struct dropped it. Every frame calls `vkCmdPipelineBarrier2KHR` and `vkQueueSubmit2KHR`, which are invalid without the feature, and validation reported about 780 errors in a short run. Each feature struct now has its own `add_pNext`.
+
+## 2026-10-22
+
+### New
+
+- `./bin/pbrt_to_gltf <scene.pbrt> <out.gltf>` converts a pbrt-v4 scene to glTF 2.0 through the renderer's importer, to open in Blender, a three.js or Babylon.js viewer, or Unity as a raster baseline. A mesh placed many times is written once. `--instancing` groups each mesh's placements into one `EXT_mesh_gpu_instancing` node, and `--weld` merges vertices identical in position, normal and uv: `sanmiguel-courtyard`'s 7.5 million vertices become 1.8 million. The environment map is written beside it as `.hdr`.
+- **Stats** → **Occlusion culling**, on by default, skips a surface of 4,096 triangles or more whose box was hidden behind the rest of the scene two frames earlier. In `pavilion-day` the GPU time of the raster preview falls from 35 ms to 8 ms from the scene's camera, and from 63 ms to 24 ms looking across the pavilion. A surface that comes out from behind another while the camera moves appears two frames late. With a still camera the image is unchanged.
+
+- **Stats** → **Pause raster preview** keeps the last raster picture instead of drawing an identical one, once the camera, the scene, the render scale and the background have been still for three frames. **Always** pauses whenever that holds, **While rendering** only while the raytracer renders, and **Never** draws every frame. **Always** is the default. The raster preview of `pavilion-day` costs 26 ms a frame while drawn and 4 ms while paused.
+
+### Changed
+
+- A pbrt scene imports standing on its up axis, which the importer takes from the scene's camera and turns to +y: the axis nearest the camera's up when that is pbrt's +y or +z, and for a plan view such as `watercolor/camera-12.pbrt` the axis it looks down. `sanmiguel`, `killeroos`, `villa`, `sportscar` and `sssdragon` stood on their side in the viewport and now stand upright; the import report names any up axis other than +y. A render from the scene's camera converges to the same image. A scene file saved earlier with a z-up pbrt model reopens with its objects where they were saved and its environment turned upright, so import the model again.
+
+### Fixed
+
+- Fixed the raster preview taking up to 2 seconds a frame in scenes of many meshes, where MoltenVK made every mesh's vertex buffer resident again on every draw. In a Debug build, `sanmiguel-courtyard` looking into the courtyard took 1,864 ms a frame and takes 23 ms, `zero-day` took 1,511 ms and takes 15 ms, and `bistro_cafe` took 514 ms and takes 15 ms.
+- Fixed a pbrt environment map gaining or losing light in the import, depending on how its texels lined up with the renderer's map. `sanmiguel`'s sky, whose sun is two texels holding half its light, was 15 percent too bright; each texel now keeps exactly its own light.
+- Fixed the app aborting with `VK_TIMEOUT` when one frame took the GPU more than a second, as a raster frame of pbrt's `landscape` or a 1600 by 1100 path-traced frame of `sanmiguel-courtyard` does. The frame's fence wait allows 30 seconds.
+- Fixed the app aborting when a render's geometry did not fit in GPU memory. pbrt's `landscape` needs 4,217 MB of BVH geometry, more than this GPU allocates at once (3,072 MB) or holds (4,096 MB); its render is now refused with those numbers in **Raytrace Render**.
+- Fixed a scene of many objects stalling after its import, while the raytracer looked up each object's mesh through every mesh node. pbrt's `landscape` (407,566 objects) had not opened after 25 minutes; it opens in 2.5 minutes.
+
+### Internal
+
+- `mesh.vert` reads its vertices through the pipeline's vertex input (binding 0, locations 0 to 4) and the world matrix as a per-instance attribute (binding 1, locations 5 to 8), not through a buffer device address in push constants. `GPUMeshBuffers` has no `vertexBufferAddress`, `RenderObject` carries `vertexBuffer`, vertex buffers are created with `VK_BUFFER_USAGE_VERTEX_BUFFER_BIT`, and `PipelineBuilder::setVertexInput()` is new. CLAUDE.md's "No buffer device addresses in raster shaders" says why.
+- `drawGeometry()` draws each run of one surface with one material as one instanced draw, with the world matrices in draw order in `FrameData::instanceBuffer`. `MeshDrawList` sorts by material, mesh and first index. `sanmiguel-courtyard`'s 50,781 draws in view become 764.
+- `RaytraceMeshData::findNode()` is a binary search, which relies on `buildRaytraceMeshData()` leaving the nodes sorted by model key and node index.
+
 ## 2026-10-21
 
 ### New
