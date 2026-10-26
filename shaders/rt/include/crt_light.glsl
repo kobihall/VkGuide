@@ -632,6 +632,18 @@ bool isDeltaLight(uint kind)
 	return kind == CRT_LIGHT_POINT || kind == CRT_LIGHT_SPOT || kind == CRT_LIGHT_DIRECTIONAL;
 }
 
+// what a light emits before any texture or falloff: its RGB radiance in the exact RGB build, its packed reference times
+// its scale in a spectral one (src/rt_lights.h GpuLight::spectrum)
+Spectrum lightSpectrum(GpuLight light)
+{
+#ifndef CRT_SPECTRAL
+	return light.radiance;
+#else
+	return spectrumScale(spectrumFromRef(sceneSpectrumRef(light.spectrum), vec3(1.0)), uintBitsToFloat(light.spectrumScale));
+#endif
+}
+
+#ifndef CRT_SPECTRAL
 // the radiance a triangle light emits at a point: its emission times its emissive texel there, and
 // nothing where its material's alpha test cuts the surface away - a BSDF sample can never hit such a
 // point, so a light sample must not find light there either (crt_traverse.glsl cutAway())
@@ -650,17 +662,43 @@ vec3 triangleLightRadiance(GpuLight light, vec3 barycentrics)
 	}
 	return layer < 0 ? light.radiance : light.radiance * srgbToLinear(textureLod(materialTextures, vec3(uv, float(layer)), 0.0).rgb);
 }
+#endif
+
+#ifdef CRT_SPECTRAL
+// a triangle light's texel at a point, in the working space, as the tint of its emission; false where its material's
+// alpha test cuts the surface away
+bool triangleLightTint(GpuLight light, vec3 barycentrics, out vec3 tint)
+{
+	tint = vec3(1.0);
+	const int layer = floatBitsToInt(light.b.w);
+	const ClassicMaterial material = classicMaterial(floatBitsToUint(light.c.w));
+	const bool cutout = material.alphaCutoff > 0.0 && material.albedoLayer >= 0;
+	if (layer < 0 && !cutout) {
+		return true;
+	}
+	const GpuTriangleAttributes attributes = triangleAttributes[floatBitsToUint(light.a.w)];
+	const vec2 uv = barycentrics.x * vec2(attributes.n0.w, attributes.vAndSurface.x) + barycentrics.y * vec2(attributes.n1.w, attributes.vAndSurface.y) + barycentrics.z * vec2(attributes.n2.w, attributes.vAndSurface.z);
+	if (cutout && textureLod(materialTextures, vec3(uv, float(material.albedoLayer)), 0.0).a < material.alphaCutoff) {
+		return false;
+	}
+	if (layer >= 0) {
+		tint = srgbToWorking(srgbToLinear(textureLod(materialTextures, vec3(uv, float(layer)), 0.0).rgb));
+	}
+	return true;
+}
+#endif
 
 // The one direction from `ref` towards a point, spot or directional light, how far away it is and
 // what arrives along it - a delta distribution, so there is no density to report. Kept apart from
 // sampleLight() so a kernel that samples delta lights alone reads no other light's resources.
 // `lightNormal` is the surface normal at the light, which a delta light does not have: zero
-bool sampleDeltaLight(GpuLight light, vec3 ref, out vec3 direction, out float distance, out vec3 radiance, out vec3 lightNormal)
+bool sampleDeltaLight(GpuLight light, vec3 ref, out vec3 direction, out float distance, out Spectrum radiance, out vec3 lightNormal)
 {
 	direction = vec3(0.0, 1.0, 0.0);
 	distance = 0.0;
-	radiance = vec3(0.0);
+	radiance = spectrumConst(0.0);
 	lightNormal = vec3(0.0);
+#ifndef CRT_SPECTRAL
 	if (light.kind == CRT_LIGHT_DIRECTIONAL) {
 		direction = -light.a.xyz;
 		distance = CRT_INFINITY;
@@ -678,6 +716,27 @@ bool sampleDeltaLight(GpuLight light, vec3 ref, out vec3 direction, out float di
 	if (light.kind == CRT_LIGHT_SPOT) {
 		radiance *= spotFalloff(dot(light.b.xyz, -direction), light.b.w, light.c.x);
 	}
+#else
+	// the spectrum is evaluated once, after the geometry, so the shader inlines it once
+	float falloff = 1.0;
+	if (light.kind == CRT_LIGHT_DIRECTIONAL) {
+		direction = -light.a.xyz;
+		distance = CRT_INFINITY;
+	} else {
+		const vec3 toLight = light.a.xyz - ref;
+		const float distanceSquared = dot(toLight, toLight);
+		if (!(distanceSquared > 0.0)) {
+			return false;
+		}
+		distance = sqrt(distanceSquared);
+		direction = toLight / distance;
+		falloff = rangeWindow(distance, light.a.w) / distanceSquared;
+		if (light.kind == CRT_LIGHT_SPOT) {
+			falloff *= spotFalloff(dot(light.b.xyz, -direction), light.b.w, light.c.x);
+		}
+	}
+	radiance = spectrumScale(lightSpectrum(light), falloff);
+#endif
 	return true;
 }
 
@@ -686,6 +745,86 @@ bool sampleDeltaLight(GpuLight light, vec3 ref, out vec3 direction, out float di
 // `lightNormal` is the surface normal at the point sampled on it, which the shadow ray's far end is
 // offset by (zero for every light that has no surface: delta lights, the environment). `environmentTable` is 1 under MIS (the compensated table), 0 otherwise. False for
 // no sample
+#ifdef CRT_SPECTRAL
+// THE SPECTRAL BUILD'S sampleLight(): the same geometry, with the emission evaluated once at the end, whatever the kind,
+// so the kernel inlines one evaluation of a spectrum rather than one per kind. What a kind emits is a reference, a
+// tint (a triangle's texel) and a scale, or for the environment its texel as an RGB emitter
+bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 direction, out float distance, out Spectrum radiance, out float pdf, out vec3 lightNormal)
+{
+	const GpuLight light = lights[index];
+	direction = vec3(0.0, 1.0, 0.0);
+	distance = 0.0;
+	radiance = spectrumConst(0.0);
+	pdf = 0.0;
+	lightNormal = vec3(0.0);
+	uint emission = sceneSpectrumRef(light.spectrum);
+	vec3 tint = vec3(1.0);
+	float scale = uintBitsToFloat(light.spectrumScale);
+
+	if (isDeltaLight(light.kind)) {
+		pdf = 1.0;
+		float falloff = 1.0;
+		if (light.kind == CRT_LIGHT_DIRECTIONAL) {
+			direction = -light.a.xyz;
+			distance = CRT_INFINITY;
+		} else {
+			const vec3 toLight = light.a.xyz - ref;
+			const float distanceSquared = dot(toLight, toLight);
+			if (!(distanceSquared > 0.0)) {
+				return false;
+			}
+			distance = sqrt(distanceSquared);
+			direction = toLight / distance;
+			falloff = rangeWindow(distance, light.a.w) / distanceSquared;
+			if (light.kind == CRT_LIGHT_SPOT) {
+				falloff *= spotFalloff(dot(light.b.xyz, -direction), light.b.w, light.c.x);
+			}
+		}
+		scale *= falloff;
+	} else if (light.kind == CRT_LIGHT_ENVIRONMENT) {
+		if (!sampleEnvironment(environmentTable, u, direction, pdf)) {
+			return false;
+		}
+		distance = CRT_INFINITY;
+		emission = CRT_SPECTRAL_NONE;
+		tint = srgbToWorking(textureLod(environmentMap, equirectUv(direction), 0.0).rgb);
+		scale = pc.environmentIntensity;
+	} else {
+		LightSample s;
+		vec3 barycentrics = vec3(0.0);
+		bool ok = false;
+		switch (light.kind) {
+		case CRT_LIGHT_SPHERE:
+			ok = sampleSphereLight(light.a.xyz, light.a.w, ref, u, s);
+			break;
+		case CRT_LIGHT_RECTANGLE:
+			ok = sampleRectangleLight(light.a.xyz, light.b.xyz, light.c.xyz, ref, u, s);
+			break;
+		case CRT_LIGHT_CYLINDER:
+			ok = sampleCylinderLight(light.a.xyz, light.b.xyz, light.c.xyz, light.a.w, light.b.w, ref, u, s);
+			break;
+		case CRT_LIGHT_TRIANGLE:
+			ok = sampleTriangleLight(light.a.xyz, light.b.xyz, light.c.xyz, ref, u, s, barycentrics);
+			if (ok && !triangleLightTint(light, barycentrics, tint)) {
+				return false;
+			}
+			break;
+		}
+		if (!ok) {
+			return false;
+		}
+		direction = s.direction;
+		distance = s.distance;
+		pdf = s.pdf;
+		lightNormal = s.normal;
+		if (!(pdf > 0.0)) {
+			return false;
+		}
+	}
+	radiance = spectrumScale(spectrumFromRefOrRgb(emission, tint, CRT_ROLE_ILLUMINANT), scale);
+	return true;
+}
+#else
 bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 direction, out float distance, out vec3 radiance, out float pdf, out vec3 lightNormal)
 {
 	const GpuLight light = lights[index];
@@ -738,6 +877,7 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 	lightNormal = s.normal;
 	return pdf > 0.0;
 }
+#endif
 
 // The density sampleLight() gives the direction from `ref` to `lightPoint` on area light `index`:
 // what kernel 04 weighs a BSDF sample that hit the light against

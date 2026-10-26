@@ -53,6 +53,14 @@ std::string commandLineUsage()
 		"                              disagreement or ao\n"
 		"  --ao-distance <x>           the ambient occlusion view's ray length; 0 (the default) is a tenth of the scene's size\n"
 		"  --relight <scale,...>       show the render relit: each light group's sums times its scale (needs --light-groups)\n"
+		"  --spectral <mode>           what a path carries: rgb, monochromatic, gaussians, bands or hero\n"
+		"  --lanes <n>                 bands and hero: 4, 8, 16 or 32\n"
+		"  --wavelength <nm>           monochromatic: the wavelength\n"
+		"  --range <min>,<max>         bands and hero: the range in nm\n"
+		"  --sampling <how>            hero: visible, uniform or lights\n"
+		"  --color-space <space>       the scene's RGB values: srgb, dci-p3, rec2020 or aces2065-1\n"
+		"  --design-wavelength <nm>    the wavelength exact RGB reads a dispersive index at\n"
+		"  --spectral-images <n>       keep n wavelength buckets per pixel (hero) or the bands, as S0.<nm> EXR channels\n"
 		"  --help                      this text\n"
 		"\n"
 		"exit code: 0 the file was written, 2 the scene or the options were refused, 3 a timeout\n",
@@ -173,6 +181,52 @@ bool parseCommandLine(int argc, char* const* argv, CommandLine& out, std::string
 				return false;
 			}
 			out.aoDistance = (float)distance;
+		} else if (flag == "--spectral" || flag == "--sampling" || flag == "--color-space") {
+			if (!value(text)) {
+				return false;
+			}
+			(flag == "--spectral" ? out.spectral : flag == "--sampling" ? out.sampling : out.colorSpace) = text;
+		} else if (flag == "--lanes") {
+			if (!value(text)) {
+				return false;
+			}
+			const unsigned long lanes = std::strtoul(text, nullptr, 10);
+			if (lanes != 4 && lanes != 8 && lanes != 16 && lanes != 32) {
+				error = fmt::format("--lanes needs 4, 8, 16 or 32, not '{}'", text);
+				return false;
+			}
+			out.lanes = (uint32_t)lanes;
+		} else if (flag == "--spectral-images") {
+			if (!value(text)) {
+				return false;
+			}
+			const unsigned long buckets = std::strtoul(text, nullptr, 10);
+			if (buckets < 1 || buckets > 256) {
+				error = fmt::format("--spectral-images needs 1 to 256 buckets, not '{}'", text);
+				return false;
+			}
+			out.spectralImages = (uint32_t)buckets;
+		} else if (flag == "--wavelength" || flag == "--design-wavelength") {
+			if (!value(text)) {
+				return false;
+			}
+			char* end = nullptr;
+			const double nm = std::strtod(text, &end);
+			if (end == text || *end != '\0' || !(nm > 0.0)) {
+				error = fmt::format("{} needs a wavelength in nm, not '{}'", flag, text);
+				return false;
+			}
+			(flag == "--wavelength" ? out.wavelength : out.designWavelength) = (float)nm;
+		} else if (flag == "--range") {
+			if (!value(text)) {
+				return false;
+			}
+			float a = 0.f, b = 0.f;
+			if (std::sscanf(text, "%f,%f", &a, &b) != 2 || !(a > 0.f) || !(b > a)) {
+				error = fmt::format("--range needs <min>,<max> in nm, not '{}'", text);
+				return false;
+			}
+			out.range = std::make_pair(a, b);
 		} else if (flag == "--relight") {
 			if (!value(text)) {
 				return false;
@@ -210,7 +264,8 @@ bool parseCommandLine(int argc, char* const* argv, CommandLine& out, std::string
 		error = "--relight needs --light-groups";
 		return false;
 	}
-	if (!out.batch() && (!out.debugView.empty() || out.aoDistance != 0.f || !out.relight.empty() || out.samples != 0 || !out.aov.empty() || out.size.has_value() || out.lightGroups || out.captureThroughSpecular || out.halfFloat)) {
+	if (!out.batch() && (!out.debugView.empty() || out.aoDistance != 0.f || !out.relight.empty() || out.samples != 0 || !out.aov.empty() || out.size.has_value() || out.lightGroups || out.captureThroughSpecular || out.halfFloat
+			|| out.spectralGiven())) {
 		error = "this option only applies to --render";
 		return false;
 	}

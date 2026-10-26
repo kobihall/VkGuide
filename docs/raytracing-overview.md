@@ -209,11 +209,21 @@ Payload version 13 adds `"errorBoundedOffsets"` and `"watertightTriangles"` to `
 
 Payload version 14 adds `"samplerRandomization"` to `"render"`. A file with no `"01"` entry in `"kernels"` opens with `pcg_hash` rather than a new scene's `zsobol`.
 
+Payload version 18 adds `"spectral"` to `"render"`, the representation and its settings, and saves a spectrum that is not RGB as an object such as `{"blackbody": 2700, "scale": 1}`. A file without `"spectral"` opens in exact RGB.
+
 Payload version 12 saves the material library. `"materials"` holds each user material in full, and each shape or override mesh object names its material by index, or a glTF model's material as `{"model":0,"material":12}`. A glTF material is saved only as what you changed of it, in `"materialOverrides"`. An older file's inline materials open as one user material per object, named after it.
 
 ---
 
 ## 4. The maths, kernel by kernel
+
+### What a path carries
+
+A path's throughput $\beta$ is a `Spectrum` (`shaders/rt/include/crt_spectrum.glsl`), and **Raytrace Render** → **Spectral** chooses what that means. In exact RGB, a new scene's default, it is the `vec3` of red, green and blue it always was, in a build of its own. Every other representation is a build with `CRT_LANES` values per path: one fixed wavelength (monochromatic), three Gaussian bands, N fixed bands over a range, or N hero wavelengths drawn per path at $\lambda_i$ from one uniform sample $u$ at $u + i/N$, each with its density $p(\lambda_i)$. A material's color, a light's radiance and the background are spectra (`SpectrumRef`), which each representation evaluates at its wavelengths or projects onto its bands; an RGB color is uplifted to a smooth spectrum first (Jakob and Hanika 2019). Kernels 03, 04 and 08 turn a path's radiance into film color when they add it. For hero wavelengths that is the Monte Carlo estimate of the CIE integrals,
+
+$$\text{XYZ} = \frac{1}{N \int \bar{y}} \sum_{i} \frac{L(\lambda_i)\,(\bar{x}, \bar{y}, \bar{z})(\lambda_i)}{p(\lambda_i)}$$
+
+then XYZ to linear sRGB; for bands it is a fixed matrix. A glass whose index varies with wavelength sends each wavelength its own way, so at a refraction through one the path keeps one lane and multiplies it by the number of lanes that were alive, which keeps the estimate unbiased (pbrt's `TerminateSecondary()`). `docs/plans/completed/pbrt-spectral-rendering.md` has the rest.
 
 ### 00 — Generate camera rays
 
@@ -281,15 +291,17 @@ The weight $w_b$ is what keeps a light from being counted twice. Under BSDF samp
 
 $$\beta_{n+1} = \beta_n \cdot f(\omega_o, \omega_i)$$
 
-Kernel 06 is built twice, once per material class. Kernel 02 reads each hit's material header and sends a hit on a *complex* material, one with a large or branchy evaluation, to a queue of its own. The basic build evaluates only the basic types, so it allocates registers for them alone; the complex build evaluates every type, as pbrt-v4's universal evaluator does (PBR 4ed 15.3.9). All of today's materials are basic, so the complex queue stays empty until a plan adds a complex type.
+Kernel 06 is built twice, once per material class. Kernel 02 reads each hit's material header and sends a hit on a *complex* material, one with a large or branchy evaluation, to a queue of its own. The basic build evaluates only the basic types, so it allocates registers for them alone; the complex build evaluates every type, as pbrt-v4's universal evaluator does (PBR 4ed 15.3.9). `glass` and `conductor` are the complex types, so the complex queue is empty in a scene without them.
 
-A material is a library entry: a type from the traits table in `src/rt_material.cpp`, with its parameters stored by name. The GPU gets a 16-byte header per material, with the type, flags kernel 02 and the alpha test read, and where its parameters sit in a second buffer, which `shaders/rt/include/crt_material.glsl` reads back. Four scattering types carry over from the project's first, CPU, raytracer, and the fifth is glTF's metallic-roughness model:
+A material is a library entry: a type from the traits table in `src/rt_material.cpp`, with its parameters stored by name. The GPU gets a 16-byte header per material, with the type, flags kernel 02 and the alpha test read, and where its parameters sit in a second buffer, which `shaders/rt/include/crt_material.glsl` reads back. Four scattering types carry over from the project's first, CPU, raytracer, the fifth is glTF's metallic-roughness model, and two are pbrt-v4's:
 
 - **Lambertian** — `normal + randomUnitVector()`. Adding a uniform-sphere point to the normal gives a *true* cosine-weighted distribution, so the sampled direction's weight is the albedo alone: the $\cos\theta/\pi$ in the BSDF and in the density cancel.
 - **Metal** — `reflect(d, n) + fuzz · randomInBall()`, absorbed if it goes below the surface.
 - **Phong** — a $\cos^\alpha$ lobe around the reflection direction with $\alpha = 1000^{s^2}$, sampled as $\cos\theta = \xi^{1/(\alpha+1)}$ in a tangent frame.
 - **Dielectric** — Snell with Schlick's approximation $R(\theta) = R_0 + (1-R_0)(1-\cos\theta)^5$, total internal reflection when $\eta\sin\theta > 1$.
 - **PBR** — glTF 2.0 metallic-roughness. A GGX specular lobe with $F_0 = \text{mix}(0.04, c, m)$ over a Lambertian lobe of $c\,(1-m)$, for base colour $c$ and metallic $m$. One lobe is sampled per bounce, with probability proportional to the luminance of what it reflects towards $\omega_o$. The specular lobe samples visible normals (Heitz 2018), so its weight is $F(\omega_o \cdot h)\,G_1(\omega_i)$. The metal/rough texture scales roughness by its green channel and metallic by its blue. Every glTF material renders as this type.
+- **Glass** — pbrt-v4's dielectric in the local shading frame (`crt_bxdf.glsl`), with the exact Fresnel equations, a rough form that refracts about a GGX microfacet normal (Walter et al. 2007), and $1/\eta^2$ on a refraction in radiance transport. Its index is a spectrum: a glass whose index varies with wavelength disperses, and a path through it keeps one wavelength (see "What a path carries").
+- **Conductor** — pbrt-v4's metal: the complex Fresnel equations with a measured $\eta$ and $k$ per wavelength (pbrt's copper by default), or derived from a reflectance, smooth or rough, anisotropic along dp/du.
 
 Then **Russian roulette**: past a few bounces, a path survives with probability $p = \text{clamp}(\max\beta, 0.05, 1)$ and its throughput is divided by $p$. Unbiased, and it is what makes late bounces cheap — by bounce six the queue is a fraction of its original size, and the indirect dispatch shrinks with it.
 
@@ -440,10 +452,13 @@ The MIS weights view works differently: it lets a path run to its second vertex 
 | Light sampling on the CPU (no Vulkan) | `src/light_sampling.h/.cpp` |
 | The samplers: kernel 01's body, and what kernels 00 and 06 read | `shaders/rt/include/crt_sampler.glsl`, `crt_samples.glsl` |
 | The samplers on the CPU (no Vulkan), and pbrt's tables | `src/sampler.h/.cpp`, `assets/sampler/` |
+| What a path carries: the spectrum's arithmetic, wavelengths, uplift and film conversion | `shaders/rt/include/crt_spectrum.glsl` |
+| The spectral representations and their packing on the CPU (no Vulkan), and a spectrum as a scene authors it | `src/spectral.h/.cpp`, `src/spectrum_ref.h/.cpp`, `src/color_space.h/.cpp` |
+| pbrt-v4's glass and conductor | `shaders/rt/include/crt_bxdf.glsl`, `crt_fresnel.glsl`, `crt_microfacet.glsl`; on the CPU `src/bxdf.h/.cpp` |
 | The reference error | `shaders/image_error.comp`, `GpuRenderer::recordReference()` |
 | CPU verification harnesses | `tests/bvh_bench.cpp` → `bin/bvh_bench`, `tests/light_test.cpp` → `bin/light_test`, `tests/sampler_test.cpp` → `bin/sampler_test` |
 
-Several shader files are mirrored line for line by CPU code: `crt_bvh.glsl` ↔ `bvh_layout.h`, `crt_shape.glsl` ↔ `shape.cpp`, `crt_light.glsl` ↔ `light_sampling.cpp`, `crt_sampler.glsl` ↔ `sampler.cpp`, and the `crt_common.glsl` structs ↔ `rt_gpu_types.h`, `rt_accel.h` and `rt_lights.h`, with `static_assert`s on size. Each carries a "change both together" note in its header. `bvh_bench` checks the traversal side against brute force, `light_test` checks every light's sample densities, and `sampler_test` checks the samplers' nets, strata, discrepancy and blue noise, which transitively validates the GLSL.
+Several shader files are mirrored line for line by CPU code: `crt_bvh.glsl` ↔ `bvh_layout.h`, `crt_shape.glsl` ↔ `shape.cpp`, `crt_light.glsl` ↔ `light_sampling.cpp`, `crt_sampler.glsl` ↔ `sampler.cpp`, `crt_spectrum.glsl` ↔ `spectral.cpp`, `crt_bxdf.glsl`, `crt_fresnel.glsl` and `crt_microfacet.glsl` ↔ `bxdf.cpp`, and the `crt_common.glsl` structs ↔ `rt_gpu_types.h`, `rt_accel.h` and `rt_lights.h`, with `static_assert`s on size. Each carries a "change both together" note in its header. `bvh_bench` checks the traversal side against brute force, `light_test` checks every light's sample densities, `sampler_test` checks the samplers' nets, strata, discrepancy and blue noise, `spectrum_test` the uplift, wavelength densities and spectra, and `bsdf_test` the BxDFs, which transitively validates the GLSL. The GPU self-tests compare the spectrum and BxDF shaders with their mirrors directly.
 
 ---
 

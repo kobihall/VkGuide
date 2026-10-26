@@ -172,6 +172,9 @@ private:
 	// the "Sampler" section: kernel 01's variant, its randomization, and why a render runs another
 	void drawSamplerSettings(VulkanEngine* engine);
 	void drawFilmSettings(VulkanEngine* engine);
+	// the "Spectral" section (docs/plans/completed/pbrt-spectral-rendering.md): the representation, its lanes, range and
+	// sampling, the working space, the design wavelength, and how a monochromatic render is shown
+	void drawSpectralSettings();
 	// the "Outputs" section: the auxiliary outputs, the light groups and Relight
 	void drawOutputsSettings(VulkanEngine* engine, RaytraceSceneEditor& editor);
 	// the "Export" section: the file options, Save when finished and the Export Render button
@@ -246,6 +249,7 @@ private:
 	std::vector<SceneLight> m_sceneAccelLights;
 	std::vector<MaterialDef> m_sceneAccelMaterials;
 	EnvironmentLight m_sceneAccelEnvironment;
+	SpectralSceneContext m_sceneAccelSpectral;
 	uint64_t m_sceneAccelModelRevision { 0 };
 	uint64_t m_sceneAccelRevision { 0 };
 	// the editor's content revision the scene acceleration structure was built or last checked at

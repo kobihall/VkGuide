@@ -47,8 +47,26 @@ struct CommandLine {
 	// --relight <scale,...>: show the render relit, each light group's sums times its scale (and written so to a .png).
 	// Needs --light-groups
 	std::vector<float> relight;
+	// THE SPECTRAL MODES (docs/plans/completed/pbrt-spectral-rendering.md), each in place of the scene's own:
+	// --spectral <rgb|monochromatic|gaussians|bands|hero>, --lanes <4|8|16|32>, --wavelength <nm> (monochromatic),
+	// --range <min>,<max> (nm), --sampling <visible|uniform|lights>, --color-space <srgb|dci-p3|rec2020|aces2065-1>
+	// and --design-wavelength <nm>. Empty or 0 keeps the scene's
+	std::string spectral;
+	uint32_t lanes { 0 };
+	float wavelength { 0.f };
+	std::optional<std::pair<float, float>> range;
+	std::string sampling;
+	std::string colorSpace;
+	float designWavelength { 0.f };
+	// --spectral-images <n>: keep n wavelength buckets per pixel (hero) or the bands, written as S0.<l>nm channels
+	uint32_t spectralImages { 0 };
 	// --help
 	bool help { false };
+
+	bool spectralGiven() const
+	{
+		return !spectral.empty() || lanes != 0 || wavelength != 0.f || range.has_value() || !sampling.empty() || !colorSpace.empty() || designWavelength != 0.f || spectralImages != 0;
+	}
 
 	bool batch() const { return !renderScene.empty(); }
 };

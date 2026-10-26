@@ -2,7 +2,7 @@
 
 These are appearance models from PBR's "Further Reading" and exercises that pbrt itself does not implement: energy compensation for microfacet models, a sheen lobe for cloth, thin-film iridescence, and glints. Each is independent of the others and lands as a material parameter or lobe through the material system.
 
-*Research extension, planned at the user's request on 2026-09-26. Not implemented. Depends on [pbrt-bsdf-library.md](pbrt-bsdf-library.md); iridescence is best with [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md); glints need the ray footprint from [pbrt-textures.md](pbrt-textures.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Research extension, planned at the user's request on 2026-09-26. Not implemented. Depends on [pbrt-bsdf-library.md](pbrt-bsdf-library.md); iridescence is best with [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md); glints need the ray footprint from [pbrt-textures.md](pbrt-textures.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Microfacet energy compensation
 

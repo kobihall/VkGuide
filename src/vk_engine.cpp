@@ -1026,7 +1026,8 @@ void VulkanEngine::drawLightOverlays()
 
 	for (const SceneLight& light : lights) {
 		//the light's own colour, brightened so a dim or dark one still shows
-		const glm::vec3 tint = light.color / std::max({ light.color.r, light.color.g, light.color.b, 1e-3f });
+		const glm::vec3 rgb = glm::max(exactRgb(light.color, SpectrumRole::Illuminant, {}), glm::vec3(0.f));
+		const glm::vec3 tint = rgb / std::max({ rgb.r, rgb.g, rgb.b, 1e-3f });
 		const ImU32 color = IM_COL32((int)(155 + 100 * tint.r), (int)(155 + 100 * tint.g), (int)(155 + 100 * tint.b), 230);
 		const glm::mat4 transform = light.transform();
 		auto at = [&](float x, float y, float z) { return glm::vec3(transform * glm::vec4(x, y, z, 1.f)); };
@@ -1091,7 +1092,7 @@ SceneLight sceneLightOf(const GltfPunctualLight& source, const std::string& mode
 	//node's -z, which is SceneLight's convention too
 	const glm::mat3 basis(glm::normalize(glm::vec3(source.worldTransform[0])), glm::normalize(glm::vec3(source.worldTransform[1])), glm::normalize(glm::vec3(source.worldTransform[2])));
 	light.orientation = glm::normalize(glm::quat_cast(basis));
-	light.color = glm::max(source.color, glm::vec3(0.f));
+	light.color = rgbSpectrum(glm::max(source.color, glm::vec3(0.f)));
 	//candela (point, spot) or lux (directional) over 683 lm/W
 	light.intensity = std::max(source.intensity, 0.f) * PHOTOMETRIC_TO_RADIOMETRIC;
 	light.range = std::max(source.range, 0.f);
@@ -1481,6 +1482,7 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 	scene.lightGroupNames = m_raytraceScene.lightGroupNames();
 	scene.environmentGroup = m_raytraceScene.environmentGroup();
 	scene.exportSettings = m_raytracer.exportSettings();
+	scene.spectralDisplay = m_raytracer.gpu().spectralDisplay;
 	//which wavefront kernel runs in each slot, and how the BVH they read is built
 	scene.kernels = m_raytracer.kernels();
 	scene.accel = m_raytracer.accelSettings();
@@ -1631,6 +1633,7 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	//the light groups last of the objects that name one: a light or material in a group the file does not list moves to group 0
 	m_raytraceScene.setLightGroups(scene.lightGroupNames, scene.environmentGroup);
 	m_raytracer.setExportSettings(scene.exportSettings);
+	m_raytracer.gpu().spectralDisplay = scene.spectralDisplay;
 	m_raytracer.setSettings(scene.render);
 	//the kernel selection first: it is what decides the BLAS node layout, so setAccelSettings()
 	//below sees the layout the file's traversal actually needs
@@ -1939,6 +1942,63 @@ bool VulkanEngine::beginBatch()
 	}
 	settings.aov.captureThroughSpecular = settings.aov.captureThroughSpecular || m_commandLine.captureThroughSpecular;
 	settings.lightGroups = settings.lightGroups || m_commandLine.lightGroups;
+	//the spectral options, each in place of the scene's own
+	{
+		SpectralSettings& spectral = settings.spectral;
+		if (!m_commandLine.spectral.empty()) {
+			bool found = false;
+			for (uint32_t r = 0; r < (uint32_t)SpectralRepresentation::Count; r++) {
+				if (m_commandLine.spectral == spectralRepresentationKey((SpectralRepresentation)r)) {
+					spectral.representation = (SpectralRepresentation)r;
+					found = true;
+				}
+			}
+			if (!found) {
+				fmt::println("render: '{}' is not a spectral mode; see --help", m_commandLine.spectral);
+				m_exitCode = 2;
+				return false;
+			}
+		}
+		if (!m_commandLine.sampling.empty()) {
+			bool found = false;
+			for (uint32_t s = 0; s < (uint32_t)WavelengthSampling::Count; s++) {
+				if (m_commandLine.sampling == wavelengthSamplingKey((WavelengthSampling)s)) {
+					spectral.sampling = (WavelengthSampling)s;
+					found = true;
+				}
+			}
+			if (!found) {
+				fmt::println("render: '{}' is not a wavelength sampling; see --help", m_commandLine.sampling);
+				m_exitCode = 2;
+				return false;
+			}
+		}
+		if (!m_commandLine.colorSpace.empty()) {
+			const std::optional<ColorSpaceId> space = findColorSpace(m_commandLine.colorSpace);
+			if (!space.has_value()) {
+				fmt::println("render: '{}' is not a color space; see --help", m_commandLine.colorSpace);
+				m_exitCode = 2;
+				return false;
+			}
+			spectral.colorSpace = *space;
+		}
+		if (m_commandLine.lanes != 0) {
+			spectral.lanes = m_commandLine.lanes;
+		}
+		if (m_commandLine.spectralImages != 0) {
+			spectral.imageBuckets = m_commandLine.spectralImages;
+		}
+		if (m_commandLine.wavelength > 0.f) {
+			spectral.monochromaticWavelength = m_commandLine.wavelength;
+		}
+		if (m_commandLine.designWavelength > 0.f) {
+			spectral.designWavelength = m_commandLine.designWavelength;
+		}
+		if (m_commandLine.range.has_value()) {
+			spectral.lambdaMin = m_commandLine.range->first;
+			spectral.lambdaMax = m_commandLine.range->second;
+		}
+	}
 	m_raytracer.setSettings(settings);
 	//the display-side controls: a debug view, the ambient occlusion distance, and Relight with the scales given
 	if (!m_commandLine.debugView.empty()) {

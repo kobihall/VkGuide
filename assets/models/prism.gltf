@@ -1,0 +1,106 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "tools/verify/prism_scene.py"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "prism",
+   "mesh": 0
+  }
+ ],
+ "meshes": [
+  {
+   "name": "prism",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1
+     },
+     "indices": 2,
+     "material": 0
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "glass",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.9,
+     0.95,
+     1.0,
+     1.0
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.0
+   }
+  }
+ ],
+ "buffers": [
+  {
+   "byteLength": 480,
+   "uri": "data:application/octet-stream;base64,UBZnvpqZGT8dceQ+ItZFv5qZGT+aIMi+ItZFv5qZGb+aIMi+UBZnvpqZGb8dceQ+ItZFv5qZGT+aIMi+UBZnPpqZGT8dceS+UBZnPpqZGb8dceS+ItZFv5qZGb+aIMi+UBZnPpqZGT8dceS+UBZnvpqZGT8dceQ+UBZnvpqZGb8dceQ+UBZnPpqZGb8dceS+ItZFv5qZGb+aIMi+UBZnPpqZGb8dceS+UBZnvpqZGb8dceQ+UBZnPpqZGT8dceS+ItZFv5qZGT+aIMi+UBZnvpqZGT8dceQ+3EhWvwAAAICOEAw/3EhWvwAAAICOEAw/3EhWvwAAAICOEAw/3EhWvwAAAICOEAw/HYRivQAAAIC2m3+/HYRivQAAAIC2m3+/HYRivQAAAIC2m3+/HYRivQAAAIC2m3+/HXFkPwAAAIBQFuc+HXFkPwAAAIBQFuc+HXFkPwAAAIBQFuc+HXFkPwAAAIBQFuc+AAAAgAAAgL8AAACAAAAAgAAAgL8AAACAAAAAgAAAgL8AAACAAAAAgAAAgD8AAAAAAAAAgAAAgD8AAAAAAAAAgAAAgD8AAAAAAAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADwAQABEA"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 216,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 216,
+   "byteLength": 216,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 432,
+   "byteLength": 48,
+   "target": 34963
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 18,
+   "type": "VEC3",
+   "min": [
+    -0.7727986574172974,
+    -0.6000000238418579,
+    -0.4461754858493805
+   ],
+   "max": [
+    0.22567105293273926,
+    0.6000000238418579,
+    0.4461754858493805
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 18,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5123,
+   "count": 24,
+   "type": "SCALAR"
+  }
+ ]
+}

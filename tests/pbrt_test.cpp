@@ -362,7 +362,9 @@ Shape "trianglemesh" "point3 P" [0 0 0  1 0 0  1 1 0]
 	check(model.lights.size() == 2, fmt::format("a point and a distant light, got {}", model.lights.size()));
 	if (model.lights.size() == 2) {
 		const SceneLight& point = model.lights[0];
-		const glm::dvec3 rgb = glm::dvec3(point.color) * (double)point.intensity;
+		//the blackbody is kept as one, which its role normalizes to luminance 1 (docs/plans/completed/pbrt-spectral-rendering.md)
+		check(point.color.kind == SpectrumKind::Blackbody, "a blackbody point light keeps its spectrum");
+		const glm::dvec3 rgb = glm::dvec3(exactRgb(point.color, SpectrumRole::Illuminant, {})) * (double)point.intensity;
 		const double luminance = 0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z;
 		check(near(luminance, 5.0, 2e-3), fmt::format("a blackbody point light has luminance 1 times its scale 5, got {}", luminance));
 		check(point.position == glm::vec3(1.f, 2.f, -3.f), "a point light at pbrt's (1, 2, 3) is at (1, 2, -3), mirrored in z");
@@ -402,24 +404,27 @@ Shape "trianglemesh" "point3 P" [0 0 0  1 0 0  1 1 0]
 
 	const ImportedMesh* glass = nullptr;
 	for (const ImportedMesh& mesh : model.meshes) {
-		if (!mesh.surfaces.empty() && model.materials[mesh.surfaces[0].material].definition.type == MaterialType::Dielectric) {
+		if (!mesh.surfaces.empty() && model.materials[mesh.surfaces[0].material].definition.type == MaterialType::Glass) {
 			glass = &mesh;
 		}
 	}
-	check(glass != nullptr, "the dielectric triangle");
+	check(glass != nullptr, "the dielectric triangle is glass");
 	if (glass != nullptr) {
-		const float ir = materialFloat(model.materials[glass->surfaces[0].material].definition, "ir");
-		check(ir > 1.515f && ir < 1.52f, fmt::format("glass-BK7 is its mean index, got {}", ir));
+		const SpectrumRef eta = materialSpectrum(model.materials[glass->surfaces[0].material].definition, "eta");
+		check(eta.kind == SpectrumKind::Named && eta.name == "glass-BK7", fmt::format("glass-BK7 keeps its dispersion, got {}", spectrumKindName(eta.kind)));
+		const double nd = scalarAt(eta, 587.6);
+		check(nd > 1.515 && nd < 1.52, fmt::format("glass-BK7 at the design wavelength is about 1.5168, got {}", nd));
 		check(glass->uvs.size() == 3 && glass->uvs[0] == glm::vec2(0.f, 1.f) && glass->uvs[2] == glm::vec2(1.f, 0.f), "pbrt's uv v runs up the image; the renderer's runs down");
 	}
 	bool gold = false;
 	for (const ImportedMaterial& material : model.materials) {
-		if (material.definition.type == MaterialType::Pbr && materialFloat(material.definition, "metallic") == 1.f) {
-			const glm::vec3 c = materialColor(material.definition, "albedo");
-			gold = c.r > 0.9f && c.g > 0.7f && c.g < 0.85f && c.b < 0.4f;
+		if (material.definition.type == MaterialType::Conductor) {
+			const SpectrumRef eta = materialSpectrum(material.definition, "eta");
+			const glm::vec3 c = materialPreviewColor(material.definition);
+			gold = eta.name == "metal-Au-eta" && c.r > 0.9f && c.g > 0.7f && c.g < 0.85f && c.b < 0.4f;
 		}
 	}
-	check(gold, "a gold conductor is pbr metal with gold's color");
+	check(gold, "a gold conductor is a conductor with gold's eta and k, and gold's color");
 	check(reportHas(model, "parameter \"float mystery\" is ignored"), "an unknown parameter is reported");
 	check(reportHas(model, "Shape \"curve\" is not supported; 1 skipped"), "a skipped shape type is counted");
 }

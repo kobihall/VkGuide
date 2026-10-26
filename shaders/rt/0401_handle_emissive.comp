@@ -25,6 +25,7 @@
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_shader_atomic_float : require
 #include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
 #include "include/crt_interaction.glsl"
 #include "include/crt_random.glsl"
 #include "equirect.glsl"
@@ -49,6 +50,21 @@ vec3 emittedRadiance(ClassicMaterial light, SurfaceInteraction si)
 	return emitted;
 }
 
+// the same as the path's spectrum: the material's emission reference (slot 1 of its spectral record, the emissive
+// color or the pbr emission, in the Illuminant role) times the strength, with the emissive texel as a tint
+Spectrum emittedSpectrum(ClassicMaterial light, uint materialIndex, SurfaceInteraction si)
+{
+#ifndef CRT_SPECTRAL
+	return emittedRadiance(light, si);
+#else
+	vec3 tint = vec3(1.0);
+	if (light.type == CRT_MATERIAL_PBR && light.emissiveLayer >= 0) {
+		tint = srgbToWorking(srgbToLinear(textureLod(materialTextures, vec3(si.uv, float(light.emissiveLayer)), 0.0).rgb));
+	}
+	return spectrumScale(spectrumFromRef(materialSpectrumRef(materialIndex, CRT_SLOT_EMISSION), tint), materialEmissionScale(materialIndex));
+#endif
+}
+
 float luminanceOf(vec3 c)
 {
 	return dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -67,6 +83,12 @@ void main()
 	const PathState path = paths[pathIndex];
 	const HitRecord hit = hits[entry];
 	const vec3 inDir = normalize(path.direction);
+#ifndef CRT_SPECTRAL
+	const Spectrum throughput = path.throughput;
+#else
+	spectralBegin(path.lambdaU);
+	const Spectrum throughput = pathSpectra[pathIndex];
+#endif
 	const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
 	const ClassicMaterial light = classicMaterial(si.material);
 
@@ -84,7 +106,11 @@ void main()
 	// light seen straight from the camera belongs to neither technique
 	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS) {
 		if (path.bounce == 1u) {
+#ifndef CRT_SPECTRAL
 			radiance[path.radianceSlot].rgb += vec3(luminanceOf(path.throughput * emittedRadiance(light, si) * weight), 0.0, 0.0);
+#else
+			radiance[path.radianceSlot].rgb += vec3(luminanceOf(spectrumToFilm(spectrumScale(spectrumMul(throughput, emittedSpectrum(light, si.material, si)), weight))), 0.0, 0.0);
+#endif
 		}
 		return;
 	}
@@ -119,12 +145,17 @@ void main()
 	// added, not written: the path may have passed other glowing surfaces on earlier bounces. The
 	// weight is applied only when it is not 1, so a strategy without light sampling adds exactly
 	// what it always did
-	vec3 contribution = path.throughput * emittedRadiance(light, si);
+	Spectrum contribution = spectrumMul(throughput, emittedSpectrum(light, si.material, si));
 	if (weight != 1.0) {
-		contribution *= weight;
+		contribution = spectrumScale(contribution, weight);
 	}
-	radiance[path.radianceSlot].rgb += contribution;
+	const vec3 added = filmAdd(path.radianceSlot, contribution);
 	if (CRT_LIGHT_GROUPS) {
-		lightGroupAdd(path.radianceSlot, si.lightIndex != CRT_NO_LIGHT ? lights[si.lightIndex].group : 0u, contribution);
+		lightGroupAdd(path.radianceSlot, si.lightIndex != CRT_NO_LIGHT ? lights[si.lightIndex].group : 0u, added);
 	}
+#ifdef CRT_SPECTRAL
+	if (CRT_SPECTRAL_IMAGES) {
+		spectralImageAdd(path.radianceSlot, contribution);
+	}
+#endif
 }

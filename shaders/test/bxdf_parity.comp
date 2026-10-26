@@ -1,0 +1,71 @@
+#version 460
+
+// GPU SELF-TEST: pbrt-v4's BxDFs (crt_fresnel.glsl, crt_microfacet.glsl, crt_bxdf.glsl) on a batch of fixed inputs in
+// the local frame, to be compared with their C++ mirror (src/bxdf.cpp) by src/gpu_selftest_spectral.cpp. The exact RGB
+// build: a conductor's three channels are three independent lanes. Not part of any render. Bindings 90 and 91 are
+// the test's own.
+
+#extension GL_GOOGLE_include_directive : require
+#include "rt/include/crt_common.glsl"
+#include "rt/include/crt_spectrum.glsl"
+#include "rt/include/crt_fresnel.glsl"
+#include "rt/include/crt_microfacet.glsl"
+#include "rt/include/crt_bxdf.glsl"
+
+layout (local_size_x = 64) in;
+
+// src/gpu_selftest_spectral.cpp BxdfParityCase, 128 bytes
+struct BxdfParityCase {
+	// type, mode, two unused
+	uvec4 ids;
+	// alpha x, alpha y, eta, uc
+	vec4 params;
+	vec4 conductorEta;
+	vec4 conductorK;
+	vec4 wo;
+	vec4 wi;
+	// u for the microfacet normal, two unused
+	vec4 u;
+	vec4 pad;
+};
+
+// src/gpu_selftest_spectral.cpp BxdfParityResult, 80 bytes
+struct BxdfParityResult {
+	// the sample's f, and 1 if it was made
+	vec4 sampleF;
+	// its direction, and its pdf
+	vec4 sampleWi;
+	// f(wo, wi), and pdf(wo, wi)
+	vec4 evalPdf;
+	// the sample's flags, its eta's bits, bxdfFlags(), and frComplex(wo.z, eta.x, k.x)'s bits
+	uvec4 flags;
+	vec4 fresnel;
+};
+
+layout (std430, set = 0, binding = 90) readonly buffer CaseBuffer { BxdfParityCase cases[]; };
+layout (std430, set = 0, binding = 91) writeonly buffer ResultBuffer { BxdfParityResult results[]; };
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= cases.length()) {
+		return;
+	}
+	const BxdfParityCase c = cases[index];
+	BxdfMaterial b;
+	b.type = c.ids.x;
+	b.alpha = trowbridgeReitz(c.params.x, c.params.y);
+	b.eta = c.params.z;
+	b.conductorEta = c.conductorEta.xyz;
+	b.conductorK = c.conductorK.xyz;
+
+	BxdfSample s;
+	const bool ok = bxdfSample(b, c.wo.xyz, c.params.w, c.u.xy, c.ids.y, s);
+	BxdfParityResult r;
+	r.sampleF = vec4(s.f, ok ? 1.0 : 0.0);
+	r.sampleWi = vec4(s.wi, s.pdf);
+	r.evalPdf = vec4(bxdfF(b, c.wo.xyz, c.wi.xyz, c.ids.y), bxdfPdf(b, c.wo.xyz, c.wi.xyz, c.ids.y));
+	r.flags = uvec4(s.flags, floatBitsToUint(s.eta), bxdfFlags(b), 0u);
+	r.fresnel = vec4(frDielectric(c.wo.z, c.params.z), frComplex(abs(c.wo.z), c.conductorEta.x, c.conductorK.x), 0.0, 0.0);
+	results[index] = r;
+}

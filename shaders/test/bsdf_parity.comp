@@ -10,6 +10,7 @@
 
 #extension GL_GOOGLE_include_directive : require
 #include "rt/include/crt_common.glsl"
+#include "rt/include/crt_spectrum.glsl"
 #include "rt/include/crt_interaction.glsl"
 #include "rt/include/crt_random.glsl"
 #include "rt/include/crt_samples.glsl"

@@ -2,7 +2,7 @@
 
 Every beam axis starts at a laser. To the beam solver a laser is a chief ray and a complex beam parameter at its waist; to the path tracer it is a light that emits a few milliwatts into a cone a milliradian wide from a spot a millimeter across. Neither exists today: the tracer's lights are punctual lights, emitting surfaces and the environment. This plan adds the laser as an optical element and as a light: its Gaussian beam with M², astigmatism and a waist that need not sit at the output, its spectrum from a single line to a femtosecond pulse's bandwidth, its power and its polarization, and the emitted-ray sampling that light tracing draws from.
 
-*Not implemented. Depends on [physoptics-optical-elements.md](physoptics-optical-elements.md) (the element), [pbrt-light-types.md](pbrt-light-types.md) (emitted-ray sampling, `sampleLe()` and `pdfLe()`) and [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) (line spectra, wavelength sampling by the emitter). Rendering its light needs the light integrator of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md); the beam solver needs only the element. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](physoptics-optical-elements.md) (the element), [pbrt-light-types.md](pbrt-light-types.md) (emitted-ray sampling, `sampleLe()` and `pdfLe()`) and [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) (line spectra, wavelength sampling by the emitter). Rendering its light needs the light integrator of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md); the beam solver needs only the element. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer does today
 
@@ -50,7 +50,7 @@ Sampling starts at the waist and carries each ray straight to the housing's aper
 
 ### Spectrum and color
 
-- In spectral modes, a light path from a laser draws its wavelengths from the laser's spectrum ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) gains this for light paths). A single line with a linewidth below the sampling resolution puts every lane at the line's center with one density, so no lane is wasted outside the line.
+- In spectral modes, a light path from a laser draws its wavelengths from the laser's spectrum. A laser's spectrum is a `Line` `SpectrumRef` (a center, a width, a Gaussian or Lorentzian profile, its integral as the scale), and camera paths can already sample wavelengths from the emitters' lines (**Sampling** → **Emitters' spectra**, [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md)); light paths from an emitter are this plan's and the light integrator's to add. A single line with a linewidth below the sampling resolution puts every lane at the line's center with one density, so no lane is wasted outside the line.
 - In exact RGB, a laser carries a fixed RGB color: its spectrum projected to linear Rec. 709 when it is visible, or the false color of its wavelength from [pbrt-display-and-color.md](pbrt-display-and-color.md) when it is not, normalized so the three channels average to 1 W per watt of laser power. A detector in exact RGB then reads the right power through optics that treat every channel alike, which is everything except colored glass and dichroics; the detector panel says to use a spectral mode for those. The glass indices use the design wavelength, which is the laser's ([physoptics-optical-materials.md](physoptics-optical-materials.md)).
 
 ### Polarization

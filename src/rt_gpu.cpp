@@ -1,5 +1,7 @@
 #include <rt_gpu.h>
 
+#include <chrono>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -36,7 +38,7 @@ struct RelightPushConstants {
 	uint32_t width;
 	uint32_t height;
 	uint32_t groupCount;
-	uint32_t pad;
+	uint32_t buckets;
 	glm::vec4 gain[MAX_LIGHT_GROUPS];
 };
 
@@ -212,9 +214,9 @@ uint64_t aovImageBytes(const AovSettings& aov, uint32_t width, uint32_t height)
 	return (uint64_t)makeAovLayout(aov).count * width * height * sizeof(glm::vec4);
 }
 
-uint64_t lightGroupSumBytes(uint32_t groups, uint32_t width, uint32_t height)
+uint64_t lightGroupSumBytes(uint32_t groups, uint32_t width, uint32_t height, uint32_t buckets)
 {
-	return groups == 0 ? 0 : (uint64_t)width * height * (3ull * groups + 1ull) * sizeof(float);
+	return groups == 0 && buckets == 0 ? 0 : (uint64_t)width * height * (3ull * groups + 1ull + buckets) * sizeof(float);
 }
 
 OutputsFallback outputsFallback(const AovSettings& aov, uint32_t lightGroupCount, uint32_t width, uint32_t height)
@@ -384,6 +386,12 @@ void GpuRenderer::destroy(VulkanEngine* engine)
 		engine->destroyBuffer(m_sceneBuffer);
 		m_sceneBuffer = {};
 	}
+	for (AllocatedBuffer* buffer : { &m_spectralData, &m_upliftBuffer }) {
+		if (buffer->buffer != VK_NULL_HANDLE) {
+			engine->destroyBuffer(*buffer);
+			*buffer = {};
+		}
+	}
 	if (m_geometryBuffer.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_geometryBuffer);
 		m_geometryBuffer = {};
@@ -457,9 +465,12 @@ void GpuRenderer::destroy(VulkanEngine* engine)
 
 //---------------------------------------------------------------- pipelines
 
-std::vector<CrtBinding> GpuRenderer::bindingsOf(const KernelVariant& variant, uint32_t traversal)
+std::vector<CrtBinding> GpuRenderer::bindingsOf(const KernelVariant& variant, uint32_t traversal, uint32_t family)
 {
 	std::vector<CrtBinding> bindings = variant.bindings;
+	if (variant.laneDependent && family != 0) {
+		bindings.insert(bindings.end(), { CrtBinding::SpectralData, CrtBinding::SpectralUplift, CrtBinding::PathSpectra });
+	}
 	if (variant.traces) {
 		if (const TraversalVariant* search = traversalVariant(traversal)) {
 			bindings.insert(bindings.end(), search->bindings.begin(), search->bindings.end());
@@ -478,7 +489,9 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 	const uint32_t classKey = variant.perMaterialClass ? (uint32_t)materialClass : NO_CLASS;
 	//the features that matter to this kernel: bit 0 the sample record to a kernel that reads it, bits 1 and 2 the
 	//outputs to a kernel that writes or folds them
-	const uint32_t recordKey = (variant.readsRecord ? (features & 1u) : 0u) | (variant.usesOutputs ? (features & 6u) : 0u);
+	const uint32_t family = variant.laneDependent ? (features >> 8u) & 0xFFu : 0u;
+	const uint32_t recordKey = (variant.readsRecord ? (features & 1u) : 0u) | (variant.usesOutputs ? (features & 14u) : 0u) | (family << 8u)
+		| (family != 0 ? features & 0xFF0000u : 0u);
 	const auto found = m_passes.find({ &variant, key, classKey, recordKey });
 	if (found != m_passes.end()) {
 		return found->second;
@@ -499,10 +512,11 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 	if (variant.perMaterialClass) {
 		shader += std::string(".") + materialClassId(materialClass);
 	}
+	shader += laneFamilySuffix(family);
 	shader += ".spv";
 
 	ComputePassBuilder builder(shader);
-	for (const CrtBinding binding : bindingsOf(variant, traversal)) {
+	for (const CrtBinding binding : bindingsOf(variant, traversal, family)) {
 		builder.addBinding((uint32_t)binding, crtBindingType(binding));
 	}
 	//a kernel that draws its numbers through crt_samples.glsl is specialized for whether there is a
@@ -515,11 +529,25 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 	if (variant.usesOutputs) {
 		builder.addSpecialization(1, (recordKey >> 1) & 1u);
 		builder.addSpecialization(2, (recordKey >> 2) & 1u);
+		builder.addSpecialization(5, (recordKey >> 3) & 1u);
 	}
+	//a spectral build, for its representation (CRT_REPRESENTATION_SPEC) and wavelength sampling (CRT_SAMPLING_SPEC),
+	//so it carries one representation's code (crt_spectrum.glsl)
+	if (family != 0) {
+		builder.addSpecialization(3, (features >> 16u) & 0xFu);
+		builder.addSpecialization(4, (features >> 20u) & 0xFu);
+	}
+	//MoltenVK compiles the shader to Metal here, which takes seconds for a large kernel the first time a build is used
+	//on a machine (Metal caches it afterwards): a slow one is reported, so a pause has a name
+	const auto before = std::chrono::steady_clock::now();
 	const auto inserted = m_passes.emplace(std::make_tuple(&variant, key, classKey, recordKey), builder
 		.setPushConstants<CrtParams>()
 		.setWorkgroupSize(CRT_WORKGROUP)
 		.build(engine->m_device));
+	const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
+	if (seconds > 0.25) {
+		fmt::println("GpuRenderer: built {} in {:.1f} s", shader.substr(shader.find("shaders/") + 8), seconds);
+	}
 	return inserted.first->second;
 }
 
@@ -530,7 +558,11 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 
 uint32_t GpuRenderer::pipelineFeatures(const KernelSelection& selection) const
 {
-	return (samplerWritesRecord(selection) ? 1u : 0u) | m_outputFeatures;
+	//the spectral build's specialization: the representation in bits 16 to 19, the wavelength sampling in 20 to 23
+	const SpectralSettings& spectral = m_snapshot.settings.spectral;
+	const uint32_t family = laneFamily(spectral);
+	const uint32_t spectralBits = family != 0 ? ((uint32_t)spectral.representation << 16u) | ((uint32_t)spectral.sampling << 20u) : 0u;
+	return (samplerWritesRecord(selection) ? 1u : 0u) | m_outputFeatures | (family << 8u) | spectralBits;
 }
 
 void GpuRenderer::preparePipelines(VulkanEngine* engine, const KernelSelection& selection)
@@ -551,12 +583,13 @@ void GpuRenderer::dispatch(VkCommandBuffer cmd, VulkanEngine* engine, const Kern
 	MaterialClass materialClass)
 {
 	const uint32_t traversal = m_snapshot.kernels.traversal;
-	const ComputePass& computePass = pass(engine, variant, traversal, materialClass, pipelineFeatures(m_snapshot.kernels));
+	const uint32_t features = pipelineFeatures(m_snapshot.kernels);
+	const ComputePass& computePass = pass(engine, variant, traversal, materialClass, features);
 	const VkDescriptorSet set = engine->getCurrentFrame().frameDescriptors.allocate(engine->m_device, computePass.setLayout);
 
 	//a kernel gets only the bindings it declared, written from whatever their owners published
 	DescriptorWriter writer;
-	for (const CrtBinding binding : bindingsOf(variant, traversal)) {
+	for (const CrtBinding binding : bindingsOf(variant, traversal, variant.laneDependent ? (features >> 8u) & 0xFFu : 0u)) {
 		m_resources.write(writer, binding);
 	}
 	writer.updateSet(engine->m_device, set);
@@ -566,6 +599,91 @@ void GpuRenderer::dispatch(VkCommandBuffer cmd, VulkanEngine* engine, const Kern
 	} else {
 		dispatchComputePass(cmd, computePass, set, &params, { size.groups, 1, 1 });
 	}
+}
+
+//---------------------------------------------------------------- the spectral data
+
+TonemapDisplay GpuRenderer::tonemapDisplay() const
+{
+	TonemapDisplay display;
+	const SpectralSettings& spectral = m_snapshot.settings.spectral;
+	if (spectral.representation != SpectralRepresentation::Monochromatic) {
+		return display;
+	}
+	switch (spectralDisplay.mode) {
+	case MonochromeDisplay::Grayscale:
+	case MonochromeDisplay::Count:
+		break;
+	case MonochromeDisplay::WavelengthColor:
+		display.mode = TonemapDisplay::Mode::Tint;
+		display.tint = wavelengthDisplayColor(spectral.monochromaticWavelength, spectralDisplay);
+		break;
+	case MonochromeDisplay::Colormap:
+		display.mode = TonemapDisplay::Mode::Colormap;
+		display.colormap = (uint32_t)spectralDisplay.colormap;
+		display.decades = spectralDisplay.logarithmic ? std::max(spectralDisplay.decades, 0.1f) : 0.f;
+		break;
+	}
+	return display;
+}
+
+void GpuRenderer::uploadSpectral(VulkanEngine* engine)
+{
+	m_spectralNote.clear();
+	SpectralSettings& spectral = m_snapshot.settings.spectral;
+	if (laneFamily(spectral) == 0) {
+		return;
+	}
+	//the working space's uplift table, which the build writes; a spectral render without one runs in exact RGB
+	std::string error;
+	const UpliftTable* table = upliftTable(engine->m_rootPath, spectral.colorSpace, &error);
+	if (table == nullptr) {
+		m_spectralNote = fmt::format("No uplift table for {}, so the render runs in exact RGB: {}", colorSpace(spectral.colorSpace).name, error);
+		fmt::println("GpuRenderer: {}", m_spectralNote);
+		spectral.representation = SpectralRepresentation::ExactRgb;
+		m_spectralBuckets = 0;
+		m_outputFeatures &= ~8u;
+		return;
+	}
+	const SpectrumContext context { table, spectral.colorSpace };
+
+	//binding 25, once per working space: the z nodes, then the coefficients
+	if (m_upliftSpace != spectral.colorSpace || m_upliftBuffer.buffer == VK_NULL_HANDLE) {
+		retireBuffer(engine, m_upliftBuffer);
+		const VkDeviceSize bytes = sizeof(float) * (table->zNodes.size() + table->data.size());
+		m_upliftBuffer = engine->createBuffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+		float* mapped = (float*)m_upliftBuffer.info.pMappedData;
+		std::copy(table->zNodes.begin(), table->zNodes.end(), mapped);
+		std::copy(table->data.begin(), table->data.end(), mapped + table->zNodes.size());
+		vmaFlushAllocation(engine->m_memAllocator, m_upliftBuffer.allocation, 0, bytes); //flush vma on MoltenVK
+		m_upliftSpace = spectral.colorSpace;
+		m_resources.setBuffer(CrtBinding::SpectralUplift, m_upliftBuffer.buffer, bytes);
+	}
+
+	//binding 24: the representation's tables and the scene's spectra. The Lights sampling follows every light's
+	//spectrum by its power
+	std::vector<EmitterSpectrum> emitters;
+	if (m_snapshot.scene != nullptr && spectral.sampling == WavelengthSampling::Lights) {
+		const auto& list = m_snapshot.scene->spectra.list();
+		for (const GpuLight& light : m_snapshot.scene->lights.lights) {
+			if (light.spectrum < list.size()) {
+				emitters.push_back({ list[light.spectrum].first, light.power });
+			}
+		}
+	}
+	const WavelengthDistribution distribution = buildWavelengthDistribution(emitters, spectral, context);
+	SpectralDataBuilder builder(spectral, context, distribution, m_spectralBuckets);
+	if (m_snapshot.scene != nullptr) {
+		builder.setScene(m_snapshot.scene->spectra, m_snapshot.scene->materialSpectra);
+	}
+	builder.setBackground(rgbSpectrum(m_snapshot.backgroundColor));
+	const std::vector<uint32_t> words = builder.finish();
+	retireBuffer(engine, m_spectralData);
+	const VkDeviceSize bytes = sizeof(uint32_t) * words.size();
+	m_spectralData = engine->createBuffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+	std::copy(words.begin(), words.end(), (uint32_t*)m_spectralData.info.pMappedData);
+	vmaFlushAllocation(engine->m_memAllocator, m_spectralData.allocation, 0, bytes); //flush vma on MoltenVK
+	m_resources.setBuffer(CrtBinding::SpectralData, m_spectralData.buffer, bytes);
 }
 
 //---------------------------------------------------------------- the film
@@ -655,8 +773,8 @@ void GpuRenderer::ensureOutputs(VulkanEngine* engine, uint32_t width, uint32_t h
 	const bool aovLive = m_aovLayout.count > 0;
 	const VkExtent2D extent = aovLive ? VkExtent2D { width, height } : VkExtent2D { 1, 1 };
 	const uint32_t layers = aovLive ? m_aovLayout.count : 1u;
-	const bool sumsLive = m_lightGroupCount > 0;
-	const VkDeviceSize sumBytes = sumsLive ? lightGroupSumBytes(m_lightGroupCount, width, height) : 16;
+	const bool sumsLive = m_lightGroupCount > 0 || m_spectralBuckets > 0;
+	const VkDeviceSize sumBytes = sumsLive ? lightGroupSumBytes(m_lightGroupCount, width, height, m_spectralBuckets) : 16;
 
 	const bool imageSame = m_aovImage.image != VK_NULL_HANDLE && m_aovImageExtent.width == extent.width && m_aovImageExtent.height == extent.height && m_aovImageLayers == layers;
 	const bool sumsSame = m_channelSums.buffer != VK_NULL_HANDLE && m_channelSumBytes == sumBytes;
@@ -694,7 +812,7 @@ void GpuRenderer::ensureOutputs(VulkanEngine* engine, uint32_t width, uint32_t h
 		m_channelSumBytes = sumBytes;
 		m_resources.setBuffer(CrtBinding::ChannelSums, m_channelSums.buffer, sumBytes);
 		if (sumsLive) {
-			fmt::println("GpuRenderer: light group sums {} x {} x {} groups = {:.0f} MB", width, height, m_lightGroupCount, double(sumBytes) / (1024.0 * 1024.0));
+			fmt::println("GpuRenderer: channel sums {} x {} x ({} groups, {} spectral buckets) = {:.0f} MB", width, height, m_lightGroupCount, m_spectralBuckets, double(sumBytes) / (1024.0 * 1024.0));
 		}
 	}
 }
@@ -815,6 +933,7 @@ void GpuRenderer::recordRelight(VkCommandBuffer cmd, VulkanEngine* engine)
 	constants.width = m_accumulation.imageExtent.width;
 	constants.height = m_accumulation.imageExtent.height;
 	constants.groupCount = m_lightGroupCount;
+	constants.buckets = m_spectralBuckets;
 	for (uint32_t g = 0; g < MAX_LIGHT_GROUPS; g++) {
 		constants.gain[g] = glm::vec4(relightGains[g].tint * relightGains[g].scale, 0.f);
 	}
@@ -835,6 +954,9 @@ bool GpuRenderer::readOutputs(VulkanEngine* engine, RenderOutputsData& data)
 	data.aov = m_aov;
 	data.layout = m_aovLayout;
 	data.samplesPerPixel = m_samplesAccumulated;
+	if (m_snapshot.settings.spectral.representation == SpectralRepresentation::Monochromatic) {
+		data.monochromaticWavelength = m_snapshot.settings.spectral.monochromaticWavelength;
+	}
 	std::vector<uint8_t> bytes;
 	if (m_aovLayout.count > 0) {
 		if (!readbackImage(engine, m_aovImage.image, VK_IMAGE_LAYOUT_GENERAL, m_aovImage.imageExtent, m_aovLayout.count, sizeof(glm::vec4), bytes)) {
@@ -843,11 +965,16 @@ bool GpuRenderer::readOutputs(VulkanEngine* engine, RenderOutputsData& data)
 		data.aovLayers.resize(bytes.size() / sizeof(float));
 		std::memcpy(data.aovLayers.data(), bytes.data(), bytes.size());
 	}
-	if (m_lightGroupCount > 0) {
-		if (!readbackBuffer(engine, m_channelSums.buffer, lightGroupSumBytes(m_lightGroupCount, data.width, data.height), bytes)) {
+	if (m_lightGroupCount > 0 || m_spectralBuckets > 0) {
+		if (!readbackBuffer(engine, m_channelSums.buffer, lightGroupSumBytes(m_lightGroupCount, data.width, data.height, m_spectralBuckets), bytes)) {
 			return false;
 		}
 		data.lightGroups = m_lightGroupCount;
+		data.spectralBuckets = m_spectralBuckets;
+		for (uint32_t b = 0; b < m_spectralBuckets; b++) {
+			const glm::vec2 range = spectralBucketRange(m_snapshot.settings.spectral, b);
+			data.spectralWavelengths.push_back(0.5f * (range.x + range.y));
+		}
 		data.groupSums.resize(bytes.size() / sizeof(float));
 		std::memcpy(data.groupSums.data(), bytes.data(), bytes.size());
 	}
@@ -1299,7 +1426,14 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 			fmt::println("GpuRenderer: {}", fallback.reason);
 		}
 		m_aovLayout = makeAovLayout(m_aov);
-		m_outputFeatures = (m_aovLayout.count > 0 ? 2u : 0u) | (m_lightGroupCount > 0 ? 4u : 0u);
+		m_spectralBuckets = spectralImageBuckets(m_snapshot.settings.spectral);
+		if (lightGroupSumBytes(m_lightGroupCount, m_snapshot.width, m_snapshot.height, m_spectralBuckets) > OUTPUT_BYTES_LIMIT && m_spectralBuckets > 0) {
+			m_outputsNote += fmt::format("{}The spectral images take {:.0f} MB at {} x {}, more than {} MB, so this size renders without them.", m_outputsNote.empty() ? "" : " ",
+				double(lightGroupSumBytes(m_lightGroupCount, m_snapshot.width, m_snapshot.height, m_spectralBuckets)) / (1024.0 * 1024.0), m_snapshot.width, m_snapshot.height,
+				OUTPUT_BYTES_LIMIT >> 20);
+			m_spectralBuckets = 0;
+		}
+		m_outputFeatures = (m_aovLayout.count > 0 ? 2u : 0u) | (m_lightGroupCount > 0 ? 4u : 0u) | (m_spectralBuckets > 0 ? 8u : 0u);
 
 		//the scene's size sets the ambient occlusion view's default ray length and the depth view's far end
 		m_autoAoDistance = 1.f;
@@ -1323,6 +1457,7 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 	uploadFilterTable(engine, m_snapshot.settings.pixelFilter);
 	uploadScene(engine);
 	uploadEnvironment(engine, m_snapshot.environment);
+	uploadSpectral(engine);
 	preparePipelines(engine, m_snapshot.kernels);
 	m_schedules[(size_t)m_activeIntegrator]->start(*this, engine);
 	m_scheduleActive = true;
@@ -1656,6 +1791,7 @@ CrtParams GpuRenderer::baseParams(VulkanEngine* engine) const
 	params.aovOutputs = m_aov.outputs | (m_aov.captureThroughSpecular ? AOV_PARAM_CAPTURE_THROUGH_SPECULAR : 0u);
 	params.aovLayers = m_aovLayout.pack();
 	params.lightGroupCount = m_lightGroupCount;
+	params.spectralBuckets = m_spectralBuckets;
 	params.environmentGroup = std::min(m_snapshot.environmentGroup, MAX_LIGHT_GROUPS - 1u);
 	params.aoDistance = aoDistance > 0.f ? aoDistance : m_autoAoDistance;
 	//the map is stored divided by its scale (environmentStorageScale()); the texture reads get
@@ -1706,7 +1842,7 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 			if (m_aovLayout.count > 0) {
 				vkCmdClearColorImage(cmd, m_aovImage.image, VK_IMAGE_LAYOUT_GENERAL, &zeroFloat, 1, &range);
 			}
-			if (m_lightGroupCount > 0) {
+			if (m_lightGroupCount > 0 || m_spectralBuckets > 0) {
 				vkCmdFillBuffer(cmd, m_channelSums.buffer, 0, VK_WHOLE_SIZE, 0);
 			}
 		}
@@ -1756,7 +1892,7 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 			ensureRelitImage(engine);
 			recordRelight(cmd, engine);
 		}
-		engine->m_tonemapPass.dispatch(cmd, engine->m_device, engine->getCurrentFrame().frameDescriptors, relit ? m_relit : m_accumulation, displayImage, exposure);
+		engine->m_tonemapPass.dispatch(cmd, engine->m_device, engine->getCurrentFrame().frameDescriptors, relit ? m_relit : m_accumulation, displayImage, exposure, tonemapDisplay());
 		recordAovViews(cmd, engine);
 		if (analysisView != CrtAnalysisView::None) {
 			recordAnalysis(cmd, engine, displayImage);

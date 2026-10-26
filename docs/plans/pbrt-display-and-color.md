@@ -2,7 +2,7 @@
 
 The shared tonemap pass (`shaders/tonemap.comp`) scales the linear image by the camera's exposure, clamps it to [0, 1] and takes the square root, the "gamma 2" of Ray Tracing in One Weekend. That is not the sRGB transfer curve, it clips highlights hard, and it offers no white balance and no way to express exposure the way a photographer would. pbrt's film and its `imgtool` add a sensor model with ISO and shutter time, von Kries white balance, output color spaces, and Reinhard and ACES filmic tone curves. This plan turns the tonemap pass into a display transform with those stages.
 
-*Not implemented. Depends on [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md). Color temperatures and sensor curves come from [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md). Color temperatures and sensor curves come from [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -52,7 +52,7 @@ The false-color curve also serves the error and standard error views (the latter
 
 ### Gamut mapping
 
-Spectral rendering can produce colors outside Rec. 709, carried as negative components ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)). The display maps them in:
+Spectral rendering can produce colors outside Rec. 709, carried as negative components ([pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md)). The display maps them in:
 
 - **Clip** each channel, the cheapest, and `imgtool`'s default.
 - **Scale by the largest component** when it exceeds 1, `imgtool convert --preservecolors`, which keeps the channel ratios.

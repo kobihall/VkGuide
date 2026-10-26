@@ -169,6 +169,22 @@ struct RaytraceSceneAccel {
 	// every light next-event estimation can sample: the punctual lights, the emitting shapes and
 	// triangles, and the environment map when it is the background
 	RaytraceLightList lights;
+	// THE SPECTRAL SIDE (docs/plans/completed/pbrt-spectral-rendering.md): every spectrum the materials and lights use,
+	// and each material's record of them by slot (indices into `spectra`), parallel to `materials`. The light records
+	// name theirs in GpuLight::spectrum. Independent of the representation, which only the SpectralData packs for
+	SceneSpectra spectra;
+	std::vector<MaterialSpectralRecord> materialSpectra;
+};
+
+// what the scene's records are read in: the working space RGB values are in, and the wavelength exact RGB reads a
+// dispersive index at
+struct SpectralSceneContext {
+	SpectrumContext spectra;
+	float designWavelength { DEFAULT_DESIGN_WAVELENGTH };
+	bool operator==(const SpectralSceneContext& other) const
+	{
+		return spectra.table == other.spectra.table && spectra.space == other.spectra.space && designWavelength == other.designWavelength;
+	}
 };
 
 // What the light list needs of the background: the environment map's tables when the map is what a
@@ -206,4 +222,5 @@ using ModelMaterialIds = std::unordered_map<const GLTFMaterial*, uint64_t>;
 // set, not per edit
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
-	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures);
+	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures,
+	const SpectralSceneContext& spectral = {});

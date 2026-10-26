@@ -2,11 +2,11 @@
 
 The tracer carries intensity alone, as pbrt does: its Fresnel terms average the s- and p-polarized reflectances on the assumption that light is unpolarized (PBR 4ed §9.3.5), and the polarization that each reflection imposes is lost. Polarization is what a photographer's polarizing filter acts on, what makes reflections off glass vanish at Brewster's angle, and what successive reflections between glass panes change. PBR 4ed exercise 9.3 asks for polarized Fresnel equations and for optical elements such as polarizers and retarders. The user chose to plan this as groundwork toward their long-term goal of electromagnetic simulation. This plan carries Stokes vectors through the spectral lanes, evaluates Mueller matrices at surfaces, and adds polarizers and retarders.
 
-*Not implemented, research groundwork. Depends on [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) (the lane families) and [pbrt-bsdf-library.md](pbrt-bsdf-library.md) (Fresnel with separate s and p amplitudes). The [laser optics plan](physoptics-laser-optics.md)'s polarization goals build on it through [physoptics-polarization-optics.md](physoptics-polarization-optics.md), which makes it item 31 of that plan's roadmap. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented, research groundwork. Depends on [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) (the lane families) and [pbrt-bsdf-library.md](pbrt-bsdf-library.md) (Fresnel with separate s and p amplitudes). The [laser optics plan](physoptics-laser-optics.md)'s polarization goals build on it through [physoptics-polarization-optics.md](physoptics-polarization-optics.md), which makes it item 31 of that plan's roadmap. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
-- Throughput is an RGB `vec3`; [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) makes it a `Spectrum` of `CRT_LANES` scalars.
+- Throughput is a `Spectrum` ([pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md)): a `vec3` in the exact RGB build and `CRT_LANES` scalars in a spectral build, kept in `PathSpectra` (binding 63). A polarized family makes each lane a Stokes vector.
 - The legacy `dielectric` uses Schlick's approximation, which has no s and p components. The `pbr` material also uses Schlick. [pbrt-bsdf-library.md](pbrt-bsdf-library.md) adds pbrt's exact dielectric and conductor Fresnel equations, whose complex amplitudes `rs` and `rp` this plan needs.
 - Emitters and the environment emit unpolarized light. The lasers of [physoptics-laser-sources.md](physoptics-laser-sources.md) will be the first polarized emitters, each with a Stokes vector.
 

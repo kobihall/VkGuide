@@ -19,6 +19,9 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+
+#include <spectral.h>
+#include <spectrum_ref.h>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -244,8 +247,9 @@ struct SceneLight {
 	// a spot or directional light shines down its local -z, as glTF's do. The identity points it
 	// down -z, the way the free camera looks at yaw 0
 	glm::quat orientation { 1.f, 0.f, 0.f, 0.f };
-	// linear rgb
-	glm::vec3 color { 1.f };
+	// what it emits, before the intensity: linear RGB in the scene's working space by default, or any spectrum in the
+	// Illuminant role (a color temperature, a named illuminant, a line). Exact RGB reads exactRgb() of it
+	SpectrumRef color { rgbSpectrum(glm::vec3(1.f)) };
 	// point and spot: radiant intensity in W/sr. Directional: irradiance in W/m^2
 	float intensity { 10.f };
 	// point and spot: the distance glTF's recommended window brings the light to zero at; 0 for an
@@ -488,6 +492,10 @@ struct RenderSettings {
 	AovSettings aov;
 	// keep the sums of each light group, so the groups can be exported and relit after the render
 	bool lightGroups { false };
+	// SPECTRAL (docs/plans/completed/pbrt-spectral-rendering.md). What a path carries: exact RGB by default, or one
+	// wavelength, three Gaussian bands, N fixed bands or N hero wavelengths; the range, the working space the scene's RGB
+	// values are in, and the design wavelength. Any change restarts the render
+	SpectralSettings spectral;
 
 	bool operator==(const RenderSettings&) const = default;
 };

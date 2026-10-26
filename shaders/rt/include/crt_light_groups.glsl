@@ -18,10 +18,49 @@ void lightGroupAdd(uint slot, uint group, vec3 contribution)
 	}
 	const float weight = radiance[slot].w < 0.0 ? -1.0 : 1.0;
 	const uint pixel = slot / pc.samplesPerFrame;
-	const uint stride = 3u * pc.lightGroupCount + 1u;
-	const uint base = pixel * stride + 3u * min(group, pc.lightGroupCount - 1u);
+	const uint base = pixel * channelStride() + 3u * min(group, pc.lightGroupCount - 1u);
 	atomicAdd(channelSums[base + 0u], weight * contribution.r);
 	atomicAdd(channelSums[base + 1u], weight * contribution.g);
 	atomicAdd(channelSums[base + 2u], weight * contribution.b);
 }
 
+
+#ifdef CRT_SPECTRAL
+// THE SPECTRAL IMAGES (pbrt's SpectralFilm): a contribution's lanes added to the wavelength buckets of its pixel, after
+// the light groups and the weight sum in ChannelSums. A bucket holds the mean spectral radiance over its width, so it
+// reads in the film's units per nanometer once divided by the weight sum: a hero lane adds L / (pdf N) / width to the
+// bucket its wavelength falls in, a band its own value to its own bucket. Weighted by the sample's filter sign, and a
+// value that is not finite is left out, as lightGroupAdd() leaves it. Behind CRT_SPECTRAL_IMAGES. Requires
+// crt_spectrum.glsl
+void spectralImageAdd(uint slot, Spectrum contribution)
+{
+	if (pc.debugView != CRT_DEBUG_NONE) {
+		return;
+	}
+	const float weight = radiance[slot].w < 0.0 ? -1.0 : 1.0;
+	const uint pixel = slot / pc.samplesPerFrame;
+	const uint base = pixel * channelStride() + 3u * pc.lightGroupCount + 1u;
+	const uint buckets = pc.spectralBuckets;
+	if (spectralRepresentation() == CRT_REPRESENTATION_HERO) {
+		const float lo = spectralFloat(CRT_SH_LAMBDA_MIN);
+		const float hi = spectralFloat(CRT_SH_LAMBDA_MAX);
+		const float width = (hi - lo) / float(buckets);
+		const float lanes = float(spectrumActiveLanes());
+		for (uint i = 0u; i < CRT_LANE_END; i++) {
+			const float value = spectrumLane(contribution, i);
+			if (!(g_lambdaPdf[i] > 0.0) || value == 0.0 || !(abs(value) < CRT_INFINITY)) {
+				continue;
+			}
+			const uint bucket = uint(clamp((g_lambda[i] - lo) / width, 0.0, float(buckets) - 0.5));
+			atomicAdd(channelSums[base + bucket], weight * value / (g_lambdaPdf[i] * lanes * width));
+		}
+		return;
+	}
+	for (uint b = 0u; b < min(buckets, spectrumActiveLanes()); b++) {
+		const float value = spectrumLane(contribution, b);
+		if (value != 0.0 && abs(value) < CRT_INFINITY) {
+			atomicAdd(channelSums[base + b], weight * value);
+		}
+	}
+}
+#endif

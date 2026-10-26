@@ -54,3 +54,34 @@ struct CrtClassicMaterial {
 	float normalScale;
 };
 static_assert(sizeof(CrtClassicMaterial) == 64);
+
+// CrtBxdfMaterial::bxdfFlags
+// the conductor reads its reflectance (the albedo slot) instead of eta and k
+inline constexpr uint32_t CRT_BXDF_FLAG_REFLECTANCE = 1u << 0;
+// the glass's index varies with wavelength: a spectral build terminates the path's secondary wavelengths at it
+inline constexpr uint32_t CRT_BXDF_FLAG_DISPERSIVE = 1u << 1;
+
+// The parameter record of the glass and conductor types (crt_scatter.glsl resolveBxdfMaterial()), four vec4s. The
+// fields a ClassicMaterial reader looks at (type, the texture layers, the alpha cutoff) sit where that record keeps
+// them, holding "none", so code that reads any material as classic (the traversal's alpha test, the normal map) finds
+// nothing to do. Exact RGB reads the RGB fields; a spectral build reads the spectra in the material's slots
+struct CrtBxdfMaterial {
+	// conductor: eta at 630, 532 and 465 nm
+	glm::vec3 rgbA;
+	// glass: the index at the design wavelength, which exact RGB uses and a constant index is everywhere
+	float etaDesign;
+	uint32_t type;
+	int32_t albedoLayer;
+	float alphaCutoff;
+	// the distribution's alphas, along dp/du and dp/dv
+	float alphaX;
+	// conductor: k at 630, 532 and 465 nm, or the reflectance
+	glm::vec3 rgbB;
+	float alphaY;
+	int32_t normalLayer;
+	int32_t metalRoughLayer;
+	int32_t emissiveLayer;
+	// CRT_BXDF_FLAG_*
+	uint32_t bxdfFlags;
+};
+static_assert(sizeof(CrtBxdfMaterial) == 64);

@@ -48,8 +48,8 @@ if (NOT MSVC)
 endif()
 
 # CPU-only verification of the surface scattering behind kernel 06: ./bin/bsdf_test
-add_executable(bsdf_test tests/bsdf_test.cpp)
-target_link_libraries(bsdf_test PRIVATE rt_bsdf fmt::fmt)
+add_executable(bsdf_test tests/bsdf_test.cpp tests/bsdf_test_bxdf.cpp)
+target_link_libraries(bsdf_test PRIVATE rt_bsdf rt_spectrum fmt::fmt)
 if (NOT MSVC)
     target_compile_options(bsdf_test PRIVATE -O2)
 endif()
@@ -68,9 +68,33 @@ if (NOT MSVC)
     target_compile_options(aov_test PRIVATE -O2)
 endif()
 
+# The RGB uplift tables of the spectral modes (src/color_space.h): pbrt-v4's rgb2spec_opt, run once per color space
+# into assets/spectra/uplift_<space>.bin (about 5 seconds each, 9.4 MB each, not committed)
+add_executable(rgb2spec_opt tools/rgb2spec/rgb2spec_opt.cpp)
+set_target_properties(rgb2spec_opt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tools")
+if (NOT MSVC)
+    target_compile_options(rgb2spec_opt PRIVATE -O2)
+endif()
+set(UPLIFT_TABLES "")
+foreach(SPACE "srgb|sRGB" "dci_p3|DCI_P3" "rec2020|REC2020" "aces2065_1|ACES2065_1")
+  string(REPLACE "|" ";" PARTS "${SPACE}")
+  list(GET PARTS 0 FILE_NAME)
+  list(GET PARTS 1 GAMUT)
+  set(TABLE "${PROJECT_SOURCE_DIR}/assets/spectra/uplift_${FILE_NAME}.bin")
+  add_custom_command(
+    OUTPUT ${TABLE}
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PROJECT_SOURCE_DIR}/assets/spectra"
+    COMMAND rgb2spec_opt 64 ${TABLE} ${GAMUT}
+    DEPENDS rgb2spec_opt
+    COMMENT "Generating the ${GAMUT} uplift table")
+  list(APPEND UPLIFT_TABLES ${TABLE})
+endforeach()
+add_custom_target(UpliftTables DEPENDS ${UPLIFT_TABLES})
+
 # CPU-only check of the spectra behind the pbrt import's RGB: ./bin/spectrum_test
 add_executable(spectrum_test tests/spectrum_test.cpp)
 target_link_libraries(spectrum_test PRIVATE rt_spectrum fmt::fmt)
+add_dependencies(spectrum_test UpliftTables)
 if (NOT MSVC)
     target_compile_options(spectrum_test PRIVATE -O2)
 endif()
@@ -150,6 +174,11 @@ foreach(LINE ${CRT_MATERIAL_CLASS_LINES})
   list(APPEND CRT_MATERIAL_CLASSES ${DEFINE})
 endforeach()
 
+## the lane families of the spectral modes (docs/plans/completed/pbrt-spectral-rendering.md, src/spectral.h
+## SPECTRAL_FAMILIES): a kernel that includes include/crt_spectrum.glsl itself is compiled once without CRT_LANES (the
+## exact RGB build, today's .spv) and once per family, to <name>.comp[.<traversal>][.<class>].lanes<N>.spv
+set(VKGUIDE_SPECTRAL_FAMILIES "1;4;8;16;32" CACHE STRING "The lane counts the spectral kernels are compiled for")
+
 ## iterate each shader
 foreach(GLSL ${GLSL_SOURCE_FILES})
   message(STATUS "BUILDING SHADER")
@@ -161,6 +190,7 @@ foreach(GLSL ${GLSL_SOURCE_FILES})
   message(STATUS ${GLSL})
   file(STRINGS ${GLSL} TRACES REGEX "#include \"include/crt_trace.glsl\"")
   file(STRINGS ${GLSL} PER_CLASS REGEX "#include \"include/crt_material_class.glsl\"")
+  file(STRINGS ${GLSL} PER_FAMILY REGEX "#include \"include/crt_spectrum.glsl\"")
   ## the permutations: one per traversal for a kernel that traces, times one per material class for
   ## a kernel that evaluates materials. Each entry is "<suffix>|<defines>"; a plain shader has one
   ## empty entry
@@ -187,6 +217,18 @@ foreach(GLSL ${GLSL_SOURCE_FILES})
       endforeach()
     endforeach()
     set(VARIANTS ${CLASS_VARIANTS})
+  endif()
+  if (PER_FAMILY)
+    set(FAMILY_VARIANTS ${VARIANTS})
+    foreach(VARIANT ${VARIANTS})
+      string(REPLACE "|" ";" PARTS "${VARIANT}|")
+      list(GET PARTS 0 SUFFIX)
+      list(GET PARTS 1 DEFINES)
+      foreach(LANES ${VKGUIDE_SPECTRAL_FAMILIES})
+        list(APPEND FAMILY_VARIANTS "${SUFFIX}.lanes${LANES}|${DEFINES} -DCRT_LANES=${LANES}")
+      endforeach()
+    endforeach()
+    set(VARIANTS ${FAMILY_VARIANTS})
   endif()
   foreach(VARIANT ${VARIANTS})
     string(REPLACE "|" ";" PARTS "${VARIANT}|")

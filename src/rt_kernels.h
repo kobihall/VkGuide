@@ -96,7 +96,10 @@ enum class CrtBinding : uint32_t {
 	// 22 is reserved by docs/plans/pbrt-roadmap.md for a plan not built yet
 	// one RaySamples record per pool slot (docs/plans/completed/pbrt-sample-generation.md)
 	RaySamples = 23,
-	// 24 and 25 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+	// the spectral builds' data (docs/plans/completed/pbrt-spectral-rendering.md): the representation, its tables and
+	// the scene's packed spectra (src/spectral.h SpectralDataBuilder); and the working space's RGB uplift table
+	SpectralData = 24,
+	SpectralUplift = 25,
 	MaterialParams = 26,
 	// 27 and 28 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
 	// the first visible surface of each camera path, while an auxiliary output is on
@@ -118,6 +121,8 @@ enum class CrtBinding : uint32_t {
 	// 47 to 61 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
 	// the outlier-reweighted film's cascade of buffers (docs/plans/completed/pbrt-film-and-reconstruction.md)
 	FilmCascade = 62,
+	// a spectral build's path throughputs, CRT_LANES floats per path (docs/plans/completed/pbrt-spectral-rendering.md)
+	PathSpectra = 63,
 	Count
 };
 
@@ -258,6 +263,10 @@ struct KernelVariant {
 	// with the specialization constants CRT_AOV (constant_id 1) and CRT_LIGHT_GROUPS (constant_id 2) set to
 	// whether the render keeps auxiliary outputs and light groups. Off, it is the code it always was
 	bool usesOutputs { false };
+	// kernels 00, 03, 04, 06 and 08: the kernel carries radiance, includes crt_spectrum.glsl and is built once per
+	// lane family (docs/plans/completed/pbrt-spectral-rendering.md): the exact RGB build at <shader>[...].spv, and a
+	// spectral one at <shader>[...].lanes<N>.spv, which also binds SpectralData, SpectralUplift and PathSpectra
+	bool laneDependent { false };
 };
 
 // A traversal: how every kernel that traces searches the scene. A scene-wide choice rather than a

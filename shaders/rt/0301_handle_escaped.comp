@@ -18,6 +18,7 @@
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_shader_atomic_float : require
 #include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
 #include "include/crt_random.glsl"
 #include "equirect.glsl"
 #include "include/crt_background.glsl"
@@ -40,6 +41,12 @@ void main()
 	const PathState path = paths[pathIndex];
 	const HitRecord hit = hits[entry];
 	const vec3 inDir = normalize(path.direction);
+#ifndef CRT_SPECTRAL
+	const Spectrum throughput = path.throughput;
+#else
+	spectralBegin(path.lambdaU);
+	const Spectrum throughput = pathSpectra[pathIndex];
+#endif
 
 	vec3 value;
 	if (debugTerminalValue(vec3(0.0), vec3(0.0), hit.traversalCost, inDir, false, value)) {
@@ -65,7 +72,11 @@ void main()
 	// background seen straight from the camera belongs to neither technique
 	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS) {
 		if (path.bounce == 1u) {
+#ifndef CRT_SPECTRAL
 			radiance[path.radianceSlot].rgb += vec3(dot(path.throughput * backgroundRadiance(inDir) * weight, vec3(0.2126, 0.7152, 0.0722)), 0.0, 0.0);
+#else
+			radiance[path.radianceSlot].rgb += vec3(dot(spectrumToFilm(spectrumScale(spectrumMul(throughput, backgroundSpectrum(inDir)), weight)), vec3(0.2126, 0.7152, 0.0722)), 0.0, 0.0);
+#endif
 		}
 		return;
 	}
@@ -73,13 +84,18 @@ void main()
 	// added, not written: the path may have passed glowing surfaces on earlier bounces. The weight
 	// is applied only when it is not 1, so a strategy without light sampling adds exactly what it
 	// always did
-	vec3 contribution = path.throughput * backgroundRadiance(inDir);
+	Spectrum contribution = spectrumMul(throughput, backgroundSpectrum(inDir));
 	if (weight != 1.0) {
-		contribution *= weight;
+		contribution = spectrumScale(contribution, weight);
 	}
-	radiance[path.radianceSlot].rgb += contribution;
+	const vec3 added = filmAdd(path.radianceSlot, contribution);
 	// the background, whatever it is (the map, the sky gradient, a solid colour), is one group's
 	if (CRT_LIGHT_GROUPS) {
-		lightGroupAdd(path.radianceSlot, pc.environmentGroup, contribution);
+		lightGroupAdd(path.radianceSlot, pc.environmentGroup, added);
 	}
+#ifdef CRT_SPECTRAL
+	if (CRT_SPECTRAL_IMAGES) {
+		spectralImageAdd(path.radianceSlot, contribution);
+	}
+#endif
 }

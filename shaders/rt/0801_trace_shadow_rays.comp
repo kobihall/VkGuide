@@ -7,6 +7,7 @@
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_shader_atomic_float : require
 #include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
 #include "include/crt_trace.glsl"
 #include "include/crt_light_groups.glsl"
 #include "include/crt_shadow.glsl"

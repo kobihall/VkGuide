@@ -32,6 +32,19 @@ inline constexpr uint32_t CRT_QUEUE_COUNT = 7;
 inline constexpr VkDeviceSize CRT_PATH_STATE_SIZE = 64;
 inline constexpr VkDeviceSize CRT_HIT_RECORD_SIZE = 24;
 inline constexpr VkDeviceSize CRT_SHADOW_RAY_SIZE = 48;
+// a lane family's shadow ray (crt_common.glsl ShadowRay under CRT_SPECTRAL): 48 bytes and the contribution, CRT_LANES
+// floats, at offset 48 with the struct aligned to 16. 48 for exact RGB, 64 for 1 and 4 lanes, 80, 112 and 176 for 8,
+// 16 and 32
+constexpr VkDeviceSize shadowRayBytes(uint32_t family)
+{
+	return family == 0 ? CRT_SHADOW_RAY_SIZE : CRT_SHADOW_RAY_SIZE + ((4 * (VkDeviceSize)family + 15) / 16) * 16;
+}
+// a lane family's path throughput in binding 63, by path: CRT_LANES floats; exact RGB keeps it in PathState and binds
+// a stub
+constexpr VkDeviceSize pathSpectrumBytes(uint32_t family)
+{
+	return family == 0 ? 0 : 4 * (VkDeviceSize)family;
+}
 // the RaySamples record, and the stub that stands in for it while the selected sampler writes none
 // (src/sampler.h SAMPLE_RECORD_BYTES)
 inline constexpr VkDeviceSize CRT_SAMPLE_RECORD_SIZE = 48;
@@ -48,7 +61,10 @@ public:
 	// `sampleRecord` is whether the selected sampler writes the RaySamples record: it exists at full
 	// size only then, and is a stub otherwise (a change reallocates just that buffer). `pixelState` is the
 	// same for the PixelState buffer, which the auxiliary outputs need. True when it reallocated
-	bool ensure(VulkanEngine* engine, CrtResourceTable& resources, uint32_t width, uint32_t height, uint32_t samplesPerFrame, bool sampleRecord, bool pixelState);
+	// `family` is the render's lane family (src/spectral.h laneFamily()), which sizes the shadow rays and the path
+	// spectra; a change reallocates the pool
+	bool ensure(VulkanEngine* engine, CrtResourceTable& resources, uint32_t width, uint32_t height, uint32_t samplesPerFrame, bool sampleRecord, bool pixelState,
+		uint32_t family = 0);
 	// requires the pool to be out of use
 	void destroy(VulkanEngine* engine, CrtResourceTable& resources);
 
@@ -75,7 +91,10 @@ private:
 	uint32_t m_height { 0 };
 	uint32_t m_samplesPerFrame { 0 };
 	uint32_t m_size { 0 };
+	uint32_t m_family { 0 };
 	bool m_allocated { false };
+	// binding 63: a spectral family's path throughputs, or a 16-byte stub
+	AllocatedBuffer m_pathSpectra {};
 
 	AllocatedBuffer m_paths {};
 	AllocatedBuffer m_hits {};

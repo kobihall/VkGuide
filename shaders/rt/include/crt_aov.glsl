@@ -160,8 +160,9 @@ void aovFoldPixel(uint pixel, ivec2 coord)
 			}
 		}
 	}
-	if (CRT_LIGHT_GROUPS) {
-		// kernels 03, 04 and 08 are done, and this pixel is this invocation's alone: no atomic
-		channelSums[pixel * (3u * pc.lightGroupCount + 1u) + 3u * pc.lightGroupCount] += weightSum;
+	if (CRT_LIGHT_GROUPS || CRT_SPECTRAL_IMAGES) {
+		// kernels 03, 04 and 08 are done, and this pixel is this invocation's alone: no atomic. The weight sum the light
+		// groups and the spectral images divide by
+		channelSums[pixel * channelStride() + 3u * pc.lightGroupCount] += weightSum;
 	}
 }

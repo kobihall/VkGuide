@@ -257,10 +257,10 @@ MaterialDef gltfMaterialDef(const GLTFMaterial& material, const RaytraceTextureA
 {
 	MaterialDef entry;
 	entry.type = MaterialType::Pbr;
-	entry.params["albedo"] = SpectrumRef { glm::vec3(material.colorFactors) };
+	entry.params["albedo"] = rgbSpectrum(glm::vec3(material.colorFactors));
 	entry.params["metallic"] = material.metalRoughFactors.x;
 	entry.params["roughness"] = material.metalRoughFactors.y;
-	entry.params["emission"] = SpectrumRef { material.emissiveFactor };
+	entry.params["emission"] = rgbSpectrum(material.emissiveFactor);
 	entry.params["strength"] = 1.f;
 	entry.params["normalScale"] = material.normalScale;
 	setModelReadOnlyParams(entry, material, textures);
@@ -285,7 +285,8 @@ void refreshModelMaterialDef(MaterialDef& entry, const GLTFMaterial& material, c
 
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
-	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures)
+	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures,
+	const SpectralSceneContext& spectral)
 {
 	auto accel = std::make_shared<RaytraceSceneAccel>();
 
@@ -300,8 +301,19 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		if (inserted) {
 			const auto found = std::find_if(materials.begin(), materials.end(), [id](const MaterialDef& m) { return m.id == id; });
 			const MaterialDef fallback = makeMaterial(MaterialType::Lambertian, id == 0 ? glm::vec3(1.f) : glm::vec3(0.7f));
-			accel->materials.push_back(packMaterial(found != materials.end() ? *found : fallback, PackContext { .textures = textures }));
+			accel->materials.push_back(packMaterial(found != materials.end() ? *found : fallback,
+				PackContext { .textures = textures, .spectra = spectral.spectra, .designWavelength = spectral.designWavelength }));
 			materialGroups.push_back(found != materials.end() ? std::min(found->lightGroup, MAX_LIGHT_GROUPS - 1u) : 0u);
+			//its spectra, by slot, as indices into the scene's list
+			const PackedMaterial& packed = accel->materials.back();
+			MaterialSpectralRecord record = emptyMaterialSpectralRecord();
+			for (size_t slot = 0; slot < MATERIAL_SPECTRUM_SLOTS; slot++) {
+				if (packed.spectra[slot].has_value()) {
+					record[slot] = accel->spectra.add(packed.spectra[slot]->first, packed.spectra[slot]->second);
+				}
+			}
+			record[SLOT_COUNT] = std::bit_cast<uint32_t>(packed.emissionScale);
+			accel->materialSpectra.push_back(record);
 		}
 		return it->second;
 	};
@@ -315,7 +327,11 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	std::vector<uint32_t> lightBase;
 
 	//the punctual lights first: the delta lights are the front of the list
-	LightListBuilder lightList;
+	LightListBuilder lightList(&accel->spectra, spectral.spectra);
+	//what an emitting material's records carry for the spectral builds
+	auto emitterSpectrum = [&](uint32_t material) {
+		return LightSpectrum { accel->materialSpectra[material][SLOT_EMISSION], accel->materials[material].emissionScale, accel->materials[material].emissionPrice };
+	};
 	for (const SceneLight& light : lights) {
 		lightList.addPunctual(light);
 	}
@@ -328,7 +344,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		instance.objectToWorld = shapes[i].objectToWorld();
 		instances.push_back(instance);
 		materialBase.push_back(material);
-		lightBase.push_back(lightList.addShape(shapes[i].kind, instance.objectToWorld, accel->materials[material].emission, materialGroups[material]));
+		lightBase.push_back(lightList.addShape(shapes[i].kind, instance.objectToWorld, accel->materials[material].emission, materialGroups[material], emitterSpectrum(material)));
 	}
 	accel->shapeCount = (uint32_t)shapes.size();
 
@@ -361,8 +377,8 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 				const auto entry = modelMaterialIds.find(surface.material.get());
 				accel->instanceMaterials.push_back(materialIndex(entry != modelMaterialIds.end() ? entry->second : 0, true));
 			}
-			const glm::vec3 emission = accel->materials[accel->instanceMaterials.back()].emission;
-			anyEmits |= emission.r > 0.f || emission.g > 0.f || emission.b > 0.f;
+			const PackedMaterial& packed = accel->materials[accel->instanceMaterials.back()];
+			anyEmits |= packed.emission.r > 0.f || packed.emission.g > 0.f || packed.emission.b > 0.f || packed.emissionPrice > 0.f;
 		}
 
 		//an emitting mesh puts each emitting triangle in the light list, in world space, and a run of
@@ -375,7 +391,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 			forEachMeshTriangle(mesh, [&](uint32_t surfaceIndex, uint32_t triangle, uint32_t ia, uint32_t ib, uint32_t ic) {
 				const PackedMaterial& material = accel->materials[accel->instanceMaterials[tableBase + surfaceIndex]];
 				const glm::vec3 emission = material.emission;
-				if (!(emission.r > 0.f || emission.g > 0.f || emission.b > 0.f)) {
+				if (!(emission.r > 0.f || emission.g > 0.f || emission.b > 0.f || material.emissionPrice > 0.f)) {
 					return;
 				}
 				auto world = [&](uint32_t vertex) { return glm::vec3(object.transform * glm::vec4(mesh.cpuVertices[vertex].position, 1.f)); };
@@ -384,7 +400,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 				//the texel itself, this only prices the triangle for the light selection
 				const float textureMean = material.emissiveLayer >= 0 ? textures.meanLuminance(material.emissiveLayer, uv(ia), uv(ib), uv(ic)) : 1.f;
 				const uint32_t light = lightList.addTriangle(world(ia), world(ib), world(ic), emission, attributeBase + triangle, accel->instanceMaterials[tableBase + surfaceIndex], material.emissiveLayer, textureMean,
-					materialGroups[accel->instanceMaterials[tableBase + surfaceIndex]]);
+					materialGroups[accel->instanceMaterials[tableBase + surfaceIndex]], emitterSpectrum(accel->instanceMaterials[tableBase + surfaceIndex]));
 				lightList.setTriangleLight(meshLightBase, triangle, light);
 			});
 		}

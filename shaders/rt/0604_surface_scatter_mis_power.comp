@@ -9,6 +9,7 @@
 #define CRT_DIRECT_LIGHTING 2
 #define CRT_MIS_EXPONENT 2.0
 #include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
 #include "include/crt_material_class.glsl"
 #include "include/crt_interaction.glsl"
 #include "include/crt_random.glsl"

@@ -44,6 +44,10 @@
 layout (constant_id = 1) const bool CRT_AOV = false;
 // CRT_LIGHT_GROUPS: kernels 03, 04 and 08 add each contribution to its light group's sums in ChannelSums
 layout (constant_id = 2) const bool CRT_LIGHT_GROUPS = false;
+// CRT_SPECTRAL_IMAGES: a spectral build's kernels 03, 04 and 08 add each contribution to its wavelength buckets' sums in
+// ChannelSums, after the light groups' and the weight sum, which kernel 09 adds (docs/plans/completed/pbrt-spectral-rendering.md).
+// constant_id 3 and 4 are the spectral builds' representation and wavelength sampling (crt_spectrum.glsl)
+layout (constant_id = 5) const bool CRT_SPECTRAL_IMAGES = false;
 
 #define CRT_DEBUG_NONE 0u
 #define CRT_DEBUG_PRIMARY_DIRECTION 1u
@@ -70,12 +74,40 @@ layout (constant_id = 2) const bool CRT_LIGHT_GROUPS = false;
 #define CRT_MATERIAL_DIELECTRIC 3u
 #define CRT_MATERIAL_EMISSIVE 4u
 #define CRT_MATERIAL_PBR 5u
+// pbrt-v4's BxDFs (docs/plans/pbrt-bsdf-library.md, crt_bxdf.glsl), evaluated by kernel 06's complex build alone
+#define CRT_MATERIAL_GLASS 6u
+#define CRT_MATERIAL_CONDUCTOR 7u
 
 // PathState.misPdf's sentinel: whatever emission this path's next ray finds counts at full weight,
 // because no light was sampled towards it - a camera ray, a ray leaving a specular surface, or a
 // strategy that samples no area lights
 #define CRT_MIS_FULL -1.0
 
+//---------------------------------------------------------------- the spectrum a path carries
+//
+// docs/plans/completed/pbrt-spectral-rendering.md. A kernel that carries radiance is built once per lane family: without
+// CRT_LANES it is the exact RGB build, where a Spectrum is the vec3 it always was and every shader is the code it always
+// was; with CRT_LANES 1 (monochromatic), 4, 8, 16 or 32 it carries that many values of the selected representation.
+// A kernel that includes include/crt_spectrum.glsl itself is built per family (CMakeLists.txt), to
+// <name>.comp[.<traversal>][.<class>].lanes<N>.spv. Kernels 01 and 02 never touch a spectrum and read PathState
+// through the RGB layout, whose fields they use sit at the same offsets in every family.
+#ifdef CRT_LANES
+#define CRT_SPECTRAL 1
+#if CRT_LANES == 1
+#define Spectrum float
+#elif CRT_LANES == 4
+#define Spectrum vec4
+#else
+#define CRT_LANE_VECS (CRT_LANES / 4)
+struct Spectrum {
+	vec4 c[CRT_LANE_VECS];
+};
+#endif
+#else
+#define Spectrum vec3
+#endif
+
+#ifndef CRT_SPECTRAL
 // 64 bytes, by path index (== the pool slot the path was spawned in)
 struct PathState {
 	vec3 origin;
@@ -95,6 +127,27 @@ struct PathState {
 	uint pad0;
 	uint pad1;
 };
+#else
+// 64 bytes in every family, the RGB layout's fields at the same offsets: the throughput's twelve bytes hold the one
+// sample the path's wavelengths derive from and the lanes still alive, and the throughput itself, CRT_LANES floats, is
+// pathSpectra[] (binding 63), so kernels 01 and 02 keep one build
+struct PathState {
+	vec3 origin;
+	uint radianceSlot;
+	vec3 direction;
+	uint rngState;
+	// hero wavelengths: the uniform sample lane i's wavelength is drawn from, at lambdaU + i / lanes (crt_spectrum.glsl)
+	float lambdaU;
+	// the lanes a dispersive refraction left alive, one bit each; all ones until then
+	uint laneMask;
+	uint spectralPad;
+	uint bounce;
+	float misPdf;
+	float misExponent;
+	uint pad0;
+	uint pad1;
+};
+#endif
 
 // a light list index for "not a light": a hit on geometry the light list does not hold, which any
 // strategy then counts at full weight
@@ -243,8 +296,11 @@ struct GpuLight {
 	// its light group, 0 to 7 (docs/plans/completed/pbrt-aovs-and-image-output.md): the sums its contributions
 	// are kept in beside the picture
 	uint group;
-	uint pad1;
-	uint pad2;
+	// what a spectral build evaluates in place of `radiance`: the emission's reference in SpectralData (binding 24)
+	// and the factor it is multiplied by (float bits): the light's intensity, or an emitter's strength
+	// (docs/plans/completed/pbrt-spectral-rendering.md). The exact RGB build never reads them
+	uint spectrum;
+	uint spectrumScale;
 };
 
 // 32 bytes, in front of lights[]
@@ -261,6 +317,7 @@ struct LightHeader {
 	float pad2;
 };
 
+#ifndef CRT_SPECTRAL
 // 48 bytes, by RAY QUEUE POSITION like hits[]: a shadow ray kernel 06 emitted, from the spawn point
 // it chose. The contribution is complete - throughput, BSDF, cosine, emitted radiance, MIS weight
 // and pdf all applied - so kernel 08 only decides whether to add it
@@ -274,6 +331,22 @@ struct ShadowRay {
 	vec3 contribution;
 	uint radianceSlot;
 };
+#else
+// a spectral family's shadow ray: the contribution in lanes, and what kernel 08 needs to turn them into the film's
+// color once it knows the ray arrives. 64 bytes for 1 and 4 lanes, 80, 112 and 176 for 8, 16 and 32
+// (src/rt_wavefront.h shadowRayBytes())
+struct ShadowRay {
+	vec3 origin;
+	uint mediumAndGroup;
+	vec3 direction;
+	float tMax;
+	uint radianceSlot;
+	float lambdaU;
+	uint laneMask;
+	uint spectralPad;
+	Spectrum contribution;
+};
+#endif
 
 // == VkDispatchIndirectCommand followed by the count. The allocator keeps groupCountX equal to
 // ceil(rayCount / CRT_WORKGROUP); nothing derives one from the other later
@@ -401,7 +474,16 @@ struct RaySamples {
 	vec4 medium;
 };
 layout (std430, set = 0, binding = 23) buffer RaySampleBuffer { RaySamples raySamples[]; };
-// 24 and 25: reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+#ifdef CRT_SPECTRAL
+// THE SPECTRAL DATA (src/spectral.h SpectralDataBuilder): a header of 64 words naming the representation, the range,
+// the tables (the CIE functions, the working space's illuminant, the bands, the wavelength distribution) and every
+// SpectrumRef the scene's materials, lights and background use, packed for the representation. crt_spectrum.glsl
+// reads it. Only the spectral builds bind it
+layout (std430, set = 0, binding = 24) readonly buffer SpectralDataBuffer { uint spectralWords[]; };
+// the working space's RGB uplift table (src/color_space.h UpliftTable): res z nodes, then [3][res][res][res][3]
+// coefficients, read when a color is only known at run time (a texture, the environment map, the sky)
+layout (std430, set = 0, binding = 25) readonly buffer SpectralUpliftBuffer { float upliftData[]; };
+#endif
 // every material's parameter record, back to back: GpuMaterial.paramOffset finds its own, and
 // crt_material.glsl reads it in the order src/rt_material.cpp packed it
 layout (std430, set = 0, binding = 26) readonly buffer MaterialParamBuffer { vec4 materialParams[]; };
@@ -476,6 +558,11 @@ layout (std430, set = 0, binding = 46) readonly buffer SamplerTableBuffer { uint
 // the outlier-reweighted film's cascade (crt_film.glsl): CRT_OUTLIER_BUFFERS vec4s per pixel, each the sum
 // of alpha w rgb in xyz and of alpha S in w for one brightness level. A stub while another film runs
 layout (std430, set = 0, binding = 62) buffer FilmCascadeBuffer { vec4 filmCascade[]; };
+#ifdef CRT_SPECTRAL
+// the throughput of every path of a spectral family, by path index: CRT_LANES floats. The exact RGB build keeps it in
+// PathState.throughput and does not bind it
+layout (std430, set = 0, binding = 63) buffer PathSpectrumBuffer { Spectrum pathSpectra[]; };
+#endif
 
 // src/rt_gpu_types.h CrtParams
 layout (push_constant) uniform Params {
@@ -534,7 +621,18 @@ layout (push_constant) uniform Params {
 	uint environmentGroup;
 	// the ambient occlusion view's ray length
 	float aoDistance;
+	// the spectral images' wavelength buckets, after the light groups in each pixel's ChannelSums record; 0 for none
+	uint spectralBuckets;
+	uint paramsPad0;
+	uint paramsPad1;
+	uint paramsPad2;
 } pc;
+
+// one pixel's record in ChannelSums: the light groups' rgb, the weight sum, the spectral images' buckets
+uint channelStride()
+{
+	return 3u * pc.lightGroupCount + 1u + pc.spectralBuckets;
+}
 
 #define CRT_AOV_THROUGH_SPECULAR 0x80000000u
 // the src/aov.h AovOutput bits kernel 06 reads

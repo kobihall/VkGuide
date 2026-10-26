@@ -29,6 +29,7 @@
 #include <image_io.h>
 #include <rt_accel.h>
 #include <rt_gpu_types.h>
+#include <vk_tonemap.h>
 #include <rt_kernels.h>
 #include <rt_scene_types.h>
 #include <rt_wavefront.h>
@@ -157,7 +158,8 @@ OutputsFallback outputsFallback(const AovSettings& aov, uint32_t lightGroupCount
 inline constexpr uint64_t OUTPUT_BYTES_LIMIT = 1ull << 30;
 // the bytes AovImages takes for the layers `aov` keeps, and the light groups' sums for `groups` groups, at a size
 uint64_t aovImageBytes(const AovSettings& aov, uint32_t width, uint32_t height);
-uint64_t lightGroupSumBytes(uint32_t groups, uint32_t width, uint32_t height);
+// ChannelSums: per pixel the light groups' rgb, the weight sum, and the spectral images' buckets
+uint64_t lightGroupSumBytes(uint32_t groups, uint32_t width, uint32_t height, uint32_t buckets = 0);
 
 // Why `sampler` cannot run a render of width x height with `settings` (as the render uses them, after
 // RaytraceRenderer::renderSettings()), or empty when it can. A sampler that needs the sample count
@@ -250,9 +252,13 @@ public:
 	uint32_t lightGroupCount() const { return m_lightGroupCount; }
 	// the memory the outputs take, 0 when the render keeps none
 	uint64_t aovBytes() const { return m_aovLayout.count > 0 ? aovImageBytes(m_aov, m_snapshot.width, m_snapshot.height) : 0; }
-	uint64_t lightGroupBytes() const { return lightGroupSumBytes(m_lightGroupCount, m_snapshot.width, m_snapshot.height); }
+	uint64_t lightGroupBytes() const { return lightGroupSumBytes(m_lightGroupCount, m_snapshot.width, m_snapshot.height, m_spectralBuckets); }
+	// the spectral images' buckets the running render keeps, 0 for none
+	uint32_t spectralBuckets() const { return m_spectralBuckets; }
 	// what the render dropped of its settings' outputs, and why; empty when it dropped none
 	const std::string& outputsNote() const { return m_outputsNote; }
+	// why a spectral render runs in exact RGB instead, empty when it does not
+	const std::string& spectralNote() const { return m_spectralNote; }
 	// the accumulation, the AOV layers, the light groups' sums and the sample counts, on the host. Waits for the
 	// device to be idle. False when there is no render
 	bool readOutputs(VulkanEngine* engine, RenderOutputsData& data);
@@ -300,6 +306,10 @@ public:
 	CrtDebugView debugView { CrtDebugView::None };
 	// switchable any time, restarts nothing: it only changes what the display image shows
 	CrtAnalysisView analysisView { CrtAnalysisView::None };
+	// how a monochromatic render is shown (gray, the wavelength's color, a colormap): display only, like the exposure
+	SpectralDisplay spectralDisplay;
+	// the tonemap's display for the running render: the spectral display for a monochromatic one, the picture otherwise
+	TonemapDisplay tonemapDisplay() const;
 
 
 	// FOR SCHEDULES. The render being recorded, every binding's resource, and the wavefront pool
@@ -323,11 +333,14 @@ private:
 	// builds every pipeline the selection's integrator runs
 	void preparePipelines(VulkanEngine* engine, const KernelSelection& selection);
 	// the specialization constants a kernel is built with for `selection` and the outputs the render keeps:
-	// bit 0 the sample record, bit 1 CRT_AOV, bit 2 CRT_LIGHT_GROUPS
+	// bit 0 the sample record, bit 1 CRT_AOV, bit 2 CRT_LIGHT_GROUPS; in bits 8 to 15 the lane family the render
+	// runs (src/spectral.h laneFamily(), 0 for exact RGB), which a lane-dependent kernel is built for; and for a spectral
+	// family the representation (bits 16 to 19) and the wavelength sampling (20 to 23) it is specialized for
 	uint32_t pipelineFeatures(const KernelSelection& selection) const;
-	// the bindings `variant` is built and written with under `traversal`: its own, plus the
-	// traversal's if it traces, each once
-	static std::vector<CrtBinding> bindingsOf(const KernelVariant& variant, uint32_t traversal);
+	// the bindings `variant` is built and written with under `traversal` and lane family `family`: its own, plus the
+	// traversal's if it traces, plus the spectral data, the uplift table and the path spectra for a lane-dependent
+	// kernel's spectral build, each once
+	static std::vector<CrtBinding> bindingsOf(const KernelVariant& variant, uint32_t traversal, uint32_t family);
 
 	// the accumulation and sample-count images, reallocated (after a device-wide wait) when the
 	// render's size changes
@@ -339,6 +352,10 @@ private:
 	// binding 30: the pixel filter's sampling table, uploaded when the filter changes
 	void uploadFilterTable(VulkanEngine* engine, const PixelFilterSettings& filter);
 	void uploadScene(VulkanEngine* engine);
+	// bindings 24 and 25 for a spectral render (docs/plans/completed/pbrt-spectral-rendering.md): the representation's
+	// SpectralData with the scene's spectra, and the working space's uplift table. Nothing for exact RGB. A missing
+	// table turns the render into exact RGB, and spectralNote() says why
+	void uploadSpectral(VulkanEngine* engine);
 	void uploadGeometry(VulkanEngine* engine, const std::shared_ptr<const RaytraceGeometry>& geometry);
 	// hands a buffer the frame in flight may still read to the deletion queue of that frame's slot
 	void retireBuffer(VulkanEngine* engine, AllocatedBuffer& buffer);
@@ -356,6 +373,12 @@ private:
 	void recordAnalysis(VkCommandBuffer cmd, VulkanEngine* engine, const AllocatedImage& displayImage);
 
 	CrtResourceTable m_resources;
+
+	// the spectral render's data (uploadSpectral()): SpectralData, rebuilt each render; the uplift table, kept per space
+	AllocatedBuffer m_spectralData {};
+	AllocatedBuffer m_upliftBuffer {};
+	ColorSpaceId m_upliftSpace { ColorSpaceId::Srgb };
+	std::string m_spectralNote;
 
 	// ONE PIPELINE PER (VARIANT, TRAVERSAL, MATERIAL CLASS, SAMPLE RECORD), built on first use: a kernel that traces
 	// is built once per traversal, one that does not once, keyed with NO_TRAVERSAL; a kernel built
@@ -387,6 +410,7 @@ private:
 	AovSettings m_aov;
 	AovLayout m_aovLayout;
 	uint32_t m_lightGroupCount { 0 };
+	uint32_t m_spectralBuckets { 0 };
 	uint32_t m_outputFeatures { 0 };
 	std::string m_outputsNote;
 	float m_autoAoDistance { 1.f };

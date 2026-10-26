@@ -2,7 +2,7 @@
 
 A simulated experiment is only as useful as what it lets you measure. In the lab that is a power meter's reading, a camera's frame, a beam profiler's widths, a spectrometer's trace, or the spot on an alignment card. This plan adds those as optical elements whose surfaces record the light that reaches them: light paths from the lasers deposit their power on a detector's film as they hit it, in a new stage after kernel 02, and a measurement panel turns each film into the numbers a lab reports, with the beam solver's analytic prediction beside each one.
 
-*Not implemented. Depends on [physoptics-optical-elements.md](physoptics-optical-elements.md), [physoptics-laser-sources.md](physoptics-laser-sources.md), and the light integrator of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md). Spectrometers need [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](physoptics-optical-elements.md), [physoptics-laser-sources.md](physoptics-laser-sources.md), and the light integrator of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md). Spectrometers need [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer does today
 

@@ -402,7 +402,7 @@ int main(int argc, char** argv)
 		const float intensity = l.intensity / PHOTOMETRIC_TO_RADIOMETRIC;
 		std::string type = l.kind == LightKind::Point ? "point" : l.kind == LightKind::Spot ? "spot" : "directional";
 		std::string spot = l.kind == LightKind::Spot ? fmt::format(R"(,"spot":{{"innerConeAngle":{},"outerConeAngle":{}}})", num(glm::radians(l.innerConeDegrees)), num(glm::radians(l.outerConeDegrees))) : "";
-		lights += fmt::format(R"({}{{"type":"{}","color":{},"intensity":{}{}}})", i == 0 ? "" : ",", type, vec(l.color), num(intensity), spot);
+		lights += fmt::format(R"({}{{"type":"{}","color":{},"intensity":{}{}}})", i == 0 ? "" : ",", type, vec(exactRgb(l.color, SpectrumRole::Illuminant, {})), num(intensity), spot);
 		addNode(fmt::format(R"({{"name":"{}","translation":{},"rotation":[{},{},{},{}],"extensions":{{"KHR_lights_punctual":{{"light":{}}}}}}})", l.name, vec(l.position),
 			num(l.orientation.x), num(l.orientation.y), num(l.orientation.z), num(l.orientation.w), i));
 	}

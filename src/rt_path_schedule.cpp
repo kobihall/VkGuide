@@ -27,7 +27,11 @@ void PathSchedule::start(GpuRenderer& renderer, VulkanEngine* engine)
 	if (!snapshot.settings.antialiasing) {
 		samplesPerFrame = 1;
 	}
-	while (samplesPerFrame > 1 && pixels * samplesPerFrame > CRT_MAX_POOL) {
+	//and what fits in memory: a spectral family's shadow rays and path spectra grow with its lanes, to about 450 bytes a
+	//path at 32 (docs/plans/completed/pbrt-spectral-rendering.md)
+	const uint32_t family = laneFamily(snapshot.settings.spectral);
+	const VkDeviceSize bytesPerPath = CRT_PATH_STATE_SIZE + CRT_HIT_RECORD_SIZE + 4 * CRT_QUEUE_COUNT + 16 + shadowRayBytes(family) + pathSpectrumBytes(family);
+	while (samplesPerFrame > 1 && ((VkDeviceSize)pixels * samplesPerFrame > CRT_MAX_POOL || (VkDeviceSize)pixels * samplesPerFrame * bytesPerPath > CRT_MAX_POOL_BYTES)) {
 		samplesPerFrame--;
 	}
 	if (samplesPerFrame != (uint32_t)snapshot.settings.samplesPerFrame) {
@@ -36,7 +40,8 @@ void PathSchedule::start(GpuRenderer& renderer, VulkanEngine* engine)
 	//the sample record exists only while the selected sampler writes one
 	const KernelVariant* sampler = snapshot.kernels.selected(KernelSlot::GenerateSamples);
 	const bool sampleRecord = sampler != nullptr && sampler->implemented && sampler->writesRecord;
-	renderer.wavefrontPool().ensure(engine, renderer.resources(), snapshot.width, snapshot.height, samplesPerFrame, sampleRecord, renderer.aovSettings().accumulates());
+	renderer.wavefrontPool().ensure(engine, renderer.resources(), snapshot.width, snapshot.height, samplesPerFrame, sampleRecord, renderer.aovSettings().accumulates(),
+		laneFamily(snapshot.settings.spectral));
 
 	if (m_headerReadback.buffer == VK_NULL_HANDLE) {
 		m_headerReadback = engine->createBuffer((VkDeviceSize)FRAME_OVERLAP * READBACK_HEADERS_PER_SLOT * sizeof(CrtQueueHeader), VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_TO_CPU);

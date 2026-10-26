@@ -24,7 +24,7 @@ A **Roulette** setting replaces the checkbox:
 | pbrt | `min(1, max(β · etaScale))` | **Minimum bounces**, 1 for new scenes | PBR 4ed §13.4; new scenes |
 | Adjoint-driven | a weight window around `Ĩ / L̂ᵢ(x)` | 1 | later, needs [pbrt-path-guiding.md](pbrt-path-guiding.md) |
 
-pbrt's rule has no floor, and after survival the largest component of `β · etaScale` becomes exactly 1: every surviving path carries about the same weight, which is what makes roulette pay. PBR 4ed Table 13.1 measures efficiency gains of 1.25× to 4.51× over no roulette on four scenes. The rule takes the maximum component rather than the mean, which pbrt explains keeps any spectral component from growing above 1 through roulette on saturated surfaces. In spectral modes the maximum runs over the live lanes (`laneMask`, [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)).
+pbrt's rule has no floor, and after survival the largest component of `β · etaScale` becomes exactly 1: every surviving path carries about the same weight, which is what makes roulette pay. PBR 4ed Table 13.1 measures efficiency gains of 1.25× to 4.51× over no roulette on four scenes. The rule takes the maximum component rather than the mean, which pbrt explains keeps any spectral component from growing above 1 through roulette on saturated surfaces. In spectral modes the maximum runs over the live lanes (`laneMask`, [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md)).
 
 ### Removing refraction's radiance scaling
 

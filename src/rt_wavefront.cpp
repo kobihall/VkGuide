@@ -2,9 +2,10 @@
 
 #include <vk_engine.h>
 
-bool WavefrontPool::ensure(VulkanEngine* engine, CrtResourceTable& resources, uint32_t width, uint32_t height, uint32_t samplesPerFrame, bool sampleRecord, bool pixelState)
+bool WavefrontPool::ensure(VulkanEngine* engine, CrtResourceTable& resources, uint32_t width, uint32_t height, uint32_t samplesPerFrame, bool sampleRecord, bool pixelState,
+	uint32_t family)
 {
-	if (m_allocated && m_width == width && m_height == height && m_samplesPerFrame == samplesPerFrame) {
+	if (m_allocated && m_width == width && m_height == height && m_samplesPerFrame == samplesPerFrame && m_family == family) {
 		if (m_hasSampleRecord == sampleRecord && m_hasPixelState == pixelState) {
 			return false;
 		}
@@ -39,13 +40,17 @@ bool WavefrontPool::ensure(VulkanEngine* engine, CrtResourceTable& resources, ui
 	m_height = height;
 	m_samplesPerFrame = samplesPerFrame;
 	m_size = width * height * samplesPerFrame;
+	m_family = family;
+	const VkDeviceSize shadowBytes = shadowRayBytes(family) * m_size;
+	const VkDeviceSize spectraBytes = family != 0 ? pathSpectrumBytes(family) * m_size : 16;
 
 	const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 	m_paths = engine->createBuffer(CRT_PATH_STATE_SIZE * m_size, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_hits = engine->createBuffer(CRT_HIT_RECORD_SIZE * m_size, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_queues = engine->createBuffer(sizeof(uint32_t) * CRT_QUEUE_COUNT * (VkDeviceSize)m_size, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_radiance = engine->createBuffer(sizeof(glm::vec4) * (VkDeviceSize)m_size, storage, VMA_MEMORY_USAGE_GPU_ONLY);
-	m_shadowRays = engine->createBuffer(CRT_SHADOW_RAY_SIZE * m_size, storage, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_shadowRays = engine->createBuffer(shadowBytes, storage, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_pathSpectra = engine->createBuffer(spectraBytes, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	const VkDeviceSize recordBytes = sampleRecord ? CRT_SAMPLE_RECORD_SIZE * m_size : CRT_SAMPLE_RECORD_STUB_SIZE;
 	m_raySamples = engine->createBuffer(recordBytes, storage, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_hasSampleRecord = sampleRecord;
@@ -62,11 +67,14 @@ bool WavefrontPool::ensure(VulkanEngine* engine, CrtResourceTable& resources, ui
 	resources.setBuffer(CrtBinding::Headers, m_headers.buffer, sizeof(CrtQueueHeader) * CRT_QUEUE_COUNT);
 	resources.setBuffer(CrtBinding::Radiance, m_radiance.buffer, sizeof(glm::vec4) * (VkDeviceSize)m_size);
 	resources.setBuffer(CrtBinding::SampleBudget, m_sampleBudget.buffer, sizeof(uint32_t) * (VkDeviceSize)width * height);
-	resources.setBuffer(CrtBinding::ShadowRays, m_shadowRays.buffer, CRT_SHADOW_RAY_SIZE * m_size);
+	resources.setBuffer(CrtBinding::ShadowRays, m_shadowRays.buffer, shadowBytes);
+	resources.setBuffer(CrtBinding::PathSpectra, m_pathSpectra.buffer, spectraBytes);
 	resources.setBuffer(CrtBinding::RaySamples, m_raySamples.buffer, recordBytes);
 	resources.setBuffer(CrtBinding::PixelState, m_pixelStates.buffer, stateBytes);
 
-	const double megabytes = double((CRT_PATH_STATE_SIZE + CRT_HIT_RECORD_SIZE + CRT_SHADOW_RAY_SIZE + 4 * CRT_QUEUE_COUNT + 16) * m_size + recordBytes + stateBytes + 4 * (VkDeviceSize)width * height) / (1024.0 * 1024.0);
+	const double megabytes = double((CRT_PATH_STATE_SIZE + CRT_HIT_RECORD_SIZE + 4 * CRT_QUEUE_COUNT + 16) * m_size + shadowBytes + spectraBytes + recordBytes + stateBytes
+							 + 4 * (VkDeviceSize)width * height)
+		/ (1024.0 * 1024.0);
 	fmt::println("WavefrontPool: {} x {} x {} = {} paths, {:.0f} MB", width, height, samplesPerFrame, m_size, megabytes);
 	return true;
 }
@@ -82,11 +90,13 @@ void WavefrontPool::destroy(VulkanEngine* engine, CrtResourceTable& resources)
 	engine->destroyBuffer(m_radiance);
 	engine->destroyBuffer(m_sampleBudget);
 	engine->destroyBuffer(m_shadowRays);
+	engine->destroyBuffer(m_pathSpectra);
 	engine->destroyBuffer(m_raySamples);
 	engine->destroyBuffer(m_pixelStates);
 	engine->destroyBuffer(m_headers);
-	m_paths = m_hits = m_queues = m_radiance = m_sampleBudget = m_shadowRays = m_raySamples = m_pixelStates = m_headers = {};
-	for (const CrtBinding binding : { CrtBinding::Paths, CrtBinding::Hits, CrtBinding::Queues, CrtBinding::Headers, CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::ShadowRays, CrtBinding::RaySamples, CrtBinding::PixelState }) {
+	m_paths = m_hits = m_queues = m_radiance = m_sampleBudget = m_shadowRays = m_pathSpectra = m_raySamples = m_pixelStates = m_headers = {};
+	for (const CrtBinding binding : { CrtBinding::Paths, CrtBinding::Hits, CrtBinding::Queues, CrtBinding::Headers, CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::ShadowRays,
+			 CrtBinding::PathSpectra, CrtBinding::RaySamples, CrtBinding::PixelState }) {
 		resources.clear(binding);
 	}
 	m_allocated = false;

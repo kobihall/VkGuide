@@ -12,7 +12,7 @@ The user settled these on 2026-09-26. Treat them as fixed.
 
 | Topic | Decision |
 |---|---|
-| Spectral transport | A runtime mode. Kernels are compiled in families by lane count (`CRT_LANES` 4, 8, 16, 32). Exact RGB stays available and bit-identical. New scenes default to exact RGB. |
+| Spectral transport | A runtime mode. Kernels are compiled in families by lane count (`CRT_LANES` 1, 4, 8, 16, 32) beside the exact RGB build, which stays available and bit-identical (implemented 2026-10-23). New scenes default to exact RGB. |
 | Spectral data | Materials and lights are authored once as `SpectrumRef`s, and each spectral representation evaluates or projects them. |
 | Bidirectional methods | An integrator layer over one shared stage library (revised and implemented 2026-09-29, when the user asked for as much code as possible to serve every integrator). The path tracer's stages keep 00 to 09. BDPT, SPPM and MLT run those stages where they can and add their own to the library. The traversal is a scene-wide choice that every tracing kernel is built for. |
 | BDPT and MLT | Two BDPT integrators: a light-vertex-cache BDPT and pbrt 3's. MLT is primary-sample-space MLT over the path tracer first, then multiplexed MLT over pbrt 3's BDPT. |
@@ -53,7 +53,8 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 | [pbrt-robust-intersections.md](completed/pbrt-robust-intersections.md) | Implemented: error-bounded spawn points, watertight triangles, conservative box tests |
 | [pbrt-verification-harness.md](completed/pbrt-verification-harness.md) | Implemented: `rt_bsdf` and `bin/bsdf_test`, GPU self-tests, furnace and Cornell checks, reference images, convergence curves |
 | [pbrt-material-system.md](completed/pbrt-material-system.md) | Implemented: named material library, parameter records, material traits table, basic and complex surface queues |
-| [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) | Lane-count families, spectral representations, `SpectrumRef`, uplifting, sensors, blackbody, dispersion |
+| [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) | Implemented: lane-count families, exact RGB, monochromatic, RGB Gaussian, band and hero representations, `SpectrumRef`, uplifting in four color spaces, blackbody, laser lines, dispersion, spectral images. Sensors wait for display-and-color |
+| [spectral-out-of-range.md](spectral-out-of-range.md) | Not designed: what RGB data is outside 360 to 830 nm |
 | [pbrt-sample-generation.md](completed/pbrt-sample-generation.md) | Implemented: per-bounce sample record and kernel 01 variants: independent, stratified, Halton, Sobol, padded Sobol, ZSobol, PMJ02BN |
 | [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md) | Implemented: pixel filters by importance sampling, compensated accumulation, per-pixel variance, clamp and outlier reweighting |
 
@@ -70,7 +71,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 | [pbrt-bump-mapping.md](pbrt-bump-mapping.md) | Displacement-texture bump mapping, normal maps in the material kernel, shadow-terminator fixes |
 | [pbrt-cameras.md](pbrt-cameras.md) | Orthographic, spherical, realistic lens systems, aperture shapes, tilt-shift, click-to-focus |
 | [pbrt-display-and-color.md](pbrt-display-and-color.md) | sRGB display curve, tone mapping operators, photographic exposure, white balance, output gamut |
-| [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) | Implemented: auxiliary outputs, light groups and Relight, EXR, PFM, HDR and PNG export, the ambient occlusion view and the batch mode. Spectral band images wait for spectral rendering |
+| [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) | Implemented: auxiliary outputs, light groups and Relight, EXR, PFM, HDR and PNG export, the ambient occlusion view and the batch mode. The spectral images came with spectral rendering |
 
 ### Lights and direct lighting
 
@@ -171,7 +172,7 @@ alternative-accelerators ─> gpu-bvh-construction ─> wavefront-performance (r
 verification-harness ─> (every plan with a new BSDF, sampler or light)
 ```
 
-The foundations change the shape of every kernel, so do them first and in this order (the integrator layer, the thin hit record, the material system, robust intersections, sample generation, the verification harness and the film are done; the material system and sample generation came ahead of plans they do not need): spectral rendering. After that the groups are largely independent.
+The foundations change the shape of every kernel, so do them first and in this order (the integrator layer, the thin hit record, the material system, robust intersections, sample generation, the verification harness, the film and spectral rendering are done; the material system and sample generation came ahead of plans they do not need). After that the groups are largely independent.
 
 ## Rules every plan follows
 
@@ -181,14 +182,14 @@ Every plan must leave a scene that does not use its feature rendering bit-identi
 
 ### Binding numbers
 
-Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Numbers 0 to 21, 23, 26, 29 to 32, 45, 46 and 62 exist. These are reserved so that plans landing in any order never collide. A plan that is never built leaves a gap, which is legal.
+Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Numbers 0 to 21, 23 to 26, 29 to 32, 45, 46, 62 and 63 exist. These are reserved so that plans landing in any order never collide. A plan that is never built leaves a gap, which is legal.
 
 | Binding | Resource | Plan |
 |---|---|---|
 | 22 | `Media` | participating-media |
 | 23 | `RaySamples` | sample-generation |
-| 24 | `SpectralData` | spectral-rendering |
-| 25 | `SpectralUplift` | spectral-rendering |
+| 24 | `SpectralData` | spectral-rendering (implemented) |
+| 25 | `SpectralUplift` | spectral-rendering (implemented) |
 | 26 | `MaterialParams` | material-system |
 | 27 | `Textures` (descriptor array) | textures |
 | 28 | `LightBvh` | bvh-light-sampler |
@@ -208,7 +209,7 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 42 | `SplatAccumulation` | bidirectional-path-tracing |
 | 43 | `PhotonGrid` | photon-mapping |
 | 44 | `MarkovChains` | metropolis-light-transport |
-| 45 | `ChannelSums` | aovs-and-image-output (implemented): the light groups, then `sum(w)`; spectral bands will follow |
+| 45 | `ChannelSums` | aovs-and-image-output (implemented): the light groups, then `sum(w)`, then the spectral images' buckets (spectral-rendering, implemented) |
 | 46 | `SamplerTables` | sample-generation |
 | 47 | `BsdfTables` | appearance-extras |
 | 48 | `GuidingVertices` | path-guiding |
@@ -219,7 +220,7 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 53 | `BdptVertices` | bidirectional-path-tracing |
 | 54 | `VisiblePoints` | photon-mapping |
 
-Bindings 55 to 61 are reserved by the [laser optics plan](physoptics-laser-optics.md): 55 `OpticSurfaces`, 56 `OpticCoatings`, 57 `OpticPathState`, 58 `BeamGraph`, 59 `Detectors`, 60 `DetectorFilm`, 61 `RayRecords`. Binding 62, `FilmCascade`, is the outlier-reweighted film's cascade of buffers by brightness, which the film plan added.
+Bindings 55 to 61 are reserved by the [laser optics plan](physoptics-laser-optics.md): 55 `OpticSurfaces`, 56 `OpticCoatings`, 57 `OpticPathState`, 58 `BeamGraph`, 59 `Detectors`, 60 `DetectorFilm`, 61 `RayRecords`. Binding 62, `FilmCascade`, is the outlier-reweighted film's cascade of buffers by brightness, which the film plan added. Binding 63, `PathSpectra`, is a spectral build's path throughputs, which spectral rendering added.
 
 The Radeon Pro 560X allows 31 storage buffers per stage (`maxPerStageDescriptorStorageBuffers`). No kernel may declare more; the per-variant subsets keep every kernel well under it today (kernel 02 declares 14).
 
@@ -245,31 +246,31 @@ The queue set (`crt_common.glsl`) grows by appending. Each queue costs `poolSize
 |---|---|---|
 | `origin`, `radianceSlot`, `direction`, `rngState`, `bounce`, `misPdf`, `misExponent` | existing | |
 | `prevNormal` | `uint`: the octahedral-encoded shading normal kernel 06 sampled lights with | light-shape-sampling |
-| `throughput` | `Spectrum` (`CRT_LANES` floats) | spectral-rendering (was `vec3`) |
+| `throughput` | `vec3` in the exact RGB build; a spectral build keeps it in `PathSpectra` (binding 63) | spectral-rendering (implemented) |
 | `medium` | `uint`, reuses `pad0` | participating-media |
 | `flags` | `uint`, reuses `pad1`: specular bounce, any non-specular bounce, inside-dielectric | path-regularization, russian-roulette |
 | `etaScale` | `float` | russian-roulette |
-| `lambdaU` | `float`: the one sample hero wavelengths are derived from | spectral-rendering |
-| `laneMask` | `uint`: which lanes are still alive after dispersion | spectral-rendering |
+| `lambdaU` | `float`, in the spectral builds only: the one sample hero wavelengths are derived from | spectral-rendering (implemented) |
+| `laneMask` | `uint`, in the spectral builds only: which lanes are still alive after dispersion | spectral-rendering (implemented) |
 | `time` | `float` | motion-blur |
 | `coneWidth`, `coneSpread` | `float` × 2 | textures |
 
-With `CRT_LANES = 4` that is 96 bytes: the `Spectrum` aligns to 16 bytes, so the fields end at byte 96 with no padding. A further field grows the struct to 112. Fields in `PixelState`: the first-hit position, normals, depth, uv, albedo and ids (aovs-and-image-output). The film plan did not allocate it: a sample's filter weight (+1 or -1) is the `w` of its radiance slot, and the camera's ray weight can start as the path's throughput, since pbrt multiplies it into the radiance and not into the film weight. Light groups need no path state: each contribution is added to its group's sums as it happens.
+`PathState` is 64 bytes in every build: a spectral build puts `lambdaU` and `laneMask` where the exact RGB build keeps its throughput, and the throughput in `PathSpectra`, 4 bytes a lane per path. The fields the other plans add grow it from there. Fields in `PixelState`: the first-hit position, normals, depth, uv, albedo and ids (aovs-and-image-output). The film plan did not allocate it: a sample's filter weight (+1 or -1) is the `w` of its radiance slot, and the camera's ray weight can start as the path's throughput, since pbrt multiplies it into the radiance and not into the film weight. Light groups need no path state: each contribution is added to its group's sums as it happens.
 
 The radiance slot (`radiance[]`, binding 4) stays a `vec4` in film space in every mode. Kernels that add radiance convert their lanes to film space at the moment they add it (spectral-rendering), so kernel 09 and the accumulation image keep their size whatever the lane count.
 
 ### Shadow rays
 
-`ShadowRay` is one record per path slot, so its size multiplies by the pool: every 16 bytes cost 64 MB at the 4M-path cap. Its layout with `CRT_LANES = 4`, 64 bytes:
+`ShadowRay` is one record per path slot, so its size multiplies by the pool: every 16 bytes cost 64 MB at the 4M-path cap. It is 48 bytes in the exact RGB build. A spectral build's (implemented) puts the radiance slot, `lambdaU` and `laneMask` after the direction and the `Spectrum` contribution at byte 48: 64 bytes at 1 or 4 lanes, 176 at 32. Its fields:
 
 | Field | Type | Owner |
 |---|---|---|
 | `origin` | `vec3` | thin-hit-record (implemented) |
 | `mediumAndGroup` | `uint`: the medium the ray starts in (low 24 bits) and the light group (high 8 bits) | participating-media, aovs-and-image-output (the group is implemented) |
 | `direction`, `tMax` | `vec3`, `float` | existing |
-| `contribution` | `Spectrum` (was `vec3`) | spectral-rendering |
+| `contribution` | `Spectrum` | spectral-rendering (implemented) |
 | `radianceSlot` | `uint` | existing |
-| `lambdaU`, `laneMask` | `float`, `uint`: what kernel 08 needs to convert lanes to film space | spectral-rendering |
+| `lambdaU`, `laneMask` | `float`, `uint`: what kernel 08 needs to convert lanes to film space | spectral-rendering (implemented) |
 | `time` | `float` | motion-blur |
 
 ### Instances
@@ -307,8 +308,8 @@ Every GLSL module that holds sampling or scattering mathematics gets a line-for-
 
 | Library | GLSL | Test | Plan |
 |---|---|---|---|
-| `rt_spectrum` | `crt_spectrum.glsl` | `bin/spectrum_test` | spectral-rendering; the CPU half (pbrt's tables, blackbodies, the projection to RGB) exists, from pbrt-scene-import |
-| `rt_bsdf` | `crt_scatter.glsl` now, then `crt_bsdf_*.glsl`, `crt_microfacet.glsl` | `bin/bsdf_test`, and the GPU self-test | verification-harness (implemented), bsdf-library |
+| `rt_spectrum` | `crt_spectrum.glsl` | `bin/spectrum_test`, and the GPU self-test | pbrt-scene-import, spectral-rendering (both implemented) |
+| `rt_bsdf` | `crt_scatter.glsl`, `crt_fresnel.glsl`, `crt_microfacet.glsl`, `crt_bxdf.glsl` | `bin/bsdf_test`, and the GPU self-tests | verification-harness (implemented), bsdf-library (glass and conductor implemented) |
 | `rt_sampler` | `crt_sampler.glsl` | `bin/sampler_test` | sample-generation (implemented) |
 | `rt_film` | `crt_filter.glsl`, `crt_film.glsl` | `bin/film_test`, and the GPU self-tests | film-and-reconstruction (implemented) |
 | `rt_media` | `crt_medium.glsl` | `bin/media_test` | participating-media |

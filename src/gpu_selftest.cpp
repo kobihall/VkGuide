@@ -13,6 +13,8 @@ SelfTestResult runFilmOutlierTest(VulkanEngine* engine);
 SelfTestResult runAovFoldTest(VulkanEngine* engine);
 SelfTestResult runAovAlbedoTest(VulkanEngine* engine);
 SelfTestResult runAovViewTest(VulkanEngine* engine);
+SelfTestResult runBxdfParityTest(VulkanEngine* engine);
+SelfTestResult runSpectrumParityTest(VulkanEngine* engine);
 
 std::span<const SelfTest> gpuSelfTests()
 {
@@ -24,6 +26,8 @@ std::span<const SelfTest> gpuSelfTests()
 		{ "Auxiliary outputs: the fold (kernel 09 against src/aov.cpp)", runAovFoldTest },
 		{ "Auxiliary outputs: the albedo estimate (crt_scatter.glsl with pbrt's 16 samples against src/bsdf.cpp)", runAovAlbedoTest },
 		{ "Auxiliary outputs: the views (shaders/aov_view.comp against their definitions)", runAovViewTest },
+		{ "BxDF parity (crt_bxdf.glsl's glass and conductor against src/bxdf.cpp)", runBxdfParityTest },
+		{ "Spectrum parity (crt_spectrum.glsl's wavelengths, spectra and film against src/spectral.cpp)", runSpectrumParityTest },
 	};
 	return tests;
 }

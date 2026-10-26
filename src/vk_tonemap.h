@@ -15,6 +15,22 @@
 class VulkanEngine;
 struct DescriptorAllocatorGrowable;
 
+// How the pass shows the picture beyond its scale: as it is, or, for a monochromatic render (one wavelength's radiance
+// in every channel), tinted by the wavelength's color or through a colormap (src/spectral.h SpectralDisplay)
+struct TonemapDisplay {
+	enum class Mode : uint32_t {
+		Rgb = 0,
+		Tint = 1,
+		Colormap = 2
+	};
+	Mode mode { Mode::Rgb };
+	// Colormap: src/spectral.h Colormap, and the decades a logarithmic scale spans (0 for linear)
+	uint32_t colormap { 0 };
+	float decades { 0.f };
+	// Tint: linear sRGB
+	glm::vec3 tint { 1.f };
+};
+
 class TonemapPass {
 public:
 	static constexpr VkFormat LINEAR_FORMAT = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -27,7 +43,8 @@ public:
 	// be in VK_IMAGE_LAYOUT_GENERAL - the caller owns every layout transition, since only it knows
 	// where each image is coming from and going to. The descriptor set is allocated from
 	// `allocator`, which must not be reset before cmd has finished executing
-	void dispatch(VkCommandBuffer cmd, VkDevice device, DescriptorAllocatorGrowable& allocator, const AllocatedImage& linearImage, const AllocatedImage& displayImage, float scale);
+	void dispatch(VkCommandBuffer cmd, VkDevice device, DescriptorAllocatorGrowable& allocator, const AllocatedImage& linearImage, const AllocatedImage& displayImage, float scale,
+		const TonemapDisplay& display = {});
 
 private:
 	ComputePass m_pass;

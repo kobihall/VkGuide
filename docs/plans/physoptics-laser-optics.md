@@ -54,7 +54,7 @@ Technical defaults the plans state and the user can object to:
 
 - The world unit is the meter, as in glTF. Every optics panel shows millimeters, degrees and microradians.
 - The CPU side of the optics is a Vulkan-free static library, `rt_optics`, built at `-O2` like `rt_bvh` and `rt_light`. Its geometry is templated on the scalar type: the beam solver runs in `double`, and the `float` instantiation is the line-for-line mirror of the GLSL.
-- In exact RGB mode a glass's index is read at the scene's **Design wavelength** (587.6 nm by default, or the laser's wavelength when the scene has one laser), not at 550 nm. [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) records the change.
+- In exact RGB mode a glass's index is read at the scene's **Design wavelength** (587.6 nm by default, or the laser's wavelength when the scene has one laser), not at 550 nm. [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) added the setting; [physoptics-laser-sources.md](physoptics-laser-sources.md) makes it follow a single laser.
 - An optic's materials are library entries the optic owns, the way a glTF model owns its imported materials in [pbrt-material-system.md](completed/pbrt-material-system.md).
 - Ports on beam-axis nodes are general (any number of outputs), so beamsplitters, acousto-optic modulators and nonlinear crystals fit the graph. Only the linear optics of the element list get physics in these plans.
 
@@ -111,10 +111,10 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 2. [pbrt-robust-intersections.md](completed/pbrt-robust-intersections.md). Implemented 2026-10-19. Its camera-relative space is split off to [pbrt-camera-relative-space.md](pbrt-camera-relative-space.md), which no laser optics plan needs.
 3. [pbrt-verification-harness.md](completed/pbrt-verification-harness.md). Implemented 2026-10-20, ahead of items 4 and 6, which it does not depend on.
 4. [pbrt-material-system.md](completed/pbrt-material-system.md). Implemented 2026-10-19, ahead of items 2 and 3, which it does not depend on.
-5. [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)
+5. [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). Implemented 2026-10-23, with a monochromatic representation for one laser wavelength, laser lines as spectra, wavelength sampling from the emitters' spectra, spectral images, and the **Design wavelength**.
 6. [pbrt-sample-generation.md](completed/pbrt-sample-generation.md). Implemented 2026-10-19, ahead of items 3 and 5, which it does not depend on.
 7. [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md). Implemented 2026-10-21.
-8. [pbrt-bsdf-library.md](pbrt-bsdf-library.md)
+8. [pbrt-bsdf-library.md](pbrt-bsdf-library.md). Its `glass` (dispersive, smooth and rough) and `conductor` were built with item 5; the rest is not implemented.
 
 ### Milestone 1: the bench
 

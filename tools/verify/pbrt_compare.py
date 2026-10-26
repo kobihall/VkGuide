@@ -15,10 +15,15 @@ What it prints, per channel and overall:
   noise floor         the same measure between each renderer's two seeds, halved: what the relative MSE would be
                       if the renderers agreed and only the noise were left
 
+`--spectral` renders here in that representation (`--lanes` sets its lane count) instead of the one the file asks for:
+a file with an "rgb" film renders in exact RGB, which reads a measured spectrum such as gold's index at three
+wavelengths, and `--spectral hero` integrates it as pbrt does.
+
 `--cornell` compares the Cornell box of tools/verify/cornell.py, written as a .pbrt file by pbrt_cornell.py, which
 needs no substitution. pbrt is the user's build: set PBRT and IMGTOOL, or they are looked for beside this repository.
 
 Run:  python3 tools/verify/pbrt_compare.py SCENE.pbrt [--spp 256] [--pbrt-spp N] [--out DIR] [--max-mean-error 0.005]
+                                            [--spectral hero|bands|gaussians] [--lanes N]
       python3 tools/verify/pbrt_compare.py --cornell [--spp 4096]
 """
 
@@ -43,9 +48,9 @@ def render_pbrt(scene, spp, seed, workdir):
     return read_pfm(pfm)
 
 
-def render_here(scene, spp, seed, workdir):
+def render_here(scene, spp, seed, workdir, extra_args):
     log = []
-    image, dropped = run_render(scene, spp, seed=seed, workdir=workdir, out_name=f"here_{seed}.pfm", timeout=3000, log=log)
+    image, dropped = run_render(scene, spp, seed=seed, workdir=workdir, out_name=f"here_{seed}.pfm", timeout=3000, log=log, extra_args=extra_args)
     ratio = 1.0
     for line in log:
         if line.startswith("render: pbrt imaging ratio "):
@@ -67,6 +72,8 @@ def main():
     parser.add_argument("--size", type=int, default=256, help="--cornell only: the image's width and height")
     parser.add_argument("--out", type=Path, default=None, help="keep the images and PNGs of both renders and their difference here")
     parser.add_argument("--max-mean-error", type=float, default=None, help="fail when a channel's mean ratio is further than this from 1")
+    parser.add_argument("--spectral", default=None, help="render here in this representation (hero, bands, gaussians, rgb)")
+    parser.add_argument("--lanes", type=int, default=None, help="with --spectral: the lane count")
     args = parser.parse_args()
     if args.scene is None and not args.cornell:
         parser.error("give a .pbrt scene or --cornell")
@@ -77,11 +84,12 @@ def main():
     if args.cornell:
         scene.write_text(pbrt_cornell.scene_text(True, args.size, args.size, args.spp, "pbrt_out.exr"))
     pbrt_spp = args.pbrt_spp or args.spp
+    extra_args = (["--spectral", args.spectral] if args.spectral else []) + (["--lanes", str(args.lanes)] if args.lanes else [])
 
     print(f"{scene}: {args.spp} spp here and {pbrt_spp} spp in pbrt, two seeds each")
     here = []
     for seed in (1, 2):
-        image, dropped, ratio, report = render_here(scene, args.spp, seed, workdir)
+        image, dropped, ratio, report = render_here(scene, args.spp, seed, workdir, extra_args)
         here.append(image)
         if dropped:
             print(f"  here, seed {seed}: {dropped} samples dropped as non-finite")

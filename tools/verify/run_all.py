@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Runs every verification check and prints one line per result:
 
-  bin/bsdf_test, bin/light_test, bin/sampler_test, bin/film_test, bin/aov_test, bin/bvh_bench   the CPU tests
+  bin/bsdf_test, bin/light_test, bin/sampler_test, bin/film_test, bin/aov_test, bin/spectrum_test, bin/pbrt_test,
+  bin/bvh_bench                                                    the CPU tests
   VKGUIDE_SELFTEST=1 bin/vulkan_guide                              shaders against their C++ mirrors
-  furnace_check.py, cornell_check.py, filter_check.py, film_check.py, aov_check.py   scene-level energy, reference, filter, film and output checks
+  furnace_check.py, cornell_check.py, filter_check.py, film_check.py, aov_check.py, spectral_check.py
+                                                                   scene-level energy, reference, filter, film, output
+                                                                   and spectral checks
 
 Build first (cd build && cmake --build .). The renders need the GPU and take a few minutes; --cpu-only
 skips them, --quick shrinks them.
@@ -48,6 +51,8 @@ def main():
     ok &= run("sampler_test", [str(BIN / "sampler_test")])
     ok &= run("film_test", [str(BIN / "film_test")])
     ok &= run("aov_test", [str(BIN / "aov_test")])
+    ok &= run("spectrum_test", [str(BIN / "spectrum_test")])
+    ok &= run("pbrt_test", [str(BIN / "pbrt_test")])
     ok &= run("bvh_bench", [str(BIN / "bvh_bench"), str(ROOT / "assets/models/structure.glb"), "--rays", "2000"])
     if not args.cpu_only:
         env = dict(os.environ, VKGUIDE_WINDOW="background", VKGUIDE_SELFTEST="1")
@@ -62,6 +67,7 @@ def main():
         ok &= run("filter_check", [sys.executable, os.path.join(HERE, "filter_check.py")] + (["--spp", "256"] if args.quick else []), cwd=HERE)
         ok &= run("film_check", [sys.executable, os.path.join(HERE, "film_check.py")], cwd=HERE)
         ok &= run("aov_check", [sys.executable, os.path.join(HERE, "aov_check.py")], cwd=HERE)
+        ok &= run("spectral_check", [sys.executable, os.path.join(HERE, "spectral_check.py")] + quick, cwd=HERE)
     print("all checks passed" if ok else "some checks failed")
     return 0 if ok else 1
 

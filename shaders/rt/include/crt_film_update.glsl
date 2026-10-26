@@ -56,7 +56,7 @@ void main()
 	}
 	// the auxiliary outputs and the light groups' weight sum, from the same slots. Once per frame: in the outlier
 	// film's first pass
-	if (CRT_AOV || CRT_LIGHT_GROUPS) {
+	if (CRT_AOV || CRT_LIGHT_GROUPS || CRT_SPECTRAL_IMAGES) {
 		aovFoldPixel(pixel, coord);
 	}
 	if (spawned == 0u) {

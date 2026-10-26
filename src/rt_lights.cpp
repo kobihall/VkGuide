@@ -19,14 +19,24 @@ void LightListBuilder::addPunctual(const SceneLight& light)
 	if (m_list.lights.size() != m_list.header.deltaCount) {
 		return;
 	}
-	const glm::vec3 intensity = glm::max(light.color, glm::vec3(0.f)) * std::max(light.intensity, 0.f);
-	const float luminance = luminanceOf(intensity);
+	//an RGB color in an sRGB scene is the authored triple, so the record is what it always was
+	const glm::vec3 color = light.color.kind == SpectrumKind::Rgb && m_context.space == ColorSpaceId::Srgb ? light.color.rgb : exactRgb(light.color, SpectrumRole::Illuminant, m_context);
+	const glm::vec3 intensity = glm::max(color, glm::vec3(0.f)) * std::max(light.intensity, 0.f);
+	float luminance = luminanceOf(intensity);
+	//a spectrum with no luminance (an infrared line) is priced by its radiance: only a spectral build sees it
+	if (!(luminance > 0.f) && light.color.kind != SpectrumKind::Rgb) {
+		luminance = spectrumRadiometricPrice(light.color) * std::max(light.intensity, 0.f);
+	}
 	if (!(luminance > 0.f) || !std::isfinite(luminance)) {
 		return;
 	}
 
 	GpuLight record;
 	record.radiance = intensity;
+	if (m_spectra != nullptr) {
+		record.spectrum = m_spectra->add(light.color, SpectrumRole::Illuminant);
+		record.spectrumScale = std::max(light.intensity, 0.f);
+	}
 	record.group = std::min(light.lightGroup, MAX_LIGHT_GROUPS - 1u);
 	const glm::vec3 direction = glm::normalize(light.direction());
 	float crossSection = 0.f;
@@ -63,9 +73,12 @@ void LightListBuilder::addPunctual(const SceneLight& light)
 	m_list.punctualLights++;
 }
 
-uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance, uint32_t group)
+uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance, uint32_t group, const LightSpectrum& spectrum)
 {
-	const float luminance = luminanceOf(radiance);
+	float luminance = luminanceOf(radiance);
+	if (!(luminance > 0.f)) {
+		luminance = spectrum.price;
+	}
 	const std::vector<AreaLightGeometry> surfaces = shapeLightGeometry(kind, objectToWorld);
 	if (!(luminance > 0.f) || !std::isfinite(luminance) || surfaces.empty()) {
 		return GPU_NO_LIGHT;
@@ -77,6 +90,8 @@ uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWor
 		record.kind = (uint32_t)surface.kind;
 		record.radiance = radiance;
 		record.group = group;
+		record.spectrum = spectrum.index;
+		record.spectrumScale = spectrum.scale;
 		switch (surface.kind) {
 		case AreaLightKind::Sphere:
 			record.a = glm::vec4(surface.a, surface.radius);
@@ -107,11 +122,13 @@ uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWor
 	return first;
 }
 
-uint32_t LightListBuilder::addTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, const glm::vec3& radiance, uint32_t attributeIndex, uint32_t material, int emissiveLayer, float textureMean, uint32_t group)
+uint32_t LightListBuilder::addTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, const glm::vec3& radiance, uint32_t attributeIndex, uint32_t material, int emissiveLayer, float textureMean, uint32_t group,
+	const LightSpectrum& spectrum)
 {
 	const float area = 0.5f * glm::length(glm::cross(v1 - v0, v2 - v0));
 	//two-sided, as the tracer's triangles are, and as bright as its texture is on average over it
-	const float power = 2.f * LIGHT_PI * area * luminanceOf(radiance) * textureMean;
+	const float luminance = luminanceOf(radiance) > 0.f ? luminanceOf(radiance) : spectrum.price;
+	const float power = 2.f * LIGHT_PI * area * luminance * textureMean;
 	if (!(power > 0.f) || !std::isfinite(power)) {
 		return GPU_NO_LIGHT;
 	}
@@ -123,6 +140,8 @@ uint32_t LightListBuilder::addTriangle(const glm::vec3& v0, const glm::vec3& v1,
 	record.radiance = radiance;
 	record.power = power;
 	record.group = group;
+	record.spectrum = spectrum.index;
+	record.spectrumScale = spectrum.scale;
 	m_list.lights.push_back(record);
 	m_crossSectionPower.push_back(0.f);
 	m_list.triangleLightCount++;

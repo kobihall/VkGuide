@@ -62,7 +62,12 @@ namespace {
 //17: a model may be a pbrt-v4 scene file (.pbrt or .pbrt.gz), re-imported on load like a glTF file. A shape
 //   the model brought carries its "model" index, and "environmentModel" names the model whose environment
 //   the scene shows. Both absent in an older file, whose shapes are its own
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 17;
+//18: adds "spectral" to "render" (docs/plans/completed/pbrt-spectral-rendering.md): the "representation" (rgb,
+//   monochromatic, gaussians, bands, hero), "lanes", "range", "wavelength", "designWavelength", "bandBasis",
+//   "gaussians", "sampling", "emittersShare", "colorSpace" and "matching"; "spectralDisplay" at the top; and a
+//   spectrum's object form wherever a color was an [r, g, b] array (spectrumJson()). An older file reads in exact
+//   RGB with sRGB colors, as it always rendered
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 18;
 
 //---------------------------------------------------------------- writing
 
@@ -109,6 +114,47 @@ std::string jsonVec3(const glm::vec3& v)
 }
 
 //x, y, z, w - named explicitly rather than trusting glm's memory order
+// A SpectrumRef: an RGB value is the [r, g, b] array every older file has, so a scene that uses no spectrum reads and
+// writes exactly as before; any other kind is an object that names it (docs/plans/completed/pbrt-spectral-rendering.md):
+//   {"constant": 1.5}   {"blackbody": 2700, "scale": 1}   {"named": "metal-Au-eta", "scale": 1}
+//   {"tabulated": [l0, v0, l1, v1, ...], "scale": 1}   {"spd": "path/file.spd", "scale": 1}
+//   {"dispersion": 2, "coefficients": [...], "name": "N-BK7", "range": [300, 2500]}
+//   {"line": 632.8, "fwhm": 0.002, "profile": "gaussian", "scale": 1}
+std::string spectrumJson(const SpectrumRef& ref)
+{
+	switch (ref.kind) {
+	case SpectrumKind::Rgb:
+		return jsonVec3(ref.rgb);
+	case SpectrumKind::Constant:
+		return fmt::format(R"({{"constant":{}}})", jsonNumber(ref.value));
+	case SpectrumKind::Blackbody:
+		return fmt::format(R"({{"blackbody":{},"scale":{}}})", jsonNumber(ref.value), jsonNumber(ref.scale));
+	case SpectrumKind::Named:
+		return fmt::format(R"({{"named":{},"scale":{}}})", jsonString(ref.name), jsonNumber(ref.scale));
+	case SpectrumKind::Tabulated: {
+		std::string samples;
+		for (size_t i = 0; i < ref.samples.size(); i++) {
+			samples += (i == 0 ? "" : ",") + jsonNumber(ref.samples[i]);
+		}
+		return fmt::format(R"({{"tabulated":[{}],"scale":{}}})", samples, jsonNumber(ref.scale));
+	}
+	case SpectrumKind::File:
+		return fmt::format(R"({{"spd":{},"scale":{}}})", jsonString(ref.name), jsonNumber(ref.scale));
+	case SpectrumKind::Dispersion: {
+		std::string coefficients;
+		for (int i = 0; i < dispersionCoefficientCount(ref.formula); i++) {
+			coefficients += fmt::format("{}{:.17g}", i == 0 ? "" : ",", ref.coefficients[(size_t)i]);
+		}
+		return fmt::format(R"({{"dispersion":{},"coefficients":[{}],"name":{},"range":[{},{}]}})", (int)ref.formula, coefficients, jsonString(ref.name),
+			jsonNumber(ref.validRange.x), jsonNumber(ref.validRange.y));
+	}
+	case SpectrumKind::Line:
+		return fmt::format(R"({{"line":{},"fwhm":{},"profile":"{}","scale":{}}})", jsonNumber(ref.value), jsonNumber(ref.width),
+			ref.profile == LineProfile::Lorentzian ? "lorentzian" : "gaussian", jsonNumber(ref.scale));
+	}
+	return jsonVec3(ref.rgb);
+}
+
 std::string jsonQuat(const glm::quat& q)
 {
 	return fmt::format("[{},{},{},{}]", jsonNumber(q.x), jsonNumber(q.y), jsonNumber(q.z), jsonNumber(q.w));
@@ -128,7 +174,7 @@ std::string materialParamsJson(const MaterialDef& material, const std::set<std::
 		if (const float* f = std::get_if<float>(&value)) {
 			json += fmt::format(R"(,"{}":{})", param.name, jsonNumber(*f));
 		} else if (const SpectrumRef* spectrum = std::get_if<SpectrumRef>(&value)) {
-			json += fmt::format(R"(,"{}":{})", param.name, jsonVec3(spectrum->rgb));
+			json += fmt::format(R"(,"{}":{})", param.name, spectrumJson(*spectrum));
 		} else if (const int* i = std::get_if<int>(&value)) {
 			json += fmt::format(R"(,"{}":{})", param.name, *i);
 		} else if (const bool* b = std::get_if<bool>(&value)) {
@@ -212,6 +258,24 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		}
 	}
 	json += fmt::format(R"(],"captureThroughSpecular":{}}},"lightGroups":{}}})", r.aov.captureThroughSpecular, r.lightGroups);
+	//version 18: the spectral settings, still inside "render"
+	{
+		const SpectralSettings& s = r.spectral;
+		json.pop_back();
+		std::string gaussians;
+		for (size_t i = 0; i < s.gaussians.size(); i++) {
+			gaussians += fmt::format("{}[{},{}]", i == 0 ? "" : ",", jsonNumber(s.gaussians[i].center), jsonNumber(s.gaussians[i].fwhm));
+		}
+		json += fmt::format(R"(,"spectral":{{"representation":{},"lanes":{},"range":[{},{}],"wavelength":{},"designWavelength":{},"bandBasis":{},"gaussians":[{}],"sampling":{},"emittersShare":{},"colorSpace":{},"images":{},"matching":"cie1931"}}}})",
+			jsonString(spectralRepresentationKey(s.representation)), s.lanes, jsonNumber(s.lambdaMin), jsonNumber(s.lambdaMax), jsonNumber(s.monochromaticWavelength), jsonNumber(s.designWavelength),
+			jsonString(bandBasisKey(s.bandBasis)), gaussians, jsonString(wavelengthSamplingKey(s.sampling)), jsonNumber(s.lightSamplingShare), jsonString(colorSpace(s.colorSpace).key), s.imageBuckets);
+	}
+	//version 18: how a monochromatic render is shown
+	{
+		const SpectralDisplay& d = scene.spectralDisplay;
+		json += fmt::format(R"(,"spectralDisplay":{{"mode":{},"colormap":{},"logarithmic":{},"decades":{},"infrared":{},"ultraviolet":{},"xuv":{}}})", jsonString(monochromeDisplayKey(d.mode)),
+			jsonString(colormapKey(d.colormap)), d.logarithmic, jsonNumber(d.decades), jsonVec3(d.infraredColor), jsonVec3(d.ultravioletColor), jsonVec3(d.xuvColor));
+	}
 
 	//version 16: the light groups' names and the background's group, and what exporting a render does
 	json += R"(,"lightGroupNames":[)";
@@ -274,7 +338,7 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		if (light.kind != LightKind::Point) {
 			json += fmt::format(R"(,"orientation":{})", jsonQuat(light.orientation));
 		}
-		json += fmt::format(R"(,"color":{},"intensity":{})", jsonVec3(light.color), jsonNumber(light.intensity));
+		json += fmt::format(R"(,"color":{},"intensity":{})", spectrumJson(light.color), jsonNumber(light.intensity));
 		if (light.kind != LightKind::Directional) {
 			json += fmt::format(R"(,"range":{})", jsonNumber(light.range));
 		}
@@ -427,6 +491,97 @@ bool readVec3(JsonElement element, glm::vec3& out)
 	return true;
 }
 
+// what spectrumJson() wrote; false, leaving `out` alone, for anything else. A file a .spd reference names that is
+// gone keeps the reference with no samples, which evaluates to zero, and says so
+bool readSpectrum(JsonElement element, SpectrumRef& out)
+{
+	glm::vec3 rgb(0.f);
+	if (readVec3(element, rgb)) {
+		out = rgbSpectrum(rgb);
+		return true;
+	}
+	simdjson::dom::object object;
+	if (element.get_object().get(object) != simdjson::SUCCESS) {
+		return false;
+	}
+	double scale = 1.0;
+	readDouble(object["scale"], scale);
+	double value = 0.0;
+	std::string_view text;
+	if (readDouble(object["constant"], value)) {
+		out = constantRef((float)value);
+		return true;
+	}
+	if (readDouble(object["blackbody"], value)) {
+		out = blackbodyRef((float)value, (float)scale);
+		return true;
+	}
+	if (object["named"].get_string().get(text) == simdjson::SUCCESS) {
+		if (std::optional<SpectrumRef> named = namedRef(text, (float)scale)) {
+			out = *named;
+			return true;
+		}
+		fmt::println("scene: the named spectrum \"{}\" is not one pbrt-v4 has; the parameter keeps its value", text);
+		return false;
+	}
+	if (object["spd"].get_string().get(text) == simdjson::SUCCESS) {
+		std::string error;
+		if (std::optional<SpectrumRef> file = fileRef(std::string(text), &error, (float)scale)) {
+			out = *file;
+		} else {
+			fmt::println("scene: {}", error);
+			out = tabulatedRef({}, (float)scale);
+			out.kind = SpectrumKind::File;
+			out.name = std::string(text);
+		}
+		return true;
+	}
+	simdjson::dom::array array;
+	if (object["tabulated"].get_array().get(array) == simdjson::SUCCESS) {
+		std::vector<float> samples;
+		for (simdjson::dom::element v : array) {
+			double number = 0.0;
+			if (readDouble(v, number)) {
+				samples.push_back((float)number);
+			}
+		}
+		out = tabulatedRef(std::move(samples), (float)scale);
+		return true;
+	}
+	int64_t formula = 0;
+	if (object["dispersion"].get_int64().get(formula) == simdjson::SUCCESS) {
+		std::vector<double> coefficients;
+		if (object["coefficients"].get_array().get(array) == simdjson::SUCCESS) {
+			for (simdjson::dom::element v : array) {
+				double number = 0.0;
+				if (readDouble(v, number)) {
+					coefficients.push_back(number);
+				}
+			}
+		}
+		std::string_view name;
+		object["name"].get_string().get(name);
+		out = dispersionRef((DispersionFormula)formula, coefficients, std::string(name));
+		glm::vec3 range(0.f);
+		if (object["range"].get_array().get(array) == simdjson::SUCCESS && array.size() == 2) {
+			double a = 0.0, b = 0.0;
+			readDouble(array.at(0), a);
+			readDouble(array.at(1), b);
+			out.validRange = glm::vec2((float)a, (float)b);
+		}
+		return true;
+	}
+	if (readDouble(object["line"], value)) {
+		double fwhm = 0.0;
+		readDouble(object["fwhm"], fwhm);
+		std::string_view profile;
+		object["profile"].get_string().get(profile);
+		out = lineRef((float)value, (float)fwhm, profile == "lorentzian" ? LineProfile::Lorentzian : LineProfile::Gaussian, (float)scale);
+		return true;
+	}
+	return false;
+}
+
 //written x, y, z, w by jsonQuat()
 bool readQuat(JsonElement element, glm::quat& out)
 {
@@ -462,6 +617,8 @@ bool readQuat(JsonElement element, glm::quat& out)
 
 //an inline material of a file before version 12, as a user material: the selected type's fields, by
 //the names the parameters still have
+void readMaterialParams(simdjson::dom::object object, MaterialType type, ParamSet& params);
+
 bool readLegacyMaterial(JsonElement element, MaterialDef& out, std::string& error)
 {
 	simdjson::dom::object object;
@@ -485,6 +642,12 @@ bool readLegacyMaterial(JsonElement element, MaterialDef& out, std::string& erro
 	//the defaults stand for every field the file does not carry (the unselected types' parameters)
 	out = MaterialDef {};
 	out.type = *type;
+	//the types newer than inline materials have no legacy form: a hand-written or generated file (tools/verify) gives
+	//their parameters by name, as a version 12 material record does
+	if (*type == MaterialType::Glass || *type == MaterialType::Conductor) {
+		readMaterialParams(object, *type, out.params);
+		return true;
+	}
 
 	//a light's colour is what it emits, not an albedo, and the file said so
 	const char* colorKey = *type == MaterialType::Emissive ? "color" : "albedo";
@@ -494,7 +657,7 @@ bool readLegacyMaterial(JsonElement element, MaterialDef& out, std::string& erro
 			error = fmt::format("{} material has no valid \"{}\"", typeName, colorKey);
 			return false;
 		}
-		out.params["albedo"] = SpectrumRef { albedo };
+		out.params["albedo"] = rgbSpectrum(albedo);
 	}
 
 	double value = 0.0;
@@ -542,7 +705,7 @@ bool readLegacyMaterial(JsonElement element, MaterialDef& out, std::string& erro
 			error = "pbr material has no valid \"emission\"";
 			return false;
 		}
-		out.params["emission"] = SpectrumRef { albedo };
+		out.params["emission"] = rgbSpectrum(albedo);
 		if (!readDouble(object["strength"], value) || value < 0.0) {
 			error = "pbr material has no valid \"strength\"";
 			return false;
@@ -732,6 +895,54 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 		readOptionalBool(aov["captureThroughSpecular"], out.aov.captureThroughSpecular);
 	}
 	readOptionalBool(object["lightGroups"], out.lightGroups);
+	//version 18: the spectral settings; an older file renders in exact RGB with sRGB colors
+	simdjson::dom::object spectral;
+	if (object["spectral"].get_object().get(spectral) == simdjson::SUCCESS) {
+		SpectralSettings& s = out.spectral;
+		auto readKey = [&](const char* field, auto& value, auto count, auto keyOf) {
+			std::string_view text;
+			if (spectral[field].get_string().get(text) != simdjson::SUCCESS) {
+				return;
+			}
+			for (uint32_t i = 0; i < (uint32_t)count; i++) {
+				if (text == keyOf(i)) {
+					value = (std::remove_reference_t<decltype(value)>)i;
+				}
+			}
+		};
+		readKey("representation", s.representation, SpectralRepresentation::Count, [](uint32_t i) { return spectralRepresentationKey((SpectralRepresentation)i); });
+		readKey("bandBasis", s.bandBasis, BandBasis::Count, [](uint32_t i) { return bandBasisKey((BandBasis)i); });
+		readKey("sampling", s.sampling, WavelengthSampling::Count, [](uint32_t i) { return wavelengthSamplingKey((WavelengthSampling)i); });
+		readKey("colorSpace", s.colorSpace, ColorSpaceId::Count, [](uint32_t i) { return colorSpace((ColorSpaceId)i).key; });
+		readOptionalUint(spectral["lanes"], s.lanes);
+		readOptionalUint(spectral["images"], s.imageBuckets);
+		simdjson::dom::array range;
+		if (spectral["range"].get_array().get(range) == simdjson::SUCCESS && range.size() == 2) {
+			double a = s.lambdaMin, b = s.lambdaMax;
+			readDouble(range.at(0), a);
+			readDouble(range.at(1), b);
+			s.lambdaMin = (float)a;
+			s.lambdaMax = (float)b;
+		}
+		readOptionalFloat(spectral["wavelength"], s.monochromaticWavelength);
+		readOptionalFloat(spectral["designWavelength"], s.designWavelength);
+		readOptionalFloat(spectral["emittersShare"], s.lightSamplingShare);
+		simdjson::dom::array gaussians;
+		if (spectral["gaussians"].get_array().get(gaussians) == simdjson::SUCCESS) {
+			size_t i = 0;
+			for (simdjson::dom::element band : gaussians) {
+				simdjson::dom::array pair;
+				if (i < s.gaussians.size() && band.get_array().get(pair) == simdjson::SUCCESS && pair.size() == 2) {
+					double center = s.gaussians[i].center, fwhm = s.gaussians[i].fwhm;
+					readDouble(pair.at(0), center);
+					readDouble(pair.at(1), fwhm);
+					s.gaussians[i] = { (float)center, (float)fwhm };
+				}
+				i++;
+			}
+		}
+		s = clampSpectralSettings(s);
+	}
 
 	//a hand-edited file cannot land on something the ui could not: the custom-resolution fields
 	//hold to the same bounds
@@ -839,8 +1050,10 @@ bool readLight(simdjson::dom::object object, size_t index, size_t modelCount, Sc
 		return false;
 	}
 	readQuat(object["orientation"], light.orientation);
-	readVec3(object["color"], light.color);
-	light.color = glm::max(light.color, glm::vec3(0.f));
+	readSpectrum(object["color"], light.color);
+	if (light.color.kind == SpectrumKind::Rgb) {
+		light.color.rgb = glm::max(light.color.rgb, glm::vec3(0.f));
+	}
 	double intensity = 0.0;
 	if (!readDouble(object["intensity"], intensity) || intensity < 0.0) {
 		error = fmt::format("light \"{}\" has no valid \"intensity\"", light.name);
@@ -941,9 +1154,9 @@ void readMaterialParams(simdjson::dom::object object, MaterialType type, ParamSe
 			break;
 		}
 		case ParamKind::Spectrum: {
-			glm::vec3 value(0.f);
-			if (readVec3(object[param.name], value)) {
-				params[param.name] = SpectrumRef { value };
+			SpectrumRef value;
+			if (readSpectrum(object[param.name], value)) {
+				params[param.name] = value;
 			}
 			break;
 		}
@@ -1139,6 +1352,30 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 	}
 	readOptionalUint(root["environmentGroup"], ctx.scene.environmentGroup);
 	ctx.scene.environmentGroup = std::min(ctx.scene.environmentGroup, (uint32_t)ctx.scene.lightGroupNames.size() - 1u);
+	simdjson::dom::object displayObject;
+	if (root["spectralDisplay"].get_object().get(displayObject) == simdjson::SUCCESS) {
+		SpectralDisplay& d = ctx.scene.spectralDisplay;
+		std::string_view text;
+		if (displayObject["mode"].get_string().get(text) == simdjson::SUCCESS) {
+			for (uint32_t i = 0; i < (uint32_t)MonochromeDisplay::Count; i++) {
+				if (text == monochromeDisplayKey((MonochromeDisplay)i)) {
+					d.mode = (MonochromeDisplay)i;
+				}
+			}
+		}
+		if (displayObject["colormap"].get_string().get(text) == simdjson::SUCCESS) {
+			for (uint32_t i = 0; i < (uint32_t)Colormap::Count; i++) {
+				if (text == colormapKey((Colormap)i)) {
+					d.colormap = (Colormap)i;
+				}
+			}
+		}
+		readOptionalBool(displayObject["logarithmic"], d.logarithmic);
+		readOptionalFloat(displayObject["decades"], d.decades);
+		readVec3(displayObject["infrared"], d.infraredColor);
+		readVec3(displayObject["ultraviolet"], d.ultravioletColor);
+		readVec3(displayObject["xuv"], d.xuvColor);
+	}
 	simdjson::dom::object exportObject;
 	if (root["export"].get_object().get(exportObject) == simdjson::SUCCESS) {
 		readOptionalBool(exportObject["half"], ctx.scene.exportSettings.halfFloat);

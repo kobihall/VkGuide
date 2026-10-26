@@ -128,6 +128,8 @@ struct SceneDescription {
 	std::vector<std::string> lightGroupNames { "Default" };
 	uint32_t environmentGroup { 0 };
 	ExportSettings exportSettings;
+	// version 18: how a monochromatic render is shown. Display only, like the export settings
+	SpectralDisplay spectralDisplay;
 };
 
 IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);

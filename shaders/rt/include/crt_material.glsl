@@ -8,7 +8,7 @@
 // struct and reader here, beside its pack function (docs/plans/pbrt-bsdf-library.md).
 //
 // Included by crt_traverse.glsl, crt_light.glsl and crt_scatter.glsl, and by any kernel that reads
-// a material. Requires crt_common.glsl.
+// a material. Requires crt_common.glsl, and crt_spectrum.glsl in a spectral build.
 
 #ifndef CRT_MATERIAL_GLSL
 #define CRT_MATERIAL_GLSL
@@ -36,6 +36,11 @@ struct ClassicMaterial {
 	// emitted colour, sRGB
 	int emissiveLayer;
 	float normalScale;
+#ifdef CRT_SPECTRAL
+	// the albedo at the path's lanes, as resolveMaterial() evaluates it (crt_scatter.glsl): the material's albedo
+	// reference times its base color texel. The RGB fields above stay what the record holds
+	Spectrum color;
+#endif
 };
 
 // one of the six original types' records
@@ -59,6 +64,9 @@ ClassicMaterial classicMaterial(uint index)
 	m.metalRoughLayer = floatBitsToInt(d.y);
 	m.emissiveLayer = floatBitsToInt(d.z);
 	m.normalScale = d.w;
+#ifdef CRT_SPECTRAL
+	m.color = spectrumConst(0.0);
+#endif
 	return m;
 }
 

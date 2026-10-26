@@ -2,7 +2,7 @@
 
 Materials are about to grow from six types with a handful of scalar fields to around fifteen types whose parameters can be spectra, textures or both. Today each shape and each overridden mesh object carries its own inline `SceneMaterial`, which stores every type's fields at once, and the GPU gets one fixed 64-byte record per material. This plan replaces that with a named material library, a traits table that describes every type's parameters as data, variable-length GPU records, and the two surface queues the user chose for kernel 06.
 
-*Implemented 2026-10-19; the as-built record is the last section before the sources. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md). [pbrt-bsdf-library.md](../pbrt-bsdf-library.md), [pbrt-textures.md](../pbrt-textures.md), [pbrt-spectral-rendering.md](../pbrt-spectral-rendering.md) and every other appearance plan add types and parameter kinds through it. Part of the [roadmap](../pbrt-roadmap.md).*
+*Implemented 2026-10-19; the as-built record is the last section before the sources. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md). [pbrt-bsdf-library.md](../pbrt-bsdf-library.md), [pbrt-textures.md](../pbrt-textures.md), [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) and every other appearance plan add types and parameter kinds through it. Part of the [roadmap](../pbrt-roadmap.md).*
 
 ## Decisions already made
 
@@ -71,7 +71,7 @@ struct MaterialTraits {
 
 Because values are stored by name, switching a material from metal to conductor keeps `roughness` and loses nothing, which preserves today's behavior for every type.
 
-`ParamValue` holds a float, a `SpectrumRef` ([pbrt-spectral-rendering.md](../pbrt-spectral-rendering.md)), a `TexRef` ([pbrt-textures.md](../pbrt-textures.md)), an enum or a bool. Until those plans land, `SpectrumRef` is an RGB triple and `TexRef` is an optional texture layer, which is exactly what `RaytraceTriMaterial` holds today.
+`ParamValue` holds a float, a `SpectrumRef` ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)), a `TexRef` ([pbrt-textures.md](../pbrt-textures.md)), an enum or a bool. Until those plans land, `SpectrumRef` is an RGB triple and `TexRef` is an optional texture layer, which is exactly what `RaytraceTriMaterial` holds today.
 
 ### GPU records
 

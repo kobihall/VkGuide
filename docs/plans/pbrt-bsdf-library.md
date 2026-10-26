@@ -2,7 +2,21 @@
 
 The six materials the tracer has are Ray Tracing in One Weekend's lambertian, fuzzed metal, phong and Schlick dielectric, an emitter, and glTF's metallic-roughness model. None of them has an exact Fresnel term, a complex index of refraction, a rough dielectric, anisotropy, a thin window pane or diffuse transmission, and the dielectric does not scale radiance by η² when it refracts. This plan adds pbrt-v4's BxDFs as new material types beside the existing ones, which all stay.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md), [pbrt-material-system.md](completed/pbrt-material-system.md) and [pbrt-verification-harness.md](completed/pbrt-verification-harness.md). Dispersion also needs [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Partly implemented 2026-10-23: `glass`, `conductor`, the Fresnel and microfacet modules and the BxDF interface, built with [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) for dispersion and measured metals. "Built with spectral rendering" below records them; the rest of the plan is not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md), [pbrt-material-system.md](completed/pbrt-material-system.md) and [pbrt-verification-harness.md](completed/pbrt-verification-harness.md). Part of the [roadmap](pbrt-roadmap.md).*
+
+## Built with spectral rendering
+
+On 2026-10-23 the user asked for every part of this plan that dispersion needs, and nothing more ([pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md)). As built:
+
+- `src/bxdf.h/.cpp` in `rt_bsdf` holds `frDielectric()`, `frComplex()`, `refractDirection()`, `TrowbridgeReitz`, `DielectricBxdf` and `ConductorBxdf` (with `fromReflectance()`), pbrt-v4's code. Its line-for-line GLSL mirrors are `crt_fresnel.glsl`, `crt_microfacet.glsl` and one `crt_bxdf.glsl` for both BxDFs, in place of the per-family files the table under "Files" lists. Add the next BxDFs to `crt_bxdf.glsl` or split it when it grows.
+- The interface is `bxdfSample()`, `bxdfF()`, `bxdfPdf()` and `bxdfFlags()` on a `BxdfMaterial`, with the transport mode. `BxdfSample` has no `pdfIsProportional` yet; [pbrt-layered-materials.md](pbrt-layered-materials.md) adds it.
+- `glass` (η as a spectrum, roughness u and v, remap roughness) and `conductor` (η and k, or from reflectance; roughness u and v) are `MATERIAL_TRAITS` rows in the complex material class, so only kernel 06's complex build evaluates them, and `ComplexMaterial` in `crt_scatter.glsl` dispatches to them beside the `pbr` path. The basic build and every existing scene are unchanged. Anisotropy follows dp/du from the interaction.
+- In exact RGB, `glass` reads η at the scene's **Design wavelength** (587.6 nm by default) and `conductor` reads η and k at 630, 532 and 465 nm. An RGB η or k is read per channel, as pbrt's `RGBUnboundedSpectrum`.
+- Neither type takes a texture or a normal map yet: `albedoLayer` and `normalLayer` are -1 in their records. [pbrt-textures.md](pbrt-textures.md) and a later step of this plan add them.
+- The importer maps pbrt's `conductor` (a textured reflectance still becomes `pbr`) and `dielectric`, smooth or rough, as "Importing pbrt scenes" asks. `thindielectric` is still solid glass.
+- `bin/bsdf_test --material glass|conductor` runs the χ², weight, energy and reciprocity checks on them, in both transport modes for glass, and **Windows** → **GPU self-tests** → **BxDF parity** compares `crt_bxdf.glsl` with `src/bxdf.cpp`. `tools/verify/spectral_check.py`'s furnace shows glass vanishing and a rough glass losing what single scattering loses.
+
+The rest of "Order of work" stands, without its glass and conductor steps.
 
 ## What the renderer does today
 
@@ -69,8 +83,8 @@ Every one has its line-for-line C++ counterpart in `rt_bsdf`.
 
 ### What each BxDF gets right
 
-- `conductor` takes its reflectance from the complex Fresnel equations with per-lane η and k (gold, copper and the rest come from named spectra, [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)). A reflectance-only mode sets η = 1 and derives k from the color, as pbrt-v4 does. In exact RGB, η and k are evaluated at representative wavelengths for red, green and blue (630, 532 and 465 nm).
-- `glass` refracts with the generalized half vector (§9.7), chooses reflection with probability R, divides radiance by η² on transmission in radiance mode, and returns the crossed η so that [pbrt-russian-roulette.md](pbrt-russian-roulette.md) can track `etaScale`. A non-constant η terminates the secondary wavelengths ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)).
+- `conductor` takes its reflectance from the complex Fresnel equations with per-lane η and k (gold, copper and the rest come from named spectra, [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md)). A reflectance-only mode sets η = 1 and derives k from the color, as pbrt-v4 does. In exact RGB, η and k are evaluated at representative wavelengths for red, green and blue (630, 532 and 465 nm).
+- `glass` refracts with the generalized half vector (§9.7), chooses reflection with probability R, divides radiance by η² on transmission in radiance mode, and returns the crossed η so that [pbrt-russian-roulette.md](pbrt-russian-roulette.md) can track `etaScale`. A non-constant η terminates the secondary wavelengths ([pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md)).
 - `thin_glass` sums the geometric series of inter-reflections between two parallel interfaces (§9.5.1) and transmits along −wo, for window panes and bubbles that should not bend light.
 - Oren–Nayar, the `diffuse` type with σ above 0, is Oren and Nayar's approximation with A and B precomputed from σ (PBR 3ed §8.4.1). pbrt-v4 dropped it; it stays useful for rough clay and the moon.
 - `mix` resolves to one of its two materials with probability equal to the amount, as pbrt-v4 does, so a 50 % mix costs the evaluation of one material (PBR 4ed §10.5.1). The choice must come out the same whenever the same hit is evaluated again (next-event estimation and the continuation both evaluate it), so it uses a hash of the hit point and the outgoing direction, as pbrt's `ChooseMaterial()` does, rather than a sample dimension.
@@ -99,7 +113,7 @@ A glTF material with none of these keeps becoming `pbr`, so no existing import c
 
 [completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
 
-- **Conductors** become `pbr` with metallic 1, the metal's color at normal incidence and Schlick's Fresnel (`mapMaterial()` and `conductorColor()` in `src/pbrt_import.cpp`). Map `conductor` to this plan's conductor with eta and k (RGB until [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)) and its anisotropic roughness, which `roughnessOf()` averages today. 78 conductors, in 13 scenes; `killeroo-gold` is the comparison scene.
+- **Conductors** become `pbr` with metallic 1, the metal's color at normal incidence and Schlick's Fresnel (`mapMaterial()` and `conductorColor()` in `src/pbrt_import.cpp`). Map `conductor` to this plan's conductor with eta and k (RGB until [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md)) and its anisotropic roughness, which `roughnessOf()` averages today. 78 conductors, in 13 scenes; `killeroo-gold` is the comparison scene.
 - **Rough dielectrics** are smooth (`setDielectric()` reports them; `lte-orb-rough-glass`). `thindielectric` is a solid dielectric (`villa`). Map both to this plan's dielectric and thin dielectric.
 - **Diffuse transmission** is Lambertian with its transmittance dropped (326 materials, mostly foliage, in `barcelona-pavilion`, `bunny-fur`, `kroken`, `landscape`, `sanmiguel`, `villa` and `watercolor`). Map it to this plan's diffuse transmission with `reflectance`, `transmittance` and `scale`.
 - **Mix** picks whichever of its two materials pbrt chooses more often, from a constant `amount`; an `amount` texture is read as its constant (`bmw-m6`, `crown`, `kroken`, `watercolor`). Map it to this plan's mix with the amount as a texture once [pbrt-textures.md](pbrt-textures.md) can carry one.

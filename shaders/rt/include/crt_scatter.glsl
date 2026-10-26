@@ -21,7 +21,12 @@
 // The material is evaluated here too: its textures (resolveMaterial()) and its normal map
 // (materialShadingNormal()), both from the SurfaceInteraction kernel 06 rebuilt.
 //
-// Requires crt_common.glsl, crt_interaction.glsl, crt_random.glsl and crt_samples.glsl.
+// THE SPECTRUM. Every color here is a Spectrum (crt_spectrum.glsl): the vec3 it always was in the exact RGB build,
+// whose expressions are the ones below operation for operation, and the path's lanes in a spectral build, where the
+// material's color is its albedo reference at the path's wavelengths and a choice between lobes weighs a color by
+// the mean of its lanes in place of its luminance.
+//
+// Requires crt_common.glsl, crt_spectrum.glsl, crt_interaction.glsl, crt_random.glsl and crt_samples.glsl.
 
 #include "crt_material.glsl"
 
@@ -46,9 +51,20 @@ float luminance(vec3 c)
 }
 
 // Schlick's Fresnel with a coloured F0, as glTF's metallic-roughness model defines it
-vec3 fresnelSchlick(vec3 f0, float cosine)
+Spectrum fresnelSchlick(Spectrum f0, float cosine)
 {
-	return f0 + (1.0 - f0) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
+	return spectrumAdd(f0, spectrumScale(spectrumOneMinus(f0), pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0)));
+}
+
+// the material's color: its RGB albedo in the exact RGB build, its albedo reference at the path's lanes in a spectral
+// one (resolveMaterial())
+Spectrum materialAlbedo(ClassicMaterial m)
+{
+#ifndef CRT_SPECTRAL
+	return m.albedo;
+#else
+	return m.color;
+#endif
 }
 
 // Smith's masking term for GGX, one direction
@@ -82,18 +98,18 @@ vec3 sampleGgxVisibleNormal(vec3 wo, float alpha, vec2 u)
 // Specular weight under visible-normal sampling with separable Smith masking is F x G1(wi).
 // The diffuse lobe takes what the Fresnel term at the viewing angle leaves, the usual cheap
 // layering; it does not conserve energy exactly at grazing angles on rough surfaces
-bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, uint pathIndex, inout uint rng, out vec3 attenuation, out vec3 outDir)
+bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, uint pathIndex, inout uint rng, out Spectrum attenuation, out vec3 outDir)
 {
 	const vec3 wo = -inDir;
 	const float cosO = max(dot(normal, wo), 1e-4);
-	const vec3 f0 = mix(vec3(0.04), m.albedo, m.metallic);
-	const vec3 diffuse = m.albedo * (1.0 - m.metallic);
-	const vec3 fresnelView = fresnelSchlick(f0, cosO);
+	const Spectrum f0 = spectrumMix(spectrumConst(0.04), materialAlbedo(m), m.metallic);
+	const Spectrum diffuse = spectrumScale(materialAlbedo(m), 1.0 - m.metallic);
+	const Spectrum fresnelView = fresnelSchlick(f0, cosO);
 
-	const float specularWeight = luminance(fresnelView);
-	const float diffuseWeight = luminance(diffuse * (1.0 - fresnelView));
+	const float specularWeight = spectrumSelectionWeight(fresnelView);
+	const float diffuseWeight = spectrumSelectionWeight(spectrumMul(diffuse, spectrumOneMinus(fresnelView)));
 	if (specularWeight + diffuseWeight <= 0.0) {
-		attenuation = vec3(0.0);
+		attenuation = spectrumConst(0.0);
 		outDir = normal;
 		return false;
 	}
@@ -112,11 +128,11 @@ bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, uint pathIndex, inou
 		const vec3 h = sampleGgxVisibleNormal(woLocal, alpha, sampleDimension2D(pathIndex, rng, CRT_SAMPLE_INDIRECT_DIRECTION));
 		const vec3 wiLocal = reflect(-woLocal, h);
 		if (wiLocal.z <= 0.0) {
-			attenuation = vec3(0.0);
+			attenuation = spectrumConst(0.0);
 			outDir = normal;
 			return false;
 		}
-		attenuation = fresnelSchlick(f0, dot(woLocal, h)) * smithG1(wiLocal.z, alpha) / specularChance;
+		attenuation = spectrumDivide(spectrumScale(fresnelSchlick(f0, dot(woLocal, h)), smithG1(wiLocal.z, alpha)), specularChance);
 		outDir = frame * wiLocal;
 		return true;
 	}
@@ -126,14 +142,14 @@ bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, uint pathIndex, inou
 	if (dot(d, d) < 1e-8) {
 		d = normal;
 	}
-	attenuation = diffuse * (1.0 - fresnelView) / (1.0 - specularChance);
+	attenuation = spectrumDivide(spectrumMul(diffuse, spectrumOneMinus(fresnelView)), 1.0 - specularChance);
 	outDir = d;
 	return true;
 }
 
 // the materials, by type. `inDir` is the unit incoming direction. Returns false when the path is
 // absorbed
-bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, uint pathIndex, inout uint rng, out vec3 attenuation, out vec3 outDir)
+bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, uint pathIndex, inout uint rng, out Spectrum attenuation, out vec3 outDir)
 {
 	switch (m.type) {
 	case CRT_MATERIAL_LAMBERTIAN: {
@@ -143,7 +159,7 @@ bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, 
 		if (dot(d, d) < 1e-8) {
 			d = normal;
 		}
-		attenuation = m.albedo;
+		attenuation = materialAlbedo(m);
 		outDir = d;
 		return true;
 	}
@@ -161,18 +177,18 @@ bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, 
 			const float ballRadius = randomFloat(rng);
 			outDir = reflected + m.param * ballFromSample(ballDirection, ballRadius);
 		}
-		attenuation = m.albedo;
+		attenuation = materialAlbedo(m);
 		return dot(outDir, normal) > 0.0;
 	}
 	case CRT_MATERIAL_PHONG: {
 		vec3 reflected = reflect(inDir, normal);
 		float alpha = pow(1000.0, m.param * m.param);
 		outDir = hemisphereFromSample(reflected, alpha, sampleDimension2D(pathIndex, rng, CRT_SAMPLE_INDIRECT_DIRECTION));
-		attenuation = m.albedo;
+		attenuation = materialAlbedo(m);
 		return dot(outDir, normal) > 0.0;
 	}
 	case CRT_MATERIAL_DIELECTRIC: {
-		attenuation = vec3(1.0);
+		attenuation = spectrumConst(1.0);
 		float ratio = frontFace ? (1.0 / m.param) : m.param;
 		float cosTheta = min(dot(-inDir, normal), 1.0);
 		float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
@@ -187,7 +203,7 @@ bool scatterSurface(ClassicMaterial m, vec3 inDir, vec3 normal, bool frontFace, 
 	case CRT_MATERIAL_PBR:
 		return scatterPbr(m, inDir, normal, pathIndex, rng, attenuation, outDir);
 	}
-	attenuation = vec3(0.0);
+	attenuation = spectrumConst(0.0);
 	outDir = normal;
 	return false;
 }
@@ -246,15 +262,15 @@ float ggxD(float cosine, float alpha)
 // scatterPbr()'s choice between its lobes, which depends on the viewing direction alone: the
 // Fresnel term there, the diffuse albedo it leaves, and the chance of sampling the specular lobe.
 // Must match scatterPbr() expression for expression. False when neither lobe reflects anything
-bool pbrLobes(ClassicMaterial m, vec3 inDir, vec3 normal, out vec3 f0, out vec3 diffuse, out vec3 fresnelView, out float specularChance)
+bool pbrLobes(ClassicMaterial m, vec3 inDir, vec3 normal, out Spectrum f0, out Spectrum diffuse, out Spectrum fresnelView, out float specularChance)
 {
 	const vec3 wo = -inDir;
 	const float cosO = max(dot(normal, wo), 1e-4);
-	f0 = mix(vec3(0.04), m.albedo, m.metallic);
-	diffuse = m.albedo * (1.0 - m.metallic);
+	f0 = spectrumMix(spectrumConst(0.04), materialAlbedo(m), m.metallic);
+	diffuse = spectrumScale(materialAlbedo(m), 1.0 - m.metallic);
 	fresnelView = fresnelSchlick(f0, cosO);
-	const float specularWeight = luminance(fresnelView);
-	const float diffuseWeight = luminance(diffuse * (1.0 - fresnelView));
+	const float specularWeight = spectrumSelectionWeight(fresnelView);
+	const float diffuseWeight = spectrumSelectionWeight(spectrumMul(diffuse, spectrumOneMinus(fresnelView)));
 	specularChance = 0.0;
 	if (specularWeight + diffuseWeight <= 0.0) {
 		return false;
@@ -265,34 +281,34 @@ bool pbrLobes(ClassicMaterial m, vec3 inDir, vec3 normal, out vec3 f0, out vec3 
 
 // f cos for pbr: the GGX lobe F D G1(wo) G1(wi) / (4 cos_o), which visible-normal sampling divided
 // by its density leaves as the F G1(wi) scatterPbr() weighs by, plus the diffuse lobe
-vec3 evalPbr(ClassicMaterial m, vec3 inDir, vec3 normal, vec3 wi)
+Spectrum evalPbr(ClassicMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 {
-	vec3 f0;
-	vec3 diffuse;
-	vec3 fresnelView;
+	Spectrum f0;
+	Spectrum diffuse;
+	Spectrum fresnelView;
 	float specularChance;
 	if (!pbrLobes(m, inDir, normal, f0, diffuse, fresnelView, specularChance)) {
-		return vec3(0.0);
+		return spectrumConst(0.0);
 	}
 	const vec3 wo = -inDir;
 	const float cosO = dot(normal, wo);
 	const float cosI = dot(normal, wi);
 	if (cosO <= 0.0 || cosI <= 0.0) {
-		return vec3(0.0);
+		return spectrumConst(0.0);
 	}
 	const float alpha = max(m.roughness * m.roughness, 1e-3);
 	const vec3 h = normalize(wo + wi);
-	const vec3 specular = fresnelSchlick(f0, dot(wo, h)) * (ggxD(dot(normal, h), alpha) * smithG1(cosO, alpha) * smithG1(cosI, alpha) / (4.0 * cosO));
-	return specular + diffuse * (1.0 - fresnelView) * (cosI / CRT_PI);
+	const Spectrum specular = spectrumScale(fresnelSchlick(f0, dot(wo, h)), ggxD(dot(normal, h), alpha) * smithG1(cosO, alpha) * smithG1(cosI, alpha) / (4.0 * cosO));
+	return spectrumAdd(specular, spectrumScale(spectrumMul(diffuse, spectrumOneMinus(fresnelView)), cosI / CRT_PI));
 }
 
 // the density scatterPbr() picks wi with: its lobe choice times each lobe's own density - the
 // visible-normal density G1(wo) D / (4 cos_o) for the specular lobe, cos / pi for the diffuse one
 float pdfPbr(ClassicMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 {
-	vec3 f0;
-	vec3 diffuse;
-	vec3 fresnelView;
+	Spectrum f0;
+	Spectrum diffuse;
+	Spectrum fresnelView;
 	float specularChance;
 	if (!pbrLobes(m, inDir, normal, f0, diffuse, fresnelView, specularChance)) {
 		return 0.0;
@@ -312,22 +328,22 @@ float pdfPbr(ClassicMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 // f(wo, wi) |cos theta_i| of the material for a direction someone else chose. `inDir` is the unit
 // incoming direction, `normal` the shading normal facing it, `wi` the unit direction towards the
 // light. Zero for a specular material and for a direction below the surface
-vec3 evalSurface(ClassicMaterial m, vec3 inDir, vec3 normal, vec3 wi)
+Spectrum evalSurface(ClassicMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 {
 	if (dot(normal, wi) <= 0.0) {
-		return vec3(0.0);
+		return spectrumConst(0.0);
 	}
 	switch (m.type) {
 	case CRT_MATERIAL_LAMBERTIAN:
-		return m.albedo * (dot(normal, wi) / CRT_PI);
+		return spectrumScale(materialAlbedo(m), dot(normal, wi) / CRT_PI);
 	case CRT_MATERIAL_METAL:
-		return m.param < CRT_SPECULAR_FUZZ ? vec3(0.0) : m.albedo * fuzzBallPdf(reflect(inDir, normal), m.param, wi);
+		return m.param < CRT_SPECULAR_FUZZ ? spectrumConst(0.0) : spectrumScale(materialAlbedo(m), fuzzBallPdf(reflect(inDir, normal), m.param, wi));
 	case CRT_MATERIAL_PHONG:
-		return m.albedo * phongLobePdf(reflect(inDir, normal), pow(1000.0, m.param * m.param), wi);
+		return spectrumScale(materialAlbedo(m), phongLobePdf(reflect(inDir, normal), pow(1000.0, m.param * m.param), wi));
 	case CRT_MATERIAL_PBR:
 		return evalPbr(m, inDir, normal, wi);
 	}
-	return vec3(0.0);
+	return spectrumConst(0.0);
 }
 
 // The solid-angle density with which scatterSurface() picks wi: the sampling routine's own density,
@@ -414,6 +430,15 @@ ClassicMaterial resolveMaterial(uint materialIndex, vec2 uv)
 		const vec3 texel = textureLod(materialTextures, vec3(uv, float(material.albedoLayer)), 0.0).rgb;
 		material.albedo *= srgbToLinear(texel);
 	}
+#ifdef CRT_SPECTRAL
+	// the albedo reference at the path's lanes, an RGB one uplifted with its texel multiplied in (pbrt's
+	// RGBAlbedoSpectrum of the textured color)
+	vec3 tint = vec3(1.0);
+	if (material.albedoLayer >= 0) {
+		tint = srgbToWorking(srgbToLinear(textureLod(materialTextures, vec3(uv, float(material.albedoLayer)), 0.0).rgb));
+	}
+	material.color = spectrumFromRef(materialSpectrumRef(materialIndex, CRT_SLOT_ALBEDO), tint);
+#endif
 	if (material.metalRoughLayer >= 0) {
 		const vec3 texel = textureLod(materialTextures, vec3(uv, float(material.metalRoughLayer)), 0.0).rgb;
 		material.roughness *= texel.g;
@@ -421,3 +446,168 @@ ClassicMaterial resolveMaterial(uint materialIndex, vec2 uv)
 	}
 	return material;
 }
+
+//---------------------------------------------------------------- the complex build's materials
+//
+// Kernel 06's complex build evaluates every type, pbrt-v4's BxDFs (crt_bxdf.glsl: glass, conductor) as well as the
+// six original ones. Its material is a ComplexMaterial, and these overloads of scatterSurface(), evalSurface(),
+// pdfSurface() and isSpecularMaterial() take one, so crt_surface.glsl's body is the same text in both builds
+// (SurfaceMaterial). The basic build never sees any of this, which keeps it the code it was.
+
+#if defined(CRT_MATERIAL_CLASS_EVALUATES_COMPLEX) && CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
+
+#include "crt_fresnel.glsl"
+#include "crt_microfacet.glsl"
+#include "crt_bxdf.glsl"
+
+// src/rt_material_record.h CRT_BXDF_FLAG_*
+#define CRT_BXDF_FLAG_REFLECTANCE 1u
+#define CRT_BXDF_FLAG_DISPERSIVE 2u
+
+struct ComplexMaterial {
+	ClassicMaterial classic;
+	BxdfMaterial bxdf;
+	bool isBxdf;
+	// the shading frame's tangent comes from dp/du (shadingFrame()); the BxDFs' u roughness runs along it
+	vec3 dpdu;
+	// CRT_BXDF_FLAG_*, and the material's index, for its spectra
+	uint bxdfFlags;
+	uint index;
+	// the ray arrived on the outside of the surface as authored: which way a glass's index reads. Kernel 06 sets it
+	// with the shading normal (materialShadingNormal())
+	bool frontFace;
+};
+
+bool isBxdfMaterialType(uint type)
+{
+	return type == CRT_MATERIAL_GLASS || type == CRT_MATERIAL_CONDUCTOR;
+}
+
+// A glass's or a conductor's record (src/rt_material_record.h CrtBxdfMaterial) as the BxDF reads it. Exact RGB takes
+// the RGB fields: the glass's index at the design wavelength, the conductor's eta and k at 630, 532 and 465 nm. A
+// spectral build reads the conductor's spectra at the path's lanes, and the glass's index where
+// applyDispersion() sets it
+BxdfMaterial resolveBxdfMaterial(uint index, out uint flags)
+{
+	const uint base = materials[index].paramOffset;
+	const vec4 a = materialParams[base];
+	const vec4 b = materialParams[base + 1u];
+	const vec4 c = materialParams[base + 2u];
+	const vec4 d = materialParams[base + 3u];
+	flags = floatBitsToUint(d.w);
+	BxdfMaterial m;
+	m.type = floatBitsToUint(b.x);
+	m.alpha = trowbridgeReitz(b.w, c.w);
+	m.eta = a.w;
+	m.conductorEta = spectrumConst(1.0);
+	m.conductorK = spectrumConst(0.0);
+	if (m.type == CRT_MATERIAL_CONDUCTOR) {
+		if ((flags & CRT_BXDF_FLAG_REFLECTANCE) != 0u) {
+			// pbrt's reflectance mode: eta 1 and the k of the clamped reflectance
+#ifndef CRT_SPECTRAL
+			const Spectrum r = clamp(c.xyz, vec3(0.0), vec3(0.9999));
+#else
+			const Spectrum r = spectrumClamp(spectrumFromRef(materialSpectrumRef(index, CRT_SLOT_ALBEDO), vec3(1.0)), 0.0, 0.9999);
+#endif
+			for (uint i = 0u; i < CRT_LANE_END; i++) {
+				const float ri = spectrumLane(r, i);
+				spectrumSetLane(m.conductorK, i, 2.0 * sqrt(ri) / sqrt(max(1.0 - ri, 0.0)));
+			}
+		} else {
+#ifndef CRT_SPECTRAL
+			m.conductorEta = a.xyz;
+			m.conductorK = c.xyz;
+#else
+			m.conductorEta = spectrumFromScalarRef(materialSpectrumRef(index, CRT_SLOT_AUX0));
+			m.conductorK = spectrumFromScalarRef(materialSpectrumRef(index, CRT_SLOT_AUX1));
+#endif
+		}
+	}
+	return m;
+}
+
+ComplexMaterial resolveComplexMaterial(uint index, SurfaceInteraction si)
+{
+	ComplexMaterial m;
+	m.classic = resolveMaterial(index, si.uv);
+	m.isBxdf = isBxdfMaterialType(m.classic.type);
+	m.dpdu = si.dpdu;
+	m.index = index;
+	m.bxdfFlags = 0u;
+	m.frontFace = si.frontFace;
+	if (m.isBxdf) {
+		m.bxdf = resolveBxdfMaterial(index, m.bxdfFlags);
+	} else {
+		m.bxdf.type = 0u;
+		m.bxdf.alpha = vec2(0.0);
+		m.bxdf.eta = 1.0;
+		m.bxdf.conductorEta = spectrumConst(1.0);
+		m.bxdf.conductorK = spectrumConst(0.0);
+	}
+	return m;
+}
+
+// The local frame about the OUTWARD shading normal: `normal` faces the ray, and `frontFace` says which side it came
+// from. Columns tangent, bitangent, normal
+mat3 bxdfFrame(ComplexMaterial m, vec3 normal, bool frontFace)
+{
+	const vec3 n = frontFace ? normal : -normal;
+	vec3 tangent = m.dpdu - n * dot(n, m.dpdu);
+	if (dot(tangent, tangent) < 1e-20) {
+		tangent = abs(n.x) > 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+		tangent -= n * dot(n, tangent);
+	}
+	tangent = normalize(tangent);
+	return mat3(tangent, cross(n, tangent), n);
+}
+
+bool scatterSurface(ComplexMaterial m, vec3 inDir, vec3 normal, bool frontFace, uint pathIndex, inout uint rng, out Spectrum attenuation, out vec3 outDir)
+{
+	if (!m.isBxdf) {
+		return scatterSurface(m.classic, inDir, normal, frontFace, pathIndex, rng, attenuation, outDir);
+	}
+	const mat3 frame = bxdfFrame(m, normal, m.frontFace);
+	const vec3 wo = transpose(frame) * -inDir;
+	const float uc = sampleDimension(pathIndex, rng, CRT_SAMPLE_INDIRECT_LOBE);
+	const vec2 u = sampleDimension2D(pathIndex, rng, CRT_SAMPLE_INDIRECT_DIRECTION);
+	BxdfSample s;
+	attenuation = spectrumConst(0.0);
+	outDir = normal;
+	if (!bxdfSample(m.bxdf, wo, uc, u, CRT_TRANSPORT_RADIANCE, s) || !(s.pdf > 0.0)) {
+		return false;
+	}
+	attenuation = spectrumScale(s.f, abs(s.wi.z) / s.pdf);
+	outDir = frame * s.wi;
+	return true;
+}
+
+// f cos for a direction someone else chose: both hemispheres, since glass transmits
+Spectrum evalSurface(ComplexMaterial m, vec3 inDir, vec3 normal, vec3 wi)
+{
+	if (!m.isBxdf) {
+		return evalSurface(m.classic, inDir, normal, wi);
+	}
+	const mat3 frame = bxdfFrame(m, normal, m.frontFace);
+	const vec3 woLocal = transpose(frame) * -inDir;
+	const vec3 wiLocal = transpose(frame) * wi;
+	return spectrumScale(bxdfF(m.bxdf, woLocal, wiLocal, CRT_TRANSPORT_RADIANCE), abs(wiLocal.z));
+}
+
+float pdfSurface(ComplexMaterial m, vec3 inDir, vec3 normal, vec3 wi)
+{
+	if (!m.isBxdf) {
+		return pdfSurface(m.classic, inDir, normal, wi);
+	}
+	const mat3 frame = bxdfFrame(m, normal, m.frontFace);
+	return bxdfPdf(m.bxdf, transpose(frame) * -inDir, transpose(frame) * wi, CRT_TRANSPORT_RADIANCE);
+}
+
+bool isSpecularMaterial(ComplexMaterial m)
+{
+	if (!m.isBxdf) {
+		return isSpecularMaterial(m.classic);
+	}
+	return (bxdfFlags(m.bxdf) & CRT_BXDF_SPECULAR) != 0u;
+}
+
+#endif

@@ -10,7 +10,7 @@ On 2026-10-21, when implementation started, the user answered four questions:
 
 - A `.pbrt` file builds the same in-engine model a glTF file does. Names that were glTF-only and now cover both became neutral: `LoadedGLTF` is `LoadedModel`, `GltfMaterialOrigin` is `ModelMaterialOrigin`, `MeshMaterialMode::Gltf` is `MeshMaterialMode::Model`, and `findGltfMaterial()` is `findModelMaterial()`. Scene file keys did not change.
 - Area lights import as two-sided. pbrt's are one-sided unless `twosided` is set, and [pbrt-light-types.md](../pbrt-light-types.md) records what restores that.
-- The RGB projection of spectra starts the `rt_spectrum` library now, which [pbrt-spectral-rendering.md](../pbrt-spectral-rendering.md) extends.
+- The RGB projection of spectra starts the `rt_spectrum` library now, which [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) extends.
 - An infinite light's map is converted in memory to the renderer's equirectangular layout, with its rotation baked in, and owned by the model.
 
 The user also asked that the tokenizer and parser stay as simple as pbrt's. The scanner is pbrt's `Tokenizer::Next()`, about 80 lines that split text into words, numbers, quoted strings and brackets, and the parser is pbrt's `parse()` directive switch. There is no grammar and no virtual target interface: the parser keeps the graphics state itself and fills plain structs.

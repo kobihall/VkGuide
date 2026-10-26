@@ -21,7 +21,6 @@ constexpr double PI = std::numbers::pi;
 // the plans that add what the import substitutes, as the report names them
 const char* const PLAN_CAMERAS = "pbrt-cameras.md";
 const char* const PLAN_DISPLAY = "pbrt-display-and-color.md";
-const char* const PLAN_SPECTRAL = "pbrt-spectral-rendering.md";
 const char* const PLAN_BSDFS = "pbrt-bsdf-library.md";
 const char* const PLAN_LAYERED = "pbrt-layered-materials.md";
 const char* const PLAN_MEASURED = "pbrt-measured-bsdfs.md";
@@ -142,6 +141,8 @@ private:
 	std::map<std::string, std::optional<Resolved>> m_resolved;
 	std::map<std::string, uint32_t> m_materialIndex;
 	std::map<std::string, int> m_typeCounts;
+	// the spectrum lightRgb() read last, which addLight() keeps
+	SpectrumRef m_lightSpectrum { rgbSpectrum(glm::vec3(1.f)) };
 	// per object, the meshes its shapes became (or -1), so each instance only adds nodes
 	std::map<std::string, std::vector<int>> m_objectMeshes;
 
@@ -263,6 +264,69 @@ private:
 		return std::nullopt;
 	}
 
+	// A spectrum-valued parameter as a SpectrumRef, as the spectral modes carry it (docs/plans/completed/pbrt-spectral-rendering.md):
+	// an RGB triple, a constant, a blackbody, one of pbrt's named spectra, an .spd file, or (wavelength, value) pairs.
+	// nullopt if it is absent, a texture or unreadable
+	std::optional<SpectrumRef> spectrumRefOf(const PbrtParam* p)
+	{
+		if (p == nullptr || p->type == "texture") {
+			return std::nullopt;
+		}
+		if (p->type == "rgb") {
+			return p->numbers.size() >= 3 ? std::optional(rgbSpectrum(glm::max(toVec3(glm::dvec3(p->numbers[0], p->numbers[1], p->numbers[2])), glm::vec3(0.f)))) : std::nullopt;
+		}
+		if (p->type == "float") {
+			return p->numbers.empty() ? std::nullopt : std::optional(constantRef((float)p->numbers[0]));
+		}
+		if (p->type == "blackbody") {
+			return p->numbers.empty() ? std::nullopt : std::optional(blackbodyRef((float)p->numbers[0]));
+		}
+		if (p->type != "spectrum") {
+			return std::nullopt;
+		}
+		if (!p->strings.empty()) {
+			if (std::optional<SpectrumRef> named = namedRef(p->strings[0])) {
+				return named;
+			}
+			std::filesystem::path path = p->strings[0];
+			if (path.is_relative()) {
+				path = s.directory / path;
+			}
+			std::string error;
+			return fileRef(path, &error);
+		}
+		if (p->numbers.size() >= 2 && p->numbers.size() % 2 == 0) {
+			return tabulatedRef(std::vector<float>(p->numbers.begin(), p->numbers.end()));
+		}
+		return std::nullopt;
+	}
+
+	// AN EMITTER'S SPECTRUM: what it emits as a SpectrumRef, and as the linear RGB exact RGB sees, both before pbrt's
+	// "scale". pbrt divides a light's spectrum by its luminance, which the Illuminant role does for any kind but RGB,
+	// whose luminance is its own (pbrt divides it by its illuminant's alone)
+	struct Emission {
+		SpectrumRef color;
+		glm::dvec3 rgb { 1.0 };
+	};
+
+	Emission emissionOf(const PbrtParam* p)
+	{
+		Emission e;
+		e.color = rgbSpectrum(glm::vec3(1.f));
+		if (p == nullptr) {
+			return e;
+		}
+		e.rgb = spectrumRgb(p, SpectrumUse::Illuminant).value_or(glm::dvec3(1.0));
+		if (p->type != "rgb") {
+			if (std::optional<SpectrumRef> ref = spectrumRefOf(p)) {
+				e.color = *ref;
+				return e;
+			}
+		}
+		e.color = rgbSpectrum(toVec3(e.rgb));
+		return e;
+	}
+
 	// a spectrum-valued parameter as linear RGB, nullopt if it is absent or a texture
 	std::optional<glm::dvec3> spectrumRgb(const PbrtParam* p, SpectrumUse use)
 	{
@@ -290,19 +354,22 @@ private:
 		}
 		switch (use) {
 		case SpectrumUse::Albedo:
-			report(fmt::format("{} \"{}\" is its RGB under D65", p->type, p->name), p->loc, PLAN_SPECTRAL);
+			//kept as a spectrum where the material takes one (a diffuse reflectance); elsewhere this RGB is all there is
+			if (p->name != "reflectance") {
+				report(fmt::format("{} \"{}\" is its RGB under D65", p->type, p->name), p->loc, PLAN_BSDFS);
+			}
 			return glm::dvec3(reflectanceToRgb(*dense));
 		case SpectrumUse::Illuminant: {
-			report(fmt::format("{} emission is its RGB projection, normalized to luminance 1 as pbrt does", p->type), p->loc, PLAN_SPECTRAL);
+			//the spectrum itself is kept for the spectral modes (emissionOf()); exact RGB sees its projection
 			const glm::dvec3 rgb(emissionToRgb(*dense));
-			//a deep red blackbody lies outside sRGB: pbrt writes the negative blue, the renderer cannot emit it
+			//a deep red blackbody lies outside sRGB: pbrt writes the negative blue, which exact RGB cannot emit
 			if (std::min(rgb.x, std::min(rgb.y, rgb.z)) < 0.0) {
-				report(fmt::format("{} emission outside the sRGB gamut is clamped to it", p->type), p->loc, PLAN_SPECTRAL);
+				report(fmt::format("{} emission outside the sRGB gamut is clamped to it in exact RGB; the spectral modes emit the spectrum", p->type), p->loc);
 			}
 			return glm::max(rgb, glm::dvec3(0.0));
 		}
 		case SpectrumUse::Unbounded:
-			report(fmt::format("{} \"{}\" is its luminance-weighted mean", p->type, p->name), p->loc, PLAN_SPECTRAL);
+			report(fmt::format("{} \"{}\" is its luminance-weighted mean", p->type, p->name), p->loc, PLAN_BSDFS);
 			return glm::dvec3(luminanceWeightedMean(*dense));
 		}
 		return std::nullopt;
@@ -480,7 +547,7 @@ private:
 	}
 
 	// a conductor's color at normal incidence, from its eta and k spectra (pbrt's default copper)
-	glm::dvec3 conductorColor(const PbrtParams& params, const std::string& prefix, const PbrtLoc& loc)
+	glm::dvec3 conductorColor(const PbrtParams& params, const std::string& prefix, const PbrtLoc& loc, bool reportSubstitution = true)
 	{
 		const PbrtParam* eta = params.find(prefix + "eta");
 		const PbrtParam* k = params.find(prefix + "k");
@@ -500,8 +567,8 @@ private:
 		for (int i = 0; i < spectrum_tables::CIE_SAMPLES; i++) {
 			f0.values[i] = conductorF0(etaDense->values[i], kDense->values[i]);
 		}
-		if (eta == nullptr || eta->type != "rgb") {
-			report("conductor color is its spectral Fresnel reflectance at normal incidence under D65", loc, PLAN_SPECTRAL);
+		if (reportSubstitution && (eta == nullptr || eta->type != "rgb")) {
+			report("conductor color is its spectral Fresnel reflectance at normal incidence under D65", loc, PLAN_BSDFS);
 		}
 		return glm::dvec3(reflectanceToRgb(f0));
 	}
@@ -509,7 +576,7 @@ private:
 	void setPbr(Resolved& r, const TexValue& base, float metallic, float roughness)
 	{
 		r.material.definition.type = MaterialType::Pbr;
-		r.material.definition.params["albedo"] = SpectrumRef { toVec3(base.factor) };
+		r.material.definition.params["albedo"] = rgbSpectrum(toVec3(base.factor));
 		r.material.definition.params["metallic"] = metallic;
 		r.material.definition.params["roughness"] = roughness;
 		r.material.baseColorImage = base.image;
@@ -523,32 +590,72 @@ private:
 	void setLambertian(Resolved& r, const TexValue& base)
 	{
 		r.material.definition.type = MaterialType::Lambertian;
-		r.material.definition.params["albedo"] = SpectrumRef { toVec3(base.factor) };
+		r.material.definition.params["albedo"] = rgbSpectrum(toVec3(base.factor));
 		r.material.baseColorImage = base.image;
 		r.mapping = base.mapping;
 		r.material.previewColor = glm::vec4(toVec3(base.factor), 1.f);
 		r.reflects = maxComponent(base.factor) > 0.0;
 	}
 
+	// pbrt's roughness parameters as the glass and conductor types take them: u and v, and whether to remap them
+	void setRoughness(Resolved& r, const PbrtParams& params, const std::string& prefix, const PbrtLoc& loc)
+	{
+		double u = floatParam(params, prefix + "roughness", 0.0, loc, PLAN_TEXTURES);
+		double v = u;
+		if (params.find(prefix + "uroughness") != nullptr || params.find(prefix + "vroughness") != nullptr) {
+			u = floatParam(params, prefix + "uroughness", u, loc, PLAN_TEXTURES);
+			v = floatParam(params, prefix + "vroughness", v, loc, PLAN_TEXTURES);
+		}
+		r.material.definition.params["uRoughness"] = (float)u;
+		r.material.definition.params["vRoughness"] = (float)v;
+		r.material.definition.params["remapRoughness"] = params.getBool("remaproughness", true);
+	}
+
+	// pbrt's dielectric as the glass type: exact Fresnel, rough or smooth, and its eta as the spectrum it is, which
+	// the spectral modes disperse and exact RGB reads at the design wavelength
 	void setDielectric(Resolved& r, const PbrtParams& params, const PbrtLoc& loc)
 	{
-		double eta = 1.5;
+		SpectrumRef eta = constantRef(1.5f);
 		if (const PbrtParam* p = params.find("eta")) {
-			if (p->type == "float" && !p->numbers.empty()) {
-				eta = p->numbers[0];
+			if (std::optional<SpectrumRef> ref = spectrumRefOf(p); ref.has_value() && ref->kind != SpectrumKind::Rgb) {
+				eta = *ref;
 			} else if (std::optional<glm::dvec3> mean = spectrumRgb(p, SpectrumUse::Unbounded)) {
-				eta = mean->x;
-				report("a dielectric whose eta varies with wavelength disperses in pbrt", loc, PLAN_SPECTRAL);
+				eta = constantRef((float)mean->x);
 			}
 		}
-		const float roughness = roughnessOf(params, "", loc, PLAN_BSDFS);
-		if (roughness > 0.f) {
-			report("rough dielectric is smooth", loc, PLAN_BSDFS);
-		}
-		r.material.definition.type = MaterialType::Dielectric;
-		r.material.definition.params["ir"] = (float)eta;
+		r.material.definition.type = MaterialType::Glass;
+		r.material.definition.params["eta"] = eta;
+		setRoughness(r, params, "", loc);
 		r.material.previewColor = glm::vec4(0.75f, 0.85f, 1.f, 1.f);
 		r.reflects = true;
+	}
+
+	// pbrt's conductor as the conductor type: its eta and k spectra (pbrt's default copper), or its reflectance
+	bool setConductor(Resolved& r, const PbrtParams& params, const PbrtLoc& loc)
+	{
+		r.material.definition.type = MaterialType::Conductor;
+		if (const PbrtParam* reflectance = params.find("reflectance")) {
+			const std::optional<glm::dvec3> rgb = spectrumRgb(reflectance, SpectrumUse::Albedo);
+			if (!rgb.has_value()) {
+				//a textured reflectance needs pbrt-textures.md on this type: the caller keeps pbr
+				return false;
+			}
+			r.material.definition.params["useReflectance"] = true;
+			r.material.definition.params["albedo"] = reflectance->type == "rgb" ? rgbSpectrum(toVec3(*rgb)) : spectrumRefOf(reflectance).value_or(rgbSpectrum(toVec3(*rgb)));
+		} else {
+			const std::optional<SpectrumRef> eta = params.find("eta") != nullptr ? spectrumRefOf(params.find("eta")) : namedRef("metal-Cu-eta");
+			const std::optional<SpectrumRef> k = params.find("k") != nullptr ? spectrumRefOf(params.find("k")) : namedRef("metal-Cu-k");
+			if (!eta.has_value() || !k.has_value()) {
+				report("conductor's eta or k is unreadable; copper is used", loc);
+			}
+			r.material.definition.params["eta"] = eta.value_or(*namedRef("metal-Cu-eta"));
+			r.material.definition.params["k"] = k.value_or(*namedRef("metal-Cu-k"));
+		}
+		setRoughness(r, params, "", loc);
+		r.material.previewColor = glm::vec4(toVec3(conductorColor(params, "", loc, false)), 1.f);
+		r.material.previewMetallic = 1.f;
+		r.reflects = true;
+		return true;
 	}
 
 	// a material by its type and parameters, as the renderer's closest type
@@ -559,6 +666,12 @@ private:
 		const std::string where = fmt::format("{} material", type.empty() ? "unnamed" : type);
 		if (type == "diffuse") {
 			setLambertian(r, textureOrValue(params, "reflectance", true, glm::dvec3(0.5), loc, 0));
+			//a measured reflectance is kept as the spectrum it is, which exact RGB reads under D65
+			if (const PbrtParam* reflectance = params.find("reflectance"); reflectance != nullptr && reflectance->type != "rgb" && reflectance->type != "texture") {
+				if (std::optional<SpectrumRef> ref = spectrumRefOf(reflectance)) {
+					r.material.definition.params["albedo"] = *ref;
+				}
+			}
 		} else if (type == "coateddiffuse") {
 			setPbr(r, textureOrValue(params, "reflectance", true, glm::dvec3(0.5), loc, 0), 0.f, roughnessOf(params, "", loc, PLAN_LAYERED));
 			report("coateddiffuse is pbr: a GGX coat with F0 0.04 over Lambertian", loc, PLAN_LAYERED);
@@ -572,14 +685,10 @@ private:
 				}
 			}
 		} else if (type == "conductor") {
-			TexValue base;
-			if (params.find("reflectance") != nullptr) {
-				base = textureOrValue(params, "reflectance", true, glm::dvec3(1.0), loc, 0);
-			} else {
-				base.factor = conductorColor(params, "", loc);
+			if (!setConductor(r, params, loc)) {
+				setPbr(r, textureOrValue(params, "reflectance", true, glm::dvec3(1.0), loc, 0), 1.f, roughnessOf(params, "", loc, PLAN_BSDFS));
+				report("a conductor with a textured reflectance is pbr with metallic 1 and Schlick's Fresnel", loc, PLAN_TEXTURES);
 			}
-			setPbr(r, base, 1.f, roughnessOf(params, "", loc, PLAN_BSDFS));
-			report("conductor is pbr with metallic 1 and its normal-incidence color (Schlick's Fresnel)", loc, PLAN_BSDFS);
 		} else if (type == "coatedconductor") {
 			TexValue base;
 			if (params.find("reflectance") != nullptr) {
@@ -595,7 +704,7 @@ private:
 			setDielectric(r, params, loc);
 		} else if (type == "thindielectric") {
 			setDielectric(r, params, loc);
-			report("thindielectric is a solid dielectric", loc, PLAN_BSDFS);
+			report("thindielectric is solid glass", loc, PLAN_BSDFS);
 		} else if (type == "diffusetransmission") {
 			TexValue base = textureOrValue(params, "reflectance", true, glm::dvec3(0.25), loc, 0);
 			base.factor *= params.getFloat("scale", 1.0);
@@ -701,14 +810,13 @@ private:
 		return r;
 	}
 
-	// an area light's radiance as linear RGB, with pbrt's normalization and "scale" (and "power", given the area)
-	glm::dvec3 areaLightRadiance(const PbrtEntity& light, double area)
+	// an area light's emission (its spectrum and its linear RGB at pbrt's normalization) and its "scale" (and "power",
+	// given the area): the radiance is the emission times the returned scale
+	double areaLightRadiance(const PbrtEntity& light, double area, Emission& emission)
 	{
 		const PbrtParams& p = light.params;
-		glm::dvec3 L(1.0);
-		if (const PbrtParam* param = p.find("L")) {
-			L = spectrumRgb(param, SpectrumUse::Illuminant).value_or(glm::dvec3(1.0));
-		}
+		emission = emissionOf(p.find("L"));
+		const glm::dvec3 L = emission.rgb;
 		double scale = p.getFloat("scale", 1.0);
 		const bool twoSided = p.getBool("twosided", false);
 		const double power = p.getFloat("power", -1.0);
@@ -725,7 +833,7 @@ private:
 			report("one-sided area light emits from both sides", light.loc, PLAN_LIGHTS);
 		}
 		reportUnused(p, fmt::format("AreaLightSource \"{}\"", light.type));
-		return L * scale;
+		return scale;
 	}
 
 	// the library material a shape is shaded with, as an index into m.materials; nullopt for an invisible shape
@@ -744,17 +852,25 @@ private:
 			report(fmt::format("area light \"{}\" is not supported; the shape does not emit", light.type), light.loc, PLAN_LIGHTS);
 			return materialIndex(key, base.material);
 		}
-		const glm::dvec3 radiance = areaLightRadiance(light, area);
+		Emission emission;
+		const double scale = areaLightRadiance(light, area, emission);
+		const glm::dvec3 radiance = emission.rgb * scale;
 		if (base.reflects) {
 			report("an emitter's own reflectance is dropped: emissive surfaces absorb", light.loc, PLAN_LIGHTS);
 		}
 		ImportedMaterial emitter;
 		emitter.definition.type = MaterialType::Emissive;
 		const double peak = std::max(maxComponent(radiance), 1e-30);
-		emitter.definition.params["albedo"] = SpectrumRef { toVec3(radiance / peak) };
-		emitter.definition.params["strength"] = (float)peak;
+		if (emission.color.kind == SpectrumKind::Rgb) {
+			emitter.definition.params["albedo"] = rgbSpectrum(toVec3(radiance / peak));
+			emitter.definition.params["strength"] = (float)peak;
+		} else {
+			//the spectrum, normalized to luminance 1 by its role, times the scale
+			emitter.definition.params["albedo"] = emission.color;
+			emitter.definition.params["strength"] = (float)scale;
+		}
 		emitter.previewColor = glm::vec4(toVec3(radiance / peak), 1.f);
-		const std::string emitterKey = fmt::format("{}|L {:.9g} {:.9g} {:.9g}", key, radiance.x, radiance.y, radiance.z);
+		const std::string emitterKey = fmt::format("{}|L {:.9g} {:.9g} {:.9g} {}", key, radiance.x, radiance.y, radiance.z, spectrumKindName(emission.color.kind));
 		if (const auto found = m_materialIndex.find(emitterKey); found != m_materialIndex.end()) {
 			return found->second;
 		}
@@ -1246,19 +1362,30 @@ private:
 
 	//---------------------------------------------------------------- lights
 
-	// a light's spectrum parameter as RGB with pbrt's normalization, times "scale"
+	// a light's spectrum parameter as RGB with pbrt's normalization, and "scale"; the spectrum itself, for addLight(),
+	// in m_lightSpectrum
 	glm::dvec3 lightRgb(const PbrtLight& light, const char* name, double& scale)
 	{
 		scale = light.params.getFloat("scale", 1.0);
-		const PbrtParam* p = light.params.find(name);
-		return p != nullptr ? spectrumRgb(p, SpectrumUse::Illuminant).value_or(glm::dvec3(1.0)) : glm::dvec3(1.0);
+		const Emission emission = emissionOf(light.params.find(name));
+		m_lightSpectrum = emission.color;
+		return emission.rgb;
 	}
 
 	void addLight(SceneLight light, const glm::dvec3& rgb, double scale)
 	{
 		const double peak = std::max(maxComponent(rgb), 1e-30);
-		light.color = toVec3(rgb / peak);
+		light.color = rgbSpectrum(toVec3(rgb / peak));
 		light.intensity = (float)(peak * scale);
+		//a spectrum is kept as it is, at luminance 1 by its role, times the scale (rgb is its projection times any
+		//"power" factor, so the factor is what rgb's luminance adds to 1)
+		if (m_lightSpectrum.kind != SpectrumKind::Rgb) {
+			const glm::dvec3 unit = glm::max(glm::dvec3(exactRgb(m_lightSpectrum, SpectrumRole::Illuminant, {})), glm::dvec3(0.0));
+			const double factor = maxComponent(unit) > 0.0 ? maxComponent(rgb) / maxComponent(unit) : 1.0;
+			light.color = m_lightSpectrum;
+			light.intensity = (float)(factor * scale);
+		}
+		m_lightSpectrum = rgbSpectrum(glm::vec3(1.f));
 		light.name = fmt::format("{} {}", lightKindName(light.kind), m.lights.size() + 1);
 		m.lights.push_back(light);
 	}
@@ -1575,10 +1702,12 @@ private:
 				report("gbuffer film positions and normals are in world space, not camera space", film.loc);
 			}
 		} else if (filmType == "spectral") {
-			report("spectral film is an RGB film", film.loc, PLAN_SPECTRAL);
-			for (const PbrtParam& p : film.params.list) {
-				p.used = true;
-			}
+			//pbrt's SpectralFilm: hero wavelengths, with its buckets kept as the spectral images
+			r.spectral.representation = SpectralRepresentation::HeroWavelengths;
+			r.spectral.imageBuckets = (uint32_t)std::clamp(film.params.getInt("nbuckets", 16), 1, 256);
+			r.spectral.lambdaMin = (float)film.params.getFloat("lambdamin", 360.0);
+			r.spectral.lambdaMax = (float)film.params.getFloat("lambdamax", 830.0);
+			r.spectral = clampSpectralSettings(r.spectral);
 		} else if (filmType != "rgb") {
 			report(fmt::format("Film \"{}\" is an RGB film", filmType), film.loc);
 		}

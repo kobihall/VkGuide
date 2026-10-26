@@ -172,9 +172,15 @@ struct RenderOutputsData {
 	AovLayout layout;
 	// layout.count layers of width x height x 4 floats, in layer order
 	std::vector<float> aovLayers;
-	// per pixel, groups x 3 floats of sum(w L) then sum(w) (the light groups' sums)
+	// per pixel, groups x 3 floats of sum(w L), then sum(w), then the spectral images' buckets of sum(w L_bucket)
+	// (ChannelSums as the GPU holds it)
 	uint32_t lightGroups { 0 };
 	std::vector<float> groupSums;
+	// the spectral images (docs/plans/completed/pbrt-spectral-rendering.md): the bucket count and each bucket's center
+	// in nm. A monochromatic render has none, and its one wavelength instead
+	uint32_t spectralBuckets { 0 };
+	std::vector<float> spectralWavelengths;
+	float monochromaticWavelength { 0.f };
 	// per pixel
 	std::vector<uint32_t> samplesTaken;
 	uint32_t samplesPerPixel { 0 };

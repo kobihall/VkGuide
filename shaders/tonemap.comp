@@ -2,16 +2,67 @@
 
 // Linear HDR radiance in, display-ready LDR out. Shared by every raytracer output so they all
 // go through one identical display transform - see src/vk_tonemap.h
+//
+// A monochromatic render (docs/plans/completed/pbrt-spectral-rendering.md) holds the spectral radiance at its one
+// wavelength in all three channels, and is shown one of three ways (src/spectral.h MonochromeDisplay): gray, which is
+// the transform below unchanged; tinted by the wavelength's own color; or through a colormap, linear or logarithmic,
+// whose output is already display-encoded.
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
 layout (rgba32f, set = 0, binding = 0) uniform readonly image2D linearImage;
 layout (rgba8, set = 0, binding = 1) uniform writeonly image2D displayImage;
 
+#define TONEMAP_RGB 0u
+#define TONEMAP_TINT 1u
+#define TONEMAP_COLORMAP 2u
+
 layout (push_constant) uniform constants {
 	// multiplied in before the clamp: 1 for an already-averaged image, 1/N for a sum of N samples
 	float scale;
+	// TONEMAP_*: the picture as it is (and a monochromatic render in gray), tinted, or through a colormap
+	uint mode;
+	// TONEMAP_COLORMAP: 0 viridis, 1 inferno, 2 turbo; and 0 for linear, else the decades below 1 a logarithmic
+	// scale spans
+	uint colormap;
+	float decades;
+	// TONEMAP_TINT: the wavelength's linear sRGB color (src/spectral.cpp wavelengthDisplayColor())
+	vec4 tint;
 } pc;
+
+// src/spectral.cpp colormapColor(): degree-6 fits of matplotlib's viridis and inferno (Matt Zucker) and Mikhailov's
+// polynomial for Turbo. sRGB-encoded
+vec3 colormapColor(uint map, float t)
+{
+	t = clamp(t, 0.0, 1.0);
+	if (map == 2u) {
+		const vec4 v4 = vec4(1.0, t, t * t, t * t * t);
+		const vec2 v2 = v4.zw * v4.z;
+		return clamp(vec3(dot(v4, vec4(0.13572138, 4.61539260, -42.66032258, 132.13108234)) + dot(v2, vec2(-152.94239396, 59.28637943)),
+						 dot(v4, vec4(0.09140261, 2.19418839, 4.84296658, -14.18503333)) + dot(v2, vec2(4.27729857, 2.82956604)),
+						 dot(v4, vec4(0.10667330, 12.64194608, -60.58204836, 110.36276771)) + dot(v2, vec2(-89.90310912, 27.34824973))),
+			0.0, 1.0);
+	}
+	vec3 c0, c1, c2, c3, c4, c5, c6;
+	if (map == 1u) {
+		c0 = vec3(0.0002189403691192265, 0.001651004631001012, -0.01948089843709184);
+		c1 = vec3(0.1065134194856116, 0.5639564367884091, 3.932712388889277);
+		c2 = vec3(11.60249308247187, -3.972853965665698, -15.9423941062914);
+		c3 = vec3(-41.70399613139459, 17.43639888205313, 44.35414519872813);
+		c4 = vec3(77.162935699427, -33.40235894210092, -81.80730925738993);
+		c5 = vec3(-71.31942824499214, 32.62606426397723, 73.20951985803202);
+		c6 = vec3(25.13112622477341, -12.24266895238567, -23.07032500287172);
+	} else {
+		c0 = vec3(0.2777273272234177, 0.005407344544966578, 0.3340998053353061);
+		c1 = vec3(0.1050930431085774, 1.404613529898575, 1.384590162594685);
+		c2 = vec3(-0.3308618287255563, 0.214847559468213, 0.09509516302823659);
+		c3 = vec3(-4.634230498983486, -5.799100973351585, -19.33244095627987);
+		c4 = vec3(6.228269936347081, 14.17993336680509, 56.69055260068105);
+		c5 = vec3(4.776384997670288, -13.74514537774601, -65.35303263337234);
+		c6 = vec3(-5.435455855934631, 4.645852612178535, 26.3124352495832);
+	}
+	return clamp(c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6))))), 0.0, 1.0);
+}
 
 void main()
 {
@@ -26,6 +77,17 @@ void main()
 
 	// NaN compares unequal to itself, and clamp() of a NaN is undefined, so it is zeroed first
 	color = mix(vec3(0.0), color, equal(color, color));
+
+	if (pc.mode == TONEMAP_COLORMAP) {
+		// the radiance (all three channels hold it) through the colormap, linearly or over `decades` below 1
+		const float value = max(color.g, 0.0);
+		const float t = pc.decades > 0.0 ? 1.0 + log(max(value, 1e-30)) / (log(10.0) * pc.decades) : value;
+		imageStore(displayImage, texelCoord, vec4(colormapColor(pc.colormap, t), 1.0));
+		return;
+	}
+	if (pc.mode == TONEMAP_TINT) {
+		color = color.g * pc.tint.rgb;
+	}
 
 	// gamma 2 - the square root the book, and the sibling project's write_color(), use
 	color = sqrt(clamp(color, 0.0, 1.0));

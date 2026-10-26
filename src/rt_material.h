@@ -14,10 +14,12 @@
 // a material into the GPU record its shader case reads (crt_material.glsl). ADDING A TYPE is a row
 // here, its parameters, its pack function, and its case in the shaders.
 //
-// Until docs/plans/pbrt-spectral-rendering.md lands a SpectrumRef is an RGB triple, and until
-// docs/plans/pbrt-textures.md lands a TexRef is a layer of the texture array: exactly what the
-// tracer stored before parameters were data.
+// A color parameter is a SpectrumRef (src/spectrum_ref.h): an RGB triple by default, or any spectrum, which the
+// parameter's SpectrumRole says how to read (docs/plans/completed/pbrt-spectral-rendering.md). Until
+// docs/plans/pbrt-textures.md lands a TexRef is a layer of the texture array: exactly what the tracer stored before
+// parameters were data.
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -29,6 +31,8 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+
+#include <spectrum_ref.h>
 
 //---------------------------------------------------------------- types
 
@@ -43,7 +47,12 @@ enum class MaterialType : uint8_t {
 	Emissive,
 	// glTF 2.0's metallic-roughness model: a GGX specular lobe over a Lambertian base, blended by
 	// metallic, plus an emission that does not end the path. What every glTF material becomes
-	Pbr
+	Pbr,
+	// pbrt-v4's dielectric: smooth or rough glass with exact Fresnel, its index any spectrum, dispersive when the index
+	// varies with wavelength (docs/plans/pbrt-bsdf-library.md)
+	Glass,
+	// pbrt-v4's conductor: smooth or rough metal with complex Fresnel from its eta and k spectra, or from a reflectance
+	Conductor
 };
 
 inline constexpr MaterialType MATERIAL_TYPES[] = {
@@ -53,17 +62,13 @@ inline constexpr MaterialType MATERIAL_TYPES[] = {
 	MaterialType::Dielectric,
 	MaterialType::Emissive,
 	MaterialType::Pbr,
+	MaterialType::Glass,
+	MaterialType::Conductor,
 };
 
 inline constexpr size_t MATERIAL_TYPE_COUNT = sizeof(MATERIAL_TYPES) / sizeof(MATERIAL_TYPES[0]);
 
 //---------------------------------------------------------------- parameters
-
-// a color, or later any spectrum (pbrt-spectral-rendering.md): linear RGB until then
-struct SpectrumRef {
-	glm::vec3 rgb { 0.f };
-	bool operator==(const SpectrumRef&) const = default;
-};
 
 // a texture a parameter reads, or none (pbrt-textures.md): a layer of RaytraceTextureArray until
 // then. Only a glTF material's import sets one, and only for this session: the layers are
@@ -107,6 +112,9 @@ struct MaterialParam {
 	uint8_t flags;
 	// shown when the widget is hovered; null for none
 	const char* tooltip;
+	// a Spectrum parameter: what its value means, which decides how an RGB value becomes a spectrum and how a
+	// spectrum becomes exact RGB's color (src/color_space.h)
+	SpectrumRole role { SpectrumRole::Albedo };
 };
 
 //---------------------------------------------------------------- materials
@@ -145,7 +153,12 @@ MaterialDef makeMaterial(MaterialType type, const glm::vec3& albedo = glm::vec3(
 // any type gives it. Asking for the wrong kind returns the kind's zero
 ParamValue materialValue(const MaterialDef& material, std::string_view name);
 float materialFloat(const MaterialDef& material, std::string_view name);
-glm::vec3 materialColor(const MaterialDef& material, std::string_view name);
+// a Spectrum parameter as exact RGB reads it: an RGB value in the working space as linear sRGB (the authored triple in
+// an sRGB scene), any other spectrum projected by the parameter's role
+glm::vec3 materialColor(const MaterialDef& material, std::string_view name, const SpectrumContext& context = {});
+// a Spectrum parameter as it is, and the role its type gives it (Albedo for a name the type does not have)
+SpectrumRef materialSpectrum(const MaterialDef& material, std::string_view name);
+SpectrumRole materialSpectrumRole(MaterialType type, std::string_view name);
 int materialTextureLayer(const MaterialDef& material, std::string_view name);
 
 //---------------------------------------------------------------- the GPU record
@@ -154,7 +167,16 @@ int materialTextureLayer(const MaterialDef& material, std::string_view name);
 // until pbrt-textures.md adds them, so a material on a shape is packed without its texture layers
 struct PackContext {
 	bool textures { true };
+	// the working space, which exact RGB converts a material's RGB values from
+	SpectrumContext spectra;
+	// what exact RGB reads a dispersive index at (src/spectral.h SpectralSettings::designWavelength)
+	float designWavelength { 587.6f };
 };
+
+// a material's spectra as the spectral builds read them, by slot (src/spectral.h SpectralSlot): the albedo, the
+// emission, and two more for the new BxDFs' indices
+inline constexpr size_t MATERIAL_SPECTRUM_SLOTS = 4;
+using MaterialSpectrumSlot = std::optional<std::pair<SpectrumRef, SpectrumRole>>;
 
 // A material as the GPU reads it: the header's type and flags (crt_common.glsl GpuMaterial), its
 // parameter record in vec4s for binding 26, and what the light list needs to price it as an emitter
@@ -167,6 +189,14 @@ struct PackedMaterial {
 	glm::vec3 emission { 0.f };
 	// its emission texture's layer, -1 for none
 	int emissiveLayer { -1 };
+	// THE SPECTRAL SIDE (docs/plans/completed/pbrt-spectral-rendering.md): the spectra the spectral builds evaluate in
+	// place of the record's RGB values, by slot, and the factor the emission is multiplied by (an emitter's strength)
+	std::array<MaterialSpectrumSlot, MATERIAL_SPECTRUM_SLOTS> spectra {};
+	float emissionScale { 0.f };
+	// what the light list prices the material as an emitter by when its RGB emission has no luminance, as a line
+	// outside the visible range has none: its radiance integrated over wavelength over CIE_Y_INTEGRAL, so it compares
+	// with a luminance. 0 for an emitter with luminance, whose RGB prices it as before
+	float emissionPrice { 0.f };
 
 	bool operator==(const PackedMaterial&) const = default;
 };

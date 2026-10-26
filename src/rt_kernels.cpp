@@ -108,6 +108,7 @@ const std::vector<KernelVariant>& registry()
 			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples, CrtBinding::PixelState }),
 			.readsRecord = true,
 			.usesOutputs = true,
+			.laneDependent = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::GenerateCameraRays,
@@ -121,6 +122,7 @@ const std::vector<KernelVariant>& registry()
 			.settings = KernelSettings::PixelFilter,
 			.readsRecord = true,
 			.usesOutputs = true,
+			.laneDependent = true,
 		});
 
 		//---------------------------------------------------------------- 01 generate samples
@@ -199,6 +201,7 @@ const std::vector<KernelVariant>& registry()
 			.queue = QUEUE_ESCAPED,
 			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Radiance, CrtBinding::EnvironmentMap, CrtBinding::Lights, CrtBinding::EnvironmentSampling, CrtBinding::ChannelSums }),
 			.usesOutputs = true,
+			.laneDependent = true,
 		});
 
 		//---------------------------------------------------------------- 04 handle emissive
@@ -214,6 +217,7 @@ const std::vector<KernelVariant>& registry()
 			.queue = QUEUE_EMISSIVE,
 			.bindings = withInteraction(withCore({ CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::MaterialParams, CrtBinding::MaterialTextures, CrtBinding::Lights, CrtBinding::PixelState, CrtBinding::ChannelSums })),
 			.usesOutputs = true,
+			.laneDependent = true,
 		});
 
 		//---------------------------------------------------------------- 05 sample medium interaction
@@ -245,6 +249,7 @@ const std::vector<KernelVariant>& registry()
 			.nextEvent = NextEvent::DeltaLights,
 			.readsRecord = true,
 			.usesOutputs = true,
+			.laneDependent = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::SurfaceScattering,
@@ -259,6 +264,7 @@ const std::vector<KernelVariant>& registry()
 			.nextEvent = NextEvent::AllLights,
 			.readsRecord = true,
 			.usesOutputs = true,
+			.laneDependent = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::SurfaceScattering,
@@ -273,6 +279,7 @@ const std::vector<KernelVariant>& registry()
 			.nextEvent = NextEvent::AllLights,
 			.readsRecord = true,
 			.usesOutputs = true,
+			.laneDependent = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::SurfaceScattering,
@@ -288,6 +295,7 @@ const std::vector<KernelVariant>& registry()
 			.nextEvent = NextEvent::AllLights,
 			.readsRecord = true,
 			.usesOutputs = true,
+			.laneDependent = true,
 		});
 
 		//---------------------------------------------------------------- 07 sample medium scattering
@@ -317,6 +325,7 @@ const std::vector<KernelVariant>& registry()
 			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::ShadowRays, CrtBinding::TraversalStats, CrtBinding::ChannelSums }),
 			.traces = true,
 			.usesOutputs = true,
+			.laneDependent = true,
 		});
 
 		//---------------------------------------------------------------- 09 update film

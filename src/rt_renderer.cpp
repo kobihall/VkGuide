@@ -318,6 +318,7 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, RaytraceSceneEditor& edit
 	drawSettings(engine);
 
 	drawSamplerSettings(engine);
+	drawSpectralSettings();
 	drawFilmSettings(engine);
 	drawOutputsSettings(engine, editor);
 	drawExportSettings(engine, editor);
@@ -508,6 +509,7 @@ RenderSettings RaytraceRenderer::renderSettings(VulkanEngine* engine) const
 	settings.maxSamples = std::max(settings.maxSamples, 1);
 	settings.rayDepth = std::clamp(settings.rayDepth, 1, CRT_MAX_DEPTH);
 	settings.samplesPerFrame = std::clamp(settings.samplesPerFrame, 1, CRT_MAX_SAMPLES_PER_FRAME);
+	settings.spectral = clampSpectralSettings(settings.spectral);
 	return settings;
 }
 
@@ -635,8 +637,16 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	//is built with the TLAS
 	EnvironmentLight environment = environmentLight(engine);
 	environment.group = editor.environmentGroup();
+	//the working space and the design wavelength decide exact RGB's colors and indices in the records, and the spectral
+	//builds' uplift table the spectra a material derives from RGB (a conductor's index)
+	SpectralSceneContext spectral;
+	spectral.spectra.space = m_settings.spectral.colorSpace;
+	if (m_settings.spectral.representation != SpectralRepresentation::ExactRgb) {
+		spectral.spectra.table = upliftTable(engine->m_rootPath, m_settings.spectral.colorSpace);
+	}
+	spectral.designWavelength = m_settings.spectral.designWavelength;
 	const bool sameBuild = m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
-		&& m_sceneAccelEnvironment == environment;
+		&& m_sceneAccelEnvironment == environment && m_sceneAccelSpectral == spectral;
 	if (sameBuild && m_sceneAccelContentRevision == editor.contentRevision()) {
 		return;
 	}
@@ -663,7 +673,8 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 		}
 	}
 	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), editor.lights(), editor.materials(), modelMaterialIds,
-		environment, engine->m_raytraceTextures);
+		environment, engine->m_raytraceTextures, spectral);
+	m_sceneAccelSpectral = spectral;
 
 	m_sceneAccelObjects = editor.meshObjects();
 	m_sceneAccelShapes = editor.shapes();
@@ -1351,6 +1362,181 @@ void RaytraceRenderer::drawSamplerSettings(VulkanEngine* engine)
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("Kernel 01 writes 48 bytes of random numbers per path, which kernels 00 and 06 read.\nPCG per bounce needs none.");
 		}
+	}
+}
+
+void RaytraceRenderer::drawSpectralSettings()
+{
+	if (!ImGui::CollapsingHeader("Spectral")) {
+		return;
+	}
+	SpectralSettings& s = m_settings.spectral;
+	auto tooltip = [](const char* text) {
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", text);
+		}
+	};
+	const char* descriptions[] = {
+		"R, G and B, as the renderer always transported. Bit-identical to a render made before spectral modes existed.",
+		"One wavelength, every path. The film holds the spectral radiance at it, shown in gray, in the wavelength's color\nor through a colormap.",
+		"Three bands with Gaussian sensitivities, fitted so sRGB colors come back close to themselves.",
+		"N fixed bands over the range, box or Gaussian. Every path carries every band, so there is no wavelength noise.",
+		"N wavelengths drawn per path (pbrt-v4's hero wavelengths), estimated against the CIE matching functions.\nUnbiased; dispersion follows one of them.",
+	};
+	if (ImGui::BeginCombo("Representation", spectralRepresentationName(s.representation))) {
+		for (uint32_t r = 0; r < (uint32_t)SpectralRepresentation::Count; r++) {
+			if (ImGui::Selectable(spectralRepresentationName((SpectralRepresentation)r), s.representation == (SpectralRepresentation)r)) {
+				s.representation = (SpectralRepresentation)r;
+			}
+			tooltip(descriptions[r]);
+		}
+		ImGui::EndCombo();
+	}
+	tooltip("What a path carries. Saved with the scene; a new scene renders in exact RGB.");
+
+	auto rangeNote = [&](float lo, float hi) {
+		if (lo < SPECTRAL_LAMBDA_MIN || hi > SPECTRAL_LAMBDA_MAX) {
+			ImGui::TextColored(ImVec4(1.f, 0.75f, 0.35f, 1.f), "RGB colors, lights and textures are defined from 360 to 830 nm only:\nbeyond that they hold their 360 or 830 nm values.");
+		}
+	};
+	switch (s.representation) {
+	case SpectralRepresentation::ExactRgb:
+		break;
+	case SpectralRepresentation::Monochromatic: {
+		ImGui::DragFloat("Wavelength", &s.monochromaticWavelength, 0.5f, SPECTRAL_RANGE_FLOOR, SPECTRAL_RANGE_CEILING, "%.2f nm", ImGuiSliderFlags_Logarithmic);
+		tooltip("The one wavelength every path carries.");
+		ImGui::SameLine();
+		if (ImGui::SmallButton("= design")) {
+			s.monochromaticWavelength = s.designWavelength;
+		}
+		tooltip("Set it to the design wavelength below");
+		rangeNote(s.monochromaticWavelength, s.monochromaticWavelength);
+		SpectralDisplay& display = m_gpu.spectralDisplay;
+		const char* modes[] = { "Grayscale", "Wavelength color", "Colormap" };
+		int mode = (int)display.mode;
+		if (ImGui::Combo("Display", &mode, modes, 3)) {
+			display.mode = (MonochromeDisplay)mode;
+		}
+		tooltip("How the radiance at the wavelength is shown. Display only: it restarts nothing, and an EXR export holds the radiance.");
+		if (display.mode == MonochromeDisplay::WavelengthColor) {
+			const glm::vec3 c = wavelengthDisplayColor(s.monochromaticWavelength, display);
+			ImGui::ColorButton("##wavelength", ImVec4(c.r, c.g, c.b, 1.f));
+			ImGui::SameLine();
+			ImGui::TextDisabled("the color of %.1f nm", s.monochromaticWavelength);
+			if (ImGui::TreeNode("Colors outside the visible range")) {
+				ImGui::ColorEdit3("Infrared", &display.infraredColor.x);
+				ImGui::ColorEdit3("Ultraviolet", &display.ultravioletColor.x);
+				ImGui::ColorEdit3("XUV (below 100 nm)", &display.xuvColor.x);
+				ImGui::TreePop();
+			}
+		} else if (display.mode == MonochromeDisplay::Colormap) {
+			const char* maps[] = { "viridis", "inferno", "turbo" };
+			int map = (int)display.colormap;
+			if (ImGui::Combo("Colormap", &map, maps, 3)) {
+				display.colormap = (Colormap)map;
+			}
+			ImGui::Checkbox("Logarithmic", &display.logarithmic);
+			if (display.logarithmic) {
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(80.f);
+				ImGui::DragFloat("decades", &display.decades, 0.05f, 0.5f, 12.f, "%.1f");
+			}
+			tooltip("Exposure x radiance through the colormap: linear from 0 to 1, or logarithmic over this many decades below 1.");
+		}
+		break;
+	}
+	case SpectralRepresentation::RgbGaussians: {
+		const char* names[] = { "Red band", "Green band", "Blue band" };
+		for (int i = 0; i < 3; i++) {
+			float values[2] = { s.gaussians[i].center, s.gaussians[i].fwhm };
+			if (ImGui::DragFloat2(names[i], values, 0.5f, 5.f, 1000.f, "%.1f nm")) {
+				s.gaussians[i] = { values[0], std::max(values[1], 5.f) };
+			}
+			tooltip("Center and full width at half maximum");
+		}
+		if (ImGui::SmallButton("Fitted bands")) {
+			s.gaussians = DEFAULT_RGB_GAUSSIANS;
+		}
+		tooltip("The bands that bring sRGB colors back closest to themselves (bin/spectrum_test --fit-gaussians)");
+		break;
+	}
+	case SpectralRepresentation::SpectralBands:
+	case SpectralRepresentation::HeroWavelengths: {
+		const uint32_t lanes[] = { 4, 8, 16, 32 };
+		if (ImGui::BeginCombo(s.representation == SpectralRepresentation::SpectralBands ? "Bands" : "Wavelengths", std::to_string(s.lanes).c_str())) {
+			for (const uint32_t n : lanes) {
+				if (ImGui::Selectable(std::to_string(n).c_str(), s.lanes == n)) {
+					s.lanes = n;
+				}
+			}
+			ImGui::EndCombo();
+		}
+		tooltip("How many values a path carries: more lanes cost more per path and less noise (hero) or a finer spectrum (bands).\nEach count is its own build of the kernels, compiled the first time it is used.");
+		float range[2] = { s.lambdaMin, s.lambdaMax };
+		if (ImGui::DragFloat2("Range", range, 1.f, SPECTRAL_RANGE_FLOOR, SPECTRAL_RANGE_CEILING, "%.1f nm")) {
+			s.lambdaMin = range[0];
+			s.lambdaMax = range[1];
+		}
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Visible")) {
+			s.lambdaMin = SPECTRAL_LAMBDA_MIN;
+			s.lambdaMax = SPECTRAL_LAMBDA_MAX;
+		}
+		rangeNote(s.lambdaMin, s.lambdaMax);
+		if (s.representation == SpectralRepresentation::SpectralBands) {
+			int basis = (int)s.bandBasis;
+			if (ImGui::Combo("Band basis", &basis, "Box\0Gaussian\0")) {
+				s.bandBasis = (BandBasis)basis;
+			}
+			tooltip("Box bands average the spectrum over their width; Gaussian bands weigh it by a Gaussian that crosses its\nneighbours at half height. Either way a constant spectrum comes back exactly.");
+		} else {
+			int sampling = (int)s.sampling;
+			if (ImGui::Combo("Sampling", &sampling, "Visible importance\0Uniform\0Emitters' spectra\0")) {
+				s.sampling = (WavelengthSampling)sampling;
+			}
+			tooltip("How each path's wavelengths are drawn. Visible importance is pbrt's sech^2 density over 360 to 830 nm, and\nuniform over any other range. Emitters' spectra mixes in the scene's lights' spectra, so a narrow line\nsource is not mostly missed.");
+			if (s.sampling == WavelengthSampling::Lights) {
+				ImGui::SliderFloat("Emitters' share", &s.lightSamplingShare, 0.f, 0.99f, "%.2f");
+			}
+			if (s.sampling == WavelengthSampling::Visible && (s.lambdaMin != SPECTRAL_LAMBDA_MIN || s.lambdaMax != SPECTRAL_LAMBDA_MAX)) {
+				ImGui::TextDisabled("visible importance needs 360 to 830 nm: this range samples uniformly");
+			}
+		}
+		{
+			bool images = s.imageBuckets > 0;
+			if (ImGui::Checkbox("Spectral images", &images)) {
+				s.imageBuckets = images ? 32u : 0u;
+			}
+			tooltip("Keep each pixel's mean spectral radiance in wavelength buckets over the range, beside the picture (pbrt's\nSpectralFilm). An EXR export writes them as S0.<wavelength>nm channels, the Spectral OpenEXR layout.\nThe bands are their own buckets; hero wavelengths fall into as many as you choose. Restarts the render.");
+			if (images && s.representation == SpectralRepresentation::HeroWavelengths) {
+				int buckets = (int)s.imageBuckets;
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(90.f);
+				if (ImGui::DragInt("buckets", &buckets, 1.f, 1, 256)) {
+					s.imageBuckets = (uint32_t)std::clamp(buckets, 1, 256);
+				}
+			}
+		}
+		break;
+	}
+	case SpectralRepresentation::Count:
+		break;
+	}
+
+	ImGui::Separator();
+	if (ImGui::BeginCombo("RGB color space", colorSpace(s.colorSpace).name)) {
+		for (uint32_t c = 0; c < (uint32_t)ColorSpaceId::Count; c++) {
+			if (ImGui::Selectable(colorSpace((ColorSpaceId)c).name, s.colorSpace == (ColorSpaceId)c)) {
+				s.colorSpace = (ColorSpaceId)c;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	tooltip("The space the scene's RGB values (material and light colors) are in. Exact RGB converts them to linear sRGB;\nthe spectral modes uplift them with that space's table. Textures and environment maps are sRGB whatever it is.");
+	ImGui::DragFloat("Design wavelength", &s.designWavelength, 0.5f, SPECTRAL_RANGE_FLOOR, SPECTRAL_RANGE_CEILING, "%.2f nm", ImGuiSliderFlags_Logarithmic);
+	tooltip("The wavelength exact RGB reads a dispersive glass's index at: 587.6 nm (the helium d line) by default, or a\nlaser's wavelength. Every spectral mode reads the index at the path's own wavelengths.");
+	if (!m_gpu.spectralNote().empty()) {
+		ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "%s", m_gpu.spectralNote().c_str());
 	}
 }
 

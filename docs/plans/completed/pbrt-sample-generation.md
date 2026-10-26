@@ -36,7 +36,7 @@ Kernel 01 writes it for every live path at the top of each bounce, and kernels 0
 | 0, 1 | offset in the pixel |
 | 2, 3 | lens position |
 | 4 | time ([pbrt-motion-blur.md](../pbrt-motion-blur.md)) |
-| 5 | wavelengths ([pbrt-spectral-rendering.md](../pbrt-spectral-rendering.md)) |
+| 5 | wavelengths ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)) |
 | 6 + 12 b to 17 + 12 b | bounce b, in field order: `direct.xyzw`, `indirect.xyzw`, `medium.xyzw` |
 
 A field's index in the record is its dimension's offset within the bounce, so `direct.w` is the spare. The record is regenerated per bounce, not stored for every bounce: one dispatch per bounce against 48 bytes × depth per path. Twelve dimensions per bounce and a maximum depth of 16 use 198 dimensions, within the 1024 of pbrt's Sobol matrices.

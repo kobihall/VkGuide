@@ -1,0 +1,57 @@
+#version 460
+
+// GPU SELF-TEST: crt_spectrum.glsl's four-lane build on a batch of fixed inputs, to be compared with its C++ mirror
+// (src/spectral.cpp) by src/gpu_selftest_spectral.cpp: the path's wavelengths from its sample, a packed SpectrumRef at
+// those lanes (untinted and tinted), a scalar reference, and the lanes as the film's color. Built for one
+// representation at a time through the specialization constants CRT_REPRESENTATION_SPEC and CRT_SAMPLING_SPEC, as the
+// kernels are. Binding 24 is the SpectralData and 25 the uplift table the host built; 90 and 91 are the test's own.
+
+#extension GL_GOOGLE_include_directive : require
+#define CRT_LANES 4
+#include "rt/include/crt_common.glsl"
+#include "rt/include/crt_spectrum.glsl"
+
+layout (local_size_x = 64) in;
+
+// src/gpu_selftest_spectral.cpp SpectrumParityCase, 32 bytes
+struct SpectrumParityCase {
+	// the scene spectrum's index (SceneSpectra), the scalar one's, and the sample's bits, one unused
+	uvec4 ids;
+	// the tint, 1 for none
+	vec4 tint;
+};
+
+// src/gpu_selftest_spectral.cpp SpectrumParityResult, 96 bytes
+struct SpectrumParityResult {
+	vec4 lambda;
+	vec4 pdf;
+	vec4 untinted;
+	vec4 tinted;
+	// the untinted lanes through the film, and the scalar reference at lane 0
+	vec4 film;
+	vec4 pad;
+};
+
+layout (std430, set = 0, binding = 90) readonly buffer CaseBuffer { SpectrumParityCase cases[]; };
+layout (std430, set = 0, binding = 91) writeonly buffer ResultBuffer { SpectrumParityResult results[]; };
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= cases.length()) {
+		return;
+	}
+	const SpectrumParityCase c = cases[index];
+	spectralBegin(uintBitsToFloat(c.ids.z));
+	SpectrumParityResult r;
+	for (uint i = 0u; i < 4u; i++) {
+		r.lambda[i] = g_lambda[i];
+		r.pdf[i] = g_lambdaPdf[i];
+	}
+	const uint ref = sceneSpectrumRef(c.ids.x);
+	r.untinted = spectrumFromRef(ref, vec3(1.0));
+	r.tinted = spectrumFromRef(ref, c.tint.xyz);
+	r.film = vec4(spectrumToFilm(r.untinted), scalarFromRef(sceneSpectrumRef(c.ids.y), 0u));
+	r.pad = vec4(0.0);
+	results[index] = r;
+}

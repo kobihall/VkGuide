@@ -3,7 +3,9 @@
 // Everything after the sample's place in the image plane is the same for both, so it is written once; the
 // including .comp holds the version, the extension and the includes below. A change here changes both
 // kernels, and 0001's compiled shader is checked against the commit before for exactly that reason.
-// Requires crt_common.glsl, crt_random.glsl, crt_samples.glsl, crt_aov.glsl, and crt_filter.glsl for CRT_PIXEL_FILTER.
+// Requires crt_common.glsl, crt_spectrum.glsl, crt_random.glsl, crt_samples.glsl, crt_aov.glsl, and crt_filter.glsl for
+// CRT_PIXEL_FILTER. A spectral build also starts the path's spectrum: its throughput in every lane, and for hero
+// wavelengths the sample they derive from.
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
@@ -72,8 +74,23 @@ void main()
 			path.origin = origin;
 			path.radianceSlot = index;
 			path.direction = target - origin;
+#ifndef CRT_SPECTRAL
 			path.rngState = rng;
 			path.throughput = vec3(1.0);
+#else
+			// the one number the path's wavelengths derive from: the camera pass's wavelength dimension, or the
+			// path's own stream. Drawn last, so every dimension before it is what the exact RGB build draws
+			path.lambdaU = spectralRepresentation() == CRT_REPRESENTATION_HERO ? sampleDimension(index, rng, CRT_SAMPLE_CAMERA_WAVELENGTH) : 0.0;
+			path.rngState = rng;
+			path.laneMask = spectrumFullLaneMask();
+			path.spectralPad = 0u;
+			// one in every lane the representation uses, zero in the rest
+			Spectrum unit = spectrumConst(0.0);
+			for (uint lane = 0u; lane < spectrumActiveLanes(); lane++) {
+				spectrumSetLane(unit, lane, 1.0);
+			}
+			pathSpectra[index] = unit;
+#endif
 			path.bounce = 0u;
 			// the camera sampled no light, so whatever a camera ray finds counts in full
 			path.misPdf = CRT_MIS_FULL;

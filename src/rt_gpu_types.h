@@ -119,8 +119,11 @@ struct CrtParams {
 	uint32_t environmentGroup;
 	// the ambient occlusion view's ray length
 	float aoDistance;
+	// the spectral images' wavelength buckets, after the light groups in ChannelSums; 0 for none
+	uint32_t spectralBuckets;
+	uint32_t paramsPad[3];
 };
-static_assert(sizeof(CrtParams) == 224);
+static_assert(sizeof(CrtParams) == 240);
 
 inline constexpr uint32_t CRT_FLAG_JITTER = 1u << 0;
 inline constexpr uint32_t CRT_FLAG_ROULETTE = 1u << 1;
@@ -141,6 +144,8 @@ inline constexpr uint32_t CRT_WORKGROUP = 64;
 // 16, seven queue entries 28), so ~720 MB at the cap, and 48 more for the sample record while a
 // sampler that writes one is selected (SAMPLE_RECORD_BYTES), ~912 MB
 inline constexpr uint32_t CRT_MAX_POOL = 4u * 1024u * 1024u;
+// and the bytes it may take, which a wide spectral family reaches first: 1.5 GB
+inline constexpr uint64_t CRT_MAX_POOL_BYTES = 1536ull * 1024ull * 1024ull;
 inline constexpr int CRT_MAX_DEPTH = 16;
 inline constexpr int CRT_MAX_SAMPLES_PER_FRAME = 8;
 

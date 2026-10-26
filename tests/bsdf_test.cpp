@@ -43,6 +43,9 @@
 
 #include <fmt/format.h>
 
+// tests/bsdf_test_bxdf.cpp: pbrt-v4's glass and conductor
+int runBxdfTests(uint64_t samples, int quadrature, bool selfcheck, const std::string& filter);
+
 namespace {
 
 using glm::dvec3;
@@ -713,6 +716,13 @@ int main(int argc, char** argv)
 			cases.push_back(c);
 		}
 	}
+	//pbrt-v4's BxDFs have their own section, which --material glass or conductor selects alone
+	const bool bxdfsOnly = !options.material.empty() && (options.material.starts_with("glass") || options.material.starts_with("conductor"));
+	if (bxdfsOnly) {
+		const int failures = runBxdfTests(options.samples, options.quadrature, options.selfcheck, options.material);
+		fmt::println("{}", failures == 0 ? "bsdf_test: ok" : fmt::format("bsdf_test: {} failure(s)", failures));
+		return failures == 0 ? 0 : 1;
+	}
 	if (cases.empty()) {
 		fmt::println("no configuration matches '{}'", options.material);
 		return 2;
@@ -841,8 +851,9 @@ int main(int argc, char** argv)
 			}
 		}
 		g_mutation = Mutation::None;
-		fmt::println("self-check: {}", (cleanFailures == 0 && missed == 0) ? "ok" : "FAILED");
-		return (cleanFailures == 0 && missed == 0) ? 0 : 1;
+		const int bxdfMissed = options.material.empty() ? runBxdfTests(options.samples, options.quadrature, true, "") : 0;
+		fmt::println("self-check: {}", (cleanFailures == 0 && missed == 0 && bxdfMissed == 0) ? "ok" : "FAILED");
+		return (cleanFailures == 0 && missed == 0 && bxdfMissed == 0) ? 0 : 1;
 	}
 
 	Report report;
@@ -858,7 +869,8 @@ int main(int argc, char** argv)
 	}
 	runSuite(report, true);
 	const int failedP = judge(report, true);
-	const int failures = report.hardFailures + failedP;
+	const int bxdfFailures = options.material.empty() ? runBxdfTests(options.samples, options.quadrature, false, "") : 0;
+	const int failures = report.hardFailures + failedP + bxdfFailures;
 	fmt::println("{}", failures == 0 ? "bsdf_test: ok" : fmt::format("bsdf_test: {} failure(s)", failures));
 	return failures == 0 ? 0 : 1;
 }

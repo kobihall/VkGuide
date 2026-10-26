@@ -17,7 +17,7 @@
 // Its traversal work goes into traversalStats after the extend stage's, per bounce, so the panel can
 // show what shadow rays cost apart from the rest.
 //
-// Requires crt_common.glsl, crt_trace.glsl and crt_light_groups.glsl.
+// Requires crt_common.glsl, crt_spectrum.glsl, crt_trace.glsl and crt_light_groups.glsl.
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
@@ -46,10 +46,28 @@ void main()
 		if (!occluded(ray.origin, ray.direction, traceTMin(), ray.tMax)) {
 			// added, not written: one path sends at most one shadow ray a bounce, and 03 and 04 have
 			// already added this bounce's emission
+#ifndef CRT_SPECTRAL
 			radiance[ray.radianceSlot].rgb += ray.contribution;
 			if (CRT_LIGHT_GROUPS) {
 				lightGroupAdd(ray.radianceSlot, ray.mediumAndGroup >> 24u, ray.contribution);
 			}
+#else
+			// a debug view's value rides in the first lane (kernel 06): green for the MIS weights, gray for ambient
+			// occlusion. Radiance turns into the film's color at the wavelengths the path carried
+			if (pc.debugView != CRT_DEBUG_NONE) {
+				const float value = spectrumLane(ray.contribution, 0u);
+				radiance[ray.radianceSlot].rgb += pc.debugView == CRT_DEBUG_MIS_WEIGHTS ? vec3(0.0, value, 0.0) : vec3(value);
+			} else {
+				spectralBegin(ray.lambdaU);
+				const vec3 added = filmAdd(ray.radianceSlot, ray.contribution);
+				if (CRT_LIGHT_GROUPS) {
+					lightGroupAdd(ray.radianceSlot, ray.mediumAndGroup >> 24u, added);
+				}
+				if (CRT_SPECTRAL_IMAGES) {
+					spectralImageAdd(ray.radianceSlot, ray.contribution);
+				}
+			}
+#endif
 		}
 		atomicAdd(s_nodesVisited, g_nodesVisited);
 		atomicAdd(s_primitivesTested, g_primitivesTested);

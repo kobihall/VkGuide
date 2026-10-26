@@ -2,7 +2,7 @@
 
 The tracer has pbrt's point, spot and distant lights, diffuse area emission from shapes and triangles, and an environment map. pbrt-v4 has nine light types; the missing ones are the projection light and the goniometric light. Its area lights can be one-sided and can carry an image, and its lights can be specified by the power or illuminance they deliver rather than by a raw scale. This plan adds those, and gives every light the emission-sampling functions that light tracing, BDPT and photon mapping need.
 
-*Not implemented. Depends on [pbrt-textures.md](pbrt-textures.md) (images for projection, goniometric and textured emission), [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (shape uvs) and [pbrt-material-system.md](completed/pbrt-material-system.md) (emission parameters). Color temperature comes from [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-textures.md](pbrt-textures.md) (images for projection, goniometric and textured emission), [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (shape uvs) and [pbrt-material-system.md](completed/pbrt-material-system.md) (emission parameters). Color temperature comes from [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -52,7 +52,7 @@ Each light can be specified in the units a lighting designer uses. The stored va
 
 For a spot light, pbrt's power-to-intensity conversion uses the cone's solid angle adjusted for the falloff (`SpotLight::Phi()`): each falloff choice has its own.
 
-A **Color temperature** option replaces a light's color with a normalized blackbody (PBR 4ed §4.4.1). In exact RGB it is the blackbody's RGB at luminance 1; in spectral modes it is the `Blackbody` `SpectrumRef` itself ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)).
+A **Color temperature** option replaces a light's color with a normalized blackbody (PBR 4ed §4.4.1). In exact RGB it is the blackbody's RGB at luminance 1; in spectral modes it is the `Blackbody` `SpectrumRef` itself. [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) built this on 2026-10-23, as the **Spectral** menu beside every light's and emitter's color, with the other spectrum kinds, so the new light types only need to take a `SpectrumRef` color.
 
 ### Emission sampling
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include <bxdf.h>
 #include <rt_material_record.h>
 
 namespace {
@@ -11,7 +12,7 @@ namespace {
 
 // the defaults are what SceneMaterial held before parameters were data, so a material made today
 // starts where one did then
-const SpectrumRef DEFAULT_ALBEDO { glm::vec3(0.7f) };
+const SpectrumRef DEFAULT_ALBEDO = rgbSpectrum(glm::vec3(0.7f));
 
 // the textures only an imported model's material sets (a pbrt "diffuse" with an image), as on pbr
 const MaterialParam LAMBERTIAN_PARAMS[] = {
@@ -38,7 +39,7 @@ const MaterialParam DIELECTRIC_PARAMS[] = {
 // a light's color is what it emits, but it is the same value an albedo is, so switching a surface
 // to emissive and back keeps it, as it always has
 const MaterialParam EMISSIVE_PARAMS[] = {
-	{ "albedo", "colour", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR, nullptr },
+	{ "albedo", "colour", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR, nullptr, SpectrumRole::Illuminant },
 	{ "strength", "strength", ParamKind::Float, 1.f, 0.f, 1000.f, PARAM_LOGARITHMIC, "The radiance is colour x strength, so a light can be far brighter than white" },
 };
 
@@ -50,11 +51,31 @@ const MaterialParam PBR_PARAMS[] = {
 	{ "metallicRoughnessTexture", "metal/rough texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "Green multiplies roughness, blue multiplies metallic" },
 	{ "normalTexture", "normal texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "Tangent space; applied on meshes with tangents" },
 	{ "normalScale", "normal scale", ParamKind::Float, 1.f, 0.f, 2.f, 0, "Scales the normal texture's tangent-plane components" },
-	{ "emission", "emission", ParamKind::Spectrum, SpectrumRef { glm::vec3(0.f) }, 0.f, 1.f, PARAM_COLOR | PARAM_TEXTURABLE, nullptr },
+	{ "emission", "emission", ParamKind::Spectrum, rgbSpectrum(glm::vec3(0.f)), 0.f, 1.f, PARAM_COLOR | PARAM_TEXTURABLE, nullptr, SpectrumRole::Illuminant },
 	{ "strength", "emission strength", ParamKind::Float, 1.f, 0.f, 1000.f, PARAM_LOGARITHMIC, "The emitted radiance is emission x strength" },
 	{ "emissiveTexture", "emission texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "sRGB, multiplies the emission" },
 	{ "alphaCutoff", "alpha cutoff", ParamKind::Float, 0.f, 0.f, 2.f, PARAM_READ_ONLY,
 		"The base colour texel's alpha below which the surface is cut away: glTF's alphaCutoff divided by the base colour factor's alpha. 0 for never" },
+};
+
+// pbrt-v4's glass and conductor (docs/plans/pbrt-bsdf-library.md). Roughness is pbrt's: remapped to alpha by its
+// square root unless remapRoughness is off, and 0 is a perfect specular surface
+const MaterialParam GLASS_PARAMS[] = {
+	{ "eta", "index of refraction", ParamKind::Spectrum, constantRef(1.5f), 1.f, 3.f, 0,
+		"A constant, a named glass, a dispersion formula or a table. An index that varies with wavelength disperses in the\nspectral modes; exact RGB reads it at the design wavelength", SpectrumRole::Scalar },
+	{ "uRoughness", "roughness u", ParamKind::Float, 0.f, 0.f, 1.f, 0, "Along dp/du. 0 is smooth glass" },
+	{ "vRoughness", "roughness v", ParamKind::Float, 0.f, 0.f, 1.f, 0, "Along dp/dv" },
+	{ "remapRoughness", "remap roughness", ParamKind::Bool, true, 0.f, 0.f, 0, "Map roughness to GGX's alpha by its square root, as pbrt does" },
+};
+
+const MaterialParam CONDUCTOR_PARAMS[] = {
+	{ "eta", "eta", ParamKind::Spectrum, *namedRef("metal-Cu-eta"), 0.f, 10.f, 0, "The real part of the metal's index; pbrt's default is copper", SpectrumRole::Scalar },
+	{ "k", "k", ParamKind::Spectrum, *namedRef("metal-Cu-k"), 0.f, 10.f, 0, "The imaginary part, the absorption", SpectrumRole::Scalar },
+	{ "useReflectance", "from reflectance", ParamKind::Bool, false, 0.f, 0.f, 0, "Derive eta and k from a normal-incidence reflectance instead, as pbrt does" },
+	{ "albedo", "reflectance", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR, "The reflectance at normal incidence, when 'from reflectance' is on" },
+	{ "uRoughness", "roughness u", ParamKind::Float, 0.f, 0.f, 1.f, 0, "Along dp/du. 0 is a mirror" },
+	{ "vRoughness", "roughness v", ParamKind::Float, 0.f, 0.f, 1.f, 0, "Along dp/dv" },
+	{ "remapRoughness", "remap roughness", ParamKind::Bool, true, 0.f, 0.f, 0, "Map roughness to GGX's alpha by its square root, as pbrt does" },
 };
 
 //---------------------------------------------------------------- packing
@@ -64,7 +85,7 @@ const MaterialParam PBR_PARAMS[] = {
 void packClassic(const MaterialDef& material, const PackContext& context, MaterialRecordWriter& writer)
 {
 	CrtClassicMaterial out {};
-	out.albedo = materialColor(material, "albedo");
+	out.albedo = materialColor(material, "albedo", context.spectra);
 	out.type = (uint32_t)material.type;
 	out.albedoLayer = -1;
 	out.normalLayer = -1;
@@ -96,7 +117,7 @@ void packClassic(const MaterialDef& material, const PackContext& context, Materi
 	case MaterialType::Pbr:
 		out.metallic = std::clamp(materialFloat(material, "metallic"), 0.f, 1.f);
 		out.roughness = std::clamp(materialFloat(material, "roughness"), 0.f, 1.f);
-		out.emission = glm::max(materialColor(material, "emission"), glm::vec3(0.f)) * std::max(materialFloat(material, "strength"), 0.f);
+		out.emission = glm::max(materialColor(material, "emission", context.spectra), glm::vec3(0.f)) * std::max(materialFloat(material, "strength"), 0.f);
 		out.normalScale = materialFloat(material, "normalScale");
 		if (context.textures) {
 			out.albedoLayer = materialTextureLayer(material, "baseColorTexture");
@@ -117,6 +138,125 @@ void packClassic(const MaterialDef& material, const PackContext& context, Materi
 	flags |= out.alphaCutoff > 0.f ? CRT_MATERIAL_FLAG_CUTOUT : 0u;
 	flags |= out.normalLayer >= 0 ? CRT_MATERIAL_FLAG_NORMAL_MAP : 0u;
 	writer.out.emissiveLayer = out.emissiveLayer;
+
+	//the spectral builds' albedo and emission: the same parameters, as spectra
+	PackedMaterial& packed = writer.out;
+	packed.spectra[0] = std::make_pair(materialSpectrum(material, "albedo"), SpectrumRole::Albedo);
+	if (material.type == MaterialType::Emissive) {
+		packed.spectra[1] = std::make_pair(materialSpectrum(material, "albedo"), SpectrumRole::Illuminant);
+		packed.emissionScale = out.param;
+	} else if (material.type == MaterialType::Pbr) {
+		packed.spectra[1] = std::make_pair(materialSpectrum(material, "emission"), SpectrumRole::Illuminant);
+		packed.emissionScale = std::max(materialFloat(material, "strength"), 0.f);
+	}
+	if (packed.spectra[1].has_value() && packed.spectra[1]->first.kind != SpectrumKind::Rgb) {
+		const SpectrumRef& emission = packed.spectra[1]->first;
+		const glm::vec3 rgb = exactRgb(emission, SpectrumRole::Illuminant, context.spectra);
+		if (!(0.2126f * rgb.r + 0.7152f * rgb.g + 0.0722f * rgb.b > 0.f)) {
+			packed.emissionPrice = spectrumRadiometricPrice(emission) * packed.emissionScale;
+			//an emitter only a spectral build sees still emits, so kernel 02 queues it for kernel 04
+			if (packed.emissionPrice > 0.f) {
+				flags |= CRT_MATERIAL_FLAG_EMITS;
+			}
+		}
+	}
+}
+
+// the representative wavelengths exact RGB reads a conductor's eta and k at (docs/plans/pbrt-bsdf-library.md)
+constexpr double RGB_WAVELENGTHS[3] = { 630.0, 532.0, 465.0 };
+
+float materialBool(const MaterialDef& material, std::string_view name)
+{
+	const ParamValue value = materialValue(material, name);
+	const bool* b = std::get_if<bool>(&value);
+	return b != nullptr && *b;
+}
+
+// pbrt reads an RGB eta or k as an unbounded spectrum (RGBUnboundedSpectrum), not as one number: exact RGB takes its
+// channels, and the spectral builds its uplift, tabulated every 5 nm so the shaders' scalar path reads it as it reads
+// a measured table (and holds its 360 and 830 nm values beyond, as every RGB value does)
+glm::vec3 conductorRgb(const SpectrumRef& ref, const SpectrumContext& context)
+{
+	if (ref.kind == SpectrumKind::Rgb) {
+		return exactRgb(ref, SpectrumRole::Unbounded, context);
+	}
+	glm::vec3 rgb;
+	for (int c = 0; c < 3; c++) {
+		rgb[c] = (float)scalarAt(ref, RGB_WAVELENGTHS[c]);
+	}
+	return rgb;
+}
+
+SpectrumRef conductorSpectrum(const SpectrumRef& ref, const SpectrumContext& context)
+{
+	if (ref.kind != SpectrumKind::Rgb || context.table == nullptr) {
+		return ref;
+	}
+	std::vector<float> samples;
+	for (int lambda = 360; lambda <= 830; lambda += 5) {
+		samples.push_back((float)lambda);
+		samples.push_back((float)evalSpectrumRef(ref, SpectrumRole::Unbounded, context, lambda));
+	}
+	return tabulatedRef(std::move(samples));
+}
+
+void packBxdf(const MaterialDef& material, const PackContext& context, MaterialRecordWriter& writer)
+{
+	CrtBxdfMaterial out {};
+	out.type = (uint32_t)material.type;
+	out.albedoLayer = -1;
+	out.normalLayer = -1;
+	out.metalRoughLayer = -1;
+	out.emissiveLayer = -1;
+	const bool remap = materialBool(material, "remapRoughness");
+	auto alpha = [&](const char* name) {
+		const float roughness = std::clamp(materialFloat(material, name), 0.f, 1.f);
+		return remap ? std::sqrt(roughness) : roughness;
+	};
+	out.alphaX = alpha("uRoughness");
+	out.alphaY = alpha("vRoughness");
+	PackedMaterial& packed = writer.out;
+	if (material.type == MaterialType::Glass) {
+		const SpectrumRef eta = materialSpectrum(material, "eta");
+		out.etaDesign = (float)scalarAt(eta, context.designWavelength);
+		if (!(out.etaDesign > 0.f)) {
+			out.etaDesign = 1.f;
+		}
+		if (!isConstantSpectrum(eta)) {
+			out.bxdfFlags |= CRT_BXDF_FLAG_DISPERSIVE;
+		}
+		packed.spectra[2] = std::make_pair(eta, SpectrumRole::Scalar);
+	} else {
+		const SpectrumRef eta = materialSpectrum(material, "eta");
+		const SpectrumRef k = materialSpectrum(material, "k");
+		if (materialBool(material, "useReflectance")) {
+			out.bxdfFlags |= CRT_BXDF_FLAG_REFLECTANCE;
+			out.rgbB = glm::clamp(materialColor(material, "albedo", context.spectra), glm::vec3(0.f), glm::vec3(1.f));
+			packed.spectra[0] = std::make_pair(materialSpectrum(material, "albedo"), SpectrumRole::Albedo);
+		} else {
+			out.rgbA = conductorRgb(eta, context.spectra);
+			out.rgbB = conductorRgb(k, context.spectra);
+		}
+		packed.spectra[2] = std::make_pair(conductorSpectrum(eta, context.spectra), SpectrumRole::Scalar);
+		packed.spectra[3] = std::make_pair(conductorSpectrum(k, context.spectra), SpectrumRole::Scalar);
+	}
+	writer.write(&out, sizeof(out));
+	writer.out.flags |= CRT_MATERIAL_FLAG_SCATTERS;
+}
+
+// a smooth metal reads as its normal-incidence reflectance; glass as the classic dielectric's tint
+glm::vec3 conductorPreview(const MaterialDef& material)
+{
+	if (materialBool(material, "useReflectance")) {
+		return materialColor(material, "albedo");
+	}
+	const glm::vec3 eta = conductorRgb(materialSpectrum(material, "eta"), {});
+	const glm::vec3 k = conductorRgb(materialSpectrum(material, "k"), {});
+	glm::vec3 rgb;
+	for (int c = 0; c < 3; c++) {
+		rgb[c] = frComplex(1.f, eta[c], k[c]);
+	}
+	return rgb;
 }
 
 glm::vec3 noEmission(const MaterialDef&)
@@ -156,6 +296,8 @@ const MaterialTraits MATERIAL_TRAITS[] = {
 	{ "dielectric", "Dielectric", DIELECTRIC_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_DELTA, packClassic, noEmission, glassPreview },
 	{ "emissive", "Emissive", EMISSIVE_PARAMS, MATERIAL_TYPE_EMISSIVE, packClassic, emissiveEmission, albedoPreview },
 	{ "pbr", "glTF PBR", PBR_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_EMISSIVE, packClassic, pbrEmission, albedoPreview },
+	{ "glass", "Glass (pbrt)", GLASS_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX, packBxdf, noEmission, glassPreview },
+	{ "conductor", "Conductor (pbrt)", CONDUCTOR_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX, packBxdf, noEmission, conductorPreview },
 };
 static_assert(sizeof(MATERIAL_TRAITS) / sizeof(MATERIAL_TRAITS[0]) == MATERIAL_TYPE_COUNT);
 
@@ -203,7 +345,7 @@ MaterialDef makeMaterial(MaterialType type, const glm::vec3& albedo)
 {
 	MaterialDef material;
 	material.type = type;
-	material.params["albedo"] = SpectrumRef { albedo };
+	material.params["albedo"] = rgbSpectrum(albedo);
 	return material;
 }
 
@@ -228,11 +370,31 @@ float materialFloat(const MaterialDef& material, std::string_view name)
 	return f != nullptr ? *f : 0.f;
 }
 
-glm::vec3 materialColor(const MaterialDef& material, std::string_view name)
+SpectrumRole materialSpectrumRole(MaterialType type, std::string_view name)
+{
+	const MaterialParam* param = findMaterialParam(type, name);
+	return param != nullptr ? param->role : SpectrumRole::Albedo;
+}
+
+SpectrumRef materialSpectrum(const MaterialDef& material, std::string_view name)
 {
 	const ParamValue value = materialValue(material, name);
 	const SpectrumRef* s = std::get_if<SpectrumRef>(&value);
-	return s != nullptr ? s->rgb : glm::vec3(0.f);
+	return s != nullptr ? *s : rgbSpectrum(glm::vec3(0.f));
+}
+
+glm::vec3 materialColor(const MaterialDef& material, std::string_view name, const SpectrumContext& context)
+{
+	const ParamValue value = materialValue(material, name);
+	const SpectrumRef* s = std::get_if<SpectrumRef>(&value);
+	if (s == nullptr) {
+		return glm::vec3(0.f);
+	}
+	//an RGB value in an sRGB scene is the authored triple, bit for bit, as it always was
+	if (s->kind == SpectrumKind::Rgb && context.space == ColorSpaceId::Srgb) {
+		return s->rgb;
+	}
+	return exactRgb(*s, materialSpectrumRole(material.type, name), context);
 }
 
 int materialTextureLayer(const MaterialDef& material, std::string_view name)

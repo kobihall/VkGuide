@@ -1,3 +1,4 @@
+#include <spectrum_edit.h>
 #include <rt_scene_editor.h>
 
 #include <algorithm>
@@ -66,7 +67,7 @@ bool drawMaterialParam(MaterialDef& material, const MaterialParam& param)
 		const ImGuiSliderFlags flags = (param.flags & PARAM_LOGARITHMIC) != 0 ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None;
 		changed = ImGui::SliderFloat(param.label, f, param.min, param.max, "%.3f", flags);
 	} else if (SpectrumRef* spectrum = std::get_if<SpectrumRef>(&value)) {
-		changed = ImGui::ColorEdit3(param.label, &spectrum->rgb.x, ImGuiColorEditFlags_Float);
+		changed = spectrumEdit(param.label, *spectrum, SpectrumEditOptions { .role = param.role, .colorFlags = ImGuiColorEditFlags_Float });
 	} else if (bool* b = std::get_if<bool>(&value)) {
 		changed = ImGui::Checkbox(param.label, b);
 	} else if (int* i = std::get_if<int>(&value)) {
@@ -170,7 +171,7 @@ bool drawLightParams(SceneLight& light)
 		changed |= drawOrientation(light.orientation);
 	}
 
-	changed |= ImGui::ColorEdit3("colour", &light.color.x);
+	changed |= spectrumEdit("colour", light.color, SpectrumEditOptions { .role = SpectrumRole::Illuminant });
 	//the tracer's radiometric units, on the scale an environment map's radiance is read in
 	const char* intensityLabel = light.kind == LightKind::Directional ? "irradiance (W/m^2)" : "intensity (W/sr)";
 	changed |= ImGui::SliderFloat(intensityLabel, &light.intensity, 0.f, 100000.f, "%.3f", ImGuiSliderFlags_Logarithmic);

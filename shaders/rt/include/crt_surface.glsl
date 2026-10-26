@@ -36,8 +36,8 @@
 // The auxiliary outputs (docs/plans/completed/pbrt-aovs-and-image-output.md) are written here too: the first
 // visible surface of a camera path goes into PixelState with the BSDF's directional albedo there, and a shadow ray
 // carries its light's group to kernel 08. Both are behind specialization constants, and the ambient occlusion view
-// casts its rays from here. Requires crt_common.glsl, crt_interaction.glsl, crt_random.glsl, crt_samples.glsl,
-// equirect.glsl, crt_scatter.glsl, crt_light.glsl and crt_debug.glsl.
+// casts its rays from here. Requires crt_common.glsl, crt_spectrum.glsl, crt_interaction.glsl, crt_random.glsl,
+// crt_samples.glsl, equirect.glsl, crt_scatter.glsl, crt_light.glsl and crt_debug.glsl.
 
 #include "crt_aov.glsl"
 
@@ -59,6 +59,15 @@
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
+// The material the body works with: the six original types' record in the basic build, and in the complex build one
+// that can also be pbrt-v4's glass or conductor (crt_scatter.glsl ComplexMaterial), whose overloads of the material
+// functions the same calls below resolve to
+#if CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
+#define SurfaceMaterial ComplexMaterial
+#else
+#define SurfaceMaterial ClassicMaterial
+#endif
+
 // How far a sampled point on an area light may be from the truth, per coordinate, in units of its
 // magnitude and the shadow ray origin's: the sample's own arithmetic, the light list's world-space
 // copy of the surface (built on the CPU from the instance's transform) against the object-space copy
@@ -75,6 +84,11 @@ layout (local_size_x = CRT_WORKGROUP) in;
 bool spawnShadowRay(SurfaceInteraction si, vec3 direction, float distance, vec3 lightNormal, out ShadowRay ray)
 {
 	ray.mediumAndGroup = 0u;
+#ifdef CRT_SPECTRAL
+	ray.lambdaU = 0.0;
+	ray.laneMask = 0u;
+	ray.spectralPad = 0u;
+#endif
 	if ((pc.flags & CRT_FLAG_ERROR_BOUNDS) == 0u) {
 		ray.origin = si.p;
 		ray.direction = direction;
@@ -111,12 +125,12 @@ bool spawnShadowRay(SurfaceInteraction si, vec3 direction, float distance, vec3 
 // shadowRays[entry] if it would add anything. `si` is the vertex, `normal` the shading normal the
 // material takes. Draws its random numbers after the BSDF sample's, so a strategy that samples
 // nothing here leaves the path's random stream exactly as it was
-bool nextEvent(ClassicMaterial material, vec3 inDir, SurfaceInteraction si, vec3 normal, PathState path, uint pathIndex, inout uint rng, uint entry)
+bool nextEvent(SurfaceMaterial material, vec3 inDir, SurfaceInteraction si, vec3 normal, PathState path, Spectrum throughput, uint pathIndex, inout uint rng, uint entry)
 {
 	const vec3 position = si.p;
 	vec3 direction;
 	float distance;
-	vec3 emitted;
+	Spectrum emitted;
 	float lightPdf;
 	vec3 lightNormal;
 	float weight = 1.0;
@@ -161,13 +175,19 @@ bool nextEvent(ClassicMaterial material, vec3 inDir, SurfaceInteraction si, vec3
 	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS && isDeltaLight(lights[index].kind)) {
 		return false;
 	}
-	vec3 contribution = path.throughput * evalSurface(material, inDir, normal, direction) * emitted * (weight / lightPdf);
-	if (!(max(contribution.r, max(contribution.g, contribution.b)) > 0.0)) {
+	Spectrum contribution = spectrumScale(spectrumMul(spectrumMul(throughput, evalSurface(material, inDir, normal, direction)), emitted), weight / lightPdf);
+	if (!(spectrumMaxValue(contribution) > 0.0)) {
 		return false;
 	}
 	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS) {
-		// what light sampling found, in green
+		// what light sampling found, in green. A spectral build hands kernel 08 the green in its first lane
+#ifndef CRT_SPECTRAL
 		contribution = vec3(0.0, luminance(contribution), 0.0);
+#else
+		const float green = luminance(spectrumToFilm(contribution));
+		contribution = spectrumConst(0.0);
+		spectrumSetLane(contribution, 0u, green);
+#endif
 	}
 
 	ShadowRay ray;
@@ -176,6 +196,10 @@ bool nextEvent(ClassicMaterial material, vec3 inDir, SurfaceInteraction si, vec3
 	}
 	ray.contribution = contribution;
 	ray.radianceSlot = path.radianceSlot;
+#ifdef CRT_SPECTRAL
+	ray.lambdaU = path.lambdaU;
+	ray.laneMask = path.laneMask;
+#endif
 	if (CRT_LIGHT_GROUPS) {
 		ray.mediumAndGroup |= (lights[index].group & 0xFFu) << 24u;
 	}
@@ -194,7 +218,7 @@ bool ambientOcclusionRay(SurfaceInteraction si, vec3 normal, uint pathIndex, Pat
 	if (!spawnShadowRay(si, direction, pc.aoDistance, vec3(0.0), ray)) {
 		return false;
 	}
-	ray.contribution = vec3(1.0);
+	ray.contribution = spectrumConst(1.0);
 	ray.radianceSlot = path.radianceSlot;
 	shadowRays[entry] = ray;
 	return true;
@@ -205,24 +229,31 @@ bool ambientOcclusionRay(SurfaceInteraction si, vec3 normal, uint pathIndex, Pat
 // mean of the weights scatterSurface() returns over pbrt's 16 fixed samples (crt_samples.glsl): a Lambertian
 // surface gives its color, glass about 1, a mirror its tint, a fuzzy metal its tint times the share of samples
 // that do not go below the surface. It draws none of the path's own numbers
-void aovCapture(uint slot, HitRecord hit, SurfaceInteraction si, ClassicMaterial material, vec3 inDir, vec3 normal, bool frontFace)
+void aovCapture(uint slot, HitRecord hit, SurfaceInteraction si, SurfaceMaterial material, vec3 inDir, vec3 normal, bool frontFace)
 {
 	if (!aovWantsSurface(slot, isSpecularMaterial(material))) {
 		return;
 	}
 	vec3 albedo = vec3(0.0);
 	if ((pc.aovOutputs & CRT_AOV_OUTPUT_ALBEDO) != 0u) {
+		Spectrum sum = spectrumConst(0.0);
 		for (int i = 0; i < CRT_ALBEDO_SAMPLES; i++) {
 			g_albedoSample = i;
 			uint rng = 0x9E3779B9u * uint(i + 1);
-			vec3 attenuation;
+			Spectrum attenuation;
 			vec3 outDir;
 			if (scatterSurface(material, inDir, normal, frontFace, slot, rng, attenuation, outDir)) {
-				albedo += attenuation;
+				sum = spectrumAdd(sum, attenuation);
 			}
 		}
 		g_albedoSample = -1;
+		// a spectral build reports the reflectance's color under the working space's white
+#ifndef CRT_SPECTRAL
+		albedo = sum;
 		albedo *= 1.0 / float(CRT_ALBEDO_SAMPLES);
+#else
+		albedo = reflectanceToFilm(spectrumScale(sum, 1.0 / float(CRT_ALBEDO_SAMPLES)));
+#endif
 	}
 	// the shading normal on the geometric normal's side, as pbrt's VisibleSurface has it
 	const vec3 shadingNormal = dot(normal, si.n) < 0.0 ? -normal : normal;
@@ -249,6 +280,13 @@ void main()
 		PathState path = paths[pathIndex];
 		const HitRecord hit = hits[entry];
 		const vec3 inDir = normalize(path.direction);
+#ifndef CRT_SPECTRAL
+		const Spectrum pathThroughput = path.throughput;
+#else
+		spectralBegin(path.lambdaU);
+		// not const: a dispersive glass terminates the secondary lanes below
+		Spectrum pathThroughput = pathSpectra[pathIndex];
+#endif
 		// the path's origin has not moved since kernel 02 traced from it
 		const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
 		bool frontFace;
@@ -262,16 +300,31 @@ void main()
 			// and ends the path, so they accumulate (and average under jitter) like radiance
 			radiance[path.radianceSlot] = vec4(debugValue, 1.0);
 		} else {
+#if CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
+			ComplexMaterial material = resolveComplexMaterial(si.material, si);
+			material.frontFace = frontFace;
+#else
 			const ClassicMaterial material = resolveMaterial(si.material, si.uv);
+#endif
 			if (CRT_AOV) {
 				aovCapture(path.radianceSlot, hit, si, material, inDir, normal, frontFace);
 			}
 			uint rng = path.rngState;
+#if defined(CRT_SPECTRAL) && CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
+			// DISPERSION. A glass whose index varies with wavelength sends each wavelength its own way, so the path keeps
+			// one lane (crt_spectrum.glsl terminateSecondary(): hero keeps its first, the bands one chosen at random) and
+			// the glass reads its index at that lane's wavelength, before anything at this vertex uses the throughput
+			if (material.isBxdf && (material.bxdfFlags & CRT_BXDF_FLAG_DISPERSIVE) != 0u) {
+				const float pick = spectralBanded() ? randomFloat(rng) : 0.0;
+				const uint lane = terminateSecondary(pathThroughput, path.laneMask, pick);
+				material.bxdf.eta = scalarFromRef(materialSpectrumRef(si.material, CRT_SLOT_AUX0), lane);
+			}
+#endif
 
-			vec3 attenuation;
+			Spectrum attenuation;
 			vec3 outDir;
 			bool alive = scatterSurface(material, inDir, normal, frontFace, pathIndex, rng, attenuation, outDir);
-			vec3 throughput = path.throughput * attenuation;
+			Spectrum throughput = spectrumMul(pathThroughput, attenuation);
 			const uint nextBounce = path.bounce + 1u;
 
 			// the MIS weights view is the direct light at the first vertex and nothing further
@@ -283,11 +336,11 @@ void main()
 			}
 
 			if (alive && (pc.flags & CRT_FLAG_ROULETTE) != 0u && nextBounce > pc.minBouncesBeforeRoulette) {
-				const float survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.05, 1.0);
+				const float survival = clamp(spectrumMaxValue(throughput), 0.05, 1.0);
 				if (sampleDimension(pathIndex, rng, CRT_SAMPLE_INDIRECT_ROULETTE) >= survival) {
 					alive = false;
 				} else {
-					throughput /= survival;
+					throughput = spectrumDivide(throughput, survival);
 				}
 			}
 
@@ -295,7 +348,7 @@ void main()
 			// the continuation, and a BSDF it could land in
 			const bool specular = isSpecularMaterial(material);
 			if (nextBounce < pc.rayDepth && !specular && !pastFirstVertex) {
-				shadow = nextEvent(material, inDir, si, normal, path, pathIndex, rng, entry);
+				shadow = nextEvent(material, inDir, si, normal, path, pathThroughput, pathIndex, rng, entry);
 			}
 
 			if (alive) {
@@ -304,7 +357,11 @@ void main()
 				path.origin = (pc.flags & CRT_FLAG_ERROR_BOUNDS) != 0u ? offsetRayOrigin(si.p, si.pError, si.n, outDir) : si.p;
 				path.direction = outDir;
 				path.rngState = rng;
+#ifndef CRT_SPECTRAL
 				path.throughput = throughput;
+#else
+				pathSpectra[pathIndex] = throughput;
+#endif
 				path.bounce = nextBounce;
 				// THE MIS RECORD for the light the new ray finds
 #if CRT_DIRECT_LIGHTING == CRT_DIRECT_BSDF

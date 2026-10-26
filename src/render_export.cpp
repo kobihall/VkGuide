@@ -123,8 +123,8 @@ ChannelImage buildExportImage(const Image& beauty, const RenderOutputsData& outp
 	}
 
 	//each light group's share of the picture: its sums over the weight sum they were taken under
+	const size_t stride = 3 * (size_t)outputs.lightGroups + 1 + outputs.spectralBuckets;
 	if (sized && outputs.lightGroups > 0) {
-		const size_t stride = 3 * (size_t)outputs.lightGroups + 1;
 		for (uint32_t g = 0; g < outputs.lightGroups; g++) {
 			const std::string name = g < info.lightGroupNames.size() ? exportChannelName(info.lightGroupNames[g]) : fmt::format("group{}", g);
 			for (size_t c = 0; c < 3; c++) {
@@ -136,6 +136,34 @@ ChannelImage buildExportImage(const Image& beauty, const RenderOutputsData& outp
 				addChannel(image, fmt::format("LightGroup.{}.{}", name, "RGB"[c]), std::move(values));
 			}
 		}
+	}
+
+	//THE SPECTRAL IMAGES, in the Spectral OpenEXR layout (Fichet, Pacanowski and Wilkie 2021) pbrt-v4's SpectralFilm
+	//writes: an emissive channel S0.<wavelength>nm per bucket, with a comma for the decimal point, in W / (m^2 sr nm).
+	//A monochromatic render's picture is its one wavelength, and is written as that channel too
+	auto spectralName = [](float lambda) {
+		const double nm = std::round((double)lambda * 1e6) / 1e6;
+		const double whole = std::floor(nm);
+		return fmt::format("S0.{},{:06d}nm", (long long)whole, (int)std::lround((nm - whole) * 1e6));
+	};
+	bool spectral = false;
+	if (sized && outputs.spectralBuckets > 0 && outputs.groupSums.size() == pixels * stride) {
+		for (uint32_t b = 0; b < outputs.spectralBuckets; b++) {
+			std::vector<float> values(pixels);
+			for (size_t i = 0; i < pixels; i++) {
+				const float weight = outputs.groupSums[i * stride + 3 * (size_t)outputs.lightGroups];
+				values[i] = weight != 0.f ? outputs.groupSums[i * stride + 3 * (size_t)outputs.lightGroups + 1 + b] / weight : 0.f;
+			}
+			addChannel(image, spectralName(b < outputs.spectralWavelengths.size() ? outputs.spectralWavelengths[b] : 0.f), std::move(values));
+		}
+		spectral = true;
+	} else if (outputs.monochromaticWavelength > 0.f) {
+		std::vector<float> values(pixels);
+		for (size_t i = 0; i < pixels; i++) {
+			values[i] = beauty.rgb[i * 3];
+		}
+		addChannel(image, spectralName(outputs.monochromaticWavelength), std::move(values));
+		spectral = true;
 	}
 
 	//the header, as pbrt's ImageMetadata
@@ -162,6 +190,10 @@ ChannelImage buildExportImage(const Image& beauty, const RenderOutputsData& outp
 	image.attributes.push_back(ImageAttribute::text("vkguide:settings", info.settings));
 	for (uint32_t g = 0; g < outputs.lightGroups && g < info.lightGroupNames.size(); g++) {
 		image.attributes.push_back(ImageAttribute::text(fmt::format("vkguide:lightGroup{}", g), info.lightGroupNames[g]));
+	}
+	if (spectral) {
+		image.attributes.push_back(ImageAttribute::text("spectralLayoutVersion", "1.0"));
+		image.attributes.push_back(ImageAttribute::text("emissiveUnits", "W.m^-2.sr^-1.nm^-1"));
 	}
 	return image;
 }

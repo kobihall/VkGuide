@@ -26,6 +26,7 @@
 
 #include <light_sampling.h>
 #include <rt_scene_types.h>
+#include <spectral.h>
 
 // crt_common.glsl CRT_LIGHT_*: AreaLightKind for the first four
 enum class GpuLightKind : uint32_t {
@@ -59,7 +60,11 @@ struct GpuLight {
 	uint32_t deltaAliasIndex { 0 };
 	// its light group, 0 to 7 (docs/plans/completed/pbrt-aovs-and-image-output.md)
 	uint32_t group { 0 };
-	uint32_t pad[2] {};
+	// what the spectral builds evaluate in place of `radiance` (docs/plans/completed/pbrt-spectral-rendering.md): the
+	// emission's index in the scene's spectra (RaytraceSceneAccel::spectra, SPECTRAL_NONE for none) and the factor it is
+	// multiplied by, a light's intensity or an emitter's strength
+	uint32_t spectrum { SPECTRAL_NONE };
+	float spectrumScale { 0.f };
 };
 static_assert(sizeof(GpuLight) == 96);
 
@@ -91,19 +96,31 @@ struct RaytraceLightList {
 	float totalPower { 0.f };
 };
 
+// What an emitter's records carry for the spectral builds: its emission's index in the scene's spectra, the factor
+// that multiplies it, and the price the light selection takes when its RGB has no luminance (PackedMaterial::
+// emissionPrice), which is what keeps an emitter only a spectral build sees in the list
+struct LightSpectrum {
+	uint32_t index { SPECTRAL_NONE };
+	float scale { 0.f };
+	float price { 0.f };
+};
+
 // Collects the lights one at a time, then finish() prices the ones that depend on the scene's size
-// and builds the alias tables. Punctual lights must be added before anything else
+// and builds the alias tables. Punctual lights must be added before anything else. A punctual light's spectrum goes
+// into `spectra`, read in `context` (the working space) for its exact RGB color
 class LightListBuilder {
 public:
+	explicit LightListBuilder(SceneSpectra* spectra = nullptr, SpectrumContext context = {}) : m_spectra(spectra), m_context(context) {}
 	void addPunctual(const SceneLight& light);
 	// an analytic shape's emitting surfaces (shapeLightGeometry()), all with the same radiance. The
 	// first record's index, or GPU_NO_LIGHT when the shape adds none
-	uint32_t addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance, uint32_t group = 0);
+	uint32_t addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance, uint32_t group = 0, const LightSpectrum& spectrum = {});
 	// one emitting triangle of a placed mesh, in world space: its record's index, or GPU_NO_LIGHT for
 	// a triangle with no area or no emission. `attributeIndex` is its global attribute record,
 	// `material` its index in the scene's materials (for the alpha test of a cut-out emitter),
 	// `emissiveLayer` its texture, -1 for none, and `textureMean` that texture's mean luminance over it
-	uint32_t addTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, const glm::vec3& radiance, uint32_t attributeIndex, uint32_t material, int emissiveLayer, float textureMean, uint32_t group = 0);
+	uint32_t addTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, const glm::vec3& radiance, uint32_t attributeIndex, uint32_t material, int emissiveLayer, float textureMean, uint32_t group = 0,
+		const LightSpectrum& spectrum = {});
 	// `luminanceIntegral` is EnvironmentDistribution::luminanceIntegral
 	void addEnvironment(float luminanceIntegral, float intensity, uint32_t group = 0);
 
@@ -116,6 +133,8 @@ public:
 	RaytraceLightList finish(float sceneRadius);
 
 private:
+	SceneSpectra* m_spectra { nullptr };
+	SpectrumContext m_context;
 	RaytraceLightList m_list;
 	// per record: power already known, or a power per unit of scene cross-section (pi r^2) for the
 	// directional lights and the environment

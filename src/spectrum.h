@@ -3,10 +3,11 @@
 // SPECTRA ON THE CPU (static library rt_spectrum, no Vulkan): spectral distributions and their projection to the
 // renderer's linear sRGB, the way pbrt-v4 defines both.
 //
-// The renderer transports RGB until docs/plans/pbrt-spectral-rendering.md lands. Until then this library is what
-// turns a spectrum a scene gives (a blackbody temperature, a named metal or glass, a .spd file) into the RGB the
-// tracer uses: docs/plans/pbrt-scene-import.md is its first user. The spectral plan extends it with the
-// representations kernels sample (crt_spectrum.glsl) and keeps these functions as the exact-RGB mode's projection.
+// These functions turn a spectrum a scene gives (a blackbody temperature, a named metal or glass, a .spd file) into
+// RGB: exact RGB's projection of it, and what the pbrt importer (docs/plans/completed/pbrt-scene-import.md) reports.
+// The spectral modes (docs/plans/completed/pbrt-spectral-rendering.md) build on them: spectrum_ref.h holds a
+// spectrum as a scene authors it, color_space.h the RGB uplift, and spectral.h the representations the kernels carry
+// (crt_spectrum.glsl).
 //
 // A spectrum is held densely at every nanometer from 360 to 830, which is what pbrt's DenselySampledSpectrum holds
 // and what its InnerProduct() sums over, so every integral here is pbrt's to float rounding. The tables

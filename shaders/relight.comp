@@ -16,7 +16,8 @@ layout (push_constant) uniform constants {
 	uint width;
 	uint height;
 	uint groupCount;
-	uint pad;
+	// the spectral images' buckets after the groups and the weight sum, which the stride counts
+	uint buckets;
 	// scale x tint per group, rgb; w unused
 	vec4 gain[8];
 } pc;
@@ -28,7 +29,7 @@ void main()
 		return;
 	}
 	const uint pixel = uint(coord.y) * pc.width + uint(coord.x);
-	const uint stride = 3u * pc.groupCount + 1u;
+	const uint stride = 3u * pc.groupCount + 1u + pc.buckets;
 	const uint base = pixel * stride;
 	const float weight = channelSums[base + 3u * pc.groupCount];
 	vec3 sum = vec3(0.0);
