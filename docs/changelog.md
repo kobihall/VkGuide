@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-10-26
+
+### New
+
+- Four material types from pbrt-v4. `diffuse` is a Lambertian surface, or Oren and Nayar's rough diffuse surface when **roughness sigma** is above 0 degrees. `thin_glass` is a pane that transmits straight through and reflects what two parallel interfaces and their inter-reflections do, 2R / (1 + R). `diffuse_transmission` reflects and transmits diffusely, with a **scale**. `mix` takes one of two other materials at each hit, the second with the chance **amount**.
+- A `mix` picks its child from a hash of the hit point and the direction, so a hit chooses the same child each time it is evaluated. A child can be any material that scatters, including another mix. Its emission and alpha cutoff do not show through the mix.
+- `pbr` has a **dielectric F0** parameter, the reflectance of its non-metal part at normal incidence, 0.04 by default.
+- A glTF material with `KHR_materials_transmission` at 1, no transmission texture and no emission imports as `glass` with the file's `KHR_materials_ior` and roughness. `KHR_materials_ior` and the factor of `KHR_materials_specular` set the F0 of every other material. `pavilion-day.gltf`'s water and glass are now glass. A material the importer reads but cannot carry (anisotropy, volume, a partial or textured transmission, a specular color) prints a line on the console and stays `pbr`.
+- `tools/verify/bsdf_check.py` renders furnaces for the new types and a camera inside a glass sphere, which sees n² = 2.25. `run_all.py` runs it.
+- `bin/bsdf_test` covers the new BxDFs, including a thin pane against 2R / (1 + R) and the choice of a mix against its amount. **Windows** → **GPU self-tests** → **BxDF parity** covers them in the shaders and compares the mix hash bit for bit.
+
+### Changed
+
+- A pbrt scene's `thindielectric` imports as `thin_glass`, no longer as solid glass. A `diffusetransmission` with a constant reflectance and transmittance imports as `diffuse_transmission`; a textured one is still Lambertian with its texture. A `mix` of two named materials imports as `mix`, no longer as whichever child pbrt picks more often. These scenes render differently from before.
+- Scene files are payload version 19: the four types, a mix's `"materialA"` and `"materialB"` as material references, and `"f0"` on `pbr`. An older file opens as before.
+- The glTF loader reads `KHR_materials_ior`, `_specular`, `_transmission`, `_anisotropy` and `_volume`, which it skipped before.
+
+### Internal
+
+- `rt_material.h` gains `ParamKind::Material`, `MaterialLink` and `PackContext::materialIndex`, which a mix's pack function calls for its children. `buildSceneAccel()` reserves a material's slot before packing it, so a mix's children follow it in the table. `CrtMixMaterial` is the mix's 64-byte record, laid out so a `ClassicMaterial` reader finds no texture and no alpha test.
+- `BxdfMaterial` in `crt_bxdf.glsl` gains `reflectance`, `transmittance`, `orenA` and `orenB`. Kernel 06's complex build resolves a mix before it reads the material, and `CRT_MIX_DEPTH` bounds the chain at 8.
+- `pbr` keeps its dielectric F0 in the `param` float of its record, 0 for 0.04. Every existing record renders bit-identical: seven scenes and an auxiliary-output render matched the build before.
+- `docs/plans/pbrt-bsdf-library.md` moved to `docs/plans/completed/`, with an "As built" and a "Not built" section.
+
 ## 2026-10-23
 
 ### New

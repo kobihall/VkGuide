@@ -114,7 +114,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 5. [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). Implemented 2026-10-23, with a monochromatic representation for one laser wavelength, laser lines as spectra, wavelength sampling from the emitters' spectra, spectral images, and the **Design wavelength**.
 6. [pbrt-sample-generation.md](completed/pbrt-sample-generation.md). Implemented 2026-10-19, ahead of items 3 and 5, which it does not depend on.
 7. [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md). Implemented 2026-10-21.
-8. [pbrt-bsdf-library.md](pbrt-bsdf-library.md). Its `glass` (dispersive, smooth and rough) and `conductor` were built with item 5; the rest is not implemented.
+8. [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md). Implemented 2026-10-26. Its `glass` and `conductor` came with item 5; the diffuse, thin glass, diffuse transmission and mix types came last.
 
 ### Milestone 1: the bench
 

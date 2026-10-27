@@ -2,7 +2,7 @@
 
 After three bounces, kernel 06 lets a path survive with probability `clamp(max(throughput), 0.05, 1)` and divides the survivors' throughput by it. pbrt-v4 uses a different rule: it starts after the first bounce, has no floor, and removes the radiance scaling that refraction puts into the throughput, so that a ray entering glass is not killed for a factor that cancels when it leaves (PBR 4ed §13.4, Figure 13.11). pbrt's chapter 13 exercises add roulette for shadow rays and Veach's efficiency-optimized roulette. This plan makes the roulette rule a setting with each of these, and leaves adjoint-driven roulette and splitting for after path guiding.
 
-*Not implemented. `etaScale` needs [pbrt-bsdf-library.md](pbrt-bsdf-library.md)'s transmission to scale radiance by 1/η². Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. `etaScale` needs [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md)'s transmission to scale radiance by 1/η². Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -28,7 +28,7 @@ pbrt's rule has no floor, and after survival the largest component of `β · eta
 
 ### Removing refraction's radiance scaling
 
-`PathState.etaScale` starts at 1 and multiplies by `η²` whenever a BxDF samples transmission with relative index `η`, which pbrt's `BSDFSample::eta` reports. The new dielectric, thin dielectric and rough dielectric BxDFs of [pbrt-bsdf-library.md](pbrt-bsdf-library.md) scale radiance by `1/η²` as pbrt does, and report `η`. The legacy `dielectric` material reports 1, since it never scaled radiance, so the pbrt rule sees the same throughput through it as the throughput rule does.
+`PathState.etaScale` starts at 1 and multiplies by `η²` whenever a BxDF samples transmission with relative index `η`, which pbrt's `BSDFSample::eta` reports. The new dielectric, thin dielectric and rough dielectric BxDFs of [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md) scale radiance by `1/η²` as pbrt does, and report `η`. The legacy `dielectric` material reports 1, since it never scaled radiance, so the pbrt rule sees the same throughput through it as the throughput rule does.
 
 ### Shadow-ray roulette
 

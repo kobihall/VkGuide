@@ -67,7 +67,10 @@ namespace {
 //   "gaussians", "sampling", "emittersShare", "colorSpace" and "matching"; "spectralDisplay" at the top; and a
 //   spectrum's object form wherever a color was an [r, g, b] array (spectrumJson()). An older file reads in exact
 //   RGB with sRGB colors, as it always rendered
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 18;
+//19: the material library gains pbrt-v4's `diffuse`, `thin_glass`, `diffuse_transmission` and `mix` types (docs/plans/completed/pbrt-bsdf-library.md).
+//   A mix's "materialA" and "materialB" are material references, written as a shape's "material" is; its "amount" is
+//   a number. The pbr type gains "f0". An older file has none of them, and every type it names reads as it did
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 19;
 
 //---------------------------------------------------------------- writing
 
@@ -160,6 +163,8 @@ std::string jsonQuat(const glm::quat& q)
 	return fmt::format("[{},{},{},{}]", jsonNumber(q.x), jsonNumber(q.y), jsonNumber(q.z), jsonNumber(q.w));
 }
 
+std::string materialRefJson(const SceneMaterialRef& ref);
+
 //a material's parameters as json fields, by the names MATERIAL_TRAITS gives them: those of its
 //type that are in `names` (every one, for a user material), never a read-only one, which is derived
 //rather than authored
@@ -179,6 +184,11 @@ std::string materialParamsJson(const MaterialDef& material, const std::set<std::
 			json += fmt::format(R"(,"{}":{})", param.name, *i);
 		} else if (const bool* b = std::get_if<bool>(&value)) {
 			json += fmt::format(R"(,"{}":{})", param.name, *b);
+		} else if (const MaterialLink* link = std::get_if<MaterialLink>(&value)) {
+			//version 19: written as a shape's material reference is, once saveScene() has turned the id into a file reference
+			if (link->fileModel >= 0 || link->fileUser >= 0) {
+				json += fmt::format(R"(,"{}":{})", param.name, materialRefJson(SceneMaterialRef { link->fileUser, link->fileModel, link->fileModelMaterial }));
+			}
 		}
 		//a texture reference is never saved until pbrt-textures.md gives textures a stable identity
 	}
@@ -644,7 +654,8 @@ bool readLegacyMaterial(JsonElement element, MaterialDef& out, std::string& erro
 	out.type = *type;
 	//the types newer than inline materials have no legacy form: a hand-written or generated file (tools/verify) gives
 	//their parameters by name, as a version 12 material record does
-	if (*type == MaterialType::Glass || *type == MaterialType::Conductor) {
+	if (*type == MaterialType::Glass || *type == MaterialType::Conductor || *type == MaterialType::Diffuse || *type == MaterialType::ThinGlass
+		|| *type == MaterialType::DiffuseTransmission || *type == MaterialType::Mix) {
 		readMaterialParams(object, *type, out.params);
 		return true;
 	}
@@ -712,7 +723,8 @@ bool readLegacyMaterial(JsonElement element, MaterialDef& out, std::string& erro
 		}
 		out.params["strength"] = (float)value;
 		break;
-	case MaterialType::Lambertian:
+	default:
+		//Lambertian, and the types newer than inline materials, which returned above
 		break;
 	}
 
@@ -1171,6 +1183,22 @@ void readMaterialParams(simdjson::dom::object object, MaterialType type, ParamSe
 			bool value = false;
 			if (element.get_bool().get(value) == simdjson::SUCCESS) {
 				params[param.name] = value;
+			}
+			break;
+		}
+		case ParamKind::Material: {
+			//a reference as a shape's material is; the loader turns it into a library id once every material is in
+			MaterialLink link;
+			int64_t user = -1;
+			int64_t model = -1;
+			uint64_t index = 0;
+			if (element.get_int64().get(user) == simdjson::SUCCESS) {
+				link.fileUser = (int)user;
+				params[param.name] = link;
+			} else if (element["model"].get_int64().get(model) == simdjson::SUCCESS && element["material"].get_uint64().get(index) == simdjson::SUCCESS) {
+				link.fileModel = (int)model;
+				link.fileModelMaterial = (uint32_t)index;
+				params[param.name] = link;
 			}
 			break;
 		}

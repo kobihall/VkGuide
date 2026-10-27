@@ -8,7 +8,7 @@ A simulated experiment is only as useful as what it lets you measure. In the lab
 
 - The only film is the camera's: kernel 09 folds each frame's samples into the accumulation image, and the tonemap pass displays it.
 - Float atomics on storage buffers are available (`shaderBufferFloat32AtomicAdd`); on images they are not.
-- A light path to a detector is importance transport, which needs every BSDF it scatters from to be reciprocal. Phong, the fuzzy metal and the Lambertian lobe of `pbr` are not (relative asymmetry 0.5 to 0.95, measured by [pbrt-verification-harness.md](completed/pbrt-verification-harness.md)), so stray light that scatters from a mount or a table made of them reads the wrong power at a detector. Mounts and the table use the types of [pbrt-bsdf-library.md](pbrt-bsdf-library.md), and the detector verification scenes include a diffuse wall read from both sides.
+- A light path to a detector is importance transport, which needs every BSDF it scatters from to be reciprocal. Phong, the fuzzy metal and the Lambertian lobe of `pbr` are not (relative asymmetry 0.5 to 0.95, measured by [pbrt-verification-harness.md](completed/pbrt-verification-harness.md)), so stray light that scatters from a mount or a table made of them reads the wrong power at a detector. Mounts and the table use the types of [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md), and the detector verification scenes include a diffuse wall read from both sides.
 - [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md)'s light integrator traces paths from lights and splats connections to the camera into binding 42.
 
 ## Design

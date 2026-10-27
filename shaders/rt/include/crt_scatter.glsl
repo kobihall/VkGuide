@@ -92,6 +92,13 @@ vec3 sampleGgxVisibleNormal(vec3 wo, float alpha, vec2 u)
 	return normalize(vec3(alpha * nh.x, alpha * nh.y, max(0.0, nh.z)));
 }
 
+// the dielectric's reflectance at normal incidence: glTF's 0.04, or the F0 a KHR_materials_ior and _specular import
+// sets in `param` (0 for the default; src/rt_material.cpp packClassic())
+float pbrF0(ClassicMaterial m)
+{
+	return m.param > 0.0 ? m.param : 0.04;
+}
+
 // glTF metallic-roughness: a GGX specular lobe with F0 = mix(0.04, base colour, metallic) over a
 // Lambertian lobe of base colour x (1 - metallic). One lobe is sampled per bounce, chosen by how
 // much each reflects towards `wo`, and its weight divided by that choice's probability.
@@ -102,7 +109,7 @@ bool scatterPbr(ClassicMaterial m, vec3 inDir, vec3 normal, uint pathIndex, inou
 {
 	const vec3 wo = -inDir;
 	const float cosO = max(dot(normal, wo), 1e-4);
-	const Spectrum f0 = spectrumMix(spectrumConst(0.04), materialAlbedo(m), m.metallic);
+	const Spectrum f0 = spectrumMix(spectrumConst(pbrF0(m)), materialAlbedo(m), m.metallic);
 	const Spectrum diffuse = spectrumScale(materialAlbedo(m), 1.0 - m.metallic);
 	const Spectrum fresnelView = fresnelSchlick(f0, cosO);
 
@@ -266,7 +273,7 @@ bool pbrLobes(ClassicMaterial m, vec3 inDir, vec3 normal, out Spectrum f0, out S
 {
 	const vec3 wo = -inDir;
 	const float cosO = max(dot(normal, wo), 1e-4);
-	f0 = spectrumMix(spectrumConst(0.04), materialAlbedo(m), m.metallic);
+	f0 = spectrumMix(spectrumConst(pbrF0(m)), materialAlbedo(m), m.metallic);
 	diffuse = spectrumScale(materialAlbedo(m), 1.0 - m.metallic);
 	fresnelView = fresnelSchlick(f0, cosO);
 	const float specularWeight = spectrumSelectionWeight(fresnelView);
@@ -449,8 +456,8 @@ ClassicMaterial resolveMaterial(uint materialIndex, vec2 uv)
 
 //---------------------------------------------------------------- the complex build's materials
 //
-// Kernel 06's complex build evaluates every type, pbrt-v4's BxDFs (crt_bxdf.glsl: glass, conductor) as well as the
-// six original ones. Its material is a ComplexMaterial, and these overloads of scatterSurface(), evalSurface(),
+// Kernel 06's complex build evaluates every type, pbrt-v4's BxDFs (crt_bxdf.glsl: glass, conductor, diffuse, thin
+// glass, diffuse transmission) as well as the six original ones, and resolves a mix to one of its children. Its material is a ComplexMaterial, and these overloads of scatterSurface(), evalSurface(),
 // pdfSurface() and isSpecularMaterial() take one, so crt_surface.glsl's body is the same text in both builds
 // (SurfaceMaterial). The basic build never sees any of this, which keeps it the code it was.
 
@@ -480,7 +487,24 @@ struct ComplexMaterial {
 
 bool isBxdfMaterialType(uint type)
 {
-	return type == CRT_MATERIAL_GLASS || type == CRT_MATERIAL_CONDUCTOR;
+	return type == CRT_MATERIAL_GLASS || type == CRT_MATERIAL_CONDUCTOR || type == CRT_MATERIAL_DIFFUSE
+		|| type == CRT_MATERIAL_THIN_GLASS || type == CRT_MATERIAL_DIFFUSE_TRANSMISSION;
+}
+
+// A mix's chain of choices down to a material that is not a mix: at each mix the hit's own hash picks a child, the
+// second with the mix's amount (src/bxdf.cpp mixChoosesSecond()). Bounded, so a file whose mixes name each other
+// ends at a mix, which scatters nothing
+#define CRT_MIX_DEPTH 8u
+uint resolveMixMaterial(uint index, vec3 p, vec3 wo)
+{
+	for (uint depth = 0u; depth < CRT_MIX_DEPTH; depth++) {
+		if (materials[index].type != CRT_MATERIAL_MIX) {
+			break;
+		}
+		const vec4 record = materialParams[materials[index].paramOffset];
+		index = floatBitsToUint(mixChoosesSecond(record.w, p, wo, index) ? record.y : record.x);
+	}
+	return index;
 }
 
 // A glass's or a conductor's record (src/rt_material_record.h CrtBxdfMaterial) as the BxDF reads it. Exact RGB takes
@@ -501,6 +525,32 @@ BxdfMaterial resolveBxdfMaterial(uint index, out uint flags)
 	m.eta = a.w;
 	m.conductorEta = spectrumConst(1.0);
 	m.conductorK = spectrumConst(0.0);
+	m.reflectance = spectrumConst(0.0);
+	m.transmittance = spectrumConst(0.0);
+	m.orenA = 1.0;
+	m.orenB = 0.0;
+	if (m.type == CRT_MATERIAL_DIFFUSE || m.type == CRT_MATERIAL_DIFFUSE_TRANSMISSION) {
+		// no microfacets: a diffuse's alpha slots hold Oren-Nayar's A and B, a diffuse transmission's first the scale
+		m.alpha = vec2(0.0);
+		const bool transmits = m.type == CRT_MATERIAL_DIFFUSE_TRANSMISSION;
+#ifndef CRT_SPECTRAL
+		// clamped, and scaled for a transmission, on the CPU
+		m.reflectance = a.xyz;
+		if (transmits) {
+			m.transmittance = c.xyz;
+		}
+#else
+		const float scale = transmits ? b.w : 1.0;
+		m.reflectance = spectrumClamp(spectrumScale(spectrumFromRef(materialSpectrumRef(index, CRT_SLOT_ALBEDO), vec3(1.0)), scale), 0.0, 1.0);
+		if (transmits) {
+			m.transmittance = spectrumClamp(spectrumScale(spectrumFromRef(materialSpectrumRef(index, CRT_SLOT_AUX0), vec3(1.0)), scale), 0.0, 1.0);
+		}
+#endif
+		if (!transmits) {
+			m.orenA = b.w;
+			m.orenB = c.w;
+		}
+	}
 	if (m.type == CRT_MATERIAL_CONDUCTOR) {
 		if ((flags & CRT_BXDF_FLAG_REFLECTANCE) != 0u) {
 			// pbrt's reflectance mode: eta 1 and the k of the clamped reflectance
@@ -543,6 +593,10 @@ ComplexMaterial resolveComplexMaterial(uint index, SurfaceInteraction si)
 		m.bxdf.eta = 1.0;
 		m.bxdf.conductorEta = spectrumConst(1.0);
 		m.bxdf.conductorK = spectrumConst(0.0);
+		m.bxdf.reflectance = spectrumConst(0.0);
+		m.bxdf.transmittance = spectrumConst(0.0);
+		m.bxdf.orenA = 1.0;
+		m.bxdf.orenB = 0.0;
 	}
 	return m;
 }

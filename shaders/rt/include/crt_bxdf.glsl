@@ -1,20 +1,25 @@
 // PBRT-V4'S BXDFS, in its local shading frame (PBR 4ed 9.1.1): z is the OUTWARD shading normal, directions point away
 // from the surface, and wo.z < 0 means the ray arrived from inside. The line-for-line mirror of src/bxdf.cpp.
-// docs/plans/pbrt-bsdf-library.md; the `glass` and `conductor` material types read their parameters into a
-// BxdfMaterial (crt_scatter.glsl resolveBxdfMaterial()), and kernel 06's complex build alone evaluates them.
+// docs/plans/completed/pbrt-bsdf-library.md; the `glass`, `conductor`, `diffuse`, `thin_glass` and
+// `diffuse_transmission` material types read their parameters into a BxdfMaterial (crt_scatter.glsl
+// resolveBxdfMaterial()), and kernel 06's complex build alone evaluates them.
 //
 //   glass      smooth or rough dielectric with exact Fresnel (Walter et al. 2007), dividing radiance by eta^2 on
 //              transmission. One index for every lane: a dispersive glass first terminates the path's secondary
 //              wavelengths (crt_spectrum.glsl terminateSecondary()) and reads its index at the one that is left
 //   conductor  smooth or rough metal with complex Fresnel per lane
+//   diffuse    Lambertian, or Oren-Nayar when sigma > 0
+//   diffuse_transmission  Lambertian reflection and transmission
+//   thin_glass a thin pane: the Fresnel term summed over the inter-reflections of its two faces, transmitting straight on
 //
-// Requires crt_common.glsl, crt_spectrum.glsl, crt_fresnel.glsl and crt_microfacet.glsl.
+// Requires crt_common.glsl, crt_random.glsl, crt_spectrum.glsl, crt_fresnel.glsl and crt_microfacet.glsl.
 
 #ifndef CRT_BXDF_GLSL
 #define CRT_BXDF_GLSL
 
 #define CRT_BXDF_REFLECTION 1u
 #define CRT_BXDF_TRANSMISSION 2u
+#define CRT_BXDF_DIFFUSE 4u
 #define CRT_BXDF_GLOSSY 8u
 #define CRT_BXDF_SPECULAR 16u
 
@@ -22,12 +27,18 @@
 #define CRT_TRANSPORT_IMPORTANCE 1u
 
 struct BxdfMaterial {
-	// CRT_MATERIAL_GLASS or CRT_MATERIAL_CONDUCTOR
+	// CRT_MATERIAL_GLASS, CONDUCTOR, DIFFUSE, THIN_GLASS or DIFFUSE_TRANSMISSION
 	uint type;
 	// the distribution's alphas, trowbridgeReitz() applied
 	vec2 alpha;
-	// glass: the relative index, outside over inside
+	// glass and thin glass: the relative index, outside over inside
 	float eta;
+	// diffuse: the reflectance; diffuse transmission: the reflectance and the transmittance
+	Spectrum reflectance;
+	Spectrum transmittance;
+	// diffuse: Oren-Nayar's A and B, 1 and 0 for a Lambertian surface
+	float orenA;
+	float orenB;
 	// conductor: the complex index per lane
 	Spectrum conductorEta;
 	Spectrum conductorK;
@@ -70,6 +81,16 @@ vec3 bxdfFaceForward(vec3 n, vec3 v)
 
 uint bxdfFlags(BxdfMaterial b)
 {
+	if (b.type == CRT_MATERIAL_DIFFUSE) {
+		return spectrumMaxValue(b.reflectance) > 0.0 ? (CRT_BXDF_REFLECTION | CRT_BXDF_DIFFUSE) : 0u;
+	}
+	if (b.type == CRT_MATERIAL_DIFFUSE_TRANSMISSION) {
+		return (spectrumMaxValue(b.reflectance) > 0.0 ? (CRT_BXDF_REFLECTION | CRT_BXDF_DIFFUSE) : 0u)
+			| (spectrumMaxValue(b.transmittance) > 0.0 ? (CRT_BXDF_TRANSMISSION | CRT_BXDF_DIFFUSE) : 0u);
+	}
+	if (b.type == CRT_MATERIAL_THIN_GLASS) {
+		return CRT_BXDF_REFLECTION | CRT_BXDF_TRANSMISSION | CRT_BXDF_SPECULAR;
+	}
 	const uint roughness = effectivelySmooth(b.alpha) ? CRT_BXDF_SPECULAR : CRT_BXDF_GLOSSY;
 	if (b.type == CRT_MATERIAL_CONDUCTOR) {
 		return CRT_BXDF_REFLECTION | roughness;
@@ -305,12 +326,188 @@ float conductorPdf(BxdfMaterial b, vec3 wo, vec3 wi)
 	return microfacetPdf(b.alpha, wo, wm) / (4.0 * abs(dot(wo, wm)));
 }
 
+//---------------------------------------------------------------- the diffuse BxDFs
+
+vec2 bxdfSampleDiskConcentric(vec2 u)
+{
+	const vec2 offset = 2.0 * u - 1.0;
+	if (offset.x == 0.0 && offset.y == 0.0) {
+		return vec2(0.0);
+	}
+	float r;
+	float theta;
+	if (abs(offset.x) > abs(offset.y)) {
+		r = offset.x;
+		theta = (CRT_PI / 4.0) * (offset.y / offset.x);
+	} else {
+		r = offset.y;
+		theta = CRT_PI / 2.0 - (CRT_PI / 4.0) * (offset.x / offset.y);
+	}
+	return r * vec2(cos(theta), sin(theta));
+}
+
+vec3 bxdfSampleCosineHemisphere(vec2 u)
+{
+	const vec2 d = bxdfSampleDiskConcentric(u);
+	return vec3(d, sqrt(max(0.0, 1.0 - d.x * d.x - d.y * d.y)));
+}
+
+float bxdfCosPhi(vec3 w)
+{
+	const float sinTheta = sqrt(max(0.0, 1.0 - w.z * w.z));
+	return sinTheta == 0.0 ? 1.0 : clamp(w.x / sinTheta, -1.0, 1.0);
+}
+
+float bxdfSinPhi(vec3 w)
+{
+	const float sinTheta = sqrt(max(0.0, 1.0 - w.z * w.z));
+	return sinTheta == 0.0 ? 0.0 : clamp(w.y / sinTheta, -1.0, 1.0);
+}
+
+Spectrum diffuseF(BxdfMaterial b, vec3 wo, vec3 wi)
+{
+	if (!bxdfSameHemisphere(wo, wi)) {
+		return spectrumConst(0.0);
+	}
+	if (b.orenB == 0.0) {
+		return spectrumScale(b.reflectance, 1.0 / CRT_PI);
+	}
+	// pbrt-v3's OrenNayar::f()
+	const float sinThetaI = sqrt(max(0.0, 1.0 - wi.z * wi.z));
+	const float sinThetaO = sqrt(max(0.0, 1.0 - wo.z * wo.z));
+	float maxCos = 0.0;
+	if (sinThetaI > 1e-4 && sinThetaO > 1e-4) {
+		const float dCos = bxdfCosPhi(wi) * bxdfCosPhi(wo) + bxdfSinPhi(wi) * bxdfSinPhi(wo);
+		maxCos = max(0.0, dCos);
+	}
+	float sinAlpha;
+	float tanBeta;
+	if (abs(wi.z) > abs(wo.z)) {
+		sinAlpha = sinThetaO;
+		tanBeta = sinThetaI / abs(wi.z);
+	} else {
+		sinAlpha = sinThetaI;
+		tanBeta = sinThetaO / abs(wo.z);
+	}
+	return spectrumScale(b.reflectance, (b.orenA + b.orenB * maxCos * sinAlpha * tanBeta) / CRT_PI);
+}
+
+bool diffuseSample(BxdfMaterial b, vec3 wo, vec2 u, out BxdfSample s)
+{
+	vec3 wi = bxdfSampleCosineHemisphere(u);
+	if (wo.z < 0.0) {
+		wi.z = -wi.z;
+	}
+	s.wi = wi;
+	s.pdf = abs(wi.z) / CRT_PI;
+	s.f = diffuseF(b, wo, wi);
+	s.flags = CRT_BXDF_DIFFUSE | CRT_BXDF_REFLECTION;
+	s.eta = 1.0;
+	return true;
+}
+
+float diffusePdf(vec3 wo, vec3 wi)
+{
+	return bxdfSameHemisphere(wo, wi) ? abs(wi.z) / CRT_PI : 0.0;
+}
+
+Spectrum diffuseTransmissionF(BxdfMaterial b, vec3 wo, vec3 wi)
+{
+	return spectrumScale(bxdfSameHemisphere(wo, wi) ? b.reflectance : b.transmittance, 1.0 / CRT_PI);
+}
+
+bool diffuseTransmissionSample(BxdfMaterial b, vec3 wo, float uc, vec2 u, out BxdfSample s)
+{
+	s.f = spectrumConst(0.0);
+	s.wi = vec3(0.0, 0.0, 1.0);
+	s.pdf = 0.0;
+	s.flags = 0u;
+	s.eta = 1.0;
+	const float pr = spectrumMaxValue(b.reflectance);
+	const float pt = spectrumMaxValue(b.transmittance);
+	if (pr == 0.0 && pt == 0.0) {
+		return false;
+	}
+	vec3 wi = bxdfSampleCosineHemisphere(u);
+	if (uc < pr / (pr + pt)) {
+		if (wo.z < 0.0) {
+			wi.z = -wi.z;
+		}
+		s.f = spectrumScale(b.reflectance, 1.0 / CRT_PI);
+		s.pdf = abs(wi.z) / CRT_PI * pr / (pr + pt);
+		s.flags = CRT_BXDF_DIFFUSE | CRT_BXDF_REFLECTION;
+	} else {
+		if (wo.z > 0.0) {
+			wi.z = -wi.z;
+		}
+		s.f = spectrumScale(b.transmittance, 1.0 / CRT_PI);
+		s.pdf = abs(wi.z) / CRT_PI * pt / (pr + pt);
+		s.flags = CRT_BXDF_DIFFUSE | CRT_BXDF_TRANSMISSION;
+	}
+	s.wi = wi;
+	return true;
+}
+
+float diffuseTransmissionPdf(BxdfMaterial b, vec3 wo, vec3 wi)
+{
+	const float pr = spectrumMaxValue(b.reflectance);
+	const float pt = spectrumMaxValue(b.transmittance);
+	if (pr == 0.0 && pt == 0.0) {
+		return 0.0;
+	}
+	return abs(wi.z) / CRT_PI * (bxdfSameHemisphere(wo, wi) ? pr : pt) / (pr + pt);
+}
+
+//---------------------------------------------------------------- the thin dielectric
+
+bool thinDielectricSample(BxdfMaterial b, vec3 wo, float uc, out BxdfSample s)
+{
+	s.f = spectrumConst(0.0);
+	s.wi = vec3(0.0, 0.0, 1.0);
+	s.pdf = 0.0;
+	s.flags = 0u;
+	s.eta = 1.0;
+	// PBR 4ed 9.5.1: the sum of the geometric series of reflections between the two interfaces
+	float R = frDielectric(abs(wo.z), b.eta);
+	float T = 1.0 - R;
+	if (R < 1.0) {
+		R += T * T * R / (1.0 - R * R);
+		T = 1.0 - R;
+	}
+	const float pr = R;
+	const float pt = T;
+	if (pr == 0.0 && pt == 0.0) {
+		return false;
+	}
+	if (uc < pr / (pr + pt)) {
+		s.wi = vec3(-wo.x, -wo.y, wo.z);
+		s.f = spectrumConst(R / abs(s.wi.z));
+		s.pdf = pr / (pr + pt);
+		s.flags = CRT_BXDF_SPECULAR | CRT_BXDF_REFLECTION;
+		return true;
+	}
+	s.wi = -wo;
+	s.f = spectrumConst(T / abs(s.wi.z));
+	s.pdf = pt / (pr + pt);
+	s.flags = CRT_BXDF_SPECULAR | CRT_BXDF_TRANSMISSION;
+	return true;
+}
+
 //---------------------------------------------------------------- by type
 
 bool bxdfSample(BxdfMaterial b, vec3 wo, float uc, vec2 u, uint mode, out BxdfSample s)
 {
 	if (b.type == CRT_MATERIAL_CONDUCTOR) {
 		return conductorSample(b, wo, u, s);
+	}
+	if (b.type == CRT_MATERIAL_DIFFUSE) {
+		return diffuseSample(b, wo, u, s);
+	}
+	if (b.type == CRT_MATERIAL_DIFFUSE_TRANSMISSION) {
+		return diffuseTransmissionSample(b, wo, uc, u, s);
+	}
+	if (b.type == CRT_MATERIAL_THIN_GLASS) {
+		return thinDielectricSample(b, wo, uc, s);
 	}
 	return dielectricSample(b, wo, uc, u, mode, s);
 }
@@ -320,6 +517,15 @@ Spectrum bxdfF(BxdfMaterial b, vec3 wo, vec3 wi, uint mode)
 	if (b.type == CRT_MATERIAL_CONDUCTOR) {
 		return conductorF(b, wo, wi);
 	}
+	if (b.type == CRT_MATERIAL_DIFFUSE) {
+		return diffuseF(b, wo, wi);
+	}
+	if (b.type == CRT_MATERIAL_DIFFUSE_TRANSMISSION) {
+		return diffuseTransmissionF(b, wo, wi);
+	}
+	if (b.type == CRT_MATERIAL_THIN_GLASS) {
+		return spectrumConst(0.0);
+	}
 	return dielectricF(b, wo, wi, mode);
 }
 
@@ -328,7 +534,43 @@ float bxdfPdf(BxdfMaterial b, vec3 wo, vec3 wi, uint mode)
 	if (b.type == CRT_MATERIAL_CONDUCTOR) {
 		return conductorPdf(b, wo, wi);
 	}
+	if (b.type == CRT_MATERIAL_DIFFUSE) {
+		return diffusePdf(wo, wi);
+	}
+	if (b.type == CRT_MATERIAL_DIFFUSE_TRANSMISSION) {
+		return diffuseTransmissionPdf(b, wo, wi);
+	}
+	if (b.type == CRT_MATERIAL_THIN_GLASS) {
+		return 0.0;
+	}
 	return dielectricPdf(b, wo, wi);
+}
+
+//---------------------------------------------------------------- the mix material
+
+// src/bxdf.cpp mixHash(): the float bits of the hit point and the outgoing direction folded through the PCG hash, so the
+// same hit chooses the same child whenever it is evaluated
+float mixHash(vec3 p, vec3 wo, uint salt)
+{
+	uint h = pcgHash(salt);
+	h = pcgHash(h ^ floatBitsToUint(p.x));
+	h = pcgHash(h ^ floatBitsToUint(p.y));
+	h = pcgHash(h ^ floatBitsToUint(p.z));
+	h = pcgHash(h ^ floatBitsToUint(wo.x));
+	h = pcgHash(h ^ floatBitsToUint(wo.y));
+	h = pcgHash(h ^ floatBitsToUint(wo.z));
+	return float(h >> 8u) * (1.0 / 16777216.0);
+}
+
+bool mixChoosesSecond(float amount, vec3 p, vec3 wo, uint salt)
+{
+	if (amount <= 0.0) {
+		return false;
+	}
+	if (amount >= 1.0) {
+		return true;
+	}
+	return !(amount < mixHash(p, wo, salt));
 }
 
 #endif

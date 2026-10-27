@@ -2,7 +2,7 @@
 
 Materials are about to grow from six types with a handful of scalar fields to around fifteen types whose parameters can be spectra, textures or both. Today each shape and each overridden mesh object carries its own inline `SceneMaterial`, which stores every type's fields at once, and the GPU gets one fixed 64-byte record per material. This plan replaces that with a named material library, a traits table that describes every type's parameters as data, variable-length GPU records, and the two surface queues the user chose for kernel 06.
 
-*Implemented 2026-10-19; the as-built record is the last section before the sources. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md). [pbrt-bsdf-library.md](../pbrt-bsdf-library.md), [pbrt-textures.md](../pbrt-textures.md), [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) and every other appearance plan add types and parameter kinds through it. Part of the [roadmap](../pbrt-roadmap.md).*
+*Implemented 2026-10-19; the as-built record is the last section before the sources. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md). [pbrt-bsdf-library.md](pbrt-bsdf-library.md), [pbrt-textures.md](../pbrt-textures.md), [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) and every other appearance plan add types and parameter kinds through it. Part of the [roadmap](../pbrt-roadmap.md).*
 
 ## Decisions already made
 
@@ -95,8 +95,8 @@ Other plans add types through the same table, and none needs more than a traits 
 
 | Type | Plan | Class |
 |---|---|---|
-| `diffuse`, `conductor`, `glass`, `thin_glass`, `diffuse_transmission` | [pbrt-bsdf-library.md](../pbrt-bsdf-library.md) | basic |
-| `mix` | [pbrt-bsdf-library.md](../pbrt-bsdf-library.md) | complex |
+| `diffuse`, `conductor`, `glass`, `thin_glass`, `diffuse_transmission` | [pbrt-bsdf-library.md](pbrt-bsdf-library.md) | basic |
+| `mix` | [pbrt-bsdf-library.md](pbrt-bsdf-library.md) | complex |
 | `coated_diffuse`, `coated_conductor` | [pbrt-layered-materials.md](../pbrt-layered-materials.md) | complex |
 | `fresnel_blend` | [pbrt-layered-materials.md](../pbrt-layered-materials.md) | basic |
 | `measured`, later `fourier` | [pbrt-measured-bsdfs.md](../pbrt-measured-bsdfs.md) | complex |

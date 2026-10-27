@@ -61,7 +61,9 @@ inline constexpr uint32_t CRT_BXDF_FLAG_REFLECTANCE = 1u << 0;
 // the glass's index varies with wavelength: a spectral build terminates the path's secondary wavelengths at it
 inline constexpr uint32_t CRT_BXDF_FLAG_DISPERSIVE = 1u << 1;
 
-// The parameter record of the glass and conductor types (crt_scatter.glsl resolveBxdfMaterial()), four vec4s. The
+// The parameter record of the glass, conductor, diffuse, thin glass and diffuse transmission types (crt_scatter.glsl
+// resolveBxdfMaterial()), four vec4s. A diffuse type's rgbA is its reflectance, a diffuse transmission's rgbB its
+// transmittance, a diffuse's alphaX and alphaY Oren-Nayar's A and B, and a thin glass's etaDesign its index. The
 // fields a ClassicMaterial reader looks at (type, the texture layers, the alpha cutoff) sit where that record keeps
 // them, holding "none", so code that reads any material as classic (the traversal's alpha test, the normal map) finds
 // nothing to do. Exact RGB reads the RGB fields; a spectral build reads the spectra in the material's slots
@@ -85,3 +87,25 @@ struct CrtBxdfMaterial {
 	uint32_t bxdfFlags;
 };
 static_assert(sizeof(CrtBxdfMaterial) == 64);
+
+// The parameter record of the mix type (crt_scatter.glsl resolveMixMaterial()), four vec4s laid out as a ClassicMaterial
+// reader finds them: a type, no textures and no alpha test, so the traversal and the normal map pass it by
+struct CrtMixMaterial {
+	// the two children, as indices into the material table
+	uint32_t childA;
+	uint32_t childB;
+	float unusedAlbedoZ;
+	// the chance of the second child
+	float amount;
+	uint32_t type;
+	int32_t albedoLayer;
+	float alphaCutoff;
+	float unusedMetallic;
+	float unusedEmission[3];
+	float unusedRoughness;
+	int32_t normalLayer;
+	int32_t metalRoughLayer;
+	int32_t emissiveLayer;
+	float unusedNormalScale;
+};
+static_assert(sizeof(CrtMixMaterial) == 64);

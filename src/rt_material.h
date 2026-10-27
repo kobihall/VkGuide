@@ -21,6 +21,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -49,10 +50,18 @@ enum class MaterialType : uint8_t {
 	// metallic, plus an emission that does not end the path. What every glTF material becomes
 	Pbr,
 	// pbrt-v4's dielectric: smooth or rough glass with exact Fresnel, its index any spectrum, dispersive when the index
-	// varies with wavelength (docs/plans/pbrt-bsdf-library.md)
+	// varies with wavelength (docs/plans/completed/pbrt-bsdf-library.md)
 	Glass,
 	// pbrt-v4's conductor: smooth or rough metal with complex Fresnel from its eta and k spectra, or from a reflectance
-	Conductor
+	Conductor,
+	// pbrt-v4's diffuse: Lambertian reflection, or Oren-Nayar's rough diffuse surface when sigma is above 0
+	Diffuse,
+	// pbrt-v4's thin dielectric: a pane that transmits straight through, with the Fresnel term of two parallel interfaces
+	ThinGlass,
+	// pbrt-v4's diffuse transmission: Lambertian reflection and transmission
+	DiffuseTransmission,
+	// pbrt-v4's mix: each hit takes one of two other library materials, the second with the chance `amount`
+	Mix
 };
 
 inline constexpr MaterialType MATERIAL_TYPES[] = {
@@ -64,6 +73,10 @@ inline constexpr MaterialType MATERIAL_TYPES[] = {
 	MaterialType::Pbr,
 	MaterialType::Glass,
 	MaterialType::Conductor,
+	MaterialType::Diffuse,
+	MaterialType::ThinGlass,
+	MaterialType::DiffuseTransmission,
+	MaterialType::Mix,
 };
 
 inline constexpr size_t MATERIAL_TYPE_COUNT = sizeof(MATERIAL_TYPES) / sizeof(MATERIAL_TYPES[0]);
@@ -78,16 +91,32 @@ struct TexRef {
 	bool operator==(const TexRef&) const = default;
 };
 
+// A reference to another library material (a mix's children), by the id the library gives it. The id is never saved: the
+// scene file writes the reference as it writes a shape's, an index into its user materials or a glTF material by model
+// and index (src/scene_io.h SceneMaterialRef). The `file` fields carry that reference on the copies a SceneDescription
+// holds, and are -1 everywhere else
+struct MaterialLink {
+	uint64_t id { 0 };
+	int fileUser { -1 };
+	int fileModel { -1 };
+	uint32_t fileModelMaterial { 0 };
+	// An import's mix names its children by their index in the model's own materials, before the library has given
+	// them ids. VulkanEngine::addModel() turns it into an id; -1 everywhere else
+	int modelIndex { -1 };
+	bool operator==(const MaterialLink&) const = default;
+};
+
 enum class ParamKind : uint8_t {
 	Float,
 	Spectrum,
 	Texture,
 	Enum,
-	Bool
+	Bool,
+	Material
 };
 
 // one alternative per ParamKind, in ParamKind's order
-using ParamValue = std::variant<float, SpectrumRef, TexRef, int, bool>;
+using ParamValue = std::variant<float, SpectrumRef, TexRef, int, bool, MaterialLink>;
 using ParamSet = std::map<std::string, ParamValue, std::less<>>;
 
 // MaterialParam::flags
@@ -171,6 +200,10 @@ struct PackContext {
 	SpectrumContext spectra;
 	// what exact RGB reads a dispersive index at (src/spectral.h SpectralSettings::designWavelength)
 	float designWavelength { 587.6f };
+	// The index in the scene's material table of the library material `id`, packing it first if it is not there yet. A
+	// mix's pack function calls it for its two children. Empty where nothing packs a scene (a preview), and the mix's
+	// children are then index 0
+	std::function<uint32_t(uint64_t id)> materialIndex;
 };
 
 // a material's spectra as the spectral builds read them, by slot (src/spectral.h SpectralSlot): the albedo, the

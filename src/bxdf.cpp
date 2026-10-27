@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace {
 
@@ -446,4 +447,237 @@ ConductorBxdf ConductorBxdf::fromReflectance(const TrowbridgeReitz& distribution
 	bxdf.eta = glm::vec3(1.f);
 	bxdf.k = 2.f * glm::sqrt(r) / glm::sqrt(glm::max(glm::vec3(1.f) - r, glm::vec3(0.f)));
 	return bxdf;
+}
+
+//---------------------------------------------------------------- the diffuse BxDFs
+
+namespace {
+
+glm::vec2 sampleUniformDiskConcentric(glm::vec2 u)
+{
+	const glm::vec2 offset = 2.f * u - glm::vec2(1.f);
+	if (offset.x == 0.f && offset.y == 0.f) {
+		return glm::vec2(0.f);
+	}
+	float r;
+	float theta;
+	if (std::abs(offset.x) > std::abs(offset.y)) {
+		r = offset.x;
+		theta = (PI_F / 4.f) * (offset.y / offset.x);
+	} else {
+		r = offset.y;
+		theta = PI_F / 2.f - (PI_F / 4.f) * (offset.x / offset.y);
+	}
+	return r * glm::vec2(std::cos(theta), std::sin(theta));
+}
+
+float maxComponent(glm::vec3 v)
+{
+	return std::max(v.x, std::max(v.y, v.z));
+}
+
+uint32_t pcgHash(uint32_t v)
+{
+	const uint32_t state = v * 747796405u + 2891336453u;
+	const uint32_t word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+
+float cosHemispherePdf(float cosTheta)
+{
+	return cosTheta / PI_F;
+}
+
+} // namespace
+
+glm::vec3 sampleCosineHemisphere(glm::vec2 u)
+{
+	const glm::vec2 d = sampleUniformDiskConcentric(u);
+	const float z = safeSqrt(1.f - d.x * d.x - d.y * d.y);
+	return glm::vec3(d.x, d.y, z);
+}
+
+DiffuseBxdf DiffuseBxdf::make(glm::vec3 reflectance, float sigmaDegrees)
+{
+	DiffuseBxdf b;
+	b.reflectance = reflectance;
+	if (sigmaDegrees > 0.f) {
+		const float sigma = sigmaDegrees * (PI_F / 180.f);
+		const float sigma2 = sigma * sigma;
+		b.orenA = 1.f - sigma2 / (2.f * (sigma2 + 0.33f));
+		b.orenB = 0.45f * sigma2 / (sigma2 + 0.09f);
+	}
+	return b;
+}
+
+uint32_t DiffuseBxdf::flags() const
+{
+	return maxComponent(reflectance) > 0.f ? (BXDF_REFLECTION | BXDF_DIFFUSE) : 0u;
+}
+
+bool DiffuseBxdf::sample(glm::vec3 wo, float uc, glm::vec2 u, TransportMode mode, BxdfSample& out) const
+{
+	(void)uc;
+	glm::vec3 wi = sampleCosineHemisphere(u);
+	if (wo.z < 0.f) {
+		wi.z = -wi.z;
+	}
+	const float pdf = cosHemispherePdf(std::abs(wi.z));
+	out = { f(wo, wi, mode), wi, pdf, BXDF_DIFFUSE | BXDF_REFLECTION, 1.f };
+	return true;
+}
+
+glm::vec3 DiffuseBxdf::f(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const
+{
+	(void)mode;
+	if (!sameHemisphere(wo, wi)) {
+		return glm::vec3(0.f);
+	}
+	if (orenB == 0.f) {
+		return reflectance / PI_F;
+	}
+	//pbrt-v3's OrenNayar::f()
+	const float sinThetaI = std::sqrt(sin2Theta(wi));
+	const float sinThetaO = std::sqrt(sin2Theta(wo));
+	float maxCos = 0.f;
+	if (sinThetaI > 1e-4f && sinThetaO > 1e-4f) {
+		const float dCos = cosPhi(wi) * cosPhi(wo) + sinPhi(wi) * sinPhi(wo);
+		maxCos = std::max(0.f, dCos);
+	}
+	float sinAlpha;
+	float tanBeta;
+	if (std::abs(wi.z) > std::abs(wo.z)) {
+		sinAlpha = sinThetaO;
+		tanBeta = sinThetaI / std::abs(wi.z);
+	} else {
+		sinAlpha = sinThetaI;
+		tanBeta = sinThetaO / std::abs(wo.z);
+	}
+	return reflectance * ((orenA + orenB * maxCos * sinAlpha * tanBeta) / PI_F);
+}
+
+float DiffuseBxdf::pdf(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const
+{
+	(void)mode;
+	return sameHemisphere(wo, wi) ? cosHemispherePdf(std::abs(wi.z)) : 0.f;
+}
+
+uint32_t DiffuseTransmissionBxdf::flags() const
+{
+	return (maxComponent(reflectance) > 0.f ? (BXDF_REFLECTION | BXDF_DIFFUSE) : 0u) | (maxComponent(transmittance) > 0.f ? (BXDF_TRANSMISSION | BXDF_DIFFUSE) : 0u);
+}
+
+bool DiffuseTransmissionBxdf::sample(glm::vec3 wo, float uc, glm::vec2 u, TransportMode mode, BxdfSample& out) const
+{
+	(void)mode;
+	const float pr = maxComponent(reflectance);
+	const float pt = maxComponent(transmittance);
+	if (pr == 0.f && pt == 0.f) {
+		return false;
+	}
+	glm::vec3 wi = sampleCosineHemisphere(u);
+	if (uc < pr / (pr + pt)) {
+		if (wo.z < 0.f) {
+			wi.z = -wi.z;
+		}
+		out = { reflectance / PI_F, wi, cosHemispherePdf(std::abs(wi.z)) * pr / (pr + pt), BXDF_DIFFUSE | BXDF_REFLECTION, 1.f };
+		return true;
+	}
+	if (wo.z > 0.f) {
+		wi.z = -wi.z;
+	}
+	out = { transmittance / PI_F, wi, cosHemispherePdf(std::abs(wi.z)) * pt / (pr + pt), BXDF_DIFFUSE | BXDF_TRANSMISSION, 1.f };
+	return true;
+}
+
+glm::vec3 DiffuseTransmissionBxdf::f(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const
+{
+	(void)mode;
+	return (sameHemisphere(wo, wi) ? reflectance : transmittance) / PI_F;
+}
+
+float DiffuseTransmissionBxdf::pdf(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const
+{
+	(void)mode;
+	const float pr = maxComponent(reflectance);
+	const float pt = maxComponent(transmittance);
+	if (pr == 0.f && pt == 0.f) {
+		return 0.f;
+	}
+	return cosHemispherePdf(std::abs(wi.z)) * (sameHemisphere(wo, wi) ? pr : pt) / (pr + pt);
+}
+
+//---------------------------------------------------------------- the thin dielectric
+
+uint32_t ThinDielectricBxdf::flags() const
+{
+	return BXDF_REFLECTION | BXDF_TRANSMISSION | BXDF_SPECULAR;
+}
+
+bool ThinDielectricBxdf::sample(glm::vec3 wo, float uc, glm::vec2 u, TransportMode mode, BxdfSample& out) const
+{
+	(void)u;
+	(void)mode;
+	//PBR 4ed 9.5.1: the sum of the geometric series of reflections between the two interfaces
+	float R = frDielectric(std::abs(wo.z), eta);
+	float T = 1.f - R;
+	if (R < 1.f) {
+		R += T * T * R / (1.f - R * R);
+		T = 1.f - R;
+	}
+	const float pr = R;
+	const float pt = T;
+	if (pr == 0.f && pt == 0.f) {
+		return false;
+	}
+	if (uc < pr / (pr + pt)) {
+		const glm::vec3 wi(-wo.x, -wo.y, wo.z);
+		out = { glm::vec3(R / std::abs(wi.z)), wi, pr / (pr + pt), BXDF_SPECULAR | BXDF_REFLECTION, 1.f };
+		return true;
+	}
+	const glm::vec3 wi = -wo;
+	out = { glm::vec3(T / std::abs(wi.z)), wi, pt / (pr + pt), BXDF_SPECULAR | BXDF_TRANSMISSION, 1.f };
+	return true;
+}
+
+glm::vec3 ThinDielectricBxdf::f(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const
+{
+	(void)wo;
+	(void)wi;
+	(void)mode;
+	return glm::vec3(0.f);
+}
+
+float ThinDielectricBxdf::pdf(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const
+{
+	(void)wo;
+	(void)wi;
+	(void)mode;
+	return 0.f;
+}
+
+//---------------------------------------------------------------- the mix material
+
+float mixHash(glm::vec3 p, glm::vec3 wo, uint32_t salt)
+{
+	//the float bits of each coordinate, folded through the PCG hash in turn
+	uint32_t h = pcgHash(salt);
+	const float values[6] = { p.x, p.y, p.z, wo.x, wo.y, wo.z };
+	for (const float value : values) {
+		uint32_t bits;
+		std::memcpy(&bits, &value, sizeof(bits));
+		h = pcgHash(h ^ bits);
+	}
+	return (float)(h >> 8) * (1.f / 16777216.f);
+}
+
+bool mixChoosesSecond(float amount, glm::vec3 p, glm::vec3 wo, uint32_t salt)
+{
+	if (amount <= 0.f) {
+		return false;
+	}
+	if (amount >= 1.f) {
+		return true;
+	}
+	return !(amount < mixHash(p, wo, salt));
 }

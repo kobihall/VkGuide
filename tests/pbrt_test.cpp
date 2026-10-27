@@ -429,6 +429,71 @@ Shape "trianglemesh" "point3 P" [0 0 0  1 0 0  1 1 0]
 	check(reportHas(model, "Shape \"curve\" is not supported; 1 skipped"), "a skipped shape type is counted");
 }
 
+//---------------------------------------------------------------- the BSDF library's materials
+
+void testBsdfMaterials()
+{
+	fmt::println("bsdf materials");
+	const std::string text = R"(
+Film "rgb" "integer xresolution" 16 "integer yresolution" 16
+WorldBegin
+MakeNamedMaterial "skin" "string type" "diffuse" "rgb reflectance" [0.6 0.5 0.4]
+MakeNamedMaterial "gold" "string type" "conductor" "spectrum eta" "metal-Au-eta" "spectrum k" "metal-Au-k"
+MakeNamedMaterial "blend" "string type" "mix" "string materials" ["skin" "gold"] "float amount" 0.25
+MakeNamedMaterial "pane" "string type" "thindielectric" "float eta" 1.45
+MakeNamedMaterial "leaf" "string type" "diffusetransmission" "rgb reflectance" [0.2 0.4 0.1] "rgb transmittance" [0.1 0.3 0.05] "float scale" 2
+MakeNamedMaterial "broken" "string type" "mix" "string materials" ["skin" "nowhere"] "float amount" 0.9
+NamedMaterial "blend"
+Shape "trianglemesh" "point3 P" [0 0 0  1 0 0  1 1 0] "integer indices" [0 1 2]
+NamedMaterial "pane"
+Shape "trianglemesh" "point3 P" [0 0 1  1 0 1  1 1 1] "integer indices" [0 1 2]
+NamedMaterial "leaf"
+Shape "trianglemesh" "point3 P" [0 0 2  1 0 2  1 1 2] "integer indices" [0 1 2]
+NamedMaterial "broken"
+Shape "trianglemesh" "point3 P" [0 0 3  1 0 3  1 1 3] "integer indices" [0 1 2]
+)";
+	PbrtScene scene;
+	std::string error;
+	check(parsePbrtString(text, scene, &error), "parses: " + error);
+	ImportedModel model;
+	importPbrtScene(scene, model);
+
+	auto find = [&](MaterialType type) -> const ImportedMaterial* {
+		for (const ImportedMaterial& material : model.materials) {
+			if (material.definition.type == type) {
+				return &material;
+			}
+		}
+		return nullptr;
+	};
+	const ImportedMaterial* mix = find(MaterialType::Mix);
+	check(mix != nullptr, "a mix of two named materials is a mix");
+	if (mix != nullptr) {
+		const MaterialLink a = std::get<MaterialLink>(materialValue(mix->definition, "materialA"));
+		const MaterialLink b = std::get<MaterialLink>(materialValue(mix->definition, "materialB"));
+		check(a.modelIndex >= 0 && b.modelIndex >= 0 && a.modelIndex != b.modelIndex && (size_t)a.modelIndex < model.materials.size() && (size_t)b.modelIndex < model.materials.size(),
+			"a mix names its two children by their index in the model");
+		if (a.modelIndex >= 0 && b.modelIndex >= 0 && (size_t)a.modelIndex < model.materials.size() && (size_t)b.modelIndex < model.materials.size()) {
+			check(model.materials[a.modelIndex].definition.type == MaterialType::Lambertian && model.materials[b.modelIndex].definition.type == MaterialType::Conductor,
+				"the first child is the first of pbrt's \"materials\", the second the second");
+		}
+		check(materialFloat(mix->definition, "amount") == 0.25f, "a mix keeps its amount, the chance of the second child");
+	}
+	const ImportedMaterial* pane = find(MaterialType::ThinGlass);
+	check(pane != nullptr && std::abs(scalarAt(materialSpectrum(pane->definition, "eta"), 587.6) - 1.45) < 1e-6, "thindielectric is thin_glass with its eta");
+	check(find(MaterialType::Glass) == nullptr, "thindielectric is no longer solid glass");
+	const ImportedMaterial* leaf = find(MaterialType::DiffuseTransmission);
+	check(leaf != nullptr, "a constant diffusetransmission is diffuse_transmission");
+	if (leaf != nullptr) {
+		const glm::vec3 r = materialColor(leaf->definition, "albedo");
+		const glm::vec3 t = materialColor(leaf->definition, "transmittance");
+		check(near(r.y, 0.4, 1e-6) && near(t.y, 0.3, 1e-6) && materialFloat(leaf->definition, "scale") == 2.f, "its reflectance, transmittance and scale are pbrt's");
+	}
+	check(!reportHas(model, "thindielectric is solid glass") && !reportHas(model, "its transmission is dropped"), "the substitutions this plan removed are not reported");
+	//a mix with a child that does not exist is whichever of its two pbrt picks more often, as before
+	check(reportHas(model, "mix material with a missing or invisible child"), "a mix with a missing child is reported");
+}
+
 //---------------------------------------------------------------- scenes on disk
 
 bool hasWorldBegin(const std::filesystem::path& path)
@@ -511,6 +576,7 @@ int main(int argc, char** argv)
 	testCameras();
 	testUpAxis();
 	testMapping();
+	testBsdfMaterials();
 	if (g_failures > 0) {
 		fmt::println("pbrt_test: {} check(s) FAILED", g_failures);
 		return 1;

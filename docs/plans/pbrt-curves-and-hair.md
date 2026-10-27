@@ -2,7 +2,7 @@
 
 Hair, fur and grass have millions of strands far thinner than a triangle mesh can represent economically. pbrt models them as cubic Bézier curves with a varying width, intersected by recursive subdivision, and shades them with a hair BSDF that follows how light scatters in a dielectric cylinder with pigment. This plan adds the curve primitive to the BVH, the hair BSDF, and a loader for Cem Yuksel's cyHair files, the format pbrt's `cyhair2pbrt` converts.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md), [pbrt-material-system.md](completed/pbrt-material-system.md) and [pbrt-bsdf-library.md](pbrt-bsdf-library.md) (the BxDF interface and `rt_bsdf`). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md), [pbrt-material-system.md](completed/pbrt-material-system.md) and [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md) (the BxDF interface and `rt_bsdf`). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 

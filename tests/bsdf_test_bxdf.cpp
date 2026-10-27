@@ -14,8 +14,11 @@
 //  5. RECIPROCITY. A conductor and a dielectric's reflection are symmetric; a dielectric's transmission satisfies
 //     eta_i^2 f(wo, wi) = eta_o^2 f(wi, wo) in radiance mode (PBR 4ed 9.5.2).
 //  6. DELTA LOBES. A smooth surface reflects to the mirror direction and refracts by Snell's law, with the weight the
-//     Fresnel term sets.
-// --selfcheck plants a dielectric density 5% high and a conductor evaluation 5% high, and expects them caught.
+//     Fresnel term sets. A thin pane reflects 2R / (1 + R), the sum of its inter-reflections, and transmits straight on.
+//  7. MIX. A mix chooses its second child with the chance `amount`, and the same hit always chooses the same child.
+// The diffuse, Oren-Nayar and diffuse transmission BxDFs run through 2 to 5 as well, with reciprocity for all three.
+// --selfcheck plants a dielectric density 5% high, a conductor evaluation 5% high and a diffuse evaluation 5% high,
+// and expects them caught.
 
 #include <bxdf.h>
 #include <spectrum.h>
@@ -43,15 +46,26 @@ enum class Plant {
 	None,
 	DielectricPdf,
 	ConductorEval,
+	DiffuseEval,
 };
 Plant g_plant = Plant::None;
 
-// one BxDF under test, as a dielectric or a conductor
+// the BxDFs the suite runs besides glass and a conductor
+enum class Other {
+	None,
+	Diffuse,
+	DiffuseTransmission,
+};
+
+// one BxDF under test, as a dielectric, a conductor, or one of `other`
 struct BxdfCase {
 	std::string label;
 	bool conductor { false };
+	Other other { Other::None };
 	DielectricBxdf dielectric;
 	ConductorBxdf metal;
+	DiffuseBxdf diffuse;
+	DiffuseTransmissionBxdf transmission;
 	// the cosine of wo with the outward normal; negative is from inside the glass
 	float cosO { 0.5f };
 	TransportMode mode { TransportMode::Radiance };
@@ -59,17 +73,35 @@ struct BxdfCase {
 
 bool caseSample(const BxdfCase& c, vec3 wo, float uc, glm::vec2 u, BxdfSample& s)
 {
+	if (c.other == Other::Diffuse) {
+		return c.diffuse.sample(wo, uc, u, c.mode, s);
+	}
+	if (c.other == Other::DiffuseTransmission) {
+		return c.transmission.sample(wo, uc, u, c.mode, s);
+	}
 	return c.conductor ? c.metal.sample(wo, uc, u, c.mode, s) : c.dielectric.sample(wo, uc, u, c.mode, s);
 }
 
 vec3 caseF(const BxdfCase& c, vec3 wo, vec3 wi)
 {
+	if (c.other == Other::Diffuse) {
+		return g_plant == Plant::DiffuseEval ? c.diffuse.f(wo, wi, c.mode) * 1.05f : c.diffuse.f(wo, wi, c.mode);
+	}
+	if (c.other == Other::DiffuseTransmission) {
+		return c.transmission.f(wo, wi, c.mode);
+	}
 	const vec3 f = c.conductor ? c.metal.f(wo, wi, c.mode) : c.dielectric.f(wo, wi, c.mode);
 	return g_plant == Plant::ConductorEval && c.conductor ? f * 1.05f : f;
 }
 
 float casePdf(const BxdfCase& c, vec3 wo, vec3 wi)
 {
+	if (c.other == Other::Diffuse) {
+		return c.diffuse.pdf(wo, wi, c.mode);
+	}
+	if (c.other == Other::DiffuseTransmission) {
+		return c.transmission.pdf(wo, wi, c.mode);
+	}
 	const float p = c.conductor ? c.metal.pdf(wo, wi, c.mode) : c.dielectric.pdf(wo, wi, c.mode);
 	return g_plant == Plant::DielectricPdf && !c.conductor ? p * 1.05f : p;
 }
@@ -129,6 +161,38 @@ std::vector<BxdfCase> buildCases()
 	//pbrt's reflectance mode at its limit: the most a conductor can reflect, which must stay at or below 1
 	const ConductorBxdf white = ConductorBxdf::fromReflectance(TrowbridgeReitz(0.4f, 0.4f), vec3(1.f));
 	addConductor("reflectance 1", white.eta, white.k, 0.4f, 0.4f, 0.7f);
+	//the diffuse BxDFs: Lambertian, then Oren-Nayar at three roughnesses, from both sides
+	auto addDiffuse = [&](vec3 reflectance, float sigma, float cosO) {
+		BxdfCase c;
+		c.other = Other::Diffuse;
+		c.diffuse = DiffuseBxdf::make(reflectance, sigma);
+		c.cosO = cosO;
+		c.label = fmt::format("diffuse R=({}, {}, {}) sigma={} cos={}", reflectance.x, reflectance.y, reflectance.z, sigma, cosO);
+		cases.push_back(c);
+	};
+	for (const float cosO : { 0.95f, 0.5f, 0.1f, -0.6f }) {
+		addDiffuse(vec3(0.8f, 0.5f, 0.2f), 0.f, cosO);
+	}
+	for (const float sigma : { 20.f, 45.f, 90.f }) {
+		for (const float cosO : { 0.9f, 0.4f, -0.3f }) {
+			addDiffuse(vec3(1.f), sigma, cosO);
+		}
+	}
+	auto addTransmission = [&](vec3 reflectance, vec3 transmittance, float cosO) {
+		BxdfCase c;
+		c.other = Other::DiffuseTransmission;
+		c.transmission.reflectance = reflectance;
+		c.transmission.transmittance = transmittance;
+		c.cosO = cosO;
+		c.label = fmt::format("diffuse transmission R=({}, {}, {}) T=({}, {}, {}) cos={}", reflectance.x, reflectance.y, reflectance.z, transmittance.x, transmittance.y, transmittance.z, cosO);
+		cases.push_back(c);
+	};
+	for (const float cosO : { 0.9f, 0.3f, -0.7f }) {
+		addTransmission(vec3(0.25f), vec3(0.25f), cosO);
+		addTransmission(vec3(0.6f, 0.3f, 0.1f), vec3(0.3f, 0.5f, 0.8f), cosO);
+	}
+	addTransmission(vec3(0.f), vec3(0.8f), 0.6f);
+	addTransmission(vec3(0.7f), vec3(0.f), 0.6f);
 	return cases;
 }
 
@@ -199,7 +263,7 @@ void runCase(const BxdfCase& c, uint64_t samples, int quadrature, Result& out)
 		}
 	}
 	//energy: a conductor and an importance-mode dielectric reflect and transmit at most what arrives
-	if (c.conductor || c.mode == TransportMode::Importance) {
+	if (c.conductor || c.other != Other::None || c.mode == TransportMode::Importance) {
 		for (int k = 0; k < 3; k++) {
 			if (albedoQuadrature[k] > 1.0 + 3e-3) {
 				out.failures.push_back(fmt::format("{}: the albedo is {:.4f}, more than 1", c.label, albedoQuadrature[k]));
@@ -219,7 +283,7 @@ void runCase(const BxdfCase& c, uint64_t samples, int quadrature, Result& out)
 		const bool transmits = wo.z * wi.z < 0.f;
 		float lhs = caseF(c, wo, wi).x;
 		float rhs = caseF(c.mode == TransportMode::Importance ? radiance : c, wi, wo).x;
-		if (transmits && !c.conductor && c.mode == TransportMode::Radiance) {
+		if (transmits && !c.conductor && c.other == Other::None && c.mode == TransportMode::Radiance) {
 			const float etaO = wo.z > 0.f ? 1.f : c.dielectric.eta;
 			const float etaI = wi.z > 0.f ? 1.f : c.dielectric.eta;
 			lhs *= (etaI * etaI) / (etaO * etaO);
@@ -289,6 +353,88 @@ int checkFresnel()
 	mirror.k = vec3(3.f);
 	check(mirror.sample(wo, 0.f, glm::vec2(0.5f), TransportMode::Radiance, s) && std::abs(s.f.x * std::abs(s.wi.z) / s.pdf - frComplex(wo.z, 0.2f, 3.f)) < 1e-6f,
 		"a smooth conductor reflects its Fresnel term");
+
+	//the thin pane: the series of inter-reflections between two parallel interfaces sums to 2R / (1 + R)
+	for (const float n : { 1.1f, 1.5f, 2.4f }) {
+		ThinDielectricBxdf pane;
+		pane.eta = n;
+		check((pane.flags() & BXDF_SPECULAR) && (pane.flags() & BXDF_REFLECTION) && (pane.flags() & BXDF_TRANSMISSION), "a thin pane is specular, reflecting and transmitting");
+		for (const float cosO : { 0.95f, 0.6f, 0.2f, -0.5f }) {
+			const vec3 woPane = woFor(cosO);
+			const float R = frDielectric(std::abs(cosO), n);
+			const float expected = 2.f * R / (1.f + R);
+			BxdfSample reflected, transmitted;
+			const bool gotR = pane.sample(woPane, 0.f, glm::vec2(0.5f), TransportMode::Radiance, reflected);
+			const bool gotT = pane.sample(woPane, 0.9999999f, glm::vec2(0.5f), TransportMode::Radiance, transmitted);
+			check(gotR && gotT, fmt::format("a thin pane (n = {}, cos {}) samples both lobes", n, cosO));
+			if (!gotR || !gotT) {
+				continue;
+			}
+			check(std::abs(reflected.pdf - expected) < 1e-5f, fmt::format("a thin pane (n = {}, cos {}) reflects 2R / (1 + R) = {:.6f}, got {:.6f}", n, cosO, expected, reflected.pdf));
+			check(glm::length(reflected.wi - vec3(-woPane.x, -woPane.y, woPane.z)) < 1e-6f, "a thin pane reflects to the mirror direction");
+			check(glm::length(transmitted.wi + woPane) < 1e-6f, "a thin pane transmits straight on, along -wo");
+			check(std::abs(transmitted.pdf - (1.f - expected)) < 1e-5f && transmitted.eta == 1.f, "a thin pane's transmission has the remaining chance and crosses no index");
+			//no eta^2 factor in either mode, and both lobes weigh 1 (f |cos| / the chance of the lobe, the chances summing to 1)
+			for (const TransportMode mode : { TransportMode::Radiance, TransportMode::Importance }) {
+				BxdfSample t;
+				pane.sample(woPane, 0.9999999f, glm::vec2(0.5f), mode, t);
+				check(std::abs(t.f.x * std::abs(t.wi.z) / t.pdf - 1.f) < 1e-5f, "a thin pane's transmission weighs 1 in both transport modes");
+			}
+			check(std::abs(reflected.f.x * std::abs(reflected.wi.z) / reflected.pdf - 1.f) < 1e-5f, "a thin pane's reflection weighs 1");
+			check(pane.f(woPane, reflected.wi, TransportMode::Radiance) == vec3(0.f) && pane.pdf(woPane, reflected.wi, TransportMode::Radiance) == 0.f, "a delta lobe evaluates to zero");
+		}
+	}
+
+	//the diffuse BxDFs' limits: Oren-Nayar at sigma 0 is Lambertian, and a Lambertian surface's albedo is its reflectance
+	{
+		const DiffuseBxdf lambert = DiffuseBxdf::make(vec3(0.5f), 0.f);
+		check(lambert.orenA == 1.f && lambert.orenB == 0.f, "Oren-Nayar at sigma 0 has A = 1 and B = 0");
+		const vec3 woD = woFor(0.7f);
+		const vec3 wiD = woFor(0.3f);
+		check(std::abs(lambert.f(woD, wiD, TransportMode::Radiance).x - 0.5f / PI_F) < 1e-7f, "a Lambertian surface's f is R / pi");
+		check(lambert.f(woD, -wiD, TransportMode::Radiance) == vec3(0.f), "a diffuse surface does not transmit");
+		const DiffuseBxdf rough = DiffuseBxdf::make(vec3(1.f), 30.f);
+		//Oren-Nayar brightens the grazing retroreflective direction and dims the rest; looking straight down it is Lambertian
+		const vec3 down(0.f, 0.f, 1.f);
+		const float s2 = (30.f * PI_F / 180.f) * (30.f * PI_F / 180.f);
+		check(std::abs(rough.f(down, down, TransportMode::Radiance).x * PI_F - (1.f - s2 / (2.f * (s2 + 0.33f)))) < 1e-5f, "Oren-Nayar at normal incidence is A / pi");
+		check((DiffuseBxdf::make(vec3(0.f), 0.f).flags()) == 0u, "a black diffuse surface has no lobes");
+		DiffuseTransmissionBxdf onlyT;
+		onlyT.reflectance = vec3(0.f);
+		onlyT.transmittance = vec3(0.5f);
+		check(onlyT.flags() == (BXDF_TRANSMISSION | BXDF_DIFFUSE), "a diffuse transmission with no reflectance only transmits");
+	}
+
+	//the mix material's choice
+	{
+		std::mt19937 engine(99);
+		std::uniform_real_distribution<float> uniform(-5.f, 5.f);
+		for (const float amount : { 0.f, 0.1f, 0.5f, 0.85f, 1.f }) {
+			const int trials = 200000;
+			int second = 0;
+			bool stable = true;
+			for (int i = 0; i < trials; i++) {
+				const vec3 p(uniform(engine), uniform(engine), uniform(engine));
+				const vec3 woMix = glm::normalize(vec3(uniform(engine), uniform(engine), uniform(engine)));
+				const bool chosen = mixChoosesSecond(amount, p, woMix, 3u);
+				stable = stable && chosen == mixChoosesSecond(amount, p, woMix, 3u);
+				second += chosen;
+			}
+			const double fraction = (double)second / trials;
+			const double sigma = std::sqrt(amount * (1.f - amount) / trials);
+			check(stable, "a mix chooses the same child each time the same hit is evaluated");
+			check(std::abs(fraction - amount) <= std::max(5.0 * sigma, 1e-9), fmt::format("a mix with amount {} chooses its second child {:.4f} of the time", amount, fraction));
+		}
+		//a different mix at the same hit chooses independently of this one
+		int agree = 0;
+		const int trials = 100000;
+		for (int i = 0; i < trials; i++) {
+			const vec3 p(uniform(engine), uniform(engine), uniform(engine));
+			const vec3 woMix = glm::normalize(vec3(uniform(engine), uniform(engine), uniform(engine)));
+			agree += mixChoosesSecond(0.5f, p, woMix, 1u) == mixChoosesSecond(0.5f, p, woMix, 2u);
+		}
+		check(std::abs((double)agree / trials - 0.5) < 0.01, fmt::format("two mixes at one hit choose independently ({:.4f} agree)", (double)agree / trials));
+	}
 	return failures;
 }
 
@@ -348,10 +494,14 @@ int runBxdfTests(uint64_t samples, int quadrature, bool selfcheck, const std::st
 	if (selfcheck) {
 		int missed = 0;
 		const int clean = suite(false);
-		for (const auto& [plant, name] : { std::pair { Plant::DielectricPdf, "dielectric pdf x 1.05" }, std::pair { Plant::ConductorEval, "conductor evaluation x 1.05" } }) {
+		for (const auto& [plant, name] : { std::pair { Plant::DielectricPdf, "dielectric pdf x 1.05" }, std::pair { Plant::ConductorEval, "conductor evaluation x 1.05" },
+											 std::pair { Plant::DiffuseEval, "diffuse evaluation x 1.05" } }) {
 			//a plant in a kind --material left out has nothing to be caught by
 			const bool conductor = plant == Plant::ConductorEval;
-			if (std::none_of(cases.begin(), cases.end(), [&](const BxdfCase& c) { return c.conductor == conductor; })) {
+			const bool diffuse = plant == Plant::DiffuseEval;
+			if (std::none_of(cases.begin(), cases.end(), [&](const BxdfCase& c) {
+					return diffuse ? c.other == Other::Diffuse : (c.conductor == conductor && c.other == Other::None);
+				})) {
 				continue;
 			}
 			g_plant = plant;
@@ -364,7 +514,7 @@ int runBxdfTests(uint64_t samples, int quadrature, bool selfcheck, const std::st
 		return clean + missed;
 	}
 	int failures = checkFresnel();
-	fmt::println("pbrt-v4's BxDFs (glass, conductor)");
+	fmt::println("pbrt-v4's BxDFs (glass, conductor, diffuse, diffuse transmission)");
 	failures += suite(true);
 	return failures;
 }

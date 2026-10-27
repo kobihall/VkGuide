@@ -1,6 +1,6 @@
 // THE FRESNEL EQUATIONS (PBR 4ed 9.3), the line-for-line mirror of src/bxdf.cpp: a dielectric's exact unpolarized
 // reflectance with total internal reflection, and a conductor's from its complex index eta + i k, with pbrt's
-// complex arithmetic (a vec2 is re, im). docs/plans/pbrt-bsdf-library.md.
+// complex arithmetic (a vec2 is re, im). docs/plans/completed/pbrt-bsdf-library.md.
 //
 // Requires nothing.
 

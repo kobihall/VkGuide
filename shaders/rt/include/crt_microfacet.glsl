@@ -1,5 +1,5 @@
 // THE TROWBRIDGE-REITZ DISTRIBUTION (PBR 4ed 9.6), anisotropic, in pbrt's local shading frame (z the outward normal):
-// the line-for-line mirror of src/bxdf.cpp TrowbridgeReitz. docs/plans/pbrt-bsdf-library.md.
+// the line-for-line mirror of src/bxdf.cpp TrowbridgeReitz. docs/plans/completed/pbrt-bsdf-library.md.
 //
 // Requires nothing.
 

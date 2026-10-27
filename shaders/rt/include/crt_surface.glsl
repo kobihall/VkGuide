@@ -289,8 +289,14 @@ void main()
 #endif
 		// the path's origin has not moved since kernel 02 traced from it
 		const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
+#if CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
+		// a mix is one of its children for this hit, here and everywhere the hit's material is read below
+		const uint materialIndex = resolveMixMaterial(si.material, si.p, -inDir);
+#else
+		const uint materialIndex = si.material;
+#endif
 		bool frontFace;
-		const vec3 normal = materialShadingNormal(classicMaterial(si.material), hit, si, inDir, frontFace);
+		const vec3 normal = materialShadingNormal(classicMaterial(materialIndex), hit, si, inDir, frontFace);
 
 		vec3 debugValue;
 		if (pc.debugView == CRT_DEBUG_AMBIENT_OCCLUSION) {
@@ -301,10 +307,10 @@ void main()
 			radiance[path.radianceSlot] = vec4(debugValue, 1.0);
 		} else {
 #if CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
-			ComplexMaterial material = resolveComplexMaterial(si.material, si);
+			ComplexMaterial material = resolveComplexMaterial(materialIndex, si);
 			material.frontFace = frontFace;
 #else
-			const ClassicMaterial material = resolveMaterial(si.material, si.uv);
+			const ClassicMaterial material = resolveMaterial(materialIndex, si.uv);
 #endif
 			if (CRT_AOV) {
 				aovCapture(path.radianceSlot, hit, si, material, inDir, normal, frontFace);
@@ -317,7 +323,7 @@ void main()
 			if (material.isBxdf && (material.bxdfFlags & CRT_BXDF_FLAG_DISPERSIVE) != 0u) {
 				const float pick = spectralBanded() ? randomFloat(rng) : 0.0;
 				const uint lane = terminateSecondary(pathThroughput, path.laneMask, pick);
-				material.bxdf.eta = scalarFromRef(materialSpectrumRef(si.material, CRT_SLOT_AUX0), lane);
+				material.bxdf.eta = scalarFromRef(materialSpectrumRef(materialIndex, CRT_SLOT_AUX0), lane);
 			}
 #endif
 

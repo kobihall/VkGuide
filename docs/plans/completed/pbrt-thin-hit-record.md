@@ -65,7 +65,7 @@ SurfaceInteraction surfaceInteraction(HitRecord hit, vec3 rayOrigin, vec3 rayDir
 
 Kernels 04, 06, the medium kernels and the auxiliary-output writes call it. Kernel 03 needs only the direction and does not.
 
-Normals keep pointing outward as authored, as in pbrt (PBR 4ed §9.1.1). The existing materials expect a normal that faces the incoming ray, so `crt_scatter.glsl` flips `ns` itself at entry, exactly as kernel 02 does today; the BxDFs of [pbrt-bsdf-library.md](../pbrt-bsdf-library.md) take the outward frame and handle the side in their local frame.
+Normals keep pointing outward as authored, as in pbrt (PBR 4ed §9.1.1). The existing materials expect a normal that faces the incoming ray, so `crt_scatter.glsl` flips `ns` itself at entry, exactly as kernel 02 does today; the BxDFs of [pbrt-bsdf-library.md](pbrt-bsdf-library.md) take the outward frame and handle the side in their local frame.
 
 ### Normal mapping moves to the material kernel
 

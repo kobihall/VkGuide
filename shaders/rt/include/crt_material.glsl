@@ -5,7 +5,7 @@
 // The six original types (lambertian, metal, phong, dielectric, emissive, pbr) share one record,
 // ClassicMaterial: the 64 bytes every material was before the header existed, field for field, so
 // crt_scatter.glsl and the kernels compute exactly what they did. A new type adds its own record
-// struct and reader here, beside its pack function (docs/plans/pbrt-bsdf-library.md).
+// struct and reader here, beside its pack function (docs/plans/completed/pbrt-bsdf-library.md).
 //
 // Included by crt_traverse.glsl, crt_light.glsl and crt_scatter.glsl, and by any kernel that reads
 // a material. Requires crt_common.glsl, and crt_spectrum.glsl in a spectral build.

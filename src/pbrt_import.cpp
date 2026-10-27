@@ -21,7 +21,7 @@ constexpr double PI = std::numbers::pi;
 // the plans that add what the import substitutes, as the report names them
 const char* const PLAN_CAMERAS = "pbrt-cameras.md";
 const char* const PLAN_DISPLAY = "pbrt-display-and-color.md";
-const char* const PLAN_BSDFS = "pbrt-bsdf-library.md";
+const char* const PLAN_BSDFS = "completed/pbrt-bsdf-library.md";
 const char* const PLAN_LAYERED = "pbrt-layered-materials.md";
 const char* const PLAN_MEASURED = "pbrt-measured-bsdfs.md";
 const char* const PLAN_HAIR = "pbrt-curves-and-hair.md";
@@ -611,9 +611,9 @@ private:
 		r.material.definition.params["remapRoughness"] = params.getBool("remaproughness", true);
 	}
 
-	// pbrt's dielectric as the glass type: exact Fresnel, rough or smooth, and its eta as the spectrum it is, which
-	// the spectral modes disperse and exact RGB reads at the design wavelength
-	void setDielectric(Resolved& r, const PbrtParams& params, const PbrtLoc& loc)
+	// a dielectric's eta as the spectrum it is, which the spectral modes disperse and exact RGB reads at the design
+	// wavelength
+	SpectrumRef dielectricEta(const PbrtParams& params)
 	{
 		SpectrumRef eta = constantRef(1.5f);
 		if (const PbrtParam* p = params.find("eta")) {
@@ -623,9 +623,24 @@ private:
 				eta = constantRef((float)mean->x);
 			}
 		}
+		return eta;
+	}
+
+	// pbrt's dielectric as the glass type: exact Fresnel, rough or smooth
+	void setDielectric(Resolved& r, const PbrtParams& params, const PbrtLoc& loc)
+	{
 		r.material.definition.type = MaterialType::Glass;
-		r.material.definition.params["eta"] = eta;
+		r.material.definition.params["eta"] = dielectricEta(params);
 		setRoughness(r, params, "", loc);
+		r.material.previewColor = glm::vec4(0.75f, 0.85f, 1.f, 1.f);
+		r.reflects = true;
+	}
+
+	// pbrt's thindielectric as the thin_glass type: a pane that transmits straight through
+	void setThinDielectric(Resolved& r, const PbrtParams& params)
+	{
+		r.material.definition.type = MaterialType::ThinGlass;
+		r.material.definition.params["eta"] = dielectricEta(params);
 		r.material.previewColor = glm::vec4(0.75f, 0.85f, 1.f, 1.f);
 		r.reflects = true;
 	}
@@ -703,28 +718,63 @@ private:
 		} else if (type == "dielectric") {
 			setDielectric(r, params, loc);
 		} else if (type == "thindielectric") {
-			setDielectric(r, params, loc);
-			report("thindielectric is solid glass", loc, PLAN_BSDFS);
+			setThinDielectric(r, params);
 		} else if (type == "diffusetransmission") {
-			TexValue base = textureOrValue(params, "reflectance", true, glm::dvec3(0.25), loc, 0);
-			base.factor *= params.getFloat("scale", 1.0);
-			setLambertian(r, base);
-			textureOrValue(params, "transmittance", true, glm::dvec3(0.25), loc, 0);
-			report("diffusetransmission is Lambertian; its transmission is dropped", loc, PLAN_BSDFS);
+			TexValue reflectance = textureOrValue(params, "reflectance", true, glm::dvec3(0.25), loc, 0);
+			const TexValue transmittance = textureOrValue(params, "transmittance", true, glm::dvec3(0.25), loc, 0);
+			const double scale = params.getFloat("scale", 1.0);
+			if (reflectance.image >= 0 || transmittance.image >= 0) {
+				//the diffuse_transmission type takes no textures until pbrt-textures.md: the texture is worth more than the transmission
+				reflectance.factor *= scale;
+				setLambertian(r, reflectance);
+				report("a diffusetransmission with a textured reflectance or transmittance is Lambertian with its texture; its transmission is dropped", loc, PLAN_TEXTURES);
+			} else {
+				r.material.definition.type = MaterialType::DiffuseTransmission;
+				r.material.definition.params["albedo"] = rgbSpectrum(toVec3(reflectance.factor));
+				r.material.definition.params["transmittance"] = rgbSpectrum(toVec3(transmittance.factor));
+				r.material.definition.params["scale"] = (float)scale;
+				//a measured reflectance or transmittance is kept as the spectrum it is
+				for (const char* name : { "reflectance", "transmittance" }) {
+					if (const PbrtParam* param = params.find(name); param != nullptr && param->type != "rgb" && param->type != "texture") {
+						if (std::optional<SpectrumRef> ref = spectrumRefOf(param)) {
+							r.material.definition.params[std::string(name) == "reflectance" ? "albedo" : name] = *ref;
+						}
+					}
+				}
+				r.material.previewColor = glm::vec4(toVec3(reflectance.factor * scale), 1.f);
+				r.reflects = maxComponent(reflectance.factor) > 0.0;
+			}
 		} else if (type == "mix") {
 			const PbrtParam* names = params.find("materials");
-			const double amount = floatParam(params, "amount", 0.5, loc, PLAN_BSDFS);
+			const double amount = floatParam(params, "amount", 0.5, loc, PLAN_TEXTURES);
 			if (names == nullptr || names->strings.size() != 2) {
 				report("mix material without two \"materials\"; gray Lambertian is used", loc);
 				setLambertian(r, TexValue { glm::dvec3(0.5) });
 			} else {
-				//pbrt picks materials[1] with probability `amount`
-				const std::string& chosen = names->strings[amount >= 0.5 ? 1 : 0];
-				report("mix material is whichever of its two it picks more often", loc, PLAN_BSDFS);
-				if (std::optional<Resolved> named = namedMaterial(chosen, loc, depth + 1)) {
-					r = *named;
+				const std::optional<Resolved> first = namedMaterial(names->strings[0], loc, depth + 1);
+				const std::optional<Resolved> second = namedMaterial(names->strings[1], loc, depth + 1);
+				if (first.has_value() && second.has_value() && !first->invisible && !second->invisible) {
+					//pbrt picks materials[1] with probability `amount`; both are library entries of this model
+					MaterialLink a;
+					a.modelIndex = (int)materialIndex("n:" + names->strings[0], first->material);
+					MaterialLink b;
+					b.modelIndex = (int)materialIndex("n:" + names->strings[1], second->material);
+					r.material.definition.type = MaterialType::Mix;
+					r.material.definition.params["materialA"] = a;
+					r.material.definition.params["materialB"] = b;
+					r.material.definition.params["amount"] = (float)amount;
+					r.material.previewColor = glm::mix(first->material.previewColor, second->material.previewColor, (float)amount);
+					r.mapping = amount >= 0.5 ? second->mapping : first->mapping;
+					r.reflects = first->reflects || second->reflects;
 				} else {
-					setLambertian(r, TexValue { glm::dvec3(0.5) });
+					//a child that is missing or only bounds a medium: whichever of the two pbrt picks more often
+					const std::string& chosen = names->strings[amount >= 0.5 ? 1 : 0];
+					report("mix material with a missing or invisible child is whichever of its two it picks more often", loc);
+					if (std::optional<Resolved> named = namedMaterial(chosen, loc, depth + 1)) {
+						r = *named;
+					} else {
+						setLambertian(r, TexValue { glm::dvec3(0.5) });
+					}
 				}
 			}
 		} else if (type == "measured") {

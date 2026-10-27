@@ -48,8 +48,34 @@ const char* meshMaterialModeName(MeshMaterialMode mode)
 	return mode == MeshMaterialMode::Model ? "glTF materials" : "override";
 }
 
+// what the material combo calls an entry: a glTF material by its model too
+std::string materialLabel(const MaterialDef& material);
+
+// whether choosing `candidate` as a child of the mix `target` would close a cycle: a mix chain from the candidate that
+// comes back to the target. The shader bounds its walk down a chain, but a cycle has no material to end at
+bool mixChainReaches(const std::vector<MaterialDef>& library, uint64_t candidate, uint64_t target, int depth = 0)
+{
+	if (candidate == target) {
+		return true;
+	}
+	if (depth > 16) {
+		return false;
+	}
+	const auto found = std::find_if(library.begin(), library.end(), [candidate](const MaterialDef& m) { return m.id == candidate; });
+	if (found == library.end() || found->type != MaterialType::Mix) {
+		return false;
+	}
+	for (const char* name : { "materialA", "materialB" }) {
+		const ParamValue value = materialValue(*found, name);
+		if (const MaterialLink* link = std::get_if<MaterialLink>(&value); link != nullptr && link->id != 0 && mixChainReaches(library, link->id, target, depth + 1)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // one parameter's widget, by its kind. Returns whether the value changed
-bool drawMaterialParam(MaterialDef& material, const MaterialParam& param)
+bool drawMaterialParam(MaterialDef& material, const MaterialParam& param, const std::vector<MaterialDef>& library)
 {
 	ParamValue value = materialValue(material, param.name);
 	bool changed = false;
@@ -72,6 +98,24 @@ bool drawMaterialParam(MaterialDef& material, const MaterialParam& param)
 		changed = ImGui::Checkbox(param.label, b);
 	} else if (int* i = std::get_if<int>(&value)) {
 		changed = ImGui::InputInt(param.label, i);
+	} else if (MaterialLink* link = std::get_if<MaterialLink>(&value)) {
+		//a library material that scatters and does not lead back to this mix
+		const auto current = std::find_if(library.begin(), library.end(), [link](const MaterialDef& m) { return m.id == link->id; });
+		const std::string preview = current != library.end() ? materialLabel(*current) : std::string("(none)");
+		if (ImGui::BeginCombo(param.label, preview.c_str())) {
+			for (const MaterialDef& candidate : library) {
+				if ((materialTraits(candidate.type).flags & MATERIAL_TYPE_SCATTERS) == 0 || mixChainReaches(library, candidate.id, material.id)) {
+					continue;
+				}
+				ImGui::PushID((int)candidate.id);
+				if (ImGui::Selectable(materialLabel(candidate).c_str(), candidate.id == link->id) && candidate.id != link->id) {
+					link->id = candidate.id;
+					changed = true;
+				}
+				ImGui::PopID();
+			}
+			ImGui::EndCombo();
+		}
 	}
 	if (param.tooltip != nullptr && ImGui::IsItemHovered()) {
 		ImGui::SetTooltip("%s", param.tooltip);
@@ -85,7 +129,7 @@ bool drawMaterialParam(MaterialDef& material, const MaterialParam& param)
 // The generic, traits-driven editor: one widget per parameter of the material's type, in the order
 // the traits list them. For a glTF material, `imported` is the entry as its file defines it: a
 // parameter the user changed is marked, recorded in `edited`, and can be reverted to the import
-bool drawMaterialParams(MaterialDef& material, const MaterialDef* imported)
+bool drawMaterialParams(MaterialDef& material, const MaterialDef* imported, const std::vector<MaterialDef>& library)
 {
 	bool changed = false;
 	for (const MaterialParam& param : materialTraits(material.type).params) {
@@ -102,7 +146,7 @@ bool drawMaterialParams(MaterialDef& material, const MaterialDef* imported)
 			}
 			ImGui::SameLine();
 		}
-		if (drawMaterialParam(material, param)) {
+		if (drawMaterialParam(material, param, library)) {
 			changed = true;
 			if (imported != nullptr) {
 				material.edited.insert(param.name);
@@ -1612,7 +1656,7 @@ void RaytraceSceneEditor::drawMaterialDetails(VulkanEngine* engine, MaterialDef&
 	}
 	ImGui::EndDisabled();
 
-	changed |= drawMaterialParams(material, imported.has_value() ? &*imported : nullptr);
+	changed |= drawMaterialParams(material, imported.has_value() ? &*imported : nullptr, m_materials);
 
 	//a material that emits is a light, and its light is kept in a group
 	if (material.type == MaterialType::Emissive || material.type == MaterialType::Pbr) {

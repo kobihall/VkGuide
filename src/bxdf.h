@@ -1,8 +1,8 @@
 #pragma once
 
 // PBRT-V4'S BXDFS (static library rt_bsdf, no Vulkan): the line-for-line C++ mirror of shaders/rt/include/crt_fresnel.glsl,
-// crt_microfacet.glsl and crt_bxdf.glsl, which kernel 06's complex build runs for the `glass` and `conductor` material
-// types (docs/plans/pbrt-bsdf-library.md; the parts docs/plans/completed/pbrt-spectral-rendering.md needs).
+// crt_microfacet.glsl and crt_bxdf.glsl, which kernel 06's complex build runs for the `glass`, `conductor`, `diffuse`,
+// `thin_glass` and `diffuse_transmission` material types and resolves a `mix` with (docs/plans/completed/pbrt-bsdf-library.md).
 //
 // Everything is in pbrt's local shading frame (PBR 4ed 9.1.1): z is the OUTWARD shading normal, directions point away
 // from the surface, and wo.z < 0 means the ray arrived from inside. A spectrum is a glm::vec3, as the exact RGB build
@@ -14,6 +14,11 @@
 //                     (9.6), effectivelySmooth() below an alpha of 1e-3
 //   DielectricBxdf    smooth or rough glass (Walter et al. 2007, 9.5 and 9.7), radiance mode dividing by eta^2
 //   ConductorBxdf     smooth or rough metal with complex Fresnel (9.4)
+//   DiffuseBxdf       Lambertian, or Oren-Nayar when sigma > 0 (PBR 3ed 8.4.1)
+//   DiffuseTransmissionBxdf  Lambertian reflection and transmission (9.2)
+//   ThinDielectricBxdf  a thin pane: Fresnel summed over the inter-reflections of two parallel interfaces, transmitting
+//                     straight through (9.5.1)
+//   mixChoosesSecond() a mix material's choice between its two children, hashed from the hit (10.5.1)
 
 #include <cstdint>
 
@@ -21,6 +26,7 @@
 
 inline constexpr uint32_t BXDF_REFLECTION = 1u << 0;
 inline constexpr uint32_t BXDF_TRANSMISSION = 1u << 1;
+inline constexpr uint32_t BXDF_DIFFUSE = 1u << 2;
 inline constexpr uint32_t BXDF_GLOSSY = 1u << 3;
 inline constexpr uint32_t BXDF_SPECULAR = 1u << 4;
 
@@ -89,3 +95,45 @@ struct ConductorBxdf {
 	// pbrt's reflectance mode: eta 1 and the k that gives this normal-incidence reflectance (clamped below 1)
 	static ConductorBxdf fromReflectance(const TrowbridgeReitz& distribution, glm::vec3 reflectance);
 };
+
+// PBR 3ed 8.4.1's Oren-Nayar model (sigma in degrees), pbrt-v4's DiffuseBxDF when sigma is 0
+struct DiffuseBxdf {
+	glm::vec3 reflectance { 0.5f };
+	// A and B from sigma, 1 and 0 for a Lambertian surface
+	float orenA { 1.f };
+	float orenB { 0.f };
+
+	static DiffuseBxdf make(glm::vec3 reflectance, float sigmaDegrees);
+	uint32_t flags() const;
+	bool sample(glm::vec3 wo, float uc, glm::vec2 u, TransportMode mode, BxdfSample& out) const;
+	glm::vec3 f(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const;
+	float pdf(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const;
+};
+
+struct DiffuseTransmissionBxdf {
+	glm::vec3 reflectance { 0.25f };
+	glm::vec3 transmittance { 0.25f };
+
+	uint32_t flags() const;
+	bool sample(glm::vec3 wo, float uc, glm::vec2 u, TransportMode mode, BxdfSample& out) const;
+	glm::vec3 f(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const;
+	float pdf(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const;
+};
+
+struct ThinDielectricBxdf {
+	float eta { 1.5f };
+
+	uint32_t flags() const;
+	bool sample(glm::vec3 wo, float uc, glm::vec2 u, TransportMode mode, BxdfSample& out) const;
+	glm::vec3 f(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const;
+	float pdf(glm::vec3 wo, glm::vec3 wi, TransportMode mode) const;
+};
+
+// pbrt's cosine-weighted hemisphere sample about +z from a concentric disk, and its density
+glm::vec3 sampleCosineHemisphere(glm::vec2 u);
+
+// A mix material's choice (pbrt-v4's MixMaterial::ChooseMaterial): true for the second child. `amount` is the chance
+// of the second; the choice is a hash of the hit point, the outgoing direction and the mix's index, so it comes out
+// the same whenever the same hit is evaluated again. mixHash() is the float in [0, 1) it compares `amount` against
+float mixHash(glm::vec3 p, glm::vec3 wo, uint32_t salt);
+bool mixChoosesSecond(float amount, glm::vec3 p, glm::vec3 wo, uint32_t salt);

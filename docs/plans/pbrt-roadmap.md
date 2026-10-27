@@ -2,7 +2,7 @@
 
 This roadmap covers every feature that *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* describe and this renderer lacks or implements weakly. Each feature has a plan in `docs/plans/`, named `pbrt-*.md` since 2026-10-18. This file records the decisions that shape all of them and reserves the resources they share, so that the plans can be implemented in any order without colliding.
 
-*Written 2026-09-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, the material system, robust intersections and sample generation on 2026-10-19, the verification harness on 2026-10-20, and the film and reconstruction, the auxiliary outputs and the pbrt scene import on 2026-10-21; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
+*Written 2026-09-26. The BSDF library was implemented on 2026-10-26. The integrator layer was implemented on 2026-09-29, the thin hit record on 2026-10-18, the material system, robust intersections and sample generation on 2026-10-19, the verification harness on 2026-10-20, and the film and reconstruction, the auxiliary outputs and the pbrt scene import on 2026-10-21; nothing else here is. Read `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan assumes them.*
 
 *Revised 2026-10-18 for the [laser optics plan](physoptics-laser-optics.md), whose `physoptics-*.md` plans build on these. That plan's roadmap gives one linear order for both sets of plans; it pulls several of these forward (the foundations, the BSDF library, light types, image output, the display transform, the light integrator of bidirectional path tracing, cameras and polarization). The reservations below gain the laser optics plan's rows, and every rule here applies to its plans too.*
 
@@ -62,7 +62,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 
 | Plan | What it adds |
 |---|---|
-| [pbrt-bsdf-library.md](pbrt-bsdf-library.md) | pbrt-v4's BxDFs beside the existing materials: diffuse, conductor, dielectric, thin dielectric, diffuse transmission, mix |
+| [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md) | Implemented: pbrt-v4's BxDFs beside the existing materials: diffuse with Oren-Nayar, conductor, glass, thin glass, diffuse transmission, mix, and the glTF index, specular and transmission extensions |
 | [pbrt-layered-materials.md](pbrt-layered-materials.md) | Coated diffuse and coated conductor (stochastic layered BSDF), Fresnel blend |
 | [pbrt-measured-bsdfs.md](pbrt-measured-bsdfs.md) | RGL measured BRDFs, with the 3rd edition's Fourier BSDF as an option |
 | [pbrt-appearance-extras.md](pbrt-appearance-extras.md) | Microfacet energy compensation, sheen, thin-film iridescence, glints (research) |
@@ -309,7 +309,7 @@ Every GLSL module that holds sampling or scattering mathematics gets a line-for-
 | Library | GLSL | Test | Plan |
 |---|---|---|---|
 | `rt_spectrum` | `crt_spectrum.glsl` | `bin/spectrum_test`, and the GPU self-test | pbrt-scene-import, spectral-rendering (both implemented) |
-| `rt_bsdf` | `crt_scatter.glsl`, `crt_fresnel.glsl`, `crt_microfacet.glsl`, `crt_bxdf.glsl` | `bin/bsdf_test`, and the GPU self-tests | verification-harness (implemented), bsdf-library (glass and conductor implemented) |
+| `rt_bsdf` | `crt_scatter.glsl`, `crt_fresnel.glsl`, `crt_microfacet.glsl`, `crt_bxdf.glsl` | `bin/bsdf_test`, and the GPU self-tests | verification-harness (implemented), bsdf-library (implemented) |
 | `rt_sampler` | `crt_sampler.glsl` | `bin/sampler_test` | sample-generation (implemented) |
 | `rt_film` | `crt_filter.glsl`, `crt_film.glsl` | `bin/film_test`, and the GPU self-tests | film-and-reconstruction (implemented) |
 | `rt_media` | `crt_medium.glsl` | `bin/media_test` | participating-media |

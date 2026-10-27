@@ -2,7 +2,7 @@
 
 Car paint, varnished wood, plastic and tarnished metal are a smooth or rough dielectric over something else. The glTF pbr material approximates that with a GGX lobe over a Lambertian lobe weighted by the Fresnel term at the viewing angle, which does not account for light that reflects back down from the underside of the coating. pbrt-v4 solves the one-dimensional equation of transfer between the two interfaces by a random walk inside the BSDF itself (Guo et al. 2018). This plan adds that layered BSDF and the two materials built from it, and the 3rd edition's cheaper Fresnel blend beside them.
 
-*Not implemented. Depends on [pbrt-bsdf-library.md](pbrt-bsdf-library.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -39,7 +39,7 @@ Shared parameters: thickness (default 0.01), slab albedo (default black, no scat
 
 ### glTF clearcoat
 
-`KHR_materials_clearcoat` maps to `coated_conductor` or `coated_diffuse` depending on the base's metallic factor, with the clearcoat factor as the top interface's weight and the clearcoat roughness as its roughness. A base that is neither fully metallic nor fully dielectric uses a mix of the two, which the mix material resolves stochastically ([pbrt-bsdf-library.md](pbrt-bsdf-library.md)).
+`KHR_materials_clearcoat` maps to `coated_conductor` or `coated_diffuse` depending on the base's metallic factor, with the clearcoat factor as the top interface's weight and the clearcoat roughness as its roughness. A base that is neither fully metallic nor fully dielectric uses a mix of the two, which the mix material resolves stochastically ([pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md)).
 
 ## Importing pbrt scenes
 

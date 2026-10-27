@@ -1,12 +1,14 @@
 #version 460
 
-// GPU SELF-TEST: pbrt-v4's BxDFs (crt_fresnel.glsl, crt_microfacet.glsl, crt_bxdf.glsl) on a batch of fixed inputs in
+// GPU SELF-TEST: pbrt-v4's BxDFs (crt_fresnel.glsl, crt_microfacet.glsl, crt_bxdf.glsl: glass, conductor, diffuse, thin glass, diffuse
+// transmission) and the mix material's choice on a batch of fixed inputs in
 // the local frame, to be compared with their C++ mirror (src/bxdf.cpp) by src/gpu_selftest_spectral.cpp. The exact RGB
 // build: a conductor's three channels are three independent lanes. Not part of any render. Bindings 90 and 91 are
 // the test's own.
 
 #extension GL_GOOGLE_include_directive : require
 #include "rt/include/crt_common.glsl"
+#include "rt/include/crt_random.glsl"
 #include "rt/include/crt_spectrum.glsl"
 #include "rt/include/crt_fresnel.glsl"
 #include "rt/include/crt_microfacet.glsl"
@@ -26,6 +28,7 @@ struct BxdfParityCase {
 	vec4 wi;
 	// u for the microfacet normal, two unused
 	vec4 u;
+	// Oren-Nayar's A and B, and the mix's amount, point and outgoing direction hash salt
 	vec4 pad;
 };
 
@@ -58,6 +61,11 @@ void main()
 	b.eta = c.params.z;
 	b.conductorEta = c.conductorEta.xyz;
 	b.conductorK = c.conductorK.xyz;
+	// a diffuse type's reflectance and transmittance ride in the conductor's fields
+	b.reflectance = c.conductorEta.xyz;
+	b.transmittance = c.conductorK.xyz;
+	b.orenA = c.pad.x;
+	b.orenB = c.pad.y;
 
 	BxdfSample s;
 	const bool ok = bxdfSample(b, c.wo.xyz, c.params.w, c.u.xy, c.ids.y, s);
@@ -66,6 +74,8 @@ void main()
 	r.sampleWi = vec4(s.wi, s.pdf);
 	r.evalPdf = vec4(bxdfF(b, c.wo.xyz, c.wi.xyz, c.ids.y), bxdfPdf(b, c.wo.xyz, c.wi.xyz, c.ids.y));
 	r.flags = uvec4(s.flags, floatBitsToUint(s.eta), bxdfFlags(b), 0u);
-	r.fresnel = vec4(frDielectric(c.wo.z, c.params.z), frComplex(abs(c.wo.z), c.conductorEta.x, c.conductorK.x), 0.0, 0.0);
+	// the mix's hash of the point c.wi and the direction c.wo, salted by ids.z, and its choice at amount params.x
+	r.fresnel = vec4(frDielectric(c.wo.z, c.params.z), frComplex(abs(c.wo.z), c.conductorEta.x, c.conductorK.x), mixHash(c.wi.xyz, c.wo.xyz, c.ids.z),
+		mixChoosesSecond(c.u.z, c.wi.xyz, c.wo.xyz, c.ids.z) ? 1.0 : 0.0);
 	results[index] = r;
 }

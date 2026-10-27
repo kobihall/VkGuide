@@ -74,9 +74,14 @@ layout (constant_id = 5) const bool CRT_SPECTRAL_IMAGES = false;
 #define CRT_MATERIAL_DIELECTRIC 3u
 #define CRT_MATERIAL_EMISSIVE 4u
 #define CRT_MATERIAL_PBR 5u
-// pbrt-v4's BxDFs (docs/plans/pbrt-bsdf-library.md, crt_bxdf.glsl), evaluated by kernel 06's complex build alone
+// pbrt-v4's BxDFs (docs/plans/completed/pbrt-bsdf-library.md, crt_bxdf.glsl), evaluated by kernel 06's complex build alone
 #define CRT_MATERIAL_GLASS 6u
 #define CRT_MATERIAL_CONDUCTOR 7u
+#define CRT_MATERIAL_DIFFUSE 8u
+#define CRT_MATERIAL_THIN_GLASS 9u
+#define CRT_MATERIAL_DIFFUSE_TRANSMISSION 10u
+// chooses one of two other materials per hit (crt_scatter.glsl resolveMixMaterial()); it has no BxDF of its own
+#define CRT_MATERIAL_MIX 11u
 
 // PathState.misPdf's sentinel: whatever emission this path's next ray finds counts at full weight,
 // because no light was sampled towards it - a camera ray, a ray leaving a specular surface, or a

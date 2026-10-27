@@ -1,6 +1,7 @@
 #include <rt_accel.h>
 
 #include <algorithm>
+#include <functional>
 #include <bit>
 #include <chrono>
 #include <future>
@@ -256,7 +257,22 @@ void setModelReadOnlyParams(MaterialDef& entry, const GLTFMaterial& material, co
 MaterialDef gltfMaterialDef(const GLTFMaterial& material, const RaytraceTextureArray& textures)
 {
 	MaterialDef entry;
+	//KHR_materials_transmission at 1, with no texture and nothing emitted, is a window: pbrt's dielectric with the glTF
+	//index and the roughness glTF's alpha (the square of the factor) makes. A partial or textured transmission, which
+	//would need two materials mixed or a texture on glass, stays the opaque material it was
+	const bool emits = glm::any(glm::greaterThan(material.emissiveFactor, glm::vec3(0.f)));
+	if (material.transmissionFactor >= 1.f && !material.transmissionTextured && !emits) {
+		entry.type = MaterialType::Glass;
+		entry.params["eta"] = constantRef(material.ior);
+		const float alpha = material.metalRoughFactors.y * material.metalRoughFactors.y;
+		entry.params["uRoughness"] = alpha;
+		entry.params["vRoughness"] = alpha;
+		entry.params["remapRoughness"] = false;
+		setModelReadOnlyParams(entry, material, textures);
+		return entry;
+	}
 	entry.type = MaterialType::Pbr;
+	entry.params["f0"] = material.dielectricF0;
 	entry.params["albedo"] = rgbSpectrum(glm::vec3(material.colorFactors));
 	entry.params["metallic"] = material.metalRoughFactors.x;
 	entry.params["roughness"] = material.metalRoughFactors.y;
@@ -296,16 +312,24 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	std::map<std::pair<uint64_t, bool>, uint32_t> packedIndex;
 	//the light group of each packed material, for the light records of what it emits
 	std::vector<uint32_t> materialGroups;
-	auto materialIndex = [&](uint64_t id, bool textures) -> uint32_t {
+	//a std::function, since a mix's pack function asks for its children's indices: the entry is reserved before it is
+	//packed, so the children land after it and a cycle of mixes finds itself already there
+	std::function<uint32_t(uint64_t, bool)> materialIndex = [&](uint64_t id, bool textures) -> uint32_t {
 		const auto [it, inserted] = packedIndex.try_emplace({ id, textures }, (uint32_t)accel->materials.size());
 		if (inserted) {
+			const uint32_t index = it->second;
+			accel->materials.emplace_back();
+			accel->materialSpectra.push_back(emptyMaterialSpectralRecord());
+			materialGroups.push_back(0u);
 			const auto found = std::find_if(materials.begin(), materials.end(), [id](const MaterialDef& m) { return m.id == id; });
 			const MaterialDef fallback = makeMaterial(MaterialType::Lambertian, id == 0 ? glm::vec3(1.f) : glm::vec3(0.7f));
-			accel->materials.push_back(packMaterial(found != materials.end() ? *found : fallback,
-				PackContext { .textures = textures, .spectra = spectral.spectra, .designWavelength = spectral.designWavelength }));
-			materialGroups.push_back(found != materials.end() ? std::min(found->lightGroup, MAX_LIGHT_GROUPS - 1u) : 0u);
+			PackedMaterial packed = packMaterial(found != materials.end() ? *found : fallback,
+				PackContext { .textures = textures,
+					.spectra = spectral.spectra,
+					.designWavelength = spectral.designWavelength,
+					.materialIndex = [&materialIndex, textures](uint64_t child) { return materialIndex(child, textures); } });
+			materialGroups[index] = found != materials.end() ? std::min(found->lightGroup, MAX_LIGHT_GROUPS - 1u) : 0u;
 			//its spectra, by slot, as indices into the scene's list
-			const PackedMaterial& packed = accel->materials.back();
 			MaterialSpectralRecord record = emptyMaterialSpectralRecord();
 			for (size_t slot = 0; slot < MATERIAL_SPECTRUM_SLOTS; slot++) {
 				if (packed.spectra[slot].has_value()) {
@@ -313,7 +337,8 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 				}
 			}
 			record[SLOT_COUNT] = std::bit_cast<uint32_t>(packed.emissionScale);
-			accel->materialSpectra.push_back(record);
+			accel->materialSpectra[index] = record;
+			accel->materials[index] = std::move(packed);
 		}
 		return it->second;
 	};

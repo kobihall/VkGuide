@@ -35,6 +35,14 @@ struct GLTFMaterial {
 	GltfAlphaMode alphaMode { GltfAlphaMode::Opaque };
 	float alphaCutoff { 0.5f };
 
+	// KHR_materials_ior, _specular and _transmission (docs/plans/completed/pbrt-bsdf-library.md). The index
+	// (1.5 when the file names none), the dielectric's reflectance at normal incidence the index and the specular factor
+	// make (0.04 for neither), and the transmission factor with whether a texture varies it
+	float ior { 1.5f };
+	float dielectricF0 { 0.04f };
+	float transmissionFactor { 0.f };
+	bool transmissionTextured { false };
+
 	// the textures, or null images for the ones the material has none of. The raster path reaches
 	// the base colour and metal/rough through `data`'s descriptor set; the path tracer needs the
 	// images themselves, to find which layers of RaytraceTextureArray hold them

@@ -2,7 +2,7 @@
 
 Skin, marble, milk, wax and jade look soft because light enters them, scatters beneath the surface and leaves somewhere else. The tracer's materials all scatter at the point of entry. The sources describe two ways to model it: a BSSRDF, a tabulated profile of where light exits relative to where it entered (PBR 3ed §11.4 and §15.4 to §15.5; pbrt-v4's `SubsurfaceMaterial`), and a volumetric random walk through the object's interior, which production renderers adopted (Chiang et al. 2016, cited in PBR 4ed chapter 14's "Further Reading"). The user chose both, selected per material. This plan adds a `subsurface` material with the two methods, a subsurface kernel, and pbrt's table of measured scattering coefficients.
 
-*Not implemented. Depends on [pbrt-participating-media.md](pbrt-participating-media.md) (homogeneous media, chromatic MIS, the named-media table), [pbrt-material-system.md](completed/pbrt-material-system.md) and [pbrt-bsdf-library.md](pbrt-bsdf-library.md) (the dielectric boundary). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-participating-media.md](pbrt-participating-media.md) (homogeneous media, chromatic MIS, the named-media table), [pbrt-material-system.md](completed/pbrt-material-system.md) and [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md) (the dielectric boundary). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decision already made
 
@@ -22,7 +22,7 @@ A `subsurface` material ([pbrt-material-system.md](completed/pbrt-material-syste
 - **Method**, random walk or BSSRDF.
 - The interior's scattering, specified one of three ways, as pbrt allows: σa and σs directly; a surface albedo (reflectance) and a mean free path per channel, inverted to σa and σs; or a named measured material.
 - **Scale** for σa and σs, and an interior asymmetry `g`.
-- The boundary: an index of refraction η and a roughness, evaluated by the dielectric BxDF of [pbrt-bsdf-library.md](pbrt-bsdf-library.md).
+- The boundary: an index of refraction η and a roughness, evaluated by the dielectric BxDF of [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md).
 - For the random walk, a **Boundary** choice: dielectric (the physical boundary) or diffuse transmission. A diffuse boundary lets next-event estimation run where a path enters and exits, which a smooth dielectric cannot; Arnold's and Cycles' random walks offer the same choice.
 
 The named measured materials are pbrt's table (`GetMediumScatteringProperties()` in `media.cpp`): 47 entries from Jensen et al. 2001 and Narasimhan et al. 2006, from apple, ketchup, marble and two skins to milks, coffees, wines, juices and Pacific Ocean surface water. [pbrt-participating-media.md](pbrt-participating-media.md) uses the same table for media presets.

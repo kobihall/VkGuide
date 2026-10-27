@@ -222,6 +222,12 @@ std::vector<Case> buildCases()
 			add(fmt::format("pbr rough={:g} metal={:g}", roughness, metallic), material(BsdfType::Pbr, 0.f, metallic, roughness), false, metallic >= 1.f, roughness < 0.35f);
 		}
 	}
+	// pbr with the dielectric F0 a KHR_materials_ior or _specular import sets in `param` (ior 1.9 is 0.0963; a specular factor of 0.2 is 0.008)
+	for (float f0 : { 0.0963f, 0.008f }) {
+		for (float metallic : { 0.f, 0.5f }) {
+			add(fmt::format("pbr rough=0.4 metal={:g} f0={:g}", metallic, f0), material(BsdfType::Pbr, f0, metallic, 0.4f), false, false);
+		}
+	}
 	return cases;
 }
 
@@ -717,7 +723,7 @@ int main(int argc, char** argv)
 		}
 	}
 	//pbrt-v4's BxDFs have their own section, which --material glass or conductor selects alone
-	const bool bxdfsOnly = !options.material.empty() && (options.material.starts_with("glass") || options.material.starts_with("conductor"));
+	const bool bxdfsOnly = !options.material.empty() && (options.material.starts_with("glass") || options.material.starts_with("conductor") || options.material.starts_with("diffuse") || options.material.starts_with("thin") || options.material.starts_with("mix"));
 	if (bxdfsOnly) {
 		const int failures = runBxdfTests(options.samples, options.quadrature, options.selfcheck, options.material);
 		fmt::println("{}", failures == 0 ? "bsdf_test: ok" : fmt::format("bsdf_test: {} failure(s)", failures));

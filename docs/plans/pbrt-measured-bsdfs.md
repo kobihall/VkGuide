@@ -2,7 +2,7 @@
 
 Analytic BSDFs cannot reproduce iridescent paint, woven fabric, or the real angular falloff of a particular brushed aluminum. pbrt-v4's `MeasuredBxDF` renders reflectance measured on a goniophotometer, in the reparameterized form of Dupuy and Jakob (2018), which stores the data where the material's own visible-normal distribution concentrates it. The RGL database publishes dozens of isotropic and anisotropic materials in that format, spectrally. This plan adds a `measured` material that loads them.
 
-*Not implemented. Depends on [pbrt-bsdf-library.md](pbrt-bsdf-library.md). Spectral measurements need [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) to be seen as measured; exact RGB projects them. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md). Spectral measurements need [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) to be seen as measured; exact RGB projects them. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 

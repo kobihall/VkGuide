@@ -114,6 +114,8 @@ SelfTestResult runBxdfParityTest(VulkanEngine* engine)
 {
 	SelfTestResult result;
 	std::mt19937 rng(20261023u);
+	//the mix's amounts come from a stream of their own, so the cases of the other types are the ones they always were
+	std::mt19937 mixRng(20261026u);
 	std::uniform_real_distribution<float> unit(0.f, 1.f);
 	struct Material {
 		std::string name;
@@ -122,6 +124,8 @@ SelfTestResult runBxdfParityTest(VulkanEngine* engine)
 		float eta;
 		glm::vec3 conductorEta;
 		glm::vec3 conductorK;
+		//a diffuse type's: Oren-Nayar's A and B (the diffuse), reflectance and transmittance riding in the conductor's fields
+		glm::vec2 oren { 1.f, 0.f };
 	};
 	std::vector<Material> materials;
 	for (const float eta : { 1.5f, 1.33f, 2.4f }) {
@@ -132,6 +136,14 @@ SelfTestResult runBxdfParityTest(VulkanEngine* engine)
 	for (const glm::vec2 alpha : { glm::vec2(0.f), glm::vec2(0.3f), glm::vec2(0.2f, 0.7f) }) {
 		materials.push_back({ fmt::format("conductor alpha ({}, {})", alpha.x, alpha.y), 7u, alpha, 1.f, glm::vec3(0.27f, 0.68f, 1.22f), glm::vec3(3.6f, 2.6f, 2.3f) });
 	}
+	for (const float sigma : { 0.f, 20.f, 60.f }) {
+		const DiffuseBxdf d = DiffuseBxdf::make(glm::vec3(0.8f, 0.5f, 0.2f), sigma);
+		materials.push_back({ fmt::format("diffuse sigma {}", sigma), 8u, glm::vec2(0.f), 1.f, d.reflectance, glm::vec3(0.f), glm::vec2(d.orenA, d.orenB) });
+	}
+	materials.push_back({ "thin glass 1.5", 9u, glm::vec2(0.f), 1.5f, glm::vec3(1.f), glm::vec3(0.f) });
+	materials.push_back({ "thin glass 1.1", 9u, glm::vec2(0.f), 1.1f, glm::vec3(1.f), glm::vec3(0.f) });
+	materials.push_back({ "diffuse transmission", 10u, glm::vec2(0.f), 1.f, glm::vec3(0.6f, 0.3f, 0.1f), glm::vec3(0.2f, 0.5f, 0.7f) });
+	materials.push_back({ "diffuse transmission, reflection only", 10u, glm::vec2(0.f), 1.f, glm::vec3(0.6f, 0.3f, 0.1f), glm::vec3(0.f) });
 	constexpr size_t PER_MATERIAL = 4096;
 	std::vector<BxdfParityCase> cases;
 	std::vector<size_t> materialOf;
@@ -143,13 +155,16 @@ SelfTestResult runBxdfParityTest(VulkanEngine* engine)
 			c.params = glm::vec4(mat.alpha, mat.eta, unit(rng));
 			c.conductorEta = glm::vec4(mat.conductorEta, 0.f);
 			c.conductorK = glm::vec4(mat.conductorK, 0.f);
+			c.pad = glm::vec4(mat.oren, 0.f, 0.f);
 			glm::vec3 wo = randomUnit(rng);
 			if (mat.type == 7u) {
 				wo.z = std::abs(wo.z);
 			}
 			c.wo = glm::vec4(wo, 0.f);
 			c.wi = glm::vec4(randomUnit(rng), 0.f);
-			c.u = glm::vec4(unit(rng), unit(rng), 0.f, 0.f);
+			//the mix's amount, and its salt: the third component of u and the case's index
+			c.u = glm::vec4(unit(rng), unit(rng), unit(mixRng), 0.f);
+			c.ids.z = (uint32_t)cases.size();
 			cases.push_back(c);
 			materialOf.push_back(m);
 		}
@@ -167,6 +182,7 @@ SelfTestResult runBxdfParityTest(VulkanEngine* engine)
 	constexpr double TOLERANCE = 1e-3;
 	constexpr double TOLERANCE_DIRECTION = 1e-4;
 	std::vector<size_t> bad(materials.size(), 0), flips(materials.size(), 0);
+	size_t mixWrong = 0, mixFlips = 0;
 	double worstValue = 0.0, worstDirection = 0.0, worstFresnel = 0.0;
 	for (size_t i = 0; i < cases.size(); i++) {
 		const BxdfParityCase& c = cases[i];
@@ -188,6 +204,30 @@ SelfTestResult runBxdfParityTest(VulkanEngine* engine)
 			f = b.f(glm::vec3(c.wo), glm::vec3(c.wi), mode);
 			p = b.pdf(glm::vec3(c.wo), glm::vec3(c.wi), mode);
 			flags = b.flags();
+		} else if (mat.type == 8u) {
+			DiffuseBxdf b;
+			b.reflectance = mat.conductorEta;
+			b.orenA = mat.oren.x;
+			b.orenB = mat.oren.y;
+			ok = b.sample(glm::vec3(c.wo), c.params.w, glm::vec2(c.u), mode, s);
+			f = b.f(glm::vec3(c.wo), glm::vec3(c.wi), mode);
+			p = b.pdf(glm::vec3(c.wo), glm::vec3(c.wi), mode);
+			flags = b.flags();
+		} else if (mat.type == 9u) {
+			ThinDielectricBxdf b;
+			b.eta = mat.eta;
+			ok = b.sample(glm::vec3(c.wo), c.params.w, glm::vec2(c.u), mode, s);
+			f = b.f(glm::vec3(c.wo), glm::vec3(c.wi), mode);
+			p = b.pdf(glm::vec3(c.wo), glm::vec3(c.wi), mode);
+			flags = b.flags();
+		} else if (mat.type == 10u) {
+			DiffuseTransmissionBxdf b;
+			b.reflectance = mat.conductorEta;
+			b.transmittance = mat.conductorK;
+			ok = b.sample(glm::vec3(c.wo), c.params.w, glm::vec2(c.u), mode, s);
+			f = b.f(glm::vec3(c.wo), glm::vec3(c.wi), mode);
+			p = b.pdf(glm::vec3(c.wo), glm::vec3(c.wi), mode);
+			flags = b.flags();
 		} else {
 			DielectricBxdf b;
 			b.eta = mat.eta;
@@ -197,8 +237,17 @@ SelfTestResult runBxdfParityTest(VulkanEngine* engine)
 			p = b.pdf(glm::vec3(c.wo), glm::vec3(c.wi), mode);
 			flags = b.flags();
 		}
-		worstFresnel = std::max({ worstFresnel, relativeDifference(frDielectric(c.wo.z, c.params.z), g.fresnel.x, 1e-3),
-			relativeDifference(frComplex(std::abs(c.wo.z), c.conductorEta.x, c.conductorK.x), g.fresnel.y, 1e-3) });
+		//the mix material's hash, bit for bit, and so its choice (the point is c.wi, the direction c.wo)
+		const float hash = mixHash(glm::vec3(c.wi), glm::vec3(c.wo), c.ids.z);
+		if (std::bit_cast<uint32_t>(hash) != std::bit_cast<uint32_t>(g.fresnel.z)) {
+			mixWrong++;
+		}
+		mixFlips += mixChoosesSecond(c.u.z, glm::vec3(c.wi), glm::vec3(c.wo), c.ids.z) != (g.fresnel.w > 0.5f);
+		//the Fresnel terms of the two types that have them; a diffuse case's fields hold other things
+		if (mat.type == 6u || mat.type == 7u) {
+			worstFresnel = std::max({ worstFresnel, relativeDifference(frDielectric(c.wo.z, c.params.z), g.fresnel.x, 1e-3),
+				relativeDifference(frComplex(std::abs(c.wo.z), c.conductorEta.x, c.conductorK.x), g.fresnel.y, 1e-3) });
+		}
 		if (ok != (g.sampleF.w > 0.5f) || (ok && s.flags != g.flags.x)) {
 			flips[materialOf[i]]++;
 			continue;
@@ -237,7 +286,8 @@ SelfTestResult runBxdfParityTest(VulkanEngine* engine)
 	//a rough glass's transmission divides by (wi.wm + wo.wm / eta)^2, which cancels where the two directions are
 	//nearly opposite across the microfacet: there float rounding on either side is amplified, and a case in a few
 	//thousand lands past the tolerance (4 of 61440 when this was written, at most 0.8 percent off)
-	result.passed = totalBad <= cases.size() / 2000 && totalFlips <= cases.size() / 500 && worstFresnel < 1e-4;
+	result.passed = totalBad <= cases.size() / 2000 && totalFlips <= cases.size() / 500 && worstFresnel < 1e-4 && mixWrong == 0 && mixFlips == 0;
+	result.lines.push_back(fmt::format("the mix hash: {} of {} differ, {} choices differ", mixWrong, cases.size(), mixFlips));
 	result.lines.insert(result.lines.begin(), fmt::format("{} cases, {} past the tolerance, {} decision(s) flipped; worst f and pdf {:.2g} (limit {:g}), direction {:.2g} ({:g}), Fresnel {:.2g} (1e-4)",
 												 cases.size(), totalBad, totalFlips, worstValue, TOLERANCE, worstDirection, TOLERANCE_DIRECTION, worstFresnel));
 	result.lines.insert(result.lines.begin(), result.passed ? "the shader and the mirror agree" : "the shader and the mirror disagree");

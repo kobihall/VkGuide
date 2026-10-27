@@ -169,7 +169,7 @@ static bool scatterPbr(const BsdfMaterial& m, glm::vec3 inDir, glm::vec3 normal,
 {
 	const glm::vec3 wo = -inDir;
 	const float cosO = std::max(glm::dot(normal, wo), 1e-4f);
-	const glm::vec3 f0 = glm::mix(glm::vec3(0.04f), m.albedo, m.metallic);
+	const glm::vec3 f0 = glm::mix(glm::vec3(m.param > 0.f ? m.param : 0.04f), m.albedo, m.metallic);
 	const glm::vec3 diffuse = m.albedo * (1.0f - m.metallic);
 	const glm::vec3 fresnelView = bsdfFresnelSchlick(f0, cosO);
 
@@ -304,7 +304,7 @@ bool bsdfPbrLobes(const BsdfMaterial& m, glm::vec3 inDir, glm::vec3 normal, glm:
 {
 	const glm::vec3 wo = -inDir;
 	const float cosO = std::max(glm::dot(normal, wo), 1e-4f);
-	f0 = glm::mix(glm::vec3(0.04f), m.albedo, m.metallic);
+	f0 = glm::mix(glm::vec3(m.param > 0.f ? m.param : 0.04f), m.albedo, m.metallic);
 	diffuse = m.albedo * (1.0f - m.metallic);
 	fresnelView = bsdfFresnelSchlick(f0, cosO);
 	const float specularWeight = luminance(fresnelView);

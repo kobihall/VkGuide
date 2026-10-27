@@ -1165,11 +1165,23 @@ std::string VulkanEngine::addModel(std::shared_ptr<LoadedModel> model, const std
 	//one library entry per material, named as the file names it, which is what its objects are shaded with and what
 	//the Materials window edits in place
 	const LoadedModel& loaded = *m_models[key];
+	std::vector<uint64_t> modelMaterialIds;
 	for (uint32_t i = 0; i < loaded.materialsByIndex.size(); i++) {
 		MaterialDef material = modelMaterialDef(loaded, i, m_raytraceTextures);
 		material.name = i < loaded.materialNames.size() ? loaded.materialNames[i] : fmt::format("material{}", i);
 		material.origin = ModelMaterialOrigin { key, i };
-		m_raytraceScene.addMaterial(std::move(material));
+		modelMaterialIds.push_back(m_raytraceScene.addMaterial(std::move(material)));
+	}
+	//an imported mix names its children by their index in the model; now that they have ids, it holds those
+	for (const uint64_t id : modelMaterialIds) {
+		MaterialDef* material = m_raytraceScene.findMaterial(id);
+		for (auto& [name, value] : material->params) {
+			MaterialLink* link = std::get_if<MaterialLink>(&value);
+			if (link != nullptr && link->modelIndex >= 0) {
+				link->id = (size_t)link->modelIndex < modelMaterialIds.size() ? modelMaterialIds[link->modelIndex] : 0;
+				link->modelIndex = -1;
+			}
+		}
 	}
 
 	//a freshly imported model places one scene object per mesh node, at the transform it was
@@ -1426,6 +1438,22 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 		return ref;
 	};
 
+	//a mix's children are library ids, which no file holds: each becomes the reference a shape's material would be
+	auto linksToReferences = [&](ParamSet& params) {
+		for (auto& [name, value] : params) {
+			if (MaterialLink* link = std::get_if<MaterialLink>(&value)) {
+				const SceneMaterialRef ref = materialRef(link->id);
+				*link = MaterialLink { .id = 0, .fileUser = ref.user, .fileModel = ref.model, .fileModelMaterial = ref.modelMaterial };
+			}
+		}
+	};
+	for (MaterialDef& material : scene.materials) {
+		linksToReferences(material.params);
+	}
+	for (SceneMaterialOverride& edit : scene.materialOverrides) {
+		linksToReferences(edit.params);
+	}
+
 	scene.hasMeshObjects = true;
 	for (const SceneMeshObject& object : m_raytraceScene.meshObjects()) {
 		const auto found = modelIndices.find(object.modelKey);
@@ -1573,6 +1601,37 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 		material.name = ownerName;
 		return m_raytraceScene.addMaterial(std::move(material));
 	};
+
+	//a mix's children, from the references the file holds to the ids the library just gave: in the user materials, and in
+	//the edits to a model's materials
+	std::vector<uint64_t> linkOwners = userIds;
+	for (const SceneMaterialOverride& edit : scene.materialOverrides) {
+		const std::string& modelKey = edit.model < (int)modelKeys.size() ? modelKeys[edit.model] : std::string();
+		if (const MaterialDef* edited = modelKey.empty() ? nullptr : m_raytraceScene.findModelMaterial(modelKey, edit.modelMaterial)) {
+			linkOwners.push_back(edited->id);
+		}
+	}
+	for (const uint64_t userId : linkOwners) {
+		MaterialDef* material = m_raytraceScene.findMaterial(userId);
+		if (material == nullptr) {
+			continue;
+		}
+		for (auto& [name, value] : material->params) {
+			MaterialLink* link = std::get_if<MaterialLink>(&value);
+			if (link == nullptr || (link->fileUser < 0 && link->fileModel < 0)) {
+				continue;
+			}
+			uint64_t id = 0;
+			if (link->fileUser >= 0 && link->fileUser < (int)userIds.size()) {
+				id = userIds[link->fileUser];
+			} else if (link->fileModel >= 0 && link->fileModel < (int)modelKeys.size() && !modelKeys[link->fileModel].empty()) {
+				if (const MaterialDef* target = m_raytraceScene.findModelMaterial(modelKeys[link->fileModel], link->fileModelMaterial)) {
+					id = target->id;
+				}
+			}
+			*link = MaterialLink { .id = id };
+		}
+	}
 
 	//the placed objects the file recorded replace the defaults every import just added. A
 	//version-4 file has none, and its models keep those defaults - every node at its authored

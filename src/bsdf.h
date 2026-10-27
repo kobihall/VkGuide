@@ -12,7 +12,7 @@
 // not: a material's textures and normal map (resolveMaterial(), materialShadingNormal()), which
 // read the GPU's texture array and the instance's triangles.
 //
-// A new BSDF (docs/plans/pbrt-bsdf-library.md) lands in both places, and its tests in
+// A new BSDF (docs/plans/completed/pbrt-bsdf-library.md) lands in both places, and its tests in
 // tests/bsdf_test.cpp. The test's machinery is generic over the signature of the three functions
 // below, so a type added later needs a row in the test's material list and nothing else.
 
@@ -37,7 +37,7 @@ struct BsdfMaterial {
 	BsdfType type { BsdfType::Lambertian };
 	// the base colour
 	glm::vec3 albedo { 0.8f };
-	// metal: fuzz. phong: smoothness. dielectric: index of refraction. Unused by the others
+	// metal: fuzz. phong: smoothness. dielectric: index of refraction. pbr: the dielectric's F0, 0 for glTF's 0.04
 	float param { 0.f };
 	float metallic { 0.f };
 	float roughness { 0.5f };

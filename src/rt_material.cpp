@@ -47,6 +47,8 @@ const MaterialParam PBR_PARAMS[] = {
 	{ "albedo", "base colour", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR | PARAM_TEXTURABLE, nullptr },
 	{ "baseColorTexture", "base colour texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "sRGB, multiplies the base colour; its alpha is the coverage the alpha test reads" },
 	{ "metallic", "metallic", ParamKind::Float, 0.f, 0.f, 1.f, PARAM_TEXTURABLE, nullptr },
+	{ "f0", "dielectric F0", ParamKind::Float, 0.04f, 0.f, 0.5f, 0,
+		"The reflectance at normal incidence of the non-metal part: glTF's 0.04, or ((ior - 1) / (ior + 1))^2 times the specular factor when a glTF material sets KHR_materials_ior or KHR_materials_specular" },
 	{ "roughness", "roughness", ParamKind::Float, 0.5f, 0.f, 1.f, PARAM_TEXTURABLE, "Perceptual roughness: 0 is a mirror, and GGX's alpha is its square" },
 	{ "metallicRoughnessTexture", "metal/rough texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "Green multiplies roughness, blue multiplies metallic" },
 	{ "normalTexture", "normal texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "Tangent space; applied on meshes with tangents" },
@@ -58,7 +60,7 @@ const MaterialParam PBR_PARAMS[] = {
 		"The base colour texel's alpha below which the surface is cut away: glTF's alphaCutoff divided by the base colour factor's alpha. 0 for never" },
 };
 
-// pbrt-v4's glass and conductor (docs/plans/pbrt-bsdf-library.md). Roughness is pbrt's: remapped to alpha by its
+// pbrt-v4's glass and conductor (docs/plans/completed/pbrt-bsdf-library.md). Roughness is pbrt's: remapped to alpha by its
 // square root unless remapRoughness is off, and 0 is a perfect specular surface
 const MaterialParam GLASS_PARAMS[] = {
 	{ "eta", "index of refraction", ParamKind::Spectrum, constantRef(1.5f), 1.f, 3.f, 0,
@@ -76,6 +78,33 @@ const MaterialParam CONDUCTOR_PARAMS[] = {
 	{ "uRoughness", "roughness u", ParamKind::Float, 0.f, 0.f, 1.f, 0, "Along dp/du. 0 is a mirror" },
 	{ "vRoughness", "roughness v", ParamKind::Float, 0.f, 0.f, 1.f, 0, "Along dp/dv" },
 	{ "remapRoughness", "remap roughness", ParamKind::Bool, true, 0.f, 0.f, 0, "Map roughness to GGX's alpha by its square root, as pbrt does" },
+};
+
+// pbrt-v4's diffuse: reflectance and Oren-Nayar's roughness. pbrt-v4 has no Oren-Nayar; PBR 3ed 8.4.1 does
+const MaterialParam DIFFUSE_PARAMS[] = {
+	{ "albedo", "reflectance", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR, "Clamped to 0 to 1" },
+	{ "sigma", "roughness sigma", ParamKind::Float, 0.f, 0.f, 90.f, 0,
+		"Oren and Nayar's microfacet slope in degrees. 0 is a Lambertian surface; rough clay is about 20 and the moon about 30" },
+};
+
+const MaterialParam THIN_GLASS_PARAMS[] = {
+	{ "eta", "index of refraction", ParamKind::Spectrum, constantRef(1.5f), 1.f, 3.f, 0,
+		"A thin pane: light goes straight through, and the pane reflects what two parallel interfaces and their inter-reflections do. A constant, a named glass, a dispersion formula or a table",
+		SpectrumRole::Scalar },
+};
+
+const MaterialParam DIFFUSE_TRANSMISSION_PARAMS[] = {
+	{ "albedo", "reflectance", ParamKind::Spectrum, rgbSpectrum(glm::vec3(0.25f)), 0.f, 1.f, PARAM_COLOR, "Clamped to 0 to 1 after the scale" },
+	{ "transmittance", "transmittance", ParamKind::Spectrum, rgbSpectrum(glm::vec3(0.25f)), 0.f, 1.f, PARAM_COLOR, "Clamped to 0 to 1 after the scale" },
+	{ "scale", "scale", ParamKind::Float, 1.f, 0.f, 10.f, 0, "Multiplies both" },
+};
+
+const MaterialParam MIX_PARAMS[] = {
+	{ "materialA", "first material", ParamKind::Material, MaterialLink {}, 0.f, 0.f, 0,
+		"A hit takes this material with the chance 1 - amount. The material must scatter; a child's emission and alpha cutoff are not seen through the mix" },
+	{ "materialB", "second material", ParamKind::Material, MaterialLink {}, 0.f, 0.f, 0, "A hit takes this one with the chance amount" },
+	{ "amount", "amount", ParamKind::Float, 0.5f, 0.f, 1.f, 0,
+		"The chance of the second material. The choice is a hash of the hit point and the direction, so a hit chooses the same child each time it is evaluated" },
 };
 
 //---------------------------------------------------------------- packing
@@ -115,6 +144,8 @@ void packClassic(const MaterialDef& material, const PackContext& context, Materi
 		out.param = materialFloat(material, "strength");
 		break;
 	case MaterialType::Pbr:
+		//the record's param is the dielectric F0, 0 for glTF's 0.04 so a record that never set it is what it was
+		out.param = materialFloat(material, "f0") == 0.04f ? 0.f : std::max(materialFloat(material, "f0"), 1e-6f);
 		out.metallic = std::clamp(materialFloat(material, "metallic"), 0.f, 1.f);
 		out.roughness = std::clamp(materialFloat(material, "roughness"), 0.f, 1.f);
 		out.emission = glm::max(materialColor(material, "emission", context.spectra), glm::vec3(0.f)) * std::max(materialFloat(material, "strength"), 0.f);
@@ -126,6 +157,8 @@ void packClassic(const MaterialDef& material, const PackContext& context, Materi
 			out.emissiveLayer = materialTextureLayer(material, "emissiveTexture");
 			out.alphaCutoff = materialFloat(material, "alphaCutoff");
 		}
+		break;
+	default:
 		break;
 	}
 	writer.write(&out, sizeof(out));
@@ -162,7 +195,7 @@ void packClassic(const MaterialDef& material, const PackContext& context, Materi
 	}
 }
 
-// the representative wavelengths exact RGB reads a conductor's eta and k at (docs/plans/pbrt-bsdf-library.md)
+// the representative wavelengths exact RGB reads a conductor's eta and k at (docs/plans/completed/pbrt-bsdf-library.md)
 constexpr double RGB_WAVELENGTHS[3] = { 630.0, 532.0, 465.0 };
 
 float materialBool(const MaterialDef& material, std::string_view name)
@@ -208,15 +241,39 @@ void packBxdf(const MaterialDef& material, const PackContext& context, MaterialR
 	out.normalLayer = -1;
 	out.metalRoughLayer = -1;
 	out.emissiveLayer = -1;
-	const bool remap = materialBool(material, "remapRoughness");
-	auto alpha = [&](const char* name) {
-		const float roughness = std::clamp(materialFloat(material, name), 0.f, 1.f);
-		return remap ? std::sqrt(roughness) : roughness;
-	};
-	out.alphaX = alpha("uRoughness");
-	out.alphaY = alpha("vRoughness");
 	PackedMaterial& packed = writer.out;
-	if (material.type == MaterialType::Glass) {
+	switch (material.type) {
+	case MaterialType::Diffuse: {
+		//a reflectance is 0 to 1, as pbrt clamps it
+		out.rgbA = glm::clamp(materialColor(material, "albedo", context.spectra), glm::vec3(0.f), glm::vec3(1.f));
+		const DiffuseBxdf bxdf = DiffuseBxdf::make(out.rgbA, std::max(materialFloat(material, "sigma"), 0.f));
+		//Oren-Nayar's A and B ride in the alphas' place: a diffuse surface has no microfacets
+		out.alphaX = bxdf.orenA;
+		out.alphaY = bxdf.orenB;
+		packed.spectra[0] = std::make_pair(materialSpectrum(material, "albedo"), SpectrumRole::Albedo);
+		break;
+	}
+	case MaterialType::DiffuseTransmission: {
+		//pbrt: both are scaled, then clamped to 0 to 1. The spectral builds scale and clamp their lanes the same way
+		const float scale = std::max(materialFloat(material, "scale"), 0.f);
+		out.rgbA = glm::clamp(materialColor(material, "albedo", context.spectra) * scale, glm::vec3(0.f), glm::vec3(1.f));
+		out.rgbB = glm::clamp(materialColor(material, "transmittance", context.spectra) * scale, glm::vec3(0.f), glm::vec3(1.f));
+		out.alphaX = scale;
+		packed.spectra[0] = std::make_pair(materialSpectrum(material, "albedo"), SpectrumRole::Albedo);
+		packed.spectra[2] = std::make_pair(materialSpectrum(material, "transmittance"), SpectrumRole::Albedo);
+		break;
+	}
+	case MaterialType::Glass:
+	case MaterialType::ThinGlass: {
+		if (material.type == MaterialType::Glass) {
+			const bool remap = materialBool(material, "remapRoughness");
+			auto alpha = [&](const char* name) {
+				const float roughness = std::clamp(materialFloat(material, name), 0.f, 1.f);
+				return remap ? std::sqrt(roughness) : roughness;
+			};
+			out.alphaX = alpha("uRoughness");
+			out.alphaY = alpha("vRoughness");
+		}
 		const SpectrumRef eta = materialSpectrum(material, "eta");
 		out.etaDesign = (float)scalarAt(eta, context.designWavelength);
 		if (!(out.etaDesign > 0.f)) {
@@ -226,7 +283,16 @@ void packBxdf(const MaterialDef& material, const PackContext& context, MaterialR
 			out.bxdfFlags |= CRT_BXDF_FLAG_DISPERSIVE;
 		}
 		packed.spectra[2] = std::make_pair(eta, SpectrumRole::Scalar);
-	} else {
+		break;
+	}
+	default: {
+		const bool remap = materialBool(material, "remapRoughness");
+		auto alpha = [&](const char* name) {
+			const float roughness = std::clamp(materialFloat(material, name), 0.f, 1.f);
+			return remap ? std::sqrt(roughness) : roughness;
+		};
+		out.alphaX = alpha("uRoughness");
+		out.alphaY = alpha("vRoughness");
 		const SpectrumRef eta = materialSpectrum(material, "eta");
 		const SpectrumRef k = materialSpectrum(material, "k");
 		if (materialBool(material, "useReflectance")) {
@@ -239,7 +305,35 @@ void packBxdf(const MaterialDef& material, const PackContext& context, MaterialR
 		}
 		packed.spectra[2] = std::make_pair(conductorSpectrum(eta, context.spectra), SpectrumRole::Scalar);
 		packed.spectra[3] = std::make_pair(conductorSpectrum(k, context.spectra), SpectrumRole::Scalar);
+		break;
 	}
+	}
+	writer.write(&out, sizeof(out));
+	writer.out.flags |= CRT_MATERIAL_FLAG_SCATTERS;
+}
+
+MaterialLink materialLink(const MaterialDef& material, std::string_view name)
+{
+	const ParamValue value = materialValue(material, name);
+	const MaterialLink* link = std::get_if<MaterialLink>(&value);
+	return link != nullptr ? *link : MaterialLink {};
+}
+
+void packMix(const MaterialDef& material, const PackContext& context, MaterialRecordWriter& writer)
+{
+	CrtMixMaterial out {};
+	auto child = [&](const char* name) -> uint32_t {
+		const MaterialLink link = materialLink(material, name);
+		return context.materialIndex && link.id != 0 ? context.materialIndex(link.id) : 0u;
+	};
+	out.childA = child("materialA");
+	out.childB = child("materialB");
+	out.amount = std::clamp(materialFloat(material, "amount"), 0.f, 1.f);
+	out.type = (uint32_t)MaterialType::Mix;
+	out.albedoLayer = -1;
+	out.normalLayer = -1;
+	out.metalRoughLayer = -1;
+	out.emissiveLayer = -1;
 	writer.write(&out, sizeof(out));
 	writer.out.flags |= CRT_MATERIAL_FLAG_SCATTERS;
 }
@@ -257,6 +351,12 @@ glm::vec3 conductorPreview(const MaterialDef& material)
 		rgb[c] = frComplex(1.f, eta[c], k[c]);
 	}
 	return rgb;
+}
+
+// a mix has no appearance of its own in the raster preview, which has no library to look its children up in
+glm::vec3 mixPreview(const MaterialDef&)
+{
+	return glm::vec3(0.7f);
 }
 
 glm::vec3 noEmission(const MaterialDef&)
@@ -298,6 +398,10 @@ const MaterialTraits MATERIAL_TRAITS[] = {
 	{ "pbr", "glTF PBR", PBR_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_EMISSIVE, packClassic, pbrEmission, albedoPreview },
 	{ "glass", "Glass (pbrt)", GLASS_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX, packBxdf, noEmission, glassPreview },
 	{ "conductor", "Conductor (pbrt)", CONDUCTOR_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX, packBxdf, noEmission, conductorPreview },
+	{ "diffuse", "Diffuse (pbrt)", DIFFUSE_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX, packBxdf, noEmission, albedoPreview },
+	{ "thin_glass", "Thin glass (pbrt)", THIN_GLASS_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX | MATERIAL_TYPE_DELTA, packBxdf, noEmission, glassPreview },
+	{ "diffuse_transmission", "Diffuse transmission (pbrt)", DIFFUSE_TRANSMISSION_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX, packBxdf, noEmission, albedoPreview },
+	{ "mix", "Mix (pbrt)", MIX_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX, packMix, noEmission, mixPreview },
 };
 static_assert(sizeof(MATERIAL_TRAITS) / sizeof(MATERIAL_TRAITS[0]) == MATERIAL_TYPE_COUNT);
 

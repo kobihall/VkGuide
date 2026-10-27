@@ -38,7 +38,7 @@ The first is a per-light-sample weight in kernel 06; the second changes the spaw
 
 ### Shading normals that point into the surface
 
-When the shading and geometric normals disagree about which side a direction is on, a BSDF sample can leave on the wrong side, and a light sample can light a surface from behind. pbrt handles this per BxDF by checking the geometric normal for reflection versus transmission. The new BxDFs of [pbrt-bsdf-library.md](pbrt-bsdf-library.md) do the same: a sampled direction is rejected when the geometric normal says it crosses the surface and the lobe is reflective, or does not cross and the lobe is transmissive. The legacy materials keep today's behavior.
+When the shading and geometric normals disagree about which side a direction is on, a BSDF sample can leave on the wrong side, and a light sample can light a surface from behind. pbrt handles this per BxDF by checking the geometric normal for reflection versus transmission. The new BxDFs of [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md) do the same: a sampled direction is rejected when the geometric normal says it crosses the surface and the lobe is reflective, or does not cross and the lobe is transmissive. The legacy materials keep today's behavior.
 
 ## Importing pbrt scenes
 

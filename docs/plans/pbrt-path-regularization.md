@@ -2,7 +2,7 @@
 
 A diffuse floor next to a chrome wheel under a sky with a small bright sun is the case PBR 4ed Figure 13.12 shows: a BSDF sample from the floor rarely hits the wheel in a direction that reflects to the sun, and when it does, the pixel spikes. Light sampling cannot help, because the wheel is specular. pbrt-v4's `PathIntegrator` offers path regularization (Kaplanyan and Dachsbacher 2013): once a path has scattered off a non-specular surface, every later BSDF is made rougher, so that next-event estimation and MIS can reach the paths BSDF sampling alone finds too rarely. It is biased, and off by default. This plan adds it as a setting.
 
-*Not implemented. Most of its effect needs the microfacet BxDFs of [pbrt-bsdf-library.md](pbrt-bsdf-library.md); before them it applies to the `pbr` and `metal` materials only. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Most of its effect needs the microfacet BxDFs of [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md); before them it applies to the `pbr` and `metal` materials only. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -57,7 +57,7 @@ pbrt's regularization is biased and stays biased at any sample count. Kaplanyan 
 
 1. The flag. Bit-identical.
 2. Roughening for `pbr` and `metal`.
-3. The microfacet BxDFs, as [pbrt-bsdf-library.md](pbrt-bsdf-library.md) adds them.
+3. The microfacet BxDFs, as [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md) adds them.
 4. **Shrink with samples**.
 
 ## Sources

@@ -271,7 +271,8 @@ std::optional<std::shared_ptr<LoadedModel>> loadGltf(VulkanEngine* engine, std::
 	//extensions fastgltf is not told about are skipped silently, and a file that *requires* one of
 	//them fails to load. KHR_lights_punctual is read into LoadedModel::lights, which importGltf() turns
 	//into scene lights
-	fastgltf::Parser parser { fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_materials_emissive_strength };
+	fastgltf::Parser parser { fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_ior
+		| fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_volume };
 
 	constexpr auto gltfOptions = fastgltf::Options::DontRequireValidAssetMember | fastgltf::Options::AllowDouble | fastgltf::Options::LoadExternalBuffers;
 
@@ -397,6 +398,33 @@ std::optional<std::shared_ptr<LoadedModel>> loadGltf(VulkanEngine* engine, std::
 		newMat->metalRoughFactors = glm::vec2(constants.metalRoughFactors);
 		newMat->emissiveFactor = glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]) * float(mat.emissiveStrength);
 		newMat->alphaCutoff = mat.alphaCutoff;
+		//the extensions the path tracer reads (gltfMaterialDef()). Each one it cannot carry is said so on the console
+		newMat->ior = std::max(float(mat.ior), 1.f);
+		if (mat.ior != 1.5f || mat.specular) {
+			const float root = (newMat->ior - 1.f) / (newMat->ior + 1.f);
+			newMat->dielectricF0 = root * root;
+		}
+		if (mat.specular) {
+			newMat->dielectricF0 = std::clamp(newMat->dielectricF0 * float(mat.specular->specularFactor), 0.f, 1.f);
+			const glm::vec3 color(mat.specular->specularColorFactor[0], mat.specular->specularColorFactor[1], mat.specular->specularColorFactor[2]);
+			if (color != glm::vec3(1.f) || mat.specular->specularColorTexture.has_value() || mat.specular->specularTexture.has_value()) {
+				fmt::println("glTF material '{}': KHR_materials_specular's color and textures are not read; its factor scales the dielectric F0", materialKey);
+			}
+		}
+		if (mat.transmission) {
+			newMat->transmissionFactor = float(mat.transmission->transmissionFactor);
+			newMat->transmissionTextured = mat.transmission->transmissionTexture.has_value();
+			const bool emits = mat.emissiveFactor[0] > 0.f || mat.emissiveFactor[1] > 0.f || mat.emissiveFactor[2] > 0.f;
+			if (newMat->transmissionFactor > 0.f && (newMat->transmissionFactor < 1.f || newMat->transmissionTextured || emits)) {
+				fmt::println("glTF material '{}': KHR_materials_transmission is read as opaque; only a factor of 1 with no texture and no emission becomes glass", materialKey);
+			}
+		}
+		if (mat.anisotropy && mat.anisotropy->anisotropyStrength > 0.f) {
+			fmt::println("glTF material '{}': KHR_materials_anisotropy is not read; the material is isotropic", materialKey);
+		}
+		if (mat.volume && mat.volume->thicknessFactor > 0.f) {
+			fmt::println("glTF material '{}': KHR_materials_volume is not read; the material has no interior medium (docs/plans/pbrt-participating-media.md)", materialKey);
+		}
 		switch (mat.alphaMode) {
 		case fastgltf::AlphaMode::Opaque:
 			newMat->alphaMode = GltfAlphaMode::Opaque;

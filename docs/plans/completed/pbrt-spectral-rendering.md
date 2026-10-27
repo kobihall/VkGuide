@@ -2,7 +2,7 @@
 
 The tracer multiplied RGB triples. PBR 4ed §4.6.4 shows why that is not physics: the same sRGB green, expressed in ACES2065-1 and multiplied by itself, comes out darker, more saturated and outside the gamut of real colors, because a product of tristimulus values depends on the color space. Dispersion, blackbody emitters, measured metal indices of refraction, laser lines and chromatic media all need light carried per wavelength. This plan makes the quantity every path carries a spectrum whose size and meaning are chosen at runtime, while exact RGB stays available and bit-identical.
 
-*Implemented 2026-10-23, with the glass and conductor of [pbrt-bsdf-library.md](../pbrt-bsdf-library.md) that dispersion and measured metals need. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) and [pbrt-material-system.md](pbrt-material-system.md). The [laser optics plan](../physoptics-laser-optics.md) builds its glasses, coatings, lasers and spectral goals on it. [spectral-out-of-range.md](../spectral-out-of-range.md) holds the open question of RGB data beyond 360 to 830 nm. Part of the [roadmap](../pbrt-roadmap.md).*
+*Implemented 2026-10-23, with the glass and conductor of [pbrt-bsdf-library.md](pbrt-bsdf-library.md) that dispersion and measured metals need. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) and [pbrt-material-system.md](pbrt-material-system.md). The [laser optics plan](../physoptics-laser-optics.md) builds its glasses, coatings, lasers and spectral goals on it. [spectral-out-of-range.md](../spectral-out-of-range.md) holds the open question of RGB data beyond 360 to 830 nm. Part of the [roadmap](../pbrt-roadmap.md).*
 
 ## Requirements and decisions
 
@@ -20,7 +20,7 @@ When implementation started on 2026-10-23, the user set the main goal as good sp
 - A **monochromatic** representation traces exactly one fixed wavelength. It has its own one-lane build, its wavelength is a setting separate from the **Design wavelength** (a button copies one to the other), and it displays in grayscale, in the wavelength's own color (with chosen colors outside the visible range), or through an intensity colormap.
 - RGB-authored spectra outside 360 to 830 nm hold their 360 and 830 nm values for now. Whether they should extrapolate physically, fall to zero or do something else is undecided; [spectral-out-of-range.md](../spectral-out-of-range.md) records the question without a design.
 - Exact RGB is a separate build in which a spectrum is a `vec3`, so its SPIR-V is the shaders it always was.
-- Dispersion comes with every part of [pbrt-bsdf-library.md](../pbrt-bsdf-library.md) it needs, and the rest of that plan waits: `crt_fresnel.glsl`, `crt_microfacet.glsl`, the local-frame BxDF interface with its transport mode, `glass` (smooth and rough, dispersive, η²) and `conductor` (spectral η and k), their C++ mirrors, `bin/bsdf_test` and a GPU parity test, and the importer's mapping of pbrt's conductors and dispersive dielectrics. `thin_glass`, `diffuse_transmission`, `mix`, Oren–Nayar and the glTF extensions wait.
+- Dispersion comes with every part of [pbrt-bsdf-library.md](pbrt-bsdf-library.md) it needs, and the rest of that plan waits: `crt_fresnel.glsl`, `crt_microfacet.glsl`, the local-frame BxDF interface with its transport mode, `glass` (smooth and rough, dispersive, η²) and `conductor` (spectral η and k), their C++ mirrors, `bin/bsdf_test` and a GPU parity test, and the importer's mapping of pbrt's conductors and dispersive dielectrics. `thin_glass`, `diffuse_transmission`, `mix`, Oren–Nayar and the glTF extensions wait.
 - The RGB Gaussians are fitted to the CIE functions and editable.
 - An RGB color in the RGB Gaussian mode is uplifted and projected onto the bands, like every other spectral mode, so it does not reproduce exact RGB's colors exactly.
 - Three additions beyond the plan: wavelength sampling from the emitters' spectra, wide-gamut uplift tables (sRGB, DCI-P3, Rec. 2020, ACES2065-1) with a scene working space, and the **Design wavelength** setting now.
@@ -188,7 +188,7 @@ The report lines that remain point to the plans that add what is missing, chiefl
 - Light paths that draw their wavelengths from the emitter, for [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md).
 - The **Design wavelength** following a scene's single laser: [physoptics-laser-sources.md](../physoptics-laser-sources.md) sets it when lasers exist.
 - AGF catalogs, the Henke tables and coatings: [physoptics-optical-materials.md](../physoptics-optical-materials.md) and [physoptics-gratings-and-xuv.md](../physoptics-gratings-and-xuv.md). The `Dispersion` kind and the line kind are what they fill in.
-- The rest of [pbrt-bsdf-library.md](../pbrt-bsdf-library.md).
+- The rest of [pbrt-bsdf-library.md](pbrt-bsdf-library.md).
 
 ## Where it departs from the plan and from pbrt
 

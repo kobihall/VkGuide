@@ -231,6 +231,21 @@ int main(int argc, char** argv)
 			extensions = fmt::format(R"("KHR_materials_transmission":{{"transmissionFactor":1}},"KHR_materials_ior":{{"ior":{}}})", num(materialFloat(d, "ir")));
 			transmission = true;
 			break;
+		case MaterialType::Glass:
+		case MaterialType::ThinGlass: {
+			//KHR_materials_transmission with the index at the design wavelength; the importer reads a factor of 1 back as glass
+			base = glm::vec3(1.f);
+			if (d.type == MaterialType::Glass) {
+				const float u = materialFloat(d, "uRoughness");
+				const bool remap = std::get<bool>(materialValue(d, "remapRoughness"));
+				roughness = std::sqrt(remap ? std::sqrt(u) : u);
+			} else {
+				roughness = 0.f;
+			}
+			extensions = fmt::format(R"("KHR_materials_transmission":{{"transmissionFactor":1}},"KHR_materials_ior":{{"ior":{}}})", num((float)scalarAt(materialSpectrum(d, "eta"), 587.6)));
+			transmission = true;
+			break;
+		}
 		case MaterialType::Emissive:
 			emissive = fmt::format(R"(,"emissiveFactor":{})", vec(base));
 			extensions = fmt::format(R"("KHR_materials_emissive_strength":{{"emissiveStrength":{}}})", num(materialFloat(d, "strength")));

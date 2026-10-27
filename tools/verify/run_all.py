@@ -4,7 +4,7 @@
   bin/bsdf_test, bin/light_test, bin/sampler_test, bin/film_test, bin/aov_test, bin/spectrum_test, bin/pbrt_test,
   bin/bvh_bench                                                    the CPU tests
   VKGUIDE_SELFTEST=1 bin/vulkan_guide                              shaders against their C++ mirrors
-  furnace_check.py, cornell_check.py, filter_check.py, film_check.py, aov_check.py, spectral_check.py
+  furnace_check.py, cornell_check.py, filter_check.py, film_check.py, aov_check.py, spectral_check.py, bsdf_check.py
                                                                    scene-level energy, reference, filter, film, output
                                                                    and spectral checks
 
@@ -68,6 +68,7 @@ def main():
         ok &= run("film_check", [sys.executable, os.path.join(HERE, "film_check.py")], cwd=HERE)
         ok &= run("aov_check", [sys.executable, os.path.join(HERE, "aov_check.py")], cwd=HERE)
         ok &= run("spectral_check", [sys.executable, os.path.join(HERE, "spectral_check.py")] + quick, cwd=HERE)
+        ok &= run("bsdf_check", [sys.executable, os.path.join(HERE, "bsdf_check.py")], cwd=HERE)
     print("all checks passed" if ok else "some checks failed")
     return 0 if ok else 1
 
