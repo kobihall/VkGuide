@@ -31,7 +31,7 @@ On 2026-10-18 the user chose:
 | Table origin | a hole at the world origin | hole centers at `(25 i, 0, 25 j)` mm |
 | Beam height | 100 mm | the optical axis height every new mount is set to |
 | Snap to holes | on | the default for dragging; holding **Alt** inverts it for one drag |
-| Show table | on | shown only while the scene's **Optical bench** capability is on ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)) |
+| Show table | on | shown only while the scene's **Optical bench** capability is on ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)) |
 
 The top face is the plane y = 0. The plate's thickness, hole diameter, thread, countersink and edge margin are read from `Breadboard-B3030A.step` by the converter's measuring step and checked against Thorlabs' B3030A page (see "Pending answers"). `buildBreadboardMesh()` (`src/optic_bench.cpp`) makes the plate procedurally: a box with each hole as a short cylinder wall and a dark floor, about 40 triangles per hole, so a 1.2 × 2.4 m table of 4600 holes is under 200 000 triangles. The same mesh is the table's BLAS, in black anodized aluminum.
 
@@ -123,6 +123,7 @@ A file from before this plan, whose optics have free transforms, opens with each
 
 - `BenchSettings`, `MountPose`, `FineAdjust`, `opticWorldTransform()`, `buildBreadboardMesh()`, the stack assembly and the adjuster solver (`src/optic_bench.h/.cpp`, in `rt_optics` so that `bin/optics_test` can check them).
 - `RaytraceSceneEditor` gains the bench settings and the constrained gizmo setter; **Optics** → **Bench settings...** is registered under the **Optical bench** capability.
+- The raster preview has no capability hook for geometry yet (`docs/physical-optics-overview.md` §7). This plan adds one to `CapabilityInfo` for the table, posts and mounts, and adds what they draw to `RasterKey`, or the paused preview keeps the old picture. The **Optics** menu is the capability's `menus` hook.
 - `buildSceneAccel()` gains the bench instances, each tagged with its optic and part.
 - No binding or kernel change.
 

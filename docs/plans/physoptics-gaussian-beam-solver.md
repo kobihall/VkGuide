@@ -83,7 +83,7 @@ It re-traces from the first invalid segment of each branch, and leaves everythin
 
 ### The Beam window
 
-**Windows** → **Beam**, registered under the **Optical bench** capability ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)), shows the solved beam: the selected axis's segments as a table (start, end, length, medium, power, clipping), and a probe you drag along a segment, with the beam there: position, direction, the two radii and their axes' orientation, both waists and Rayleigh ranges, both wavefront radii, power, the polarization ellipse, and the optical path length. **Copy as CSV** puts the table on the clipboard.
+**Windows** → **Beam**, registered under the **Optical bench** capability ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)), shows the solved beam: the selected axis's segments as a table (start, end, length, medium, power, clipping), and a probe you drag along a segment, with the beam there: position, direction, the two radii and their axes' orientation, both waists and Rayleigh ranges, both wavefront radii, power, the polarization ellipse, and the optical path length. **Copy as CSV** puts the table on the clipboard.
 
 ## Registry, bindings and data
 

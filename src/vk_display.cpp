@@ -95,9 +95,24 @@ void DisplayRegistry::registerImage(const std::string& name, VkImageView imageVi
 	image.filter = filter;
 	image.textureId = to_texture_id(ImGui_ImplVulkan_AddTexture(imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
 	image.visible = true;
+	image.listed = true;
 	image.onInteract = std::move(onInteract);
 
 	images.push_back(std::move(image));
+}
+
+void DisplayRegistry::registerTexture(const std::string& name, VkImageView imageView, VkExtent2D extent)
+{
+	registerImage(name, imageView, extent);
+	DisplayImage* image = find(name);
+	image->visible = false;
+	image->listed = false;
+}
+
+ImTextureID DisplayRegistry::textureId(const std::string& name) const
+{
+	auto found = std::find_if(images.begin(), images.end(), [&name](const DisplayImage& image) { return image.name == name; });
+	return found != images.end() ? found->textureId : (ImTextureID)0;
 }
 
 void DisplayRegistry::unregisterImage(const std::string& name)
@@ -156,7 +171,7 @@ void DisplayRegistry::beginFrame(uint64_t currentFrame)
 void DisplayRegistry::drawWindows()
 {
 	for (DisplayImage& image : images) {
-		if (!image.visible) {
+		if (!image.visible || !image.listed) {
 			continue;
 		}
 
@@ -166,6 +181,10 @@ void DisplayRegistry::drawWindows()
 			const float defaultWidth = 480.f;
 			const float aspect = (float)image.extent.height / (float)image.extent.width;
 			ImGui::SetNextWindowSize({ defaultWidth, defaultWidth * aspect + ImGui::GetFrameHeight() }, ImGuiCond_FirstUseEver);
+		}
+		//a tab beside the viewport, unless it has been placed before
+		if (defaultDock != 0) {
+			ImGui::SetNextWindowDockID(defaultDock, ImGuiCond_FirstUseEver);
 		}
 
 		//passing &visible gives the window a close button that clears the same flag the Windows menu toggles
@@ -178,13 +197,15 @@ void DisplayRegistry::drawWindows()
 
 void DisplayRegistry::drawWindowsMenu()
 {
-	if (images.empty()) {
-		ImGui::TextDisabled("(no images registered)");
-		return;
-	}
-
+	bool any = false;
 	for (DisplayImage& image : images) {
-		ImGui::MenuItem(image.name.c_str(), nullptr, &image.visible);
+		if (image.listed) {
+			ImGui::MenuItem(image.name.c_str(), nullptr, &image.visible);
+			any = true;
+		}
+	}
+	if (!any) {
+		ImGui::TextDisabled("(no images registered)");
 	}
 }
 

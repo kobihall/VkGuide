@@ -163,7 +163,7 @@ private:
 	// reference changed
 	bool drawMaterialReference(uint64_t& materialId, const std::string& ownerName);
 	// the Materials window's parts
-	void drawMaterialTree();
+	void drawMaterialTree(VulkanEngine* engine);
 	void drawMaterialDetails(VulkanEngine* engine, MaterialDef& material);
 	// a user material that copies `source`: its parameters, without the origin, the edits or the
 	// textures a user material cannot keep yet

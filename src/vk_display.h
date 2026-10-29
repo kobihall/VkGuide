@@ -29,6 +29,9 @@ struct DisplayImage {
 	DisplayFilter filter;
 	ImTextureID textureId;
 	bool visible;
+	// false for an image whose owner draws it in a window of its own (the Viewport): the registry then only holds its
+	// texture, and neither draws nor lists it
+	bool listed;
 	// optional, invoked on every frame the image is being clicked or dragged, with the
 	// cursor position as a [0,1] uv over the image content
 	std::function<void(glm::vec2 uv)> onInteract;
@@ -43,6 +46,10 @@ public:
 	// aborts if name is already registered - a duplicate name cannot be honoured without
 	// silently dropping one of the two entries
 	void registerImage(const std::string& name, VkImageView imageView, VkExtent2D extent, DisplayFilter filter = DisplayFilter::Linear, std::function<void(glm::vec2 uv)> onInteract = nullptr);
+	// an image its owner draws itself, with the texture from textureId(): unlisted, never drawn by drawWindows()
+	void registerTexture(const std::string& name, VkImageView imageView, VkExtent2D extent);
+	// 0 when name is not registered
+	ImTextureID textureId(const std::string& name) const;
 	// does nothing if name is not registered, so a producer's cleanup path can call it unconditionally
 	void unregisterImage(const std::string& name);
 	bool isRegistered(const std::string& name) const;
@@ -57,6 +64,8 @@ public:
 	void drawWindows();
 	// contents of the "Windows" menu, called from inside the caller's own ImGui::BeginMenu()
 	void drawWindowsMenu();
+	// the dock node an image window opens in the first time it is shown (the layout's center); 0 to float
+	void setDefaultDock(uint32_t dockId) { defaultDock = dockId; }
 
 	// releases every descriptor set at once. Only safe with the device idle, and must run
 	// before ImGui_ImplVulkan_Shutdown()
@@ -74,4 +83,5 @@ private:
 	std::vector<PendingRemoval> pendingRemovals;
 	uint32_t framesInFlight{ 0 };
 	uint64_t frameNumber{ 0 };
+	uint32_t defaultDock{ 0 };
 };

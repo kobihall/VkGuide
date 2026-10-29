@@ -48,7 +48,7 @@ The light integrator emits each path with power `P_laser / N`, for N paths emitt
 
 ### Measurements
 
-**Windows** → **Detectors**, registered under the **Optical bench** capability ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)), lists every detector with its reading, and each detector's own window shows:
+**Windows** → **Detectors**, registered under the **Optical bench** capability ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)), lists every detector with its reading, and each detector's own window shows:
 
 - **Power**, with its standard error from the spread of per-frame readings, and the paths that reached it.
 - **Image** through `DisplayRegistry`: linear or logarithmic, false color, with a cursor readout in W per pixel and W/m².

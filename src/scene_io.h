@@ -19,7 +19,8 @@
 // material), 9 (no punctual lights), 10 (no integrator or traversal), 11 (inline materials rather
 // than a library: each object's becomes a user material named after it), 12 to 14 (render settings
 // that a file without them reads as the defaults a scene of its time had), 15 (no auxiliary outputs,
-// light groups or export settings) and 16 (no shape or environment brought by a model).
+// light groups or export settings), 16 (no shape or environment brought by a model) and 17 to 19 (material types and
+// spectral settings that a file without them never uses). Version 20 adds the scene's capabilities and its template.
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -82,6 +83,12 @@ struct SceneLightRecord {
 	int model { -1 };
 };
 
+// in a template file only (assets/templates/): what File -> New from Template lists it as
+struct SceneTemplateInfo {
+	std::string name;
+	std::string description;
+};
+
 struct SceneDescription {
 	// absolute paths
 	std::vector<std::filesystem::path> modelPaths;
@@ -130,6 +137,12 @@ struct SceneDescription {
 	ExportSettings exportSettings;
 	// version 18: how a monochromatic render is shown. Display only, like the export settings
 	SpectralDisplay spectralDisplay;
+	// version 20: the scene capabilities it has on, by key (scene_capabilities.h), including keys this build does not
+	// know, which the engine keeps and saves back; the template it started from, empty for none; and in a template
+	// file, the template's own name and description. A file before 20 has no capabilities and no template
+	std::vector<std::string> capabilities;
+	std::string templateKey;
+	std::optional<SceneTemplateInfo> templateInfo;
 };
 
 IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);

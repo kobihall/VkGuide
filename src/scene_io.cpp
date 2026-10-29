@@ -70,7 +70,11 @@ namespace {
 //19: the material library gains pbrt-v4's `diffuse`, `thin_glass`, `diffuse_transmission` and `mix` types (docs/plans/completed/pbrt-bsdf-library.md).
 //   A mix's "materialA" and "materialB" are material references, written as a shape's "material" is; its "amount" is
 //   a number. The pbr type gains "f0". An older file has none of them, and every type it names reads as it did
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 19;
+//20: adds "capabilities", the keys of the scene capabilities it has on (docs/plans/completed/physoptics-scene-capabilities.md),
+//   "template", the template it started from, and in a template file "templateInfo" ("name", "description"). Each is
+//   written only when it has something to say, so a scene without them saves as before apart from the version. An
+//   older file has no capabilities and no template
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 20;
 
 //---------------------------------------------------------------- writing
 
@@ -234,6 +238,21 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		json += fmt::format(R"({{"path":{}}})", jsonString(portablePath(scene.modelPaths[i], sceneDirectory)));
 	}
 	json += ']';
+
+	//version 20: the capabilities, the template, and a template file's own name
+	if (!scene.capabilities.empty()) {
+		json += R"(,"capabilities":[)";
+		for (size_t i = 0; i < scene.capabilities.size(); i++) {
+			json += fmt::format("{}{}", i > 0 ? "," : "", jsonString(scene.capabilities[i]));
+		}
+		json += ']';
+	}
+	if (!scene.templateKey.empty()) {
+		json += fmt::format(R"(,"template":{})", jsonString(scene.templateKey));
+	}
+	if (scene.templateInfo.has_value()) {
+		json += fmt::format(R"(,"templateInfo":{{"name":{},"description":{}}})", jsonString(scene.templateInfo->name), jsonString(scene.templateInfo->description));
+	}
 
 	if (!scene.environmentMapPath.empty()) {
 		json += fmt::format(R"(,"environmentMap":{})", jsonString(portablePath(scene.environmentMapPath, sceneDirectory)));
@@ -1319,6 +1338,33 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 	if (version > SCENE_FILE_FORMAT_VERSION) {
 		ctx.error = fmt::format("scene file format version {} is newer than the version {} this build understands", version, SCENE_FILE_FORMAT_VERSION);
 		return;
+	}
+
+	//version 20: the capabilities by key (the engine sorts out which it knows), the template, a template file's info
+	simdjson::dom::array capabilityKeys;
+	if (root["capabilities"].get_array().get(capabilityKeys) == simdjson::SUCCESS) {
+		for (simdjson::dom::element entry : capabilityKeys) {
+			std::string_view key;
+			if (entry.get_string().get(key) == simdjson::SUCCESS && !key.empty()) {
+				ctx.scene.capabilities.emplace_back(key);
+			}
+		}
+	}
+	std::string_view templateKey;
+	if (root["template"].get_string().get(templateKey) == simdjson::SUCCESS) {
+		ctx.scene.templateKey = std::string(templateKey);
+	}
+	simdjson::dom::object templateInfo;
+	if (root["templateInfo"].get_object().get(templateInfo) == simdjson::SUCCESS) {
+		SceneTemplateInfo info;
+		std::string_view text;
+		if (templateInfo["name"].get_string().get(text) == simdjson::SUCCESS) {
+			info.name = std::string(text);
+		}
+		if (templateInfo["description"].get_string().get(text) == simdjson::SUCCESS) {
+			info.description = std::string(text);
+		}
+		ctx.scene.templateInfo = std::move(info);
 	}
 
 	//version 1 had spheres only, so both of these are optional

@@ -42,7 +42,12 @@
 
 constexpr bool b_UseValidationLayers = false;
 
-constexpr const char* SCENE_MIRROR_DISPLAY_NAME = "Scene Mirror";
+constexpr const char* VIEWPORT_TEXTURE_NAME = "Viewport";
+
+namespace {
+// defined with the scene file helpers below
+std::filesystem::path absoluteNormalized(const std::filesystem::path& path);
+}
 
 void VulkanEngine::init()
 {
@@ -64,11 +69,9 @@ void VulkanEngine::init()
 	m_raytraceTextures.init(this);
 	m_raytracer.init(this);
 
-	//debug view of the main draw image. Hidden by default, shown from the "Windows" menu.
-	//note this mirrors the whole draw image, so at a render scale below 1 the unused border
-	//still holds the previous frame's pixels
-	m_displayRegistry.registerImage(SCENE_MIRROR_DISPLAY_NAME, m_drawImage.imageView, { m_drawImage.imageExtent.width, m_drawImage.imageExtent.height });
-	m_displayRegistry.setVisible(SCENE_MIRROR_DISPLAY_NAME, false);
+	//the raster preview reaches the screen through the Viewport window, which samples the draw image
+	m_displayRegistry.registerTexture(VIEWPORT_TEXTURE_NAME, m_drawImage.imageView, { m_drawImage.imageExtent.width, m_drawImage.imageExtent.height });
+	registerWindows();
 
 	m_mainCamera.velocity = glm::vec3(0.f);
 	m_mainCamera.position = glm::vec3(0, 0, 5);
@@ -127,8 +130,9 @@ void VulkanEngine::draw()
 	//begin the command buffer recording. We will use this command buffer exactly once, so we want to let vulkan know that
 	VkCommandBufferBeginInfo cmdBeginInfo = vkinit::command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-	m_drawExtent.width = std::min(m_drawImage.imageExtent.width, m_swapchainExtent.width)*m_renderScale;
-	m_drawExtent.height = std::min(m_drawImage.imageExtent.height, m_swapchainExtent.height)*m_renderScale;
+	//the Viewport window chose this frame's extent; a resize since may have shrunk the image under it
+	m_drawExtent.width = std::clamp(m_drawExtent.width, 1u, m_drawImage.imageExtent.width);
+	m_drawExtent.height = std::clamp(m_drawExtent.height, 1u, m_drawImage.imageExtent.height);
 
 	//the raster preview pauses, keeping last frame's picture in the draw image, once nothing it shows has changed for
 	//FRAME_OVERLAP + 1 frames: a frame skips the surfaces its occlusion queries of FRAME_OVERLAP frames before found
@@ -139,6 +143,11 @@ void VulkanEngine::draw()
 	const bool pauseAllowed = m_rasterPauseMode == RasterPauseMode::Always
 		|| (m_rasterPauseMode == RasterPauseMode::WhileRendering && m_raytracer.renderRunning());
 	m_rasterPaused = pauseAllowed && m_rasterStableFrames > FRAME_OVERLAP;
+	//a preview nobody sees is not drawn; when it comes back on screen it is drawn afresh before it may pause again
+	const bool rasterSkipped = !m_viewportVisible;
+	if (rasterSkipped) {
+		m_rasterStableFrames = 0;
+	}
 
 	//start the command buffer recording
 	checkVkResult(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
@@ -147,9 +156,8 @@ void VulkanEngine::draw()
 	// display image, which it leaves readable for drawImgui()
 	m_raytracer.record(cmd, this, m_raytraceScene);
 
-	if (m_rasterPaused) {
-		//last frame's picture, which every frame leaves in SHADER_READ_ONLY_OPTIMAL (below)
-		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	if (rasterSkipped || m_rasterPaused) {
+		//the draw image keeps last frame's picture in SHADER_READ_ONLY_OPTIMAL (below), which the Viewport window shows
 		m_stats.meshDrawTime = 0.f;
 	} else {
 		// transition our main draw image into general layout so we can write into it
@@ -165,21 +173,13 @@ void VulkanEngine::draw()
 
 		drawGeometry(cmd);
 
-		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		// the Viewport window samples the draw image, so it has to be readable before drawImgui() below. Every image
+		// registered with m_displayRegistry needs this same transition
+		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	}
 
-	// transition the swapchain image into its transfer layout
-	vkutil::transition_image(cmd, m_swapchainImages[swapchainImageIndex],VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-	// execute a copy from the draw image into the swapchain
-	vkutil::copy_image_to_image(cmd, m_drawImage.image, m_swapchainImages[swapchainImageIndex], m_drawExtent, m_swapchainExtent);
-
-	// the "Scene Mirror" display window samples the draw image, so it has to be readable before
-	// drawImgui() below. Every image registered with m_displayRegistry needs this same transition.
-	vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-	// set swapchain image layout to Attachment Optimal so we can draw it
-	vkutil::transition_image(cmd, m_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	//the ui covers the whole swapchain image and clears it first, so its old contents do not matter
+	vkutil::transition_image(cmd, m_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 	//draw imgui into the swapchain image
 	drawImgui(cmd, m_swapchainImageViews[swapchainImageIndex]);
@@ -570,7 +570,9 @@ void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 
 void VulkanEngine::drawImgui(VkCommandBuffer cmd, VkImageView targetImageView)
 {
-	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(targetImageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	VkClearValue clear {};
+	clear.color = { { 0.f, 0.f, 0.f, 1.f } };
+	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(targetImageView, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	VkRenderingInfo renderInfo = vkinit::rendering_info(m_swapchainExtent, &colorAttachment, nullptr);
 
 	vkinit::VkFunctionLoader::get_instance().vkCmdBeginRenderingKHR(cmd, &renderInfo);
@@ -646,18 +648,24 @@ void VulkanEngine::run()
 
 		if (m_resizeRequested) {
 			resizeSwapchain();
-		}		
+		}
+
+		//a workspace switch or reset loads a saved layout, which has to happen between frames
+		m_workspaces.applyPending(m_capabilities);
 
 		// imgui new frame
 		ImGui_ImplVulkan_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
+		//the dock space every window docks into, before any window is built
+		m_workspaces.beginFrame();
+		m_displayRegistry.setDefaultDock(m_workspaces.centerDock());
+
 		//the camera moves first, so the gizmo, the overlays, the panels and the raster pass all
 		//see this frame's pose - a camera updated after the gizmo was drawn trails it by a frame
 		updateViewportCamera();
 
-		//first, so the window ImGuizmo draws into sits behind every panel built after it
 		m_transformGizmo.beginFrame();
 
 		m_displayRegistry.beginFrame(m_frameNumber);
@@ -672,89 +680,32 @@ void VulkanEngine::run()
 
 		if (ImGui::BeginMainMenuBar()) {
 			drawFileMenu();
+			drawEditMenu();
 			if (ImGui::BeginMenu("Windows")) {
-				ImGui::MenuItem("background", nullptr, &m_showBackgroundWindow);
-				ImGui::MenuItem("Stats", nullptr, &m_showStatsWindow);
-				ImGui::MenuItem("Scene", nullptr, m_raytraceScene.visibilityFlag());
-				ImGui::MenuItem("Materials", nullptr, m_raytraceScene.materialsVisibilityFlag());
-				ImGui::MenuItem("Raytrace Render", nullptr, m_raytracer.visibilityFlag());
-				ImGui::MenuItem("Raytracer Shaders", nullptr, m_raytracer.kernelPanelVisibilityFlag());
-				ImGui::MenuItem("GPU self-tests", nullptr, m_selfTests.visibilityFlag());
-				ImGui::MenuItem("Import Report", nullptr, &m_showImportReport);
-				ImGui::MenuItem("ImGui Demo", nullptr, &m_showDemoWindow);
-				ImGui::Separator();
-				m_displayRegistry.drawWindowsMenu();
+				m_workspaces.drawWindowsMenu(m_capabilities, [this]() { m_displayRegistry.drawWindowsMenu(); });
 				ImGui::EndMenu();
 			}
+			forEachEnabledCapability(m_capabilities, [this](const CapabilityInfo& capability) {
+				if (capability.menus != nullptr) {
+					capability.menus(this);
+				}
+			});
+			m_workspaces.drawTabs(m_capabilities);
 			ImGui::EndMainMenuBar();
 		}
 
-
-		if (m_showBackgroundWindow) {
-			if (ImGui::Begin("background", &m_showBackgroundWindow)) {
-				ImGui::SliderFloat("Render Scale",&m_renderScale, 0.3f, 1.f);
-				
-				BackgroundEffect& selected = m_backgroundEffects[m_currentBackgroundEffect];
-
-				ImGui::Text("Selected effect: %s", selected.name);
-
-				ImGui::SliderInt("Effect Index", &m_currentBackgroundEffect,0, m_backgroundEffects.size() - 1);
-
-				selected.drawSettings();
-			}
-			ImGui::End();
-		}
-
-		if (m_showStatsWindow) {
-			if (ImGui::Begin("Stats", &m_showStatsWindow)) {
-				ImGui::Text("frametime %f ms", m_stats.frameTime);
-				ImGui::Text("draw time %f ms", m_stats.meshDrawTime);
-				ImGui::Text("update time %f ms", m_stats.sceneUpdateTime);
-				ImGui::Text("triangles %i", m_stats.triangleCount);
-				ImGui::Text("draws %i", m_stats.drawcallCount);
-				const char* pauseModes[] = { "Always", "While rendering", "Never" };
-				int pauseMode = (int)m_rasterPauseMode;
-				if (ImGui::Combo("Pause raster preview", &pauseMode, pauseModes, IM_ARRAYSIZE(pauseModes))) {
-					m_rasterPauseMode = (RasterPauseMode)pauseMode;
-				}
-				ImGui::SetItemTooltip("Keep the last picture instead of drawing an identical one, once the camera, the scene and the background have been still for %u frames. Always, only while the raytracer renders, or never", FRAME_OVERLAP + 1);
-				if (m_rasterPaused) {
-					ImGui::SameLine();
-					ImGui::TextDisabled("(paused)");
-				}
-				ImGui::Checkbox("Occlusion culling", &m_occlusionCulling);
-				ImGui::SetItemTooltip("Skip a surface of %u or more triangles whose box was hidden two frames ago. A surface that comes out from behind another appears two frames late", MeshDrawList::OCCLUSION_MIN_TRIANGLES);
-				ImGui::Text("occluded %i (%llu triangles)", m_stats.occludedCount, (unsigned long long)m_stats.occludedTriangles);
-			}
-			ImGui::End();
-		}
-
-		m_raytraceScene.drawPanel(this);
-		m_raytraceScene.drawMaterialsWindow(this);
-		m_raytracer.drawPanel(this, m_raytraceScene);
-		m_raytracer.drawKernelPanel(this);
-		m_selfTests.drawWindow(this);
-		drawImportReport();
-
-		//some imgui UI to test
-		if (m_showDemoWindow) {
-			ImGui::ShowDemoWindow(&m_showDemoWindow);
-		}
-
 		m_displayRegistry.drawWindows();
-
-		drawCameraOverlays();
-		drawLightOverlays();
-
-		//after the panels, so an "Edit Transform" click shows the gizmo this frame. ImGuizmo
-		//maps clip space to the screen itself, y up, so it gets the un-flipped projection
-		m_transformGizmo.draw(m_mainCamera.getViewMatrix(), rasterProjection());
+		//every panel, and last the Viewport with the overlays and the gizmo, so an "Edit Transform" click shows the
+		//gizmo this frame
+		m_workspaces.drawWindows(m_capabilities);
+		drawSaveTemplatePopup(this);
 
 		//make imgui calculate internal draw structures
 		ImGui::Render();
 
 		//between the imgui frame and the draw, since a native file dialog blocks in a modal loop
 		runPendingFileAction();
+		updateWindowTitle();
 
 		draw();
 
@@ -765,6 +716,237 @@ void VulkanEngine::run()
 		auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 		m_stats.frameTime = elapsed.count() / 1000.f;
 	}
+
+	//imgui writes its file only every few seconds while something changed, so the last layout and workspace would be
+	//lost on quit
+	if (ImGui::GetIO().IniFilename != nullptr) {
+		ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
+	}
+}
+
+void VulkanEngine::registerWindows()
+{
+	//the Viewport is drawn last: its gizmo must see this frame's "Edit Transform" clicks in the panels
+	m_workspaces.addWindow({ "Viewport", &m_showViewport, [this]() { drawViewportWindow(); }, {}, WindowGroup::Main, true });
+	m_workspaces.addWindow({ "Scene", m_raytraceScene.visibilityFlag(), [this]() { m_raytraceScene.drawPanel(this); } });
+	m_workspaces.addWindow({ "Materials", m_raytraceScene.materialsVisibilityFlag(), [this]() { m_raytraceScene.drawMaterialsWindow(this); } });
+	m_workspaces.addWindow({ "Raytrace Render", m_raytracer.visibilityFlag(), [this]() { m_raytracer.drawPanel(this, m_raytraceScene); } });
+	m_workspaces.addWindow({ "Render Settings", m_raytracer.settingsVisibilityFlag(), [this]() { m_raytracer.drawSettingsPanel(this, m_raytraceScene); } });
+	m_workspaces.addWindow({ "Raytracer Shaders", m_raytracer.kernelPanelVisibilityFlag(), [this]() { m_raytracer.drawKernelPanel(this); } });
+	m_workspaces.addWindow({ "Import Report", &m_showImportReport, [this]() { drawImportReport(); } });
+	m_workspaces.addWindow({ "Scene Capabilities", &m_showCapabilities, [this]() { drawCapabilitiesWindow(this, &m_showCapabilities); } });
+
+	m_workspaces.addWindow({ "Stats", &m_showStatsWindow, [this]() {
+		if (!m_showStatsWindow) {
+			return;
+		}
+		if (ImGui::Begin("Stats", &m_showStatsWindow)) {
+			ImGui::Text("frametime %f ms", m_stats.frameTime);
+			ImGui::Text("draw time %f ms", m_stats.meshDrawTime);
+			ImGui::Text("update time %f ms", m_stats.sceneUpdateTime);
+			ImGui::Text("triangles %i", m_stats.triangleCount);
+			ImGui::Text("draws %i", m_stats.drawcallCount);
+			const char* pauseModes[] = { "Always", "While rendering", "Never" };
+			int pauseMode = (int)m_rasterPauseMode;
+			if (ImGui::Combo("Pause raster preview", &pauseMode, pauseModes, IM_ARRAYSIZE(pauseModes))) {
+				m_rasterPauseMode = (RasterPauseMode)pauseMode;
+			}
+			ImGui::SetItemTooltip("Keep the last picture instead of drawing an identical one, once the camera, the scene and the background have been still for %u frames. Always, only while the raytracer renders, or never", FRAME_OVERLAP + 1);
+			if (m_rasterPaused) {
+				ImGui::SameLine();
+				ImGui::TextDisabled("(paused)");
+			}
+			ImGui::Checkbox("Occlusion culling", &m_occlusionCulling);
+			ImGui::SetItemTooltip("Skip a surface of %u or more triangles whose box was hidden two frames ago. A surface that comes out from behind another appears two frames late", MeshDrawList::OCCLUSION_MIN_TRIANGLES);
+			ImGui::Text("occluded %i (%llu triangles)", m_stats.occludedCount, (unsigned long long)m_stats.occludedTriangles);
+		}
+		ImGui::End();
+	}, {}, WindowGroup::Debug });
+	m_workspaces.addWindow({ "background", &m_showBackgroundWindow, [this]() {
+		if (!m_showBackgroundWindow) {
+			return;
+		}
+		if (ImGui::Begin("background", &m_showBackgroundWindow)) {
+			ImGui::SliderFloat("Render Scale", &m_renderScale, 0.3f, 1.f);
+			BackgroundEffect& selected = m_backgroundEffects[m_currentBackgroundEffect];
+			ImGui::Text("Selected effect: %s", selected.name);
+			ImGui::SliderInt("Effect Index", &m_currentBackgroundEffect, 0, m_backgroundEffects.size() - 1);
+			selected.drawSettings();
+		}
+		ImGui::End();
+	}, {}, WindowGroup::Debug });
+	m_workspaces.addWindow({ "GPU self-tests", m_selfTests.visibilityFlag(), [this]() { m_selfTests.drawWindow(this); }, {}, WindowGroup::Debug });
+	m_workspaces.addWindow({ "Dear ImGui Demo", &m_showDemoWindow, [this]() {
+		if (m_showDemoWindow) {
+			ImGui::ShowDemoWindow(&m_showDemoWindow);
+		}
+	}, {}, WindowGroup::Debug });
+}
+
+void VulkanEngine::drawViewportWindow()
+{
+	m_viewportVisible = false;
+	m_viewportHovered = false;
+	if (!m_showViewport) {
+		return;
+	}
+	//the preview fills the window to its edges
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.f, 0.f));
+	const bool shown = ImGui::Begin("Viewport", &m_showViewport, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+	ImGui::PopStyleVar();
+	const ImVec2 size = ImGui::GetContentRegionAvail();
+	if (!shown || size.x < 1.f || size.y < 1.f) {
+		//collapsed, or a tab behind another: draw() skips the raster pass
+		ImGui::End();
+		return;
+	}
+
+	//the raster pass draws the window's size, at the render scale, into the corner of the window-sized draw image,
+	//and the window shows that corner stretched over itself
+	m_drawExtent.width = std::clamp((uint32_t)(size.x * m_renderScale), 1u, m_drawImage.imageExtent.width);
+	m_drawExtent.height = std::clamp((uint32_t)(size.y * m_renderScale), 1u, m_drawImage.imageExtent.height);
+	m_viewportVisible = true;
+
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	const ImVec2 uvMax { (float)m_drawExtent.width / (float)m_drawImage.imageExtent.width, (float)m_drawExtent.height / (float)m_drawImage.imageExtent.height };
+	ImGui::Image(m_displayRegistry.textureId(VIEWPORT_TEXTURE_NAME), size, ImVec2(0.f, 0.f), uvMax);
+	m_viewportHovered = ImGui::IsItemHovered();
+
+	ViewportView view;
+	view.pos = pos;
+	view.size = size;
+	view.view = m_mainCamera.getViewMatrix();
+	view.projection = rasterProjection();
+	view.viewProj = view.projection * view.view;
+	view.drawList = ImGui::GetWindowDrawList();
+	m_viewportView = view;
+
+	//a first-person edit shows the flown camera's whole frame, outlined in yellow, and greys what the viewport sees
+	//beyond it, as Blender's camera view and Unreal's piloted cameras do
+	if (const std::optional<glm::vec2> frame = flownCameraFrame()) {
+		const ImVec2 center { pos.x + size.x * 0.5f, pos.y + size.y * 0.5f };
+		const ImVec2 lo { center.x - frame->x * size.x * 0.5f, center.y - frame->y * size.y * 0.5f };
+		const ImVec2 hi { center.x + frame->x * size.x * 0.5f, center.y + frame->y * size.y * 0.5f };
+		const ImVec2 end { pos.x + size.x, pos.y + size.y };
+		const ImU32 grey = IM_COL32(24, 24, 24, 140);
+		view.drawList->AddRectFilled(pos, ImVec2(end.x, lo.y), grey);
+		view.drawList->AddRectFilled(ImVec2(pos.x, hi.y), end, grey);
+		view.drawList->AddRectFilled(ImVec2(pos.x, lo.y), ImVec2(lo.x, hi.y), grey);
+		view.drawList->AddRectFilled(ImVec2(hi.x, lo.y), ImVec2(end.x, hi.y), grey);
+		view.drawList->AddRect(lo, hi, IM_COL32(255, 220, 80, 255), 0.f, 0, 1.5f);
+	}
+
+	drawCameraOverlays(view);
+	drawLightOverlays(view);
+	forEachEnabledCapability(m_capabilities, [&](const CapabilityInfo& capability) {
+		if (capability.viewportOverlays != nullptr) {
+			capability.viewportOverlays(this, view);
+		}
+	});
+	m_transformGizmo.draw(view, m_viewportHovered);
+
+	ImGui::End();
+}
+
+void VulkanEngine::updateWindowTitle()
+{
+	//the template's name may come from its file, so it is looked up only when the scene changes
+	const std::string key = m_scenePath.string() + "\n" + m_sceneTemplate;
+	if (key == m_windowTitleKey) {
+		return;
+	}
+	m_windowTitleKey = key;
+	std::string title = m_scenePath.empty() ? "Untitled" : m_scenePath.filename().string();
+	if (!m_sceneTemplate.empty()) {
+		title += " - " + templateDisplayName(m_sceneTemplate, templatesDirectory());
+	}
+	title += " - VkGuide";
+	glfwSetWindowTitle(m_window, title.c_str());
+}
+
+void VulkanEngine::enableCapability(CapabilityId id, bool offerRecommendations)
+{
+	if (m_capabilities.has(id)) {
+		return;
+	}
+	m_capabilities.enabled.set((size_t)id);
+	if (offerRecommendations && std::find(m_pendingRecommendations.begin(), m_pendingRecommendations.end(), id) == m_pendingRecommendations.end()) {
+		m_pendingRecommendations.push_back(id);
+	}
+}
+
+bool VulkanEngine::disableCapability(CapabilityId id)
+{
+	if (!m_capabilities.has(id)) {
+		return true;
+	}
+	std::vector<ObjectRef> objects;
+	capabilityInfo(id).dependentObjects(this, objects);
+	if (!objects.empty()) {
+		return false;
+	}
+	m_capabilities.enabled.reset((size_t)id);
+	std::erase(m_pendingRecommendations, id);
+	return true;
+}
+
+std::filesystem::path VulkanEngine::templatesDirectory() const
+{
+	return absoluteNormalized(m_rootPath + "assets/templates");
+}
+
+void VulkanEngine::requestNewScene(const SceneTemplate& entry)
+{
+	m_pendingTemplate = entry;
+	m_pendingFileAction = FileAction::NewFromTemplate;
+}
+
+void VulkanEngine::newSceneFromTemplate(const SceneTemplate& entry)
+{
+	if (entry.path.empty()) {
+		newScene();
+		if (entry.populate != nullptr) {
+			entry.populate(this);
+		}
+		m_sceneTemplate = entry.key;
+		m_lastFileResult = IoResult::success(fmt::format("New scene from the {} template", entry.name));
+		return;
+	}
+	//a template file opens untitled, so Save asks for a path rather than overwriting the template
+	const IoResult opened = openScene(entry.path);
+	if (m_scenePath != absoluteNormalized(entry.path)) {
+		//the file did not read, and the current scene is untouched
+		m_lastFileResult = opened;
+		return;
+	}
+	m_scenePath.clear();
+	m_sceneTemplate = entry.key;
+	m_lastFileResult = opened.ok ? IoResult::success(fmt::format("New scene from the {} template", entry.name)) : opened;
+}
+
+IoResult VulkanEngine::saveTemplate(const std::string& key, const std::string& name, const std::string& description)
+{
+	SceneDescription scene = describeScene();
+	scene.templateKey = key;
+	scene.templateInfo = SceneTemplateInfo { name, description };
+	std::error_code ec;
+	std::filesystem::create_directories(templatesDirectory(), ec);
+	const std::filesystem::path path = templatesDirectory() / (key + ".gltf");
+	const IoResult result = saveSceneFile(scene, path);
+	if (!result.ok) {
+		return result;
+	}
+	return IoResult::success(fmt::format("Saved the template '{}' to {}", name, path.filename().string()));
+}
+
+void VulkanEngine::setViewportPose(const glm::vec3& position, const glm::vec3& forward)
+{
+	//as beginFirstPersonEdit(): the free camera is yaw and pitch only
+	const glm::vec3 direction = glm::normalize(forward);
+	m_mainCamera.position = position;
+	m_mainCamera.pitch = glm::asin(glm::clamp(direction.y, -1.f, 1.f));
+	m_mainCamera.yaw = glm::atan(direction.x, -direction.z);
+	m_mainCamera.velocity = glm::vec3(0.f);
 }
 
 void VulkanEngine::initGLFW()
@@ -791,10 +973,18 @@ void VulkanEngine::initGLFW()
 		glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
 	}
 
-	m_window = glfwCreateWindow(m_windowExtent.width, m_windowExtent.height, "Vulkan", nullptr, nullptr);
+	//maximized, so the docked layout has the screen to divide; the swapchain follows whatever size that gives
+	glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+	m_window = glfwCreateWindow(m_windowExtent.width, m_windowExtent.height, "VkGuide", nullptr, nullptr);
 	if (minimized) {
 		glfwIconifyWindow(m_window);
 		m_renderWhenHidden = true;
+	}
+	int width = 0;
+	int height = 0;
+	glfwGetWindowSize(m_window, &width, &height);
+	if (width > 0 && height > 0) {
+		m_windowExtent = { (uint32_t)width, (uint32_t)height };
 	}
 	glfwSetWindowUserPointer(m_window, this);
 
@@ -828,9 +1018,9 @@ void VulkanEngine::initGLFW()
 		}
 		auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
 		if (action == GLFW_PRESS) {
-			//the ui has first claim on the cursor, so only a press over the raster background looks
-			//around - and a press on or near an active gizmo handle is a gizmo drag, not a look
-			if (!ImGui::GetIO().WantCaptureMouse && !engine->m_transformGizmo.wantsMouse()) {
+			//only a press over the raster preview, with no window in front of it, looks around - and a press on or
+			//near an active gizmo handle is a gizmo drag, not a look
+			if (engine->m_viewportHovered && !engine->m_transformGizmo.wantsMouse()) {
 				engine->setCameraCapture(true);
 			}
 		} else if (action == GLFW_RELEASE) {
@@ -866,20 +1056,63 @@ void VulkanEngine::setCameraCapture(bool active)
 	m_cameraCaptureActive = active;
 }
 
+float VulkanEngine::renderAspect() const
+{
+	const RenderSettings& settings = m_raytracer.settings();
+	return settings.matchViewport
+		? (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u)
+		: (float)std::max(settings.width, 1) / (float)std::max(settings.height, 1);
+}
+
+namespace {
+
+// how much wider than the flown camera's frame the viewport sees on the axis where the frame fits tightest, so the
+// yellow border stays inside the viewport on every side
+constexpr float CAMERA_FRAME_MARGIN = 1.06f;
+
+// the viewport's half extents on the image plane at distance 1, for a flown camera of vertical fov `vfovDegrees` and
+// aspect `cameraAspect` seen in a viewport of aspect `viewportAspect`: the smallest that hold the camera's, times the
+// margin
+glm::vec2 flownViewportHalfExtents(float vfovDegrees, float cameraAspect, float viewportAspect)
+{
+	const float t = glm::tan(glm::radians(vfovDegrees) * 0.5f);
+	const float halfHeight = CAMERA_FRAME_MARGIN * std::max(t, cameraAspect * t / viewportAspect);
+	return glm::vec2(viewportAspect * halfHeight, halfHeight);
+}
+
+}
+
 float VulkanEngine::rasterVerticalFov() const
 {
 	if (m_firstPersonCameraId != 0) {
 		if (const SceneCamera* camera = m_raytraceScene.findCamera(m_firstPersonCameraId)) {
-			return camera->vfovDegrees;
+			//wider than the camera's own, so the whole frame it renders fits in a viewport of any shape
+			const float viewportAspect = (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u);
+			const glm::vec2 half = flownViewportHalfExtents(camera->vfovDegrees, renderAspect(), viewportAspect);
+			return glm::degrees(2.f * glm::atan(half.y));
 		}
 	}
 	return CAMERA_VERTICAL_FOV_DEGREES;
 }
 
+std::optional<glm::vec2> VulkanEngine::flownCameraFrame() const
+{
+	const SceneCamera* camera = m_firstPersonCameraId != 0 ? m_raytraceScene.findCamera(m_firstPersonCameraId) : nullptr;
+	if (camera == nullptr) {
+		return std::nullopt;
+	}
+	const float t = glm::tan(glm::radians(camera->vfovDegrees) * 0.5f);
+	const float cameraAspect = renderAspect();
+	const float viewportAspect = (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u);
+	const glm::vec2 half = flownViewportHalfExtents(camera->vfovDegrees, cameraAspect, viewportAspect);
+	return glm::vec2(cameraAspect * t / half.x, t / half.y);
+}
+
 glm::mat4 VulkanEngine::rasterProjection() const
 {
 	//forward-z, not vkguide's reversed near/far - see CLAUDE.md's MoltenVK notes
-	return glm::perspective(glm::radians(rasterVerticalFov()), (float)m_windowExtent.width / (float)m_windowExtent.height, 0.1f, 10000.f);
+	//the Viewport window's aspect, which m_drawExtent keeps at every render scale
+	return glm::perspective(glm::radians(rasterVerticalFov()), (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u), 0.1f, 10000.f);
 }
 
 SceneCamera VulkanEngine::cameraFromViewport() const
@@ -931,39 +1164,16 @@ void VulkanEngine::updateViewportCamera()
 	m_raytraceScene.setCameraPose(m_firstPersonCameraId, m_mainCamera.position, glm::normalize(glm::quat_cast(glm::mat3(m_mainCamera.getRotationMatrix()))));
 }
 
-void VulkanEngine::drawCameraOverlays()
+void VulkanEngine::drawCameraOverlays(const ViewportView& view)
 {
 	const std::vector<SceneCamera>& cameras = m_raytraceScene.cameras();
 	if (cameras.empty()) {
 		return;
 	}
-
-	const ImGuiViewport* viewport = ImGui::GetMainViewport();
-	ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-	const glm::mat4 viewProj = rasterProjection() * m_mainCamera.getViewMatrix();
-
-	//world -> screen through the raster view; nothing behind the viewport is drawn
-	auto project = [&](const glm::vec3& world, ImVec2& out) {
-		const glm::vec4 clip = viewProj * glm::vec4(world, 1.f);
-		if (clip.w <= 0.001f) {
-			return false;
-		}
-		const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-		out = ImVec2(viewport->Pos.x + (ndc.x * 0.5f + 0.5f) * viewport->Size.x, viewport->Pos.y + (0.5f - ndc.y * 0.5f) * viewport->Size.y);
-		return true;
-	};
-	auto line = [&](const glm::vec3& a, const glm::vec3& b, ImU32 color) {
-		ImVec2 pa, pb;
-		if (project(a, pa) && project(b, pb)) {
-			drawList->AddLine(pa, pb, color, 1.5f);
-		}
-	};
+	auto line = [&](const glm::vec3& a, const glm::vec3& b, ImU32 color) { view.line(a, b, color); };
 
 	//the frustum's aspect is the render's, so the outline shows what a render would frame
-	const RenderSettings& settings = m_raytracer.settings();
-	const float aspect = settings.matchViewport
-		? (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u)
-		: (float)std::max(settings.width, 1) / (float)std::max(settings.height, 1);
+	const float aspect = renderAspect();
 
 	for (const SceneCamera& camera : cameras) {
 		//the flown camera is the viewport itself; its outline would fill the screen
@@ -999,31 +1209,13 @@ void VulkanEngine::drawCameraOverlays()
 	}
 }
 
-void VulkanEngine::drawLightOverlays()
+void VulkanEngine::drawLightOverlays(const ViewportView& view)
 {
 	const std::vector<SceneLight>& lights = m_raytraceScene.lights();
 	if (lights.empty()) {
 		return;
 	}
-
-	const ImGuiViewport* viewport = ImGui::GetMainViewport();
-	ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-	const glm::mat4 viewProj = rasterProjection() * m_mainCamera.getViewMatrix();
-	auto project = [&](const glm::vec3& world, ImVec2& out) {
-		const glm::vec4 clip = viewProj * glm::vec4(world, 1.f);
-		if (clip.w <= 0.001f) {
-			return false;
-		}
-		const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-		out = ImVec2(viewport->Pos.x + (ndc.x * 0.5f + 0.5f) * viewport->Size.x, viewport->Pos.y + (0.5f - ndc.y * 0.5f) * viewport->Size.y);
-		return true;
-	};
-	auto line = [&](const glm::vec3& a, const glm::vec3& b, ImU32 color) {
-		ImVec2 pa, pb;
-		if (project(a, pa) && project(b, pb)) {
-			drawList->AddLine(pa, pb, color, 1.5f);
-		}
-	};
+	auto line = [&](const glm::vec3& a, const glm::vec3& b, ImU32 color) { view.line(a, b, color); };
 
 	for (const SceneLight& light : lights) {
 		//the light's own colour, brightened so a dim or dark one still shows
@@ -1388,10 +1580,23 @@ void VulkanEngine::newScene()
 	m_solidBackground = false;
 	m_backgroundColor = glm::vec3(0.f);
 	m_scenePath.clear();
+	//the Render scene template, which turns on no capability
+	m_capabilities = {};
+	m_sceneTemplate = DEFAULT_TEMPLATE_KEY;
+	m_pendingRecommendations.clear();
 	m_lastFileResult = IoResult::success("New empty scene");
 }
 
 IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
+{
+	IoResult result = saveSceneFile(describeScene(), path);
+	if (result.ok) {
+		m_scenePath = absoluteNormalized(path);
+	}
+	return result;
+}
+
+SceneDescription VulkanEngine::describeScene()
 {
 	SceneDescription scene;
 	//the models, and the index each one's key maps to, since a mesh object refers to its model by
@@ -1519,12 +1724,9 @@ IoResult VulkanEngine::saveScene(const std::filesystem::path& path)
 	if (m_solidBackground) {
 		scene.backgroundColor = m_backgroundColor;
 	}
-
-	IoResult result = saveSceneFile(scene, path);
-	if (result.ok) {
-		m_scenePath = absoluteNormalized(path);
-	}
-	return result;
+	scene.capabilities = capabilityKeys(m_capabilities);
+	scene.templateKey = m_sceneTemplate;
+	return scene;
 }
 
 IoResult VulkanEngine::openScene(const std::filesystem::path& path)
@@ -1710,11 +1912,27 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	m_backgroundColor = scene.backgroundColor.value_or(glm::vec3(0.f));
 	m_scenePath = absoluteNormalized(path);
 
-	if (!problems.empty()) {
-		return IoResult::failure(fmt::format("Opened '{}' with {} problem(s): {}", path.filename().string(), problems.size(), fmt::join(problems, "; ")));
+	//the capabilities the file names, an unknown one kept for the save, and the template it started from. Its objects
+	//are all loaded, so a capability a file lacks but whose objects it holds (one written before capabilities) is
+	//turned on here, and said so; nothing a file opens with offers its recommendations, which are the file's to keep
+	m_capabilities = capabilitiesFromKeys(scene.capabilities, problems);
+	m_sceneTemplate = scene.templateKey;
+	m_pendingRecommendations.clear();
+	std::string enabled;
+	for (const CapabilityInfo& capability : capabilities()) {
+		std::vector<ObjectRef> objects;
+		capability.dependentObjects(this, objects);
+		if (!m_capabilities.has(capability.id) && !objects.empty()) {
+			enableCapability(capability.id, false);
+			enabled += fmt::format("; turned on {}, which its {} object(s) need", capability.name, objects.size());
+		}
 	}
-	return IoResult::success(fmt::format("Opened '{}': {} model(s), {} shape(s){}", path.filename().string(), m_models.size(), m_raytraceScene.shapes().size(),
-		m_environmentMapPath.empty() ? "" : ", environment map"));
+
+	if (!problems.empty()) {
+		return IoResult::failure(fmt::format("Opened '{}' with {} problem(s): {}{}", path.filename().string(), problems.size(), fmt::join(problems, "; "), enabled));
+	}
+	return IoResult::success(fmt::format("Opened '{}': {} model(s), {} shape(s){}{}", path.filename().string(), m_models.size(), m_raytraceScene.shapes().size(),
+		m_environmentMapPath.empty() ? "" : ", environment map", enabled));
 }
 
 IoResult VulkanEngine::loadEnvironmentMap(const std::filesystem::path& path)
@@ -1915,6 +2133,8 @@ void VulkanEngine::drawFileMenu()
 		if (ImGui::MenuItem("New Scene")) {
 			m_pendingFileAction = FileAction::NewScene;
 		}
+		ImGui::SetItemTooltip("One camera and the default settings: the Render scene template");
+		drawTemplateMenu(this);
 		if (ImGui::MenuItem("Open Scene...")) {
 			m_pendingFileAction = FileAction::OpenScene;
 		}
@@ -1923,6 +2143,9 @@ void VulkanEngine::drawFileMenu()
 		}
 		if (ImGui::MenuItem("Save Scene As...")) {
 			m_pendingFileAction = FileAction::SaveSceneAs;
+		}
+		if (ImGui::MenuItem("Save as Template...")) {
+			openSaveTemplatePopup();
 		}
 		ImGui::Separator();
 		if (ImGui::MenuItem("Import glTF Model...")) {
@@ -1938,9 +2161,26 @@ void VulkanEngine::drawFileMenu()
 			m_pendingFileAction = FileAction::ClearEnvironmentMap;
 		}
 		ImGui::Separator();
+		forEachEnabledCapability(m_capabilities, [this](const CapabilityInfo& capability) {
+			if (capability.fileMenu != nullptr) {
+				capability.fileMenu(this);
+			}
+		});
 		if (ImGui::MenuItem("Export Render...", nullptr, false, m_raytracer.hasRender())) {
 			m_pendingFileAction = FileAction::ExportRender;
 		}
+		ImGui::EndMenu();
+	}
+}
+
+void VulkanEngine::drawEditMenu()
+{
+	if (ImGui::BeginMenu("Edit")) {
+		if (ImGui::MenuItem("Scene Capabilities...")) {
+			m_showCapabilities = true;
+			ImGui::SetWindowFocus("Scene Capabilities");
+		}
+		ImGui::SetItemTooltip("What this scene uses beyond a plain render, such as the optical bench");
 		ImGui::EndMenu();
 	}
 }
@@ -2199,6 +2439,9 @@ void VulkanEngine::runPendingFileAction()
 			m_lastFileResult = m_raytracer.exportRender(this, m_raytraceScene, *chosen);
 		}
 		break;
+	case FileAction::NewFromTemplate:
+		newSceneFromTemplate(m_pendingTemplate);
+		break;
 	}
 
 	if (!m_lastFileResult.ok) {
@@ -2357,14 +2600,12 @@ void VulkanEngine::resizeSwapchain()
 
 	createSwapchain(m_windowExtent.width, m_windowExtent.height);
 
-	//the draw images follow the window, so the raster keeps the swapchain's aspect and the
-	//"Scene Mirror" window shows the new image. The device is idle, so the old views can go now
-	const bool mirrorVisible = m_displayRegistry.isVisible(SCENE_MIRROR_DISPLAY_NAME);
-	m_displayRegistry.unregisterImage(SCENE_MIRROR_DISPLAY_NAME);
+	//the draw images follow the window, the largest the Viewport window can be, and the viewport shows the new image.
+	//The device is idle, so the old views can go now
+	m_displayRegistry.unregisterImage(VIEWPORT_TEXTURE_NAME);
 	destroyDrawImages();
 	createDrawImages(m_windowExtent);
-	m_displayRegistry.registerImage(SCENE_MIRROR_DISPLAY_NAME, m_drawImage.imageView, { m_drawImage.imageExtent.width, m_drawImage.imageExtent.height });
-	m_displayRegistry.setVisible(SCENE_MIRROR_DISPLAY_NAME, mirrorVisible);
+	m_displayRegistry.registerTexture(VIEWPORT_TEXTURE_NAME, m_drawImage.imageView, { m_drawImage.imageExtent.width, m_drawImage.imageExtent.height });
 
 	m_resizeRequested = false;
 }
@@ -2572,9 +2813,9 @@ void VulkanEngine::initSwapchain()
 void VulkanEngine::createDrawImages(VkExtent2D extent)
 {
 	m_drawImagesCreated++;
-	//the draw image is the window's size in points (the swapchain is the framebuffer, 2x that on
-	//a retina display, and the blit scales up). Same aspect as the swapchain by construction,
-	//so m_drawExtent, the raster viewport and the blit region always agree
+	//the draw image is the window's size in points (the swapchain is the framebuffer, 2x that on a retina display),
+	//the largest the Viewport window can be. The raster pass draws m_drawExtent of it, the Viewport window's size, and
+	//the window shows that part, so the raster viewport, the projection's aspect and the window always agree
 	VkExtent3D drawImageExtent = {
 		extent.width,
 		extent.height,
@@ -2590,7 +2831,7 @@ void VulkanEngine::createDrawImages(VkExtent2D extent)
 	drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
 	drawImageUsages |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-	//needed by the "Scene Mirror" display window, which samples this image from imgui
+	//the Viewport window samples this image from imgui
 	drawImageUsages |= VK_IMAGE_USAGE_SAMPLED_BIT;
 
 	VkImageCreateInfo rimg_info = vkinit::image_create_info(m_drawImage.imageFormat, drawImageUsages, drawImageExtent);
@@ -3030,8 +3271,18 @@ void VulkanEngine::initIMGUI()
 	// this initializes the core structures of imgui
 	ImGui::CreateContext();
 
-	//let windows be dragged onto each other to form tabbed/docked groups at runtime
+	//every window docks into the main viewport's dock space (workspace.h), and moves only by its title bar or tab, so
+	//a drag in the Viewport window is the gizmo's or the camera's, never the window's
 	ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+	ImGui::GetIO().ConfigWindowsMoveFromTitleBarOnly = true;
+
+	//the workspaces' own entries in imgui.ini, then the file itself, read now rather than at the first frame so a file
+	//from before the dock space can be discarded before any window takes its old position
+	m_workspaces.init();
+	if (ImGui::GetIO().IniFilename != nullptr) {
+		ImGui::LoadIniSettingsFromDisk(ImGui::GetIO().IniFilename);
+	}
+	m_workspaces.afterIniLoaded();
 
 	// this initializes imgui for GLFW
 	ImGui_ImplGlfw_InitForVulkan(m_window, true);

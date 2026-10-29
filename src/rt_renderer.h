@@ -37,8 +37,11 @@ public:
 	// a finished render and restarts a render whose inputs changed
 	void update(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 
-	// non-const: the Outputs section edits the scene's light groups and the camera's relight gains
+	// the "Raytrace Render" window: the camera, Render and Stop, progress, readouts and the reference
 	void drawPanel(VulkanEngine* engine, RaytraceSceneEditor& editor);
+	// the "Render Settings" window: every settings section, then each enabled capability's. Non-const: the Outputs
+	// section edits the scene's light groups and the camera's relight gains
+	void drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEditor& editor);
 
 	// inside draw()'s command buffer, before the raster passes: this frame's path-tracing
 	// work and its tonemap into the display image
@@ -53,6 +56,7 @@ public:
 	void shutdown(VulkanEngine* engine);
 
 	bool* visibilityFlag() { return &m_showPanel; }
+	bool* settingsVisibilityFlag() { return &m_showSettingsPanel; }
 
 	// the models changed (an import, a removal, a scene load): builds the BLAS of every mesh not
 	// already built. Called from the engine's scene-change path, so the BVH work happens at load
@@ -279,4 +283,5 @@ private:
 	std::string m_blockedReason;
 
 	bool m_showPanel { true };
+	bool m_showSettingsPanel { true };
 };

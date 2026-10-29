@@ -2,7 +2,7 @@
 
 The request lists thirteen kinds of optic, from planar mirrors to round wedge prisms, each in the sizes Thorlabs sells. This plan makes each kind a scene object, `SceneOptic`, described by one row of a traits table the way `SHAPE_TRAITS` describes shapes: its sizes, its parameters, its material slots, its mounts, its output ports, and a builder that turns the parameters into the surface prescription of [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md). The Scene panel gains an **Optics** folder, the scene file an `"optics"` list, and the path tracer one optical body per element.
 
-*Not implemented. Depends on [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md), [physoptics-optical-materials.md](physoptics-optical-materials.md) and [physoptics-scene-capabilities.md](physoptics-scene-capabilities.md), whose **Optical bench** capability its UI registers under. [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) replaces this plan's free placement with mount poses. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md), [physoptics-optical-materials.md](physoptics-optical-materials.md) and [physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md), whose **Optical bench** capability its UI registers under. [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) replaces this plan's free placement with mount poses. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
@@ -107,8 +107,8 @@ Each kind names its output beams, which the beam axis connects ([physoptics-beam
 
 ### Editing
 
-- While the scene's **Optical bench** capability is on ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)), the Scene panel's tree has an **Optics** folder with one sub-folder per kind, the arrangement the user chose for shapes, and **Add** → **Optic** lists the kinds. A scene without the capability shows neither, and adding an optic by any other route (pasting, opening a file) turns the capability on.
-- An element's panel shows the size combo (presets and **Custom**), its parameters in millimeters and degrees with their units, the read-only readout, the material slots, and **Edit Transform**.
+- While the scene's **Optical bench** capability is on ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)), the Scene panel's tree has an **Optics** folder with one sub-folder per kind, the arrangement the user chose for shapes, and **Add** → **Optic** lists the kinds. A scene without the capability shows neither, and adding an optic by any other route (pasting, opening a file) turns the capability on.
+- An element's panel shows the size combo (presets and **Custom**), its parameters in millimeters and degrees with their units, the read-only readout, the material slots, and **Edit Transform**. Whether millimeters are a per-scene length unit for every panel or only the optics panels' is open (`docs/physical-optics-overview.md` §7); the scene capabilities plan recommends "showing millimeters" and has no setting to change yet.
 - **Edit Transform** in this plan moves the optic freely with the shared `TransformGizmo`. [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) replaces it with the mount's breadboard-physical controls.
 - Invalid parameters (an edge thickness below zero, a filter too thick for its holder, an iris opening outside its range) are clamped by the widget and explained beside it, never silently.
 
@@ -138,7 +138,7 @@ Parameters are saved by name in SI units, only when they differ from the kind's 
 ## Registry, bindings and data
 
 - `OpticKind`, `OpticTraits`, `OPTIC_TRAITS`, `SceneOptic`, `OpticParams` (`src/optic_catalog.h/.cpp`); builders and readouts in `src/optic_builders.cpp`, part of `rt_optics` so that `bin/optics_test` can build every kind without Vulkan.
-- `RaytraceSceneEditor` gains the optics list, `findOptic()`, `replaceOptics()` and the Optics folder.
+- `RaytraceSceneEditor` gains the optics list, `findOptic()`, `replaceOptics()` and the Optics folder, registered through **Optical bench**'s `sceneFolders` and `addMenu` hooks, with every optic listed by its `dependentObjects` (`docs/physical-optics-overview.md` §7 has the checks).
 - `buildSceneAccel()` gains the optics; `drawRaytraceShapes()` gains their preview.
 - No new binding beyond binding 55; no kernel change.
 

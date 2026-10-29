@@ -17,6 +17,10 @@
 #include <vk_gizmo.h>
 #include <gpu_selftest.h>
 #include <mount_library.h>
+#include <scene_capabilities.h>
+#include <scene_io.h>
+#include <viewport_view.h>
+#include <workspace.h>
 
 #include <chrono>
 #include <filesystem>
@@ -284,7 +288,8 @@ public:
 
 	AllocatedImage m_drawImage;
 	AllocatedImage m_depthImage;
-	VkExtent2D m_drawExtent;
+	// the part of the draw image the raster pass draws: the Viewport window's size, times m_renderScale
+	VkExtent2D m_drawExtent { 1, 1 };
 	float m_renderScale = 1.f;
 
 	FrameData m_frames[FRAME_OVERLAP];
@@ -392,6 +397,12 @@ public:
 
 	// the file the current scene was opened from or last saved to; empty for an unsaved scene
 	std::filesystem::path m_scenePath;
+	// what the scene uses beyond a plain render (scene_capabilities.h), saved with it; the key of the template it
+	// started from, a label shown in the window title that gates nothing; and the capabilities turned on since whose
+	// recommended settings the Scene panel's note still offers
+	SceneCapabilities m_capabilities;
+	std::string m_sceneTemplate;
+	std::vector<CapabilityId> m_pendingRecommendations;
 	// the outcome of the last File-menu action, shown in the Scene panel
 	IoResult m_lastFileResult;
 
@@ -459,15 +470,28 @@ public:
 		ClearEnvironmentMap,
 		SaveReference,
 		LoadReference,
-		ExportRender
+		ExportRender,
+		NewFromTemplate
 	};
 	FileAction m_pendingFileAction { FileAction::None };
+	// the template FileAction::NewFromTemplate starts from
+	SceneTemplate m_pendingTemplate;
 
-	// toggled from the "Windows" menu
-	bool m_showBackgroundWindow{ true };
-	bool m_showStatsWindow{ true };
+	// every top-level window, the dock space and the workspaces (workspace.h)
+	WorkspaceManager m_workspaces;
+	// the windows' flags, toggled from the "Windows" menu and set by the workspaces. The panels of the scene editor,
+	// the raytracer and the self-tests own their own flags, since they own their own windows
+	bool m_showViewport{ true };
+	bool m_showBackgroundWindow{ false };
+	bool m_showStatsWindow{ false };
 	bool m_showDemoWindow{ false };
-	// the raytracer's two control panels own their own flags, since they own their own windows
+	bool m_showCapabilities{ false };
+	// the raster preview this frame: where the Viewport window shows it, whether it is on screen at all (a closed
+	// window or a hidden tab skips the raster pass), and whether the cursor is over it with no window in front, which
+	// is what a right-drag needs to look around
+	ViewportView m_viewportView;
+	bool m_viewportVisible{ false };
+	bool m_viewportHovered{ false };
 
 	//initializes everything in the engine
 	void init();
@@ -485,20 +509,40 @@ public:
 	void destroyImage(const AllocatedImage& img);
 
 	// the scene as a whole: models + environment map + shapes. Failures never abort and leave
-	// what is loaded untouched; a partially readable scene reports what it could not load
+	// what is loaded untouched; a partially readable scene reports what it could not load.
+	// newScene() is the Render scene template: one camera, default settings, no capability
 	void newScene();
 	IoResult openScene(const std::filesystem::path& path);
 	IoResult saveScene(const std::filesystem::path& path);
 
+	// the scene's capabilities (scene_capabilities.h). Turning one on with `offerRecommendations` queues its note in
+	// the Scene panel. Turning one off is refused, returning false with nothing changed, while objects need it
+	bool capabilityEnabled(CapabilityId id) const { return m_capabilities.has(id); }
+	void enableCapability(CapabilityId id, bool offerRecommendations);
+	bool disableCapability(CapabilityId id);
+	// templates: assets/templates/ holds the user's; requestNewScene() starts from one once the frame is finished,
+	// saveTemplate() writes the scene there as `key`.gltf without changing the scene's own path
+	std::filesystem::path templatesDirectory() const;
+	void requestNewScene(const SceneTemplate& entry);
+	IoResult saveTemplate(const std::string& key, const std::string& name, const std::string& description);
+	// puts the free camera at `position` looking along `forward` (no roll), as a template's first view
+	void setViewportPose(const glm::vec3& position, const glm::vec3& forward);
+
 	// the raster camera's projection in OpenGL clip convention (y up). updateScene() flips y for
-	// vulkan; the gizmo wants it as-is. Uses the flown camera's fov during a first-person edit
+	// vulkan; the gizmo wants it as-is. During a first-person edit the fov is wider than the flown
+	// camera's, just enough that its whole frame fits in the viewport whatever the two aspects
 	glm::mat4 rasterProjection() const;
 	float rasterVerticalFov() const;
+	// the aspect a render frames: the viewport's under Match viewport, else the render resolution's
+	float renderAspect() const;
+	// during a first-person edit, the flown camera's frame as fractions of the viewport's half width
+	// and half height, centered; nullopt for the free camera
+	std::optional<glm::vec2> flownCameraFrame() const;
 
 	// the viewport's pose as a scene camera - what "Add Camera" creates
 	SceneCamera cameraFromViewport() const;
-	// first-person edit: the viewport takes the camera's pose and fov, and drives the camera
-	// until endFirstPersonEdit(); deleting the camera ends it too
+	// first-person edit: the viewport takes the camera's pose, shows its frame (flownCameraFrame()),
+	// and drives the camera until endFirstPersonEdit(); deleting the camera ends it too
 	void beginFirstPersonEdit(uint64_t cameraId);
 	void endFirstPersonEdit();
 
@@ -574,7 +618,20 @@ private:
 	void setCameraCapture(bool active);
 
 	void drawFileMenu();
+	void drawEditMenu();
 	void runPendingFileAction();
+	// the scene in its file's form: what saveScene() and saveTemplate() write
+	SceneDescription describeScene();
+	// File -> New from Template, between frames
+	void newSceneFromTemplate(const SceneTemplate& entry);
+	// every window into m_workspaces, once at init
+	void registerWindows();
+	// the raster preview's window: the draw image, the overlays and the gizmo over it. Built after every other window,
+	// so a click on "Edit Transform" shows the gizmo in the same frame
+	void drawViewportWindow();
+	// "<scene> - <template> - VkGuide", whenever the scene's path or template changes
+	void updateWindowTitle();
+	std::string m_windowTitleKey;
 	// what every import does once its file is a model: key it, rebuild what derives from the models, add its
 	// materials to the library and place its nodes. Returns the key
 	std::string addModel(std::shared_ptr<LoadedModel> model, const std::filesystem::path& path);
@@ -590,12 +647,12 @@ private:
 	// At the top of the frame, before anything reads the camera - the gizmo, the panels, the
 	// raster pass - so they all see the same pose
 	void updateViewportCamera();
-	// wireframe frustums for the scene's cameras, drawn over the viewport through imgui's
-	// background draw list; the render camera brighter, the flown one not at all
-	void drawCameraOverlays();
+	// wireframe frustums for the scene's cameras, drawn over the viewport into its window's draw
+	// list; the render camera brighter, the flown one not at all
+	void drawCameraOverlays(const ViewportView& view);
 	// markers for the punctual lights over the viewport, the same way: a point light's star, a spot
 	// light's cone, a directional light's arrow
-	void drawLightOverlays();
+	void drawLightOverlays(const ViewportView& view);
 
 	// CPU-only scene preparation: camera, the models' draw list, the scene uniform's values.
 	// Touches no GPU resource, so it runs before the frame's fence wait and overlaps the GPU
@@ -609,6 +666,8 @@ private:
 	// ComputePushConstants block, dispatched over the whole draw image
 	void recordDrawImageEffect(VkCommandBuffer cmd, const ComputePass& pass, const ComputePushConstants& params);
 	void drawGeometry(VkCommandBuffer cmd);
+	// clears the swapchain image and draws the whole UI into it: the raster preview reaches the screen only through
+	// the Viewport window
 	void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);
 
 	static void glfw_error_callback(int error, const char* description);

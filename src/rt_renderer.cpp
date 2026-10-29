@@ -307,15 +307,34 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, RaytraceSceneEditor& edit
 
 	drawReference(engine);
 
+	if (m_hasDisplayImage) {
+		ImGui::SeparatorText("Output");
+		ImGui::Text("%ux%u, shown in the \"%s\" window", m_displayImage.imageExtent.width, m_displayImage.imageExtent.height, OUTPUT_IMAGE_NAME);
+		ImGui::TextDisabled("Lens and exposure are the camera's, in the Scene panel. The settings are in Render Settings");
+	}
+
+	ImGui::End();
+}
+
+void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEditor& editor)
+{
+	if (!m_showSettingsPanel) {
+		return;
+	}
+	if (!ImGui::Begin("Render Settings", &m_showSettingsPanel)) {
+		ImGui::End();
+		return;
+	}
+
+	drawIntegratorCombo();
+	drawSettings(engine);
+
 	//a section for kernel 06's strategies only while the integrator runs kernel 06
 	if (integratorRunsStage(m_kernels.integrator, KernelSlot::SurfaceScattering)) {
 		ImGui::SeparatorText("Direct lighting");
 		drawLightingSettings(engine);
+		ImGui::Separator();
 	}
-
-	ImGui::SeparatorText("Settings");
-	drawIntegratorCombo();
-	drawSettings(engine);
 
 	drawSamplerSettings(engine);
 	drawSpectralSettings();
@@ -325,11 +344,12 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, RaytraceSceneEditor& edit
 	drawAccelSettings(engine);
 	drawIntersectionSettings();
 
-	if (m_hasDisplayImage) {
-		ImGui::SeparatorText("Output");
-		ImGui::Text("%ux%u, shown in the \"%s\" window", m_displayImage.imageExtent.width, m_displayImage.imageExtent.height, OUTPUT_IMAGE_NAME);
-		ImGui::TextDisabled("Lens and exposure are the camera's, in the Scene panel");
-	}
+	//what the scene's capabilities add, such as the optical bench's Optics section
+	forEachEnabledCapability(engine->m_capabilities, [engine](const CapabilityInfo& capability) {
+		if (capability.renderSettings != nullptr) {
+			capability.renderSettings(engine);
+		}
+	});
 
 	ImGui::End();
 }

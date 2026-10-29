@@ -19,6 +19,8 @@
 #include <imgui.h>
 #include <ImGuizmo.h>
 
+#include <viewport_view.h>
+
 class TransformGizmo {
 public:
 	// the target's current transform, or nothing once the target has gone away
@@ -35,15 +37,15 @@ public:
 	bool isActive() const { return m_active; }
 	bool isEditing(const void* targetId) const { return m_active && m_targetId == targetId; }
 
-	// once per frame straight after ImGui::NewFrame(), before any other window is built, so the
-	// full-screen window ImGuizmo draws into sits behind everything else
+	// once per frame straight after ImGui::NewFrame(): resets ImGuizmo's per-frame state
 	void beginFrame();
 
-	// once per frame after the panels are built, so a click on "Edit Transform" shows the gizmo
-	// the same frame. view/projection are the raster camera's, with the projection in OpenGL
-	// convention (y up): ImGuizmo maps clip space to the screen itself and must not be given
-	// the vulkan y-flipped matrix
-	void draw(const glm::mat4& view, const glm::mat4& projection);
+	// once per frame inside the Viewport window, which is built after the panels so a click on "Edit Transform" shows
+	// the gizmo the same frame. Draws into the viewport's draw list and rectangle; `hovered` is whether the cursor is
+	// over the preview with no other window in front, and a gizmo the cursor is not over stays inert unless mid-drag.
+	// The view's projection is in OpenGL convention (y up): ImGuizmo maps clip space to the screen itself and must not
+	// be given the vulkan y-flipped matrix
+	void draw(const ViewportView& view, bool hovered);
 
 	// true while the cursor is over or dragging a gizmo handle. The camera-capture entry trigger
 	// checks this so a click on the gizmo is never mistaken for a look-around request

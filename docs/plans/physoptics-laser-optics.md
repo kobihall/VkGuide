@@ -4,7 +4,7 @@ This plan turns the path tracer into a simulator of optical experiments on a las
 
 The request this plan answers is `docs/00-laser-optics.md`. It takes its approach from femtoPro, the University of Würzburg's virtual ultrafast laser laboratory, without copying its feature list. The 18 `physoptics-*.md` plans below implement it, on top of the `pbrt-*.md` plans of the [pbrt roadmap](pbrt-roadmap.md). This file holds the decisions that shape all of them, the resources they reserve, and one linear order to build everything in.
 
-*Written 2026-10-18. Nothing here is implemented. Read the [pbrt roadmap](pbrt-roadmap.md), `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan here assumes them.*
+*Written 2026-10-18. The optomechanical models (2026-10-28) and scene capabilities (2026-10-29) are implemented; `docs/physical-optics-overview.md` describes what is built. Read the [pbrt roadmap](pbrt-roadmap.md), `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan here assumes them.*
 
 ## What femtoPro does, and what this plan takes from it
 
@@ -48,7 +48,7 @@ The user settled these on 2026-10-18. Treat them as fixed.
 | Missing models | Lasers and detectors get procedural placeholders now, and [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md) lists Thorlabs parts whose STEP files replace them later. |
 | References | Zemax OpticStudio, open-source Python ray tracers (Optiland, RayOptics) and open-source wave optics (LightPipes, POPPY) are all available for comparison. |
 | Wave optics | Not planned here. The user builds the coherent backend last. See "The wave backend" below. |
-| Scene modes | The optics editor is a scene capability, **Optical bench**, which a scene lists in its file and which adds the optics' folders, windows, menus and recommended settings without changing how anything renders. Capabilities combine; **New Scene** offers templates that turn them on; a capability cannot be turned off while its objects exist; its recommended settings are offered once, never forced; named workspaces come later ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)). |
+| Scene modes | The optics editor is a scene capability, **Optical bench**, which a scene lists in its file and which adds the optics' folders, windows, menus and recommended settings without changing how anything renders. Capabilities combine; **New from Template** offers templates that turn them on, the built-in ones in code; a capability cannot be turned off while its objects exist; its recommended settings are offered once, never forced; named workspaces keep a layout per task ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)). |
 
 Technical defaults the plans state and the user can object to:
 
@@ -82,7 +82,7 @@ Two consumers read the same optics. The solver traces one chief ray per segment 
 
 | Plan | What it adds |
 |---|---|
-| [physoptics-scene-capabilities.md](physoptics-scene-capabilities.md) | Scene capabilities (**Optical bench** first), templates for **New Scene**, and later workspaces, so the optics editor never shows in a plain render scene |
+| [physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md) | Scene capabilities (**Optical bench** first), templates for **New Scene**, and later workspaces, so the optics editor never shows in a plain render scene |
 | [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md) | The surface-list optical body: surface kinds, apertures, media, the `CRT_SHAPE_OPTIC` instance, `crt_optic.glsl`, `rt_optics` |
 | [physoptics-optical-materials.md](physoptics-optical-materials.md) | Glass catalogs (AGF, Sellmeier), coatings (ideal, tabulated, thin-film stacks, metals, absorbers), the optical interface material |
 | [physoptics-optical-elements.md](physoptics-optical-elements.md) | `SceneOptic` and `OPTIC_TRAITS`: every element of the request with its Thorlabs sizes, the Optics folder, the scene file |
@@ -118,7 +118,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 ### Milestone 1: the bench
 
-9. [physoptics-scene-capabilities.md](physoptics-scene-capabilities.md). Capabilities and templates, so every later plan registers its UI under **Optical bench** and a plain render scene never shows it.
+9. [physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md). Implemented 2026-10-29, with the dock space, the Viewport window and workspaces. Capabilities and templates, so every later plan registers its UI under **Optical bench** and a plain render scene never shows it. `docs/physical-optics-overview.md` tracks what is built and the checks each later plan runs.
 10. [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md). Offline work, which can start in parallel with milestone 0.
 11. [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md)
 12. [physoptics-optical-materials.md](physoptics-optical-materials.md)
@@ -255,7 +255,7 @@ The plans add, each in the payload version it lands in: `"capabilities"` and `"t
 
 ### Files and directories
 
-- `src/scene_capabilities.{h,cpp}` for the capability registry, and `assets/templates/` for the templates.
+- `src/scene_capabilities.{h,cpp}` for the capability registry and the built-in templates, `src/workspace.{h,cpp}` for the window registry and workspaces, and `assets/templates/` for the templates the user saves.
 - `src/optic_*.{h,cpp}` for the optics code and `src/beam_*.{h,cpp}` for the beam axis and solver, flat in `src/` as the rest of the codebase is.
 - `shaders/rt/include/crt_optic.glsl`, `crt_coating.glsl`, `crt_detector.glsl`; `shaders/rt/2601_deposit_detector.comp`; `shaders/optics/beam_preview.vert` and `.frag` for the raster beams.
 - `tools/optical_models/` for the FreeCAD conversion scripts, and `assets/optical_models/meshes/` for their committed output.

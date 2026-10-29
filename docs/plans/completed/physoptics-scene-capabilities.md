@@ -2,7 +2,7 @@
 
 The laser optics plans add an Optics folder, beam axes, a breadboard, detectors, a Beam window, a design wavelength and a dozen settings that mean nothing in a scene of Sponza under an HDR sky. The application has to stay a plain raytracer for such scenes, and become an optics editor without becoming a second application. This plan adds the mechanism: a scene lists the capabilities it uses, each capability brings its own object kinds, folders, windows, menus and recommended settings, and **New Scene** offers templates that start with a set of them on. **Optical bench** is the first capability, and later modes are more of them.
 
-*Not implemented. No plan dependencies. Every physoptics plan that adds UI registers it through this plan, so build it before [physoptics-optical-elements.md](physoptics-optical-elements.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Implemented 2026-10-29, workspaces included; see "As built" at the end for what changed from the design below. No plan dependencies. Every physoptics plan that adds UI registers it through this plan. Part of the [laser optics plan](../physoptics-laser-optics.md); the readable account is `docs/physical-optics-overview.md`.*
 
 ## Decisions already made
 
@@ -23,7 +23,7 @@ On 2026-10-18 the user asked for one unified editor that does not take over the 
 | Settings that unlock panels | Blender's per-scene render engine (Cycles or EEVEE) and Cycles' experimental feature set | groups of settings | already how this renderer hides the BVH settings for the linear scan |
 | Templates | Blender's new-file templates (General, Sculpting, VFX); Unreal's project templates | the starting state only | nothing is locked afterwards |
 
-The plan takes the add-on model for what a scene contains, templates for how one starts, the renderer's existing "the selection declares its settings" pattern for panels ([pbrt-roadmap.md](pbrt-roadmap.md), integrator layer), and workspaces for layout later.
+The plan takes the add-on model for what a scene contains, templates for how one starts, the renderer's existing "the selection declares its settings" pattern for panels ([pbrt-roadmap.md](../pbrt-roadmap.md), integrator layer), and workspaces for layout later.
 
 ## What the renderer does today
 
@@ -66,13 +66,13 @@ Each plan registers its UI under a capability. For **Optical bench**:
 
 | Where | What appears |
 |---|---|
-| Scene panel tree | the **Optics**, **Beam axes** and **Detectors** folders ([physoptics-optical-elements.md](physoptics-optical-elements.md), [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-detectors.md](physoptics-detectors.md)) |
+| Scene panel tree | the **Optics**, **Beam axes** and **Detectors** folders ([physoptics-optical-elements.md](../physoptics-optical-elements.md), [physoptics-beam-axis.md](../physoptics-beam-axis.md), [physoptics-detectors.md](../physoptics-detectors.md)) |
 | **Add** menu | **Optic**, **Laser**, **Detector**, **Beam axis** |
-| Menu bar | an **Optics** menu: **Import prescription...**, **Load glass catalog...**, **Bench settings...** ([physoptics-prescription-import.md](physoptics-prescription-import.md), [physoptics-optical-materials.md](physoptics-optical-materials.md), [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)) |
-| **File** menu | **Export Optical Data...** ([physoptics-data-export.md](physoptics-data-export.md)) |
-| **Windows** menu | **Beam**, **Detectors** ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md), [physoptics-detectors.md](physoptics-detectors.md)) |
-| Viewport | the breadboard, beams, beam-axis overlays ([physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md), [physoptics-beam-preview.md](physoptics-beam-preview.md)) |
-| **Raytrace Render** | an **Optics** section: design wavelength, surrounding medium, exact coatings, record rays |
+| Menu bar | an **Optics** menu: **Import prescription...**, **Load glass catalog...**, **Bench settings...** ([physoptics-prescription-import.md](../physoptics-prescription-import.md), [physoptics-optical-materials.md](../physoptics-optical-materials.md), [physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md)) |
+| **File** menu | **Export Optical Data...** ([physoptics-data-export.md](../physoptics-data-export.md)) |
+| **Windows** menu | **Beam**, **Detectors** ([physoptics-gaussian-beam-solver.md](../physoptics-gaussian-beam-solver.md), [physoptics-detectors.md](../physoptics-detectors.md)) |
+| Viewport | the breadboard, beams, beam-axis overlays ([physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md), [physoptics-beam-preview.md](../physoptics-beam-preview.md)) |
+| **Render Settings** (split from **Raytrace Render**) | an **Optics** section: design wavelength, surrounding medium, exact coatings, record rays |
 | **Materials** window | the **Glasses** and **Coatings** folders |
 
 Registration is by name: the Scene panel asks the registry for the folders, add entries and windows of every enabled capability, in registry order, and draws them. Code outside `scene_capabilities.cpp` never tests for **Optical bench** by name except the plans that own its parts.
@@ -81,7 +81,7 @@ Registration is by name: the Scene panel asks the registry for the folders, add 
 
 **Edit** → **Scene capabilities...** lists every capability with a checkbox and its description.
 
-- Turning one on adds its UI at once and shows a note above the Scene panel: "Optical bench recommends:" and the list of settings it would change, with **Apply** and **Dismiss**. **Optical bench** recommends the light integrator ([pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md)) when the scene has lasers, a fixed seed for comparisons, the breadboard at the default size, and showing millimeters. Nothing changes until **Apply**, and the note never returns for that scene.
+- Turning one on adds its UI at once and shows a note above the Scene panel: "Optical bench recommends:" and the list of settings it would change, with **Apply** and **Dismiss**. **Optical bench** recommends the light integrator ([pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md)) when the scene has lasers, a fixed seed for comparisons, the breadboard at the default size, and showing millimeters. Nothing changes until **Apply**, and the note never returns for that scene.
 - Turning one off is refused while its dependent objects exist. The dialog lists them (by name and kind) with **Delete them and turn off** and **Cancel**.
 - An action that needs a capability turns it on, with the same note: **Import prescription...** is under the Optics menu, but opening a scene, pasting an optic, or a script adding a laser to a scene without the capability enables it rather than failing.
 
@@ -113,12 +113,12 @@ A workspace is a named docking layout and a set of open windows: **Render** (the
 
 ### Future capabilities
 
-The mechanism is general, which is the point of it. Candidates the plans already contain: the 2D wave solver of [simulation-domain.md](simulation-domain.md) and [wave-simulation.md](wave-simulation.md), whose simulation plane and boundary panel are exactly a capability's folder and window; and the user's future wave backend, if it brings its own objects and settings.
+The mechanism is general, which is the point of it. Candidates the plans already contain: the 2D wave solver of [simulation-domain.md](../simulation-domain.md) and [wave-simulation.md](../wave-simulation.md), whose simulation plane and boundary panel are exactly a capability's folder and window; and the user's future wave backend, if it brings its own objects and settings.
 
 ## Registry, bindings and data
 
 - `CapabilityId`, `CapabilityInfo`, `CAPABILITIES`, `SceneCapabilities` (`src/scene_capabilities.h/.cpp`).
-- Registration hooks in the Scene panel's tree and **Add** menu, the menu bar, the **Windows** menu, the Raytrace Render panel and the Materials window.
+- Registration hooks in the Scene panel's tree and **Add** menu, the menu bar, the **Windows** menu, the Render Settings window, the Materials window and the Viewport.
 - **Edit** → **Scene capabilities...**; **File** → **New Scene** submenu and **Save as Template...**; the recommendation note.
 - `assets/templates/render_scene.gltf`, `assets/templates/optical_bench.gltf`.
 - Scene file: `"capabilities"`, `"template"`.
@@ -145,6 +145,29 @@ The mechanism is general, which is the point of it. Candidates the plans already
 
 - Whether a capability should also be able to hide existing UI that its scenes do not need (the environment map controls in a bench scene with an empty environment). The decision so far is that capabilities only add; hiding would be a workspace's job.
 - Whether templates should also exist for scenes the user commonly builds (a Cornell box, the Veach scene), which would make the existing `assets/scenes/` files templates. That is a convenience with no design consequence.
+
+## As built
+
+Implemented on 2026-10-29, all five steps of the order of work. The user settled four questions before the work started: the raster preview became a dockable **Viewport** window rather than a see-through dock space center, workspaces were built in this change and remember the user's rearrangement, the built-in templates are code rather than files, and **Optical bench** registers no test content. Instead, `docs/physical-optics-overview.md` records what is built and lists the checks every later physoptics plan runs. `docs/codebase-map.md` §8.27 has the file-by-file detail.
+
+What differs from the design above:
+
+- **Templates.** **Render scene** and **Optical bench** are `BUILTIN_TEMPLATES` in `src/scene_capabilities.cpp`, each `newScene()` plus a `populate` function, so they follow the current defaults and payload without a file to regenerate. `assets/templates/` holds only the templates **Save as Template...** writes; it does not exist until the first one is saved. **New Scene** stays a menu item and makes the Render scene template; **New from Template** beside it is the submenu. A template file carries `"templateInfo"` (`"name"`, `"description"`) as well as `"template"`, and its key is its file stem.
+- **The Optical bench template** turns the capability on, applies its recommended settings, places a camera 0.55 m above the table aimed at the beam height and sets a black background. The breadboard, laser, power meter, beam axis and light integrator of the table above join it as their plans land.
+- **Recommended settings** are not saved. The note appears when a capability is turned on, from the dialog or by an action, and goes on **Apply** or **Dismiss**; a scene opened with the capability already on never shows it, and turning the capability off and on again offers it again. **Optical bench** recommends a fixed seed only: the light integrator, the breadboard and millimeters wait for the plans that build them.
+- **Registered UI.** Every hook site in the table exists. **Optical bench** fills two: `sceneStatus`, which now holds the optomechanical models' placeholder warning that `physoptics-optomechanical-models.md` had put in every scene's panel, and the Optics workspace. Its `dependentObjects` lists nothing, since no optics object exists.
+- **The Raytrace Render panel** is two windows: **Raytrace Render** (camera, Render and Stop, progress, readouts, Compare to reference) and **Render Settings** (every settings section, then the capabilities' sections). The **Optics** section goes in **Render Settings**.
+- **The dock space and the Viewport.** The main window is a dock space, and the raster preview is a **Viewport** window tabbed with **Raytraced Output**; the gizmo and the camera and light overlays draw into it, and a right-drag looks around only over it. The "Scene Mirror" window is gone. The window starts maximized, and an `imgui.ini` from before the dock space is discarded once for the default layout.
+- **Workspaces** are **Render** and, while the scene has **Optical bench**, **Optics**, as tabs on the right of the menu bar and under **Windows** → **Workspace**. Each keeps its layout and open windows in `imgui.ini`'s `[Workspace]` entries, with **Reset Layout** to return to its default. The Optics workspace has no top-down viewport: that needs a second raster view, which no plan builds yet.
+- **Window title**: `<file or Untitled> - <template name> - VkGuide`.
+
+Verification, against the list above:
+
+- The Cornell box, the sphere scene and the Veach scene render byte for byte as the commit before (batch mode, 200 × 150, 16 spp, fixed seed). The GPU self-tests pass. Every scene in `assets/scenes/` opens with no capability.
+- Turning **Optical bench** on showed its note and the Optics tab, and changed no setting; turning it off removed both. A scene saved with it on and then off differs only in `"capabilities"`.
+- A scene with an unknown key, `future_thing`, opened with one warning and saved the key back.
+- **Save as Template...** followed by **New from Template** gave an untitled scene whose file equals the template's, less `"templateInfo"`.
+- Not yet testable, and listed in `docs/physical-optics-overview.md` §7 for the plans that add objects: the refusal with an optic in the scene, **Delete them and turn off**, and an older optics file opening with the capability on.
 
 ## Sources
 

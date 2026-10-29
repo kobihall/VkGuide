@@ -42,7 +42,7 @@ The shaders do not change. They see a smaller world, and every `pError` is propo
 
 ### Settings
 
-**Raytrace Render** → **Intersection precision** gains **Camera-relative space**, off by default. It sits in `RenderSettings`, in the render key, and in the scene file in the payload version that lands with it. Off, nothing in this plan runs.
+**Render Settings** → **Intersection precision** gains **Camera-relative space**, off by default. It sits in `RenderSettings`, in the render key, and in the scene file in the payload version that lands with it. Off, nothing in this plan runs.
 
 ## What later plans must do
 

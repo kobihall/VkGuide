@@ -64,7 +64,7 @@ The Scene panel colors each node by its status, and the viewport draws the autho
 
 ### Building and editing
 
-Under the **Optical bench** capability ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)), the Scene panel has a **Beam axes** folder and **Add** → **Beam axis**. Each axis is a tree of its nodes, labeled by optic name and port.
+Under the **Optical bench** capability ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)), the Scene panel has a **Beam axes** folder and **Add** → **Beam axis**. Each axis is a tree of its nodes, labeled by optic name and port.
 
 - **New beam axis** asks for a laser and creates the root.
 - **Follow beam** extends a node's port with whatever the traced beam actually hits next, repeatedly, until the beam leaves the table, hits a detector or a beam dump, or falls below the ghost threshold. On a setup already placed by hand, one click builds the whole axis. At a splitter it follows every port.

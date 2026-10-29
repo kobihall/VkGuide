@@ -296,7 +296,7 @@ A kernel that traces includes `crt_trace.glsl` and is compiled once per traversa
 
 ### Scene files
 
-Every plan that saves something bumps `SCENE_FILE_FORMAT_VERSION` by one when it lands (17 today), and every older version keeps loading. Plans do not pre-assign version numbers, since the order they land in is unknown.
+Every plan that saves something bumps `SCENE_FILE_FORMAT_VERSION` by one when it lands (20 today), and every older version keeps loading. Plans do not pre-assign version numbers, since the order they land in is unknown.
 
 ### pbrt scenes
 

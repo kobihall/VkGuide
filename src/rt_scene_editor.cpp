@@ -860,6 +860,9 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 		return;
 	}
 
+	//the settings a capability turned on since recommends, offered once
+	drawRecommendationNotes(engine);
+
 	//which file this scene is, if any. Opening and saving live in the File menu
 	if (engine->m_scenePath.empty()) {
 		ImGui::TextDisabled("Unsaved scene");
@@ -890,19 +893,12 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 	ImGui::Spacing();
 	drawIoResultLine(engine->m_lastFileResult);
 
-	//optomechanical models whose converted files could not be read, and stand in as boxes (mount_library.h)
-	const std::vector<std::string>& modelWarnings = engine->m_mountLibrary.warnings();
-	if (!modelWarnings.empty()) {
-		ImGui::Spacing();
-		ImGui::TextColored(ImVec4(1.f, 0.7f, 0.2f, 1.f), "%zu optical models are placeholder boxes", modelWarnings.size());
-		if (ImGui::IsItemHovered()) {
-			std::string tip;
-			for (const std::string& line : modelWarnings) {
-				tip += line + "\n";
-			}
-			ImGui::SetTooltip("%s", tip.c_str());
+	//what the scene's capabilities report, such as the optical bench's placeholder models
+	forEachEnabledCapability(engine->m_capabilities, [engine](const CapabilityInfo& capability) {
+		if (capability.sceneStatus != nullptr) {
+			capability.sceneStatus(engine);
 		}
-	}
+	});
 
 	ImGui::End();
 }
@@ -942,6 +938,12 @@ void RaytraceSceneEditor::drawToolbar(VulkanEngine* engine)
 		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
 			ImGui::SetTooltip("Placed at the viewport's current pose, shining the way it looks.\nFor a light with a surface, give a shape an emissive material");
 		}
+		//the object kinds the scene's capabilities add
+		forEachEnabledCapability(engine->m_capabilities, [engine](const CapabilityInfo& capability) {
+			if (capability.addMenu != nullptr) {
+				capability.addMenu(engine);
+			}
+		});
 		ImGui::Separator();
 		if (ImGui::MenuItem("Mesh from glTF file...")) {
 			//the native dialog runs a modal loop, so it cannot open from inside the imgui frame;
@@ -980,6 +982,12 @@ void RaytraceSceneEditor::drawObjectTree(VulkanEngine* engine)
 		drawLightRows();
 		drawGeometryRows();
 		drawModelRows(engine);
+		//the folders of the object kinds the scene's capabilities add
+		forEachEnabledCapability(engine->m_capabilities, [engine](const CapabilityInfo& capability) {
+			if (capability.sceneFolders != nullptr) {
+				capability.sceneFolders(engine);
+			}
+		});
 	}
 	ImGui::EndChild();
 
@@ -1567,7 +1575,7 @@ void RaytraceSceneEditor::drawMaterialsWindow(VulkanEngine* engine)
 		ImGui::SetTooltip("Deletes every user material no shape or override uses");
 	}
 
-	drawMaterialTree();
+	drawMaterialTree(engine);
 	selected = findMaterial(m_selectedMaterialId);
 	if (selected != nullptr) {
 		drawMaterialDetails(engine, *selected);
@@ -1576,7 +1584,7 @@ void RaytraceSceneEditor::drawMaterialsWindow(VulkanEngine* engine)
 	ImGui::End();
 }
 
-void RaytraceSceneEditor::drawMaterialTree()
+void RaytraceSceneEditor::drawMaterialTree(VulkanEngine* engine)
 {
 	const float height = 12 * ImGui::GetTextLineHeightWithSpacing();
 	if (ImGui::BeginChild("##materials", ImVec2(0, height), ImGuiChildFlags_Borders)) {
@@ -1614,6 +1622,12 @@ void RaytraceSceneEditor::drawMaterialTree()
 				ImGui::TreePop();
 			}
 		}
+		//the folders the scene's capabilities add, such as the optical bench's glasses and coatings
+		forEachEnabledCapability(engine->m_capabilities, [engine](const CapabilityInfo& capability) {
+			if (capability.materialFolders != nullptr) {
+				capability.materialFolders(engine);
+			}
+		});
 	}
 	ImGui::EndChild();
 }

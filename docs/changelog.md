@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-10-29
+
+### New
+
+- Scenes record the capabilities they use. **Edit** → **Scene Capabilities...** turns **Optical bench** on or off. It adds the laser optics simulator's UI as each of its plans lands, and changes nothing about how anything renders. A capability cannot be turned off while objects that need it exist.
+- Turning a capability on shows a note at the top of the Scene panel with the settings it recommends, such as a fixed seed for **Optical bench**. Nothing changes until **Apply**.
+- **File** → **New from Template** starts from a template: **Render scene** or **Optical bench**, which turns the capability on with a camera looking down at the table and an empty, black environment. **File** → **Save as Template...** saves the current scene to `assets/templates/`, and its templates follow the built-in ones in the menu. A template opens untitled.
+- The main window is a dock space, and every window docks into it. The raster preview is the **Viewport** window, tabbed with **Raytraced Output**, and image windows open as tabs beside it.
+- Workspaces: the tabs on the right of the menu bar switch between **Render** and, while the scene has **Optical bench**, **Optics**. Each keeps its own layout and open windows, and **Windows** → **Workspace** → **Reset Layout** restores its default.
+- The window title names the scene's file and the template it started from.
+- **First-Person Edit** shows the flown camera's whole frame in the **Viewport**, outlined in yellow, whatever the shapes of the viewport and the render. The viewport widens its field of view to fit the frame and greys what it sees beyond it.
+- `docs/physical-optics-overview.md` describes the laser optics simulator as built, and lists the checks every later physoptics plan runs.
+
+### Changed
+
+- Scene files are payload version 20, which adds `"capabilities"`, `"template"` and a template's `"templateInfo"`. A scene without a capability saves as before, apart from the version.
+- The settings sections of **Raytrace Render** are a window of their own, **Render Settings**. **Raytrace Render** keeps the camera, **Render**, progress, the readouts and **Compare to reference**.
+- The window opens maximized. An `imgui.ini` from before the dock space is replaced once by the default layout, so windows lose their old floating positions.
+- **Windows** lists the panels, then **Images**, **Debug** (**Stats**, **background**, **GPU self-tests** and the ImGui demo) and **Workspace**. **Stats** and **background** start closed.
+- **Match viewport** renders at the **Viewport** window's size, no longer the whole window's. The raster preview's aspect follows the window too.
+- A right-drag looks around only over the **Viewport**, and the gizmo responds only there. Windows move by their title bar or tab, not by a drag in their content.
+- The raster preview is not drawn while the **Viewport** window is closed or behind another tab.
+- The warning about optical models that are placeholder boxes shows only in scenes with **Optical bench**.
+
+### Internal
+
+- `src/scene_capabilities.{h,cpp}` is the capability registry (`CAPABILITIES`, one `CapabilityInfo` per `CapabilityId`, with a hook per UI site) and the built-in templates. `src/workspace.{h,cpp}` holds the window registry (`AppWindow`, registered in `VulkanEngine::registerWindows()`), the dock space, the workspaces and their `[Workspace]` entries in `imgui.ini`.
+- Overlays and the gizmo draw from a `ViewportView` (`src/viewport_view.h`) into the **Viewport** window's draw list. `TransformGizmo::draw()` takes the view and whether the preview is hovered.
+- `draw()` no longer blits the draw image to the swapchain: `drawImgui()` clears the swapchain image and the **Viewport** window samples the draw image. The "Scene Mirror" display window is gone, and `DisplayRegistry::registerTexture()` holds an image its owner draws itself.
+- `VulkanEngine::saveScene()` writes `describeScene()`, which `saveTemplate()` also uses.
+
 ## 2026-10-28
 
 ### New

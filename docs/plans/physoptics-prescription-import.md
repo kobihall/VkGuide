@@ -57,7 +57,7 @@ The elements are of the generic kind `prescription`, whose parameters are the bo
 
 ### Where an import goes
 
-**Optics** → **Import prescription...**, in the menu the **Optical bench** capability adds ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)), opens a file dialog for `.zmx` or `.dat` and creates the assembly, mounted at the bench's beam height on a single post by default, or free. **Use as camera lens** offers the assembly to a realistic camera ([pbrt-cameras.md](pbrt-cameras.md)). The import report lists what was read, every substitution (a pbrt constant-index glass, a mirror substrate thickness), and, when the import is refused, why.
+**Optics** → **Import prescription...**, in the menu the **Optical bench** capability adds ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)), opens a file dialog for `.zmx` or `.dat` and creates the assembly, mounted at the bench's beam height on a single post by default, or free. **Use as camera lens** offers the assembly to a realistic camera ([pbrt-cameras.md](pbrt-cameras.md)). The import report lists what was read, every substitution (a pbrt constant-index glass, a mirror substrate thickness), and, when the import is refused, why.
 
 ### Checking an import
 

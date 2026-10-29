@@ -26,7 +26,7 @@ void TransformGizmo::beginFrame()
 	ImGuizmo::BeginFrame();
 }
 
-void TransformGizmo::draw(const glm::mat4& view, const glm::mat4& projection)
+void TransformGizmo::draw(const ViewportView& view, bool hovered)
 {
 	if (!m_active) {
 		return;
@@ -39,22 +39,18 @@ void TransformGizmo::draw(const glm::mat4& view, const glm::mat4& projection)
 		return;
 	}
 
-	//the raster scene is a full-screen background rather than a panel, so the gizmo's rect is
-	//the whole main viewport
-	const ImGuiViewport* viewport = ImGui::GetMainViewport();
 	ImGuizmo::SetOrthographic(false);
-	ImGuizmo::SetRect(viewport->Pos.x, viewport->Pos.y, viewport->Size.x, viewport->Size.y);
+	ImGuizmo::SetDrawlist(view.drawList);
+	ImGuizmo::SetRect(view.pos.x, view.pos.y, view.size.x, view.size.y);
 
-	//ImGuizmo hit-tests the raw cursor and knows nothing about the imgui windows floating over
-	//the background. While one of them is under the cursor the gizmo is drawn but inert - except
-	//mid-drag, where the cursor crossing a window must not drop the handle. This must test the
-	//hovered window, not io.WantCaptureMouse: ImGuizmo itself requests mouse capture whenever the
-	//cursor is over a handle, so gating on that flag toggled the gizmo off every other frame
-	const bool overWindow = ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow);
-	ImGuizmo::Enable(!overWindow || ImGuizmo::IsUsing());
+	//ImGuizmo hit-tests the raw cursor and knows nothing about the windows docked around the preview or floating over
+	//it, so it is inert unless the preview itself is hovered - except mid-drag, where the cursor leaving the preview
+	//must not drop the handle. This must not test io.WantCaptureMouse: ImGuizmo itself requests mouse capture whenever
+	//the cursor is over a handle, so gating on that flag toggled the gizmo off every other frame
+	ImGuizmo::Enable(hovered || ImGuizmo::IsUsing());
 
 	glm::mat4 matrix = *current;
-	if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection), m_operation, m_mode, glm::value_ptr(matrix))) {
+	if (ImGuizmo::Manipulate(glm::value_ptr(view.view), glm::value_ptr(view.projection), m_operation, m_mode, glm::value_ptr(matrix))) {
 		m_setMatrix(matrix);
 	}
 }

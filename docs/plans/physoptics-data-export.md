@@ -50,7 +50,7 @@ OpticStudio runs on Windows. The scripts that need it write their inputs and rea
 
 ### The Export menu
 
-**File** → **Export Optical Data...**, registered under the **Optical bench** capability ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)), opens a dialog over what the scene has: each detector (ZBF, NPY, EXR, JSON), each probe plane's solver beam (ZBF), the last recorded rays (ZRD, NPY), and the solver's tables (CSV). The batch mode gains `--export-detectors <dir>`, which writes every detector after the render's target sample count, for the scripts.
+**File** → **Export Optical Data...**, registered under the **Optical bench** capability ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)), opens a dialog over what the scene has: each detector (ZBF, NPY, EXR, JSON), each probe plane's solver beam (ZBF), the last recorded rays (ZRD, NPY), and the solver's tables (CSV). The batch mode gains `--export-detectors <dir>`, which writes every detector after the render's target sample count, for the scripts.
 
 ## Registry, bindings and data
 

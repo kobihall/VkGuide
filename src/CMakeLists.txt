@@ -208,6 +208,11 @@ add_executable(vulkan_guide
     rt_textures.h
     scene_io.cpp
     scene_io.h
+    scene_capabilities.cpp
+    scene_capabilities.h
+    workspace.cpp
+    workspace.h
+    viewport_view.h
     spectrum_edit.cpp
     spectrum_edit.h
     file_dialog.h
