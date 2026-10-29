@@ -1,0 +1,160 @@
+{
+ "model": "RSP05/M",
+ "step": "Rotation_mount-RSP05_M.step",
+ "units": "meters",
+ "frame": "+y up, +z along the optical axis toward the incoming light",
+ "source_frame": {
+  "comment": "the canonical frame's origin and axes in the STEP file's millimeters",
+  "origin": [
+   0.0,
+   0.0,
+   -2.032
+  ],
+  "x": [
+   1.0,
+   0.0,
+   0.0
+  ],
+  "y": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "z": [
+   0.0,
+   0.0,
+   1.0
+  ]
+ },
+ "parts": [
+  "housing",
+  "rotor",
+  "retaining_ring"
+ ],
+ "mates": {
+  "optic_seat": {
+   "origin": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the rotor's lip, which the optic's back face rests on",
+   "part": "rotor",
+   "bore_diameter": 0.013589
+  },
+  "retaining_ring_seat": {
+   "origin": [
+    0.0,
+    0.0,
+    0.006096
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the ring's back face, which presses on the optic's front face; it turns with the rotor",
+   "part": "retaining_ring"
+  },
+  "rotor_axis": {
+   "origin": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the rotor's axis at the seat; the scale's zero is where the model leaves it, not identified",
+   "part": "rotor"
+  },
+  "post_tap": {
+   "origin": [
+    0.0,
+    -0.013975,
+    0.001397
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "z": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "comment": "the tapped hole's axis where it leaves the housing's rim, z out of it",
+   "part": "housing"
+  }
+ },
+ "motions": {
+  "rotor": {
+   "kind": "rotate",
+   "mate": "rotor_axis",
+   "range": [
+    -1.5708,
+    1.5708
+   ]
+  },
+  "retaining_ring": {
+   "kind": "slide",
+   "mate": "retaining_ring_seat",
+   "range": [
+    -0.006096,
+    0.0
+   ],
+   "follows": "rotor"
+  }
+ },
+ "triangles": 14369,
+ "budget": 40000,
+ "decals": {
+  "comment": "the lettering, scales, springs and threads, baked into the .glb's texture",
+  "size": 1024,
+  "texel": 4e-05
+ },
+ "kind": "rotation_mount"
+}

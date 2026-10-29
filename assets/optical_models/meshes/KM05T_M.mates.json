@@ -1,0 +1,222 @@
+{
+ "model": "KM05T/M",
+ "step": "Kinematic_mount-KM05T_M.step",
+ "units": "meters",
+ "frame": "+y up, +z along the optical axis toward the incoming light",
+ "source_frame": {
+  "comment": "the canonical frame's origin and axes in the STEP file's millimeters",
+  "origin": [
+   -71.035766059,
+   -39.766057984,
+   11.0998
+  ],
+  "x": [
+   1.0,
+   0.0,
+   0.0
+  ],
+  "y": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "z": [
+   0.0,
+   0.0,
+   1.0
+  ]
+ },
+ "parts": [
+  "base",
+  "plate",
+  "retaining_ring",
+  "adjuster_x",
+  "adjuster_y"
+ ],
+ "mates": {
+  "optic_seat": {
+   "origin": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the rear retaining ring's front face, on the bore's axis",
+   "part": "plate",
+   "bore_diameter": 0.013589
+  },
+  "retaining_ring_seat": {
+   "origin": [
+    0.0,
+    0.0,
+    0.00381
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the front ring's back face, which presses on the optic's front face",
+   "part": "retaining_ring"
+  },
+  "post_tap": {
+   "origin": [
+    0.0,
+    -0.014732,
+    -0.0071628
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "z": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "part": "base"
+  },
+  "pivot": {
+   "origin": [
+    0.009906,
+    -0.009906,
+    -0.0023241
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "part": "base"
+  },
+  "adjuster_x_tip": {
+   "origin": [
+    -0.009906,
+    -0.009906,
+    -0.00235328
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "part": "adjuster_x",
+   "pitch": null,
+   "pitch_source": "unknown (to confirm)"
+  },
+  "adjuster_y_tip": {
+   "origin": [
+    0.009906,
+    0.009906,
+    -0.0023495
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "part": "adjuster_y",
+   "pitch": null,
+   "pitch_source": "unknown (to confirm)"
+  }
+ },
+ "motions": {
+  "plate": {
+   "kind": "tilt",
+   "mate": "pivot",
+   "range": 0.0698
+  },
+  "adjuster_x": {
+   "kind": "screw",
+   "mate": "adjuster_x_tip",
+   "range": [
+    -0.0015,
+    0.0015
+   ]
+  },
+  "adjuster_y": {
+   "kind": "screw",
+   "mate": "adjuster_y_tip",
+   "range": [
+    -0.0015,
+    0.0015
+   ]
+  },
+  "retaining_ring": {
+   "kind": "slide",
+   "mate": "retaining_ring_seat",
+   "range": [
+    -0.00381,
+    0.0
+   ]
+  }
+ },
+ "triangles": 24771,
+ "budget": 40000,
+ "decals": {
+  "comment": "the lettering, scales, springs and threads, baked into the .glb's texture",
+  "size": 1024,
+  "texel": 4e-05
+ },
+ "kind": "kinematic_mount"
+}

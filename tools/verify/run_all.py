@@ -2,7 +2,7 @@
 """Runs every verification check and prints one line per result:
 
   bin/bsdf_test, bin/light_test, bin/sampler_test, bin/film_test, bin/aov_test, bin/spectrum_test, bin/pbrt_test,
-  bin/bvh_bench                                                    the CPU tests
+  bin/bvh_bench, bin/optic_models_test                             the CPU tests
   VKGUIDE_SELFTEST=1 bin/vulkan_guide                              shaders against their C++ mirrors
   furnace_check.py, cornell_check.py, filter_check.py, film_check.py, aov_check.py, spectral_check.py, bsdf_check.py
                                                                    scene-level energy, reference, filter, film, output
@@ -54,6 +54,7 @@ def main():
     ok &= run("spectrum_test", [str(BIN / "spectrum_test")])
     ok &= run("pbrt_test", [str(BIN / "pbrt_test")])
     ok &= run("bvh_bench", [str(BIN / "bvh_bench"), str(ROOT / "assets/models/structure.glb"), "--rays", "2000"])
+    ok &= run("optic_models_test", [str(BIN / "optic_models_test")], cwd=ROOT)
     if not args.cpu_only:
         env = dict(os.environ, VKGUIDE_WINDOW="background", VKGUIDE_SELFTEST="1")
         ok &= run("GPU self-tests", [str(BIN / "vulkan_guide")], env=env, cwd=BIN)

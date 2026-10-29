@@ -1,8 +1,8 @@
 # The bench and the mounts
 
-On a real table an optic is never just somewhere. It sits in a mount, the mount sits on a post, the post slides in a post holder, and a clamping fork bolts the holder to the breadboard, whose holes are 25 mm apart. That stack decides which motions are possible: the post slides across the table and turns about itself and up and down, and everything else (tip, tilt, rotation about the optical axis) comes from the mount's adjusters. It also puts metal near the beam, which is where a misaligned beam clips. This plan builds the bench from the models of [physoptics-optomechanical-models.md](physoptics-optomechanical-models.md): a procedural breadboard, the stack under every optic, placement in the degrees of freedom the stack allows, snapping to holes, real kinematics for the fine adjusters, and every part as geometry the tracer can hit.
+On a real table an optic is never just somewhere. It sits in a mount, the mount sits on a post, the post slides in a post holder, and a clamping fork bolts the holder to the breadboard, whose holes are 25 mm apart. That stack decides which motions are possible: the post slides across the table and turns about itself and up and down, and everything else (tip, tilt, rotation about the optical axis) comes from the mount's adjusters. It also puts metal near the beam, which is where a misaligned beam clips. This plan builds the bench from the models of [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md): a procedural breadboard, the stack under every optic, placement in the degrees of freedom the stack allows, snapping to holes, real kinematics for the fine adjusters, and every part as geometry the tracer can hit.
 
-*Not implemented. Depends on [physoptics-optical-elements.md](physoptics-optical-elements.md) and [physoptics-optomechanical-models.md](physoptics-optomechanical-models.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](physoptics-optical-elements.md) and [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
@@ -82,7 +82,7 @@ struct MountPose {
 
 **Edit Transform** on an optic starts the gizmo with `TRANSLATE_X | TRANSLATE_Z | TRANSLATE_Y | ROTATE_Y` in world space, at the post's axis. The setter projects what the gizmo produced onto the pose: x and z move the post, y changes the height, and rotation about y changes the yaw. ImGuizmo shows no other handles, so nothing else can move.
 
-- **Snap to holes** rounds the post's x and z to the nearest hole center. The fork then points along the table axis (±x or ±z) nearest its previous direction, with its bolt in the next hole, 25 mm away, which the CF125C/M's slot reaches (checked against its `slot` mate; see "Pending answers").
+- **Snap to holes** rounds the post's x and z to the nearest hole center. The fork then points along the table axis (±x or ±z) nearest its previous direction, with its bolt in the next hole, 25 mm away. The converter measured that the CF125C/M's slot does not reach that hole (its `slot` mate; see "Pending answers"), so this rule needs revising before it is built.
 - **Continuous** leaves the post anywhere. The fork turns to the direction in which a hole falls inside its slot's reach, preferring its previous direction. If no hole is in reach, which can happen only at the table's edge, the fork is drawn in red and the panel says so.
 - The height is clamped to what the post holder's travel allows for the chosen post length; past it, the post length changes.
 - **Free placement** gives the full translate-and-rotate gizmo on the optic itself. The post, holder and fork are hidden, since a free optic has no defined stack, and the panel marks the optic as free. Turning it off again drops the optic to the nearest physical pose: the post under the optic's datum, the yaw from its axis's horizontal component, the height of its datum.
@@ -96,7 +96,9 @@ struct MountPose {
 | Rotation (RSP) | the rotor angle, in degrees | rotation about `rotor_axis` |
 | Fixed, plate holder, iris | none | |
 
-A turn of an adjuster moves its tip along the screw's axis by the thread pitch. The plate's new orientation is the rotation about the pivot that puts each adjuster's contact back on its tip, solved by Newton's method in `double` from the previous orientation; for small turns it is a rotation about the axis through the pivot and the other adjuster's contact, by the tip's travel over its distance from that axis. The optic rides on the plate, so its vertex moves on an arc about the pivot as it tilts, which is how a real mount walks a beam while steering it. The panel shows each adjuster's turns, the plate's tip and tilt in microradians, and the optic vertex's displacement. Thread pitches come from the adjusters' modeled threads, measured by the converter before it removes them, and are checked against Thorlabs' published angle per revolution (see "Pending answers"). The adjusters' travel limits stop the widget, as the screw would stop.
+An iris has no control of its own: its lever and each of its blades take the pose its optic's aperture diameter sets, through the `aperture` drive in the model's mates file (`driveMotionValue()`, `src/optic_models.h`).
+
+A turn of an adjuster moves its tip along the screw's axis by the thread pitch. The plate's new orientation is the rotation about the pivot that puts each adjuster's contact back on its tip, solved by Newton's method in `double` from the previous orientation; for small turns it is a rotation about the axis through the pivot and the other adjuster's contact, by the tip's travel over its distance from that axis. The optic rides on the plate, so its vertex moves on an arc about the pivot as it tilts, which is how a real mount walks a beam while steering it. The panel shows each adjuster's turns, the plate's tip and tilt in microradians, and the optic vertex's displacement. Thread pitches are each adjuster tip's `pitch` in the model's mates file. The STEP files model no adjuster threads, so the converter's manifest sets them from Thorlabs' specification, and they are checked against Thorlabs' published angle per revolution (see "Pending answers"). The adjusters' travel limits stop the widget, as the screw would stop.
 
 The raster preview moves the plate and turns and advances the adjuster screws with the pose, using the models' separate parts.
 
@@ -150,8 +152,8 @@ A file from before this plan, whose optics have free transforms, opens with each
 These need the user's answer, checked against Thorlabs, before the step that uses them:
 
 - B3030A dimensions. Its thickness, hole thread (M6 is expected for a metric board), countersink, and edge margin, read from the STEP file and confirmed against the Thorlabs B3030A page.
-- Adjuster specifications. For KM05T/M, KM100, KM200 and KM200PM/M: thread pitch, angle per revolution, and adjustment range, from the Thorlabs pages. Search results disagree on KM100 (80 versus 100 threads per inch, 8 mrad per revolution), so the plan measures the modeled threads and asks the user to confirm.
-- The fork's reach. Whether CF125C/M's slot reaches a hole 25 mm from the post's axis when the post holder sits in the fork, so that a snapped post always has a hole for its bolt.
+- Adjuster specifications. For KM05T/M, KM100, KM200 and KM200PM/M: thread pitch, angle per revolution, and adjustment range, from the Thorlabs pages. Search results disagree on KM100 (80 versus 100 threads per inch, 8 mrad per revolution). The converter assumed 1/4"-80 for KM100, KM200 and KM200PM/M, which gives 8.4 mrad per revolution at KM100's modeled lever of 37.7 mm, and left KM05T/M's unset.
+- The fork's reach. Measured by the converter: CF125C/M's slot holds the bolt 26.8 to 58.3 mm from the post's axis, so it cannot reach the hole 25 mm away. The nearest it reaches are the diagonal hole, 35.4 mm away, and the hole 50 mm away along an axis. Snapping needs a rule for which.
 - Rotation mount scale. RSP's graduation step and whether the panel should snap the rotor to graduations.
 - Large prisms. Whether a 60 mm right-angle prism sits on a KM200PM/M platform, or needs another mount.
 

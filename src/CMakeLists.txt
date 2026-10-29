@@ -101,6 +101,21 @@ if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
     target_compile_options(rt_image PRIVATE -O2)
 endif()
 
+# The optomechanical model library as plain C++: the table of Thorlabs mounts, holders, irises and blanks,
+# the reader of the converter's .glb and .mates.json files (assets/optical_models/meshes/), and the procedural
+# placeholders. Uploaded by the app's MountLibrary and checked on its own by tests/optic_models_test.cpp. It
+# decodes the models' decal textures with its own static copy of stb_image, so that a Debug build decodes them
+# at -O2 too (unoptimized, the 19 textures took 2.5 s at startup)
+add_library(rt_optic_models STATIC
+    optic_models.cpp
+    optic_models.h)
+target_include_directories(rt_optic_models PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(rt_optic_models PRIVATE "${CMAKE_SOURCE_DIR}/../CPPLibraries")
+target_link_libraries(rt_optic_models PUBLIC glm fmt::fmt fastgltf::fastgltf)
+if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
+    target_compile_options(rt_optic_models PRIVATE -O2)
+endif()
+
 # The material model as plain C++: MaterialDef, the traits table and the packing into the GPU's record
 # (rt_material_record.h). Shared by the app and the pbrt importer, which builds materials without Vulkan
 add_library(rt_material STATIC
@@ -175,6 +190,8 @@ add_executable(vulkan_guide
     vk_ui.h
     vk_loader.cpp
     vk_loader.h
+    mount_library.cpp
+    mount_library.h
     raster_draw_list.cpp
     vk_tonemap.cpp
     vk_tonemap.h
@@ -225,7 +242,7 @@ set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGE
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide PUBLIC rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_aov rt_image rt_material rt_spectrum rt_pbrt vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
+target_link_libraries(vulkan_guide PUBLIC rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_aov rt_image rt_material rt_spectrum rt_pbrt rt_optic_models vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
 
 target_link_libraries(vulkan_guide PRIVATE GPUOpen::VulkanMemoryAllocator)
 

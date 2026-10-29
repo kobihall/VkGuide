@@ -114,7 +114,7 @@ Each kind names its output beams, which the beam axis connects ([physoptics-beam
 
 ### The preview
 
-Planar mirrors draw their PF blank model from the mount library, and so do concave mirrors and off-axis parabolas for now, as the request asks ([physoptics-optomechanical-models.md](physoptics-optomechanical-models.md)). Every other kind draws its tessellated prescription (`src/optic_mesh.cpp`) through the raster pass's transparent pipeline, tinted by its glass. The preview geometry is rebuilt when a parameter changes, which takes well under a millisecond for one element.
+Planar mirrors draw their PF blank model from the mount library, and so do concave mirrors and off-axis parabolas for now, as the request asks ([physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md)). Every other kind draws its tessellated prescription (`src/optic_mesh.cpp`) through the raster pass's transparent pipeline, tinted by its glass. The preview geometry is rebuilt when a parameter changes, which takes well under a millisecond for one element.
 
 ### The path tracer
 

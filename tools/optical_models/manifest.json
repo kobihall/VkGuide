@@ -1,0 +1,1124 @@
+{
+ "comment": "The converter's only hand-made input; see tools/optical_models/convert.py. Solids are indices in the STEP file's order (convert.py --describe lists them). Points and directions are in the STEP file's millimeters; motion ranges and parameters are SI (meters, radians).",
+ "models": [
+  {
+   "model": "KM05T/M",
+   "kind": "kinematic_mount",
+   "step": "Kinematic_mount-KM05T_M.step",
+   "comment": "Optical axis along +z in the file, stood on its tapped hole as in example mirror.FCStd. The rear retaining ring is the seat; the front ring is its own part, which the bench moves up to the optic or leaves out when the optic is thicker than the 3.81 mm between the rings.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 1, "radius": 6.7945, "near": [-71.0358, -39.7661, 12.0] }},
+     "plane": {"plane": { "solid": 3, "normal": [0, 0, 1], "near": [-65.0358, -39.7661, 11.0998] }}
+    },
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"base": [0, 4, 5, 6, 7, 8, 9, 13, 17, 18, 19, 20], "plate": [1, 3, 15, 16, 21, 22, 23, 24, 25], "retaining_ring": [2], "adjuster_x": [10, 12], "adjuster_y": [11, 14]},
+   "mates": {
+    "optic_seat": {
+     "comment": "the rear retaining ring's front face, on the bore's axis",
+     "origin": {
+      "axis": {"cylinder": { "solid": 1, "radius": 6.7945, "near": [-71.0358, -39.7661, 12.0] }},
+      "plane": {"plane": { "solid": 3, "normal": [0, 0, 1], "near": [-65.0358, -39.7661, 11.0998] }}
+     },
+     "z": [0, 0, 1],
+     "part": "plate",
+     "bore_diameter": 0.013589
+    },
+    "retaining_ring_seat": {
+     "comment": "the front ring's back face, which presses on the optic's front face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 1, "radius": 6.7945, "near": [-71.0358, -39.7661, 12.0] }},
+      "plane": {"plane": { "solid": 2, "normal": [0, 0, -1], "near": [-65.0358, -39.7661, 14.9098] }}
+     },
+     "z": [0, 0, 1],
+     "part": "retaining_ring"
+    },
+    "post_tap": {
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 2.0, "near": [-71.0358, -52.0, 3.937] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, -1, 0], "near": [-71.0358, -54.498, 3.937] }}
+     },
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "base"
+    },
+    "pivot": {"origin": { "sphere": 13 }, "z": [0, 0, 1], "part": "base"},
+    "adjuster_x_tip": {"origin": { "sphere": 12 }, "z": [0, 0, 1], "part": "adjuster_x", "pitch": null, "pitch_source": "unknown (to confirm)"},
+    "adjuster_y_tip": {"origin": { "sphere": 14 }, "z": [0, 0, 1], "part": "adjuster_y", "pitch": null, "pitch_source": "unknown (to confirm)"}
+   },
+   "motions": {
+    "plate": {
+     "kind": "tilt",
+     "mate": "pivot",
+     "range": 0.0698
+    },
+    "adjuster_x": {
+     "kind": "screw",
+     "mate": "adjuster_x_tip",
+     "range": [-0.0015, 0.0015]
+    },
+    "adjuster_y": {
+     "kind": "screw",
+     "mate": "adjuster_y_tip",
+     "range": [-0.0015, 0.0015]
+    },
+    "retaining_ring": {
+     "kind": "slide",
+     "mate": "retaining_ring_seat",
+     "range": [-0.00381, 0.0]
+    }
+   },
+   "budget": 40000,
+   "proxies": [
+    {"solid": 4, "kind": "spring"},
+    {"solid": 5, "kind": "spring"},
+    {"solid": 6, "kind": "spring"},
+    {"solid": 7, "kind": "spring"}
+   ]
+  },
+  {
+   "model": "KM100",
+   "kind": "kinematic_mount",
+   "step": "Kinematic_mount-KM100.step",
+   "comment": "Optical axis along -y in the file. Stood on the tapped hole that puts the pivot at the bottom right seen from the front, as the user stood KM05T/M in example mirror.FCStd; the other tapped hole turns it 90 degrees.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 0, "radius": 12.8016, "near": [12.885, 2.0, -1.089] }},
+     "plane": {"plane": { "solid": 0, "normal": [0, -1, 0], "near": [12.4, 4.972, -1.089] }}
+    },
+    "z": [0, -1, 0],
+    "y": [0, 0, -1]
+   },
+   "parts": {"base": [1, 2, 3, 13, 14, 15], "plate": [0, 4, 5, 6, 16], "adjuster_x": [8, 10, 12], "adjuster_y": [7, 9, 11]},
+   "mates": {
+    "optic_seat": {
+     "comment": "the lip the optic's back face rests on, on the bore's axis",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 12.8016, "near": [12.885, 2.0, -1.089] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, -1, 0], "near": [12.4, 4.972, -1.089] }}
+     },
+     "z": [0, -1, 0],
+     "part": "plate",
+     "bore_diameter": 0.0256032
+    },
+    "post_tap": {
+     "comment": "the bottom face on the tapped hole's axis, z out of the face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 1, "radius": 2.3812, "near": [0.084, 13.468, 22.0] }},
+      "plane": {"plane": { "solid": 1, "normal": [0, 0, 1], "near": [0.084, 13.468, 24.311] }}
+     },
+     "z": [0, 0, 1],
+     "y": [0, -1, 0],
+     "part": "base"
+    },
+    "pivot": {"origin": { "sphere": 13 }, "z": [0, -1, 0], "part": "base"},
+    "adjuster_x_tip": {"comment": "the ball on the screw's tip; z is the way the screw advances", "origin": { "sphere": 12 }, "z": [0, -1, 0], "part": "adjuster_x", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"},
+    "adjuster_y_tip": {"origin": { "sphere": 11 }, "z": [0, -1, 0], "part": "adjuster_y", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"}
+   },
+   "motions": {
+    "plate": {
+     "kind": "tilt",
+     "mate": "pivot",
+     "range": 0.0698
+    },
+    "adjuster_x": {
+     "kind": "screw",
+     "mate": "adjuster_x_tip",
+     "range": [-0.0025, 0.0025]
+    },
+    "adjuster_y": {
+     "kind": "screw",
+     "mate": "adjuster_y_tip",
+     "range": [-0.0025, 0.0025]
+    }
+   },
+   "budget": 40000
+  },
+  {
+   "model": "KM200",
+   "kind": "kinematic_mount",
+   "step": "Kinematic_mount-KM200.step",
+   "comment": "Optical axis along +z in the file. Stood on the -x face's middle tapped hole, which puts the pivot at the bottom right seen from the front as for KM05T/M and KM100.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 0, "radius": 25.527, "near": [38.1, 38.1, 5.0] }},
+     "plane": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [63.1, 38.1, 2.032] }}
+    },
+    "z": [0, 0, 1],
+    "y": [1, 0, 0]
+   },
+   "parts": {"base": [8, 10, 11, 16, 5, 6, 7, 9, 19, 20], "plate": [0, 1, 2, 3, 4], "adjuster_x": [13, 14, 17], "adjuster_y": [12, 15, 18]},
+   "mates": {
+    "optic_seat": {
+     "comment": "the lip the optic's back face rests on, on the bore's axis",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 25.527, "near": [38.1, 38.1, 5.0] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [63.1, 38.1, 2.032] }}
+     },
+     "z": [0, 0, 1],
+     "part": "plate",
+     "bore_diameter": 0.051054
+    },
+    "post_tap": {
+     "comment": "the bottom face on the middle tapped hole's axis, z out of the face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 8, "radius": 2.3812, "near": [0.0, 38.1, -8.573] }},
+      "plane": {"plane": { "solid": 8, "normal": [-1, 0, 0], "near": [-1.524, 38.1, -8.573] }}
+     },
+     "z": [-1, 0, 0],
+     "y": [0, 0, 1],
+     "part": "base"
+    },
+    "pivot": {"origin": { "sphere": 16 }, "z": [0, 0, 1], "part": "base"},
+    "adjuster_x_tip": {"comment": "the ball on the screw's tip; z is the way the screw advances", "origin": { "sphere": 17 }, "z": [0, 0, 1], "part": "adjuster_x", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"},
+    "adjuster_y_tip": {"origin": { "sphere": 18 }, "z": [0, 0, 1], "part": "adjuster_y", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"}
+   },
+   "motions": {
+    "plate": {
+     "kind": "tilt",
+     "mate": "pivot",
+     "range": 0.0698
+    },
+    "adjuster_x": {
+     "kind": "screw",
+     "mate": "adjuster_x_tip",
+     "range": [-0.0025, 0.0025]
+    },
+    "adjuster_y": {
+     "kind": "screw",
+     "mate": "adjuster_y_tip",
+     "range": [-0.0025, 0.0025]
+    }
+   },
+   "budget": 40000,
+   "proxies": [
+    {"solid": 9, "kind": "spring"},
+    {"solid": 19, "kind": "spring"},
+    {"solid": 20, "kind": "spring"}
+   ]
+  },
+  {
+   "model": "KM200PM/M",
+   "kind": "prism_mount",
+   "step": "Prism_mount-KM200PM_M.step",
+   "comment": "A KM200-style kinematic mount (front plate along +z in the file, up +y) carrying a platform. The prism seat is on the platform's top face, over the post (x = -19.71, the back plate's middle tapped hole, as for KM200) and halfway across the platform in front of the front plate (z = 32.88): Thorlabs gives no seat, so this is a choice.",
+   "frame": {
+    "origin": {"plane": { "solid": 18, "normal": [0, 1, 0], "near": [-19.71, 3.064, 32.88] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"base": [0, 2, 3, 7, 8, 22, 9, 10, 21, 11], "plate": [1, 4, 5, 6, 18, 19, 20, 23, 24, 25, 26, 27, 28, 29, 30], "adjuster_x": [14, 17, 12], "adjuster_y": [15, 16, 13]},
+   "mates": {
+    "prism_seat": {
+     "comment": "the platform's top face, over the post; y is the platform's normal",
+     "origin": {"plane": { "solid": 18, "normal": [0, 1, 0], "near": [-19.71, 3.064, 32.88] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "plate"
+    },
+    "post_tap": {
+     "comment": "the bottom face on the middle tapped hole's axis, z out of the face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 2.3812, "near": [-19.71, -17.5, 0.0] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, -1, 0], "near": [-19.71, -19.914, 0.0] }}
+     },
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "base"
+    },
+    "pivot": {"origin": { "sphere": 11 }, "z": [0, 0, 1], "part": "base"},
+    "adjuster_x_tip": {"comment": "the ball on the screw's tip; z is the way the screw advances", "origin": { "sphere": 12 }, "z": [0, 0, 1], "part": "adjuster_x", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"},
+    "adjuster_y_tip": {"origin": { "sphere": 13 }, "z": [0, 0, 1], "part": "adjuster_y", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"}
+   },
+   "motions": {
+    "plate": {
+     "kind": "tilt",
+     "mate": "pivot",
+     "range": 0.0698
+    },
+    "adjuster_x": {
+     "kind": "screw",
+     "mate": "adjuster_x_tip",
+     "range": [-0.0025, 0.0025]
+    },
+    "adjuster_y": {
+     "kind": "screw",
+     "mate": "adjuster_y_tip",
+     "range": [-0.0025, 0.0025]
+    }
+   },
+   "budget": 40000,
+   "proxies": [
+    {"solid": 7, "kind": "spring"},
+    {"solid": 8, "kind": "spring"},
+    {"solid": 22, "kind": "spring"}
+   ]
+  },
+  {
+   "model": "LMR05/M",
+   "kind": "fixed_mount",
+   "step": "Fixed_mount-LMR05_M.step",
+   "comment": "SM05-threaded bore along +z in the file, its lip at the back and the retaining ring at the front, which faces the light.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 0, "radius": 6.4516, "near": [0.0, 3.556, -2.175] }},
+     "plane": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [6.0832999999999995, 3.556, -3.175] }}
+    },
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"body": [0], "retaining_ring": [1]},
+   "mates": {
+    "optic_seat": {
+     "comment": "the lip at the back of the threaded bore, which the optic's back face rests on",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 6.4516, "near": [0.0, 3.556, -2.175] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [6.0832999999999995, 3.556, -3.175] }}
+     },
+     "z": [0, 0, 1],
+     "part": "body",
+     "bore_diameter": 0.0129032
+    },
+    "retaining_ring_seat": {
+     "comment": "the ring's back face, which presses on the optic's front face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 6.4516, "near": [0.0, 3.556, -2.175] }},
+      "plane": {"plane": { "solid": 1, "normal": [0, 0, -1], "near": [6.0832999999999995, 3.556, 2.159] }}
+     },
+     "z": [0, 0, 1],
+     "part": "retaining_ring"
+    },
+    "post_tap": {
+     "comment": "the bottom face on the tapped hole's axis, z out of the face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 1.65, "near": [0.0, -10.446, 0.0] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, -1, 0], "near": [0.0, -12.446, 0.0] }}
+     },
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "body"
+    }
+   },
+   "motions": {"retaining_ring": { "kind": "slide", "mate": "retaining_ring_seat", "range": [-0.005334, 0.0] }},
+   "budget": 10000
+  },
+  {
+   "model": "LMR1/M",
+   "kind": "fixed_mount",
+   "step": "Fixed_mount-LMR1_M.step",
+   "comment": "SM1-threaded bore along +z in the file, its lip at the back and the retaining ring at the front, which faces the light.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 0, "radius": 13.1445, "near": [-9.516, 8.229, -1.3039999999999998] }},
+     "plane": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [2.993499999999999, 8.229, -2.304] }}
+    },
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"body": [0], "retaining_ring": [1]},
+   "mates": {
+    "optic_seat": {
+     "comment": "the lip at the back of the threaded bore, which the optic's back face rests on",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 13.1445, "near": [-9.516, 8.229, -1.3039999999999998] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [2.993499999999999, 8.229, -2.304] }}
+     },
+     "z": [0, 0, 1],
+     "part": "body",
+     "bore_diameter": 0.026289
+    },
+    "retaining_ring_seat": {
+     "comment": "the ring's back face, which presses on the optic's front face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 13.1445, "near": [-9.516, 8.229, -1.3039999999999998] }},
+      "plane": {"plane": { "solid": 1, "normal": [0, 0, -1], "near": [2.993499999999999, 8.229, 4.369] }}
+     },
+     "z": [0, 0, 1],
+     "part": "retaining_ring"
+    },
+    "post_tap": {
+     "comment": "the bottom face on the tapped hole's axis, z out of the face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 1.65, "near": [-9.516, -11.869, 1.76] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, -1, 0], "near": [-9.516, -13.869, 1.76] }}
+     },
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "body"
+    }
+   },
+   "motions": {"retaining_ring": { "kind": "slide", "mate": "retaining_ring_seat", "range": [-0.006673, 0.0] }},
+   "budget": 10000
+  },
+  {
+   "model": "LMR2/M",
+   "kind": "fixed_mount",
+   "step": "Fixed_mount-LMR2_M.step",
+   "comment": "SM2-threaded bore along +z in the file, its lip at the back and the retaining ring at the front. No STEP colors: anodized throughout.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 0, "radius": 25.8445, "near": [-31.16, -32.341, 10.17] }},
+     "plane": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [-6.172750000000001, -32.341, 9.17] }}
+    },
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"body": [0], "retaining_ring": [1]},
+   "mates": {
+    "optic_seat": {
+     "comment": "the lip at the back of the threaded bore, which the optic's back face rests on",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 25.8445, "near": [-31.16, -32.341, 10.17] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [-6.172750000000001, -32.341, 9.17] }}
+     },
+     "z": [0, 0, 1],
+     "part": "body",
+     "bore_diameter": 0.051689
+    },
+    "retaining_ring_seat": {
+     "comment": "the ring's back face, which presses on the optic's front face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 25.8445, "near": [-31.16, -32.341, 10.17] }},
+      "plane": {"plane": { "solid": 1, "normal": [0, 0, -1], "near": [-6.172750000000001, -32.341, 18.314] }}
+     },
+     "z": [0, 0, 1],
+     "part": "retaining_ring"
+    },
+    "post_tap": {
+     "comment": "the bottom face on the tapped hole's axis, z out of the face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 2.0, "near": [-31.16, -64.758, 14.504] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, -1, 0], "near": [-31.16, -66.758, 14.504] }}
+     },
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "body"
+    }
+   },
+   "motions": {"retaining_ring": { "kind": "slide", "mate": "retaining_ring_seat", "range": [-0.009144, 0.0] }},
+   "budget": 10000,
+   "find_lettering": true
+  },
+  {
+   "model": "RSP05/M",
+   "kind": "rotation_mount",
+   "step": "Rotation_mount-RSP05_M.step",
+   "comment": "Axis along +z in the file, the scale and retaining ring at the front; the M4 tap at the bottom (-y) and the lock screw on top. The back piece (6576-003) threads into the rotor and carries the lip.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 1, "radius": 6.7945, "near": [0, 0, 0] }},
+     "plane": {"plane": { "solid": 2, "normal": [0, 0, 1], "near": [6.0, 0, -2.032] }}
+    },
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"housing": [0, 3], "rotor": [1, 2], "retaining_ring": [4]},
+   "mates": {
+    "optic_seat": {
+     "comment": "the rotor's lip, which the optic's back face rests on",
+     "origin": {
+      "axis": {"cylinder": { "solid": 1, "radius": 6.7945, "near": [0, 0, 0] }},
+      "plane": {"plane": { "solid": 2, "normal": [0, 0, 1], "near": [6.0, 0, -2.032] }}
+     },
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "rotor",
+     "bore_diameter": 0.013589
+    },
+    "retaining_ring_seat": {
+     "comment": "the ring's back face, which presses on the optic's front face; it turns with the rotor",
+     "origin": {
+      "axis": {"cylinder": { "solid": 1, "radius": 6.7945, "near": [0, 0, 0] }},
+      "plane": {"plane": { "solid": 4, "normal": [0, 0, -1], "near": [6.0, 0, 4.064] }}
+     },
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "retaining_ring"
+    },
+    "rotor_axis": {
+     "comment": "the rotor's axis at the seat; the scale's zero is where the model leaves it, not identified",
+     "origin": {
+      "axis": {"cylinder": { "solid": 1, "radius": 6.7945, "near": [0, 0, 0] }},
+      "plane": {"plane": { "solid": 2, "normal": [0, 0, 1], "near": [6.0, 0, -2.032] }}
+     },
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "rotor"
+    },
+    "post_tap": {
+     "comment": "the tapped hole's axis where it leaves the housing's rim, z out of it",
+     "origin": {"cylinder": { "solid": 0, "radius": 1.65, "near": [0, -13.975, -0.635] }},
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "housing"
+    }
+   },
+   "motions": {"rotor": { "kind": "rotate", "mate": "rotor_axis", "range": [-1.5708, 1.5708] }, "retaining_ring": { "kind": "slide", "mate": "retaining_ring_seat", "range": [-0.006096, 0.0], "follows": "rotor" }},
+   "budget": 40000
+  },
+  {
+   "model": "RSP1/M",
+   "kind": "rotation_mount",
+   "step": "Rotation_mount-RSP1_M.step",
+   "comment": "Axis along +y in the file, the scale and retaining ring at the front (+y). The M4 tap is at +z, so up is -z; the 8-32 hole at -z holds the lock screw. The two needle thrust bearings between rotor and housing are removed: they show only at grazing angles through the gap.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 3, "radius": 12.8016, "near": [0, 0, 0] }},
+     "plane": {"plane": { "solid": 3, "normal": [0, 1, 0], "near": [12.7, -6.858, 0] }}
+    },
+    "z": [0, 1, 0],
+    "y": [0, 0, -1]
+   },
+   "parts": {"housing": [0, 6], "rotor": [3, 4], "retaining_ring": [5]},
+   "mates": {
+    "optic_seat": {
+     "comment": "the rotor's lip, which the optic's back face rests on",
+     "origin": {
+      "axis": {"cylinder": { "solid": 3, "radius": 12.8016, "near": [0, 0, 0] }},
+      "plane": {"plane": { "solid": 3, "normal": [0, 1, 0], "near": [12.7, -6.858, 0] }}
+     },
+     "z": [0, 1, 0],
+     "y": [0, 0, -1],
+     "part": "rotor",
+     "bore_diameter": 0.0256032
+    },
+    "retaining_ring_seat": {
+     "comment": "the ring's back face, which presses on the optic's front face; it turns with the rotor",
+     "origin": {
+      "axis": {"cylinder": { "solid": 3, "radius": 12.8016, "near": [0, 0, 0] }},
+      "plane": {"plane": { "solid": 5, "normal": [0, -1, 0], "near": [12.0, 5.08, 0] }}
+     },
+     "z": [0, 1, 0],
+     "y": [0, 0, -1],
+     "part": "retaining_ring"
+    },
+    "rotor_axis": {
+     "comment": "the rotor's axis at the seat; the scale's zero is where the model leaves it, not identified",
+     "origin": {
+      "axis": {"cylinder": { "solid": 3, "radius": 12.8016, "near": [0, 0, 0] }},
+      "plane": {"plane": { "solid": 3, "normal": [0, 1, 0], "near": [12.7, -6.858, 0] }}
+     },
+     "z": [0, 1, 0],
+     "y": [0, 0, -1],
+     "part": "rotor"
+    },
+    "post_tap": {
+     "comment": "the tapped hole's axis where it leaves the housing's rim, z out of it",
+     "origin": {"cylinder": { "solid": 0, "radius": 1.65, "near": [0, -0.508, 27.732] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "housing"
+    }
+   },
+   "motions": {"rotor": { "kind": "rotate", "mate": "rotor_axis", "range": [-1.5708, 1.5708] }, "retaining_ring": { "kind": "slide", "mate": "retaining_ring_seat", "range": [-0.011938, 0.0], "follows": "rotor" }},
+   "budget": 40000,
+   "remove_solids": [1, 2]
+  },
+  {
+   "model": "RSP2/M",
+   "kind": "rotation_mount",
+   "step": "Rotation_mount-RSP2_M.step",
+   "comment": "Axis along +y in the file, the scale and retaining ring at the front (+y). The M4 tap is at +z, so up is -z; the 8-32 hole at -z holds the lock screw. The two needle thrust bearings between rotor and housing are removed: they show only at grazing angles through the gap.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 4, "radius": 25.5016, "near": [0, 0, 0] }},
+     "plane": {"plane": { "solid": 4, "normal": [0, 1, 0], "near": [25.0, -6.68, 0] }}
+    },
+    "z": [0, 1, 0],
+    "y": [0, 0, -1]
+   },
+   "parts": {"housing": [0, 6], "rotor": [3, 4], "retaining_ring": [5]},
+   "mates": {
+    "optic_seat": {
+     "comment": "the rotor's lip, which the optic's back face rests on",
+     "origin": {
+      "axis": {"cylinder": { "solid": 4, "radius": 25.5016, "near": [0, 0, 0] }},
+      "plane": {"plane": { "solid": 4, "normal": [0, 1, 0], "near": [25.0, -6.68, 0] }}
+     },
+     "z": [0, 1, 0],
+     "y": [0, 0, -1],
+     "part": "rotor",
+     "bore_diameter": 0.0510032
+    },
+    "retaining_ring_seat": {
+     "comment": "the ring's back face, which presses on the optic's front face; it turns with the rotor",
+     "origin": {
+      "axis": {"cylinder": { "solid": 4, "radius": 25.5016, "near": [0, 0, 0] }},
+      "plane": {"plane": { "solid": 5, "normal": [0, -1, 0], "near": [25.0, 5.334, 0] }}
+     },
+     "z": [0, 1, 0],
+     "y": [0, 0, -1],
+     "part": "retaining_ring"
+    },
+    "rotor_axis": {
+     "comment": "the rotor's axis at the seat; the scale's zero is where the model leaves it, not identified",
+     "origin": {
+      "axis": {"cylinder": { "solid": 4, "radius": 25.5016, "near": [0, 0, 0] }},
+      "plane": {"plane": { "solid": 4, "normal": [0, 1, 0], "near": [25.0, -6.68, 0] }}
+     },
+     "z": [0, 1, 0],
+     "y": [0, 0, -1],
+     "part": "rotor"
+    },
+    "post_tap": {
+     "comment": "the tapped hole's axis where it leaves the housing's rim, z out of it",
+     "origin": {"cylinder": { "solid": 0, "radius": 1.65, "near": [0, -0.508, 41.402] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "housing"
+    }
+   },
+   "motions": {"rotor": { "kind": "rotate", "mate": "rotor_axis", "range": [-1.5708, 1.5708] }, "retaining_ring": { "kind": "slide", "mate": "retaining_ring_seat", "range": [-0.012014, 0.0], "follows": "rotor" }},
+   "budget": 40000,
+   "remove_solids": [1, 2]
+  },
+  {
+   "model": "FP01",
+   "kind": "plate_holder",
+   "step": "Filter_mount-FP01.step",
+   "comment": "Clamps a plate's bottom edge in a slot open upward (+y); the beam passes through the plate above it, along x. The plate's back face rests on the fixed wall (x = 11.684) and its front faces -x, which is taken as toward the light. The jaw closes the gap from 14.605 mm (Thorlabs: plates up to 14.7 mm) to nothing.",
+   "frame": {"origin": [11.684, -3.81, 0.0], "z": [-1, 0, 0], "y": [0, 1, 0]},
+   "parts": {"body": [0], "jaw": [1, 2, 3]},
+   "mates": {
+    "plate_seat": {"comment": "the fixed wall's face at the slot's floor and center: the plate's back face and bottom edge", "origin": [11.684, -3.81, 0.0], "z": [-1, 0, 0], "y": [0, 1, 0], "part": "body", "body_width": 0.02286},
+    "jaw": {"comment": "the jaw's pad face, z the way it closes", "origin": [4.318, 5.131, 0.0], "z": [1, 0, 0], "y": [0, 1, 0], "part": "jaw", "gap": 0.007366},
+    "post_tap": {
+     "comment": "the bottom face on the tapped hole's axis, z out of the face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 2.3876, "near": [0.254, -9.0, 0.0] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, -1, 0], "near": [0.254, -10.414, 0.0] }}
+     },
+     "z": [0, -1, 0],
+     "y": [1, 0, 0],
+     "part": "body"
+    }
+   },
+   "motions": {"jaw": { "kind": "slide", "mate": "jaw", "range": [-0.007239, 0.007366] }},
+   "budget": 20000
+  },
+  {
+   "model": "ID8/M",
+   "kind": "iris",
+   "step": "Iris-ID8_M.step",
+   "comment": "Aperture along +z in the file, lever on top. The file includes the iris's TR75/M post, which is removed: the bench's procedural post replaces it. Each blade is its own part, turning about its pivot as the lever turns (tools/optical_models/iris.py).",
+   "frame": {
+    "origin": {"cylinder": { "solid": 13, "radius": 10.7, "near": [0.0, 0.0, 0.8826] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"housing": [0, 2, 13, 14], "actuator": [1, 3]},
+   "remove_solids": [12],
+   "mates": {
+    "aperture_center": {
+     "comment": "the blades' mid-plane on the iris's axis",
+     "origin": {"cylinder": { "solid": 13, "radius": 10.7, "near": [0.0, 0.0, 0.8826] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "housing",
+     "aperture_modeled": 0.003875
+    },
+    "post_tap": {
+     "comment": "where the removed post's top met the housing, on the post's axis, z down",
+     "origin": {"cylinder": { "solid": 12, "radius": 6.3373, "near": [0.0, -10.3, -0.7636] }},
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "housing"
+    },
+    "lever_axis": {
+     "comment": "the actuator's axis, the iris's own; the lever as modeled points along y",
+     "origin": {"cylinder": { "solid": 13, "radius": 10.7, "near": [0.0, 0.0, 0.8826] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "actuator",
+     "lever_angle_modeled": 0.0
+    }
+   },
+   "budget": 20000,
+   "iris": {
+    "comment": "pivot_near: a point on the first blade's pivot pin, which sits in a hole in the housing; drive_near: on its drive pin, which rides in the actuator ring's radial slot. The aperture range is Thorlabs' (3doptix.com's listing of it, read 2026-10-28)",
+    "blades": [4, 5, 6, 7, 8, 9, 10, 11],
+    "pivot_near": [2.02, 4.88, 0.883],
+    "drive_near": [-1.86, -4.5, 0.883],
+    "aperture_range": [0.7, 8.0]
+   }
+  },
+  {
+   "model": "ID12/M",
+   "kind": "iris",
+   "step": "Iris-ID12_M.step",
+   "comment": "Aperture along +z in the file, lever on top. The file includes the iris's TR75/M post, which is removed: the bench's procedural post replaces it. Each blade is its own part, turning about its pivot as the lever turns (tools/optical_models/iris.py).",
+   "frame": {
+    "origin": {"cylinder": { "solid": 0, "radius": 13.208, "near": [9.1089, 12.1973, 23.6038] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"housing": [0, 1, 2], "actuator": [3, 14]},
+   "remove_solids": [15],
+   "mates": {
+    "aperture_center": {
+     "comment": "the blades' mid-plane on the iris's axis",
+     "origin": {"cylinder": { "solid": 0, "radius": 13.208, "near": [9.1089, 12.1973, 23.6038] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "housing",
+     "aperture_modeled": 0.006709
+    },
+    "post_tap": {
+     "comment": "where the removed post's top met the housing, on the post's axis, z down",
+     "origin": {"cylinder": { "solid": 15, "radius": 6.3373, "near": [9.1089, -0.6297, 21.7496] }},
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "housing"
+    },
+    "lever_axis": {
+     "comment": "the actuator's axis, the iris's own; the lever as modeled points along y",
+     "origin": {"cylinder": { "solid": 0, "radius": 13.208, "near": [9.1089, 12.1973, 23.6038] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "actuator",
+     "lever_angle_modeled": 0.0
+    }
+   },
+   "budget": 20000,
+   "iris": {
+    "comment": "pivot_near: a point on the first blade's pivot pin, which sits in a hole in the housing; drive_near: on its drive pin, which rides in the actuator ring's radial slot. The aperture range is Thorlabs' (3doptix.com's listing of it, read 2026-10-28)",
+    "blades": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+    "pivot_near": [4.75, 18.2, 23.604],
+    "drive_near": [14.8, 8.19, 23.604],
+    "aperture_range": [0.8, 12.0]
+   },
+   "lettering_colors": [
+    [0.7961, 0.8235, 0.9373]
+   ]
+  },
+  {
+   "model": "ID15/M",
+   "kind": "iris",
+   "step": "Iris-ID15_M.step",
+   "comment": "Aperture along +z in the file, lever on top. The file includes the iris's TR75/M post, which is removed: the bench's procedural post replaces it. Each blade is its own part, turning about its pivot as the lever turns (tools/optical_models/iris.py).",
+   "frame": {
+    "origin": {"cylinder": { "solid": 16, "radius": 15.3, "near": [0.0, 0.0, 0.889] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"housing": [0, 2, 16, 18], "actuator": [1, 3]},
+   "remove_solids": [17],
+   "mates": {
+    "aperture_center": {
+     "comment": "the blades' mid-plane on the iris's axis",
+     "origin": {"cylinder": { "solid": 16, "radius": 15.3, "near": [0.0, 0.0, 0.889] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "housing",
+     "aperture_modeled": 0.007911
+    },
+    "post_tap": {
+     "comment": "where the removed post's top met the housing, on the post's axis, z down",
+     "origin": {"cylinder": { "solid": 17, "radius": 6.3373, "near": [0.0, -14.9, -0.8001] }},
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "housing"
+    },
+    "lever_axis": {
+     "comment": "the actuator's axis, the iris's own; the lever as modeled points along y",
+     "origin": {"cylinder": { "solid": 16, "radius": 15.3, "near": [0.0, 0.0, 0.889] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "actuator",
+     "lever_angle_modeled": 0.0
+    }
+   },
+   "budget": 20000,
+   "iris": {
+    "comment": "pivot_near: a point on the first blade's pivot pin, which sits in a hole in the housing; drive_near: on its drive pin, which rides in the actuator ring's radial slot. The aperture range is Thorlabs' (3doptix.com's listing of it, read 2026-10-28)",
+    "blades": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    "pivot_near": [2.45, 9.16, 0.889],
+    "drive_near": [-2.22, -8.29, 0.889],
+    "aperture_range": [0.8, 15.0]
+   }
+  },
+  {
+   "model": "ID20/M",
+   "kind": "iris",
+   "step": "Iris-ID20_M.step",
+   "comment": "Aperture along +z in the file, lever on top. The file includes the iris's TR75/M post, which is removed: the bench's procedural post replaces it. Each blade is its own part, turning about its pivot as the lever turns (tools/optical_models/iris.py).",
+   "frame": {
+    "origin": {"cylinder": { "solid": 0, "radius": 18.3, "near": [0.0, 0.0, 3.9311] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"housing": [0, 2, 17], "actuator": [3, 4]},
+   "remove_solids": [1],
+   "mates": {
+    "aperture_center": {
+     "comment": "the blades' mid-plane on the iris's axis",
+     "origin": {"cylinder": { "solid": 0, "radius": 18.3, "near": [0.0, 0.0, 3.9311] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "housing",
+     "aperture_modeled": 0.0144
+    },
+    "post_tap": {
+     "comment": "where the removed post's top met the housing, on the post's axis, z down",
+     "origin": {"cylinder": { "solid": 1, "radius": 6.3373, "near": [0.0, -17.9, 1.0668] }},
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "housing"
+    },
+    "lever_axis": {
+     "comment": "the actuator's axis, the iris's own; the lever as modeled points along y",
+     "origin": {"cylinder": { "solid": 0, "radius": 18.3, "near": [0.0, 0.0, 3.9311] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "actuator",
+     "lever_angle_modeled": 0.0
+    }
+   },
+   "budget": 20000,
+   "iris": {
+    "comment": "pivot_near: a point on the first blade's pivot pin, which sits in a hole in the housing; drive_near: on its drive pin, which rides in the actuator ring's radial slot. The aperture range is Thorlabs' (3doptix.com's listing of it, read 2026-10-28)",
+    "blades": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    "pivot_near": [0.0, 12.45, 3.931],
+    "drive_near": [2.97, -11.08, 3.931],
+    "aperture_range": [0.8, 20.0]
+   }
+  },
+  {
+   "model": "ID25/M",
+   "kind": "iris",
+   "step": "Iris-ID25_M.step",
+   "comment": "Aperture along +z in the file, lever on top. The file includes the iris's TR75/M post, which is removed: the bench's procedural post replaces it. Each blade is its own part, turning about its pivot as the lever turns (tools/optical_models/iris.py).",
+   "frame": {
+    "origin": {"cylinder": { "solid": 0, "radius": 21.8694, "near": [40.4422, 18.1994, 3.2993] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"housing": [0, 1, 18], "actuator": [2, 9]},
+   "remove_solids": [19],
+   "mates": {
+    "aperture_center": {
+     "comment": "the blades' mid-plane on the iris's axis",
+     "origin": {"cylinder": { "solid": 0, "radius": 21.8694, "near": [40.4422, 18.1994, 3.2993] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "housing",
+     "aperture_modeled": 0.013623
+    },
+    "post_tap": {
+     "comment": "where the removed post's top met the housing, on the post's axis, z down",
+     "origin": {"cylinder": { "solid": 19, "radius": 6.3373, "near": [40.4422, -3.2636, 1.7753] }},
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "housing"
+    },
+    "lever_axis": {
+     "comment": "the actuator's axis, the iris's own; the lever as modeled points along y",
+     "origin": {"cylinder": { "solid": 0, "radius": 21.8694, "near": [40.4422, 18.1994, 3.2993] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "actuator",
+     "lever_angle_modeled": 0.0
+    }
+   },
+   "budget": 20000,
+   "iris": {
+    "comment": "pivot_near: a point on the first blade's pivot pin, which sits in a hole in the housing; drive_near: on its drive pin, which rides in the actuator ring's radial slot. The aperture range is Thorlabs' (3doptix.com's listing of it, read 2026-10-28)",
+    "blades": [3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17],
+    "pivot_near": [46.91, 31.62, 3.299],
+    "drive_near": [37.57, 5.61, 3.299],
+    "aperture_range": [1.0, 25.0]
+   }
+  },
+  {
+   "model": "ID36/M",
+   "kind": "iris",
+   "step": "Iris-ID36_M.step",
+   "comment": "Aperture along +z in the file, lever on top. The file includes the iris's TR75/M post, which is removed: the bench's procedural post replaces it. Each blade is its own part, turning about its pivot as the lever turns (tools/optical_models/iris.py).",
+   "frame": {
+    "origin": {"cylinder": { "solid": 0, "radius": 28.448, "near": [15.8902, 31.9516, 47.706] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"housing": [0, 1, 20], "actuator": [18, 19]},
+   "remove_solids": [21],
+   "mates": {
+    "aperture_center": {
+     "comment": "the blades' mid-plane on the iris's axis",
+     "origin": {"cylinder": { "solid": 0, "radius": 28.448, "near": [15.8902, 31.9516, 47.706] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "housing",
+     "aperture_modeled": 0.01778
+    },
+    "post_tap": {
+     "comment": "where the removed post's top met the housing, on the post's axis, z down",
+     "origin": {"cylinder": { "solid": 21, "radius": 6.3373, "near": [15.8902, 3.8846, 45.3375] }},
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "housing"
+    },
+    "lever_axis": {
+     "comment": "the actuator's axis, the iris's own; the lever as modeled points along y",
+     "origin": {"cylinder": { "solid": 0, "radius": 28.448, "near": [15.8902, 31.9516, 47.706] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "actuator",
+     "lever_angle_modeled": 0.0
+    }
+   },
+   "budget": 20000,
+   "iris": {
+    "comment": "pivot_near: a point on the first blade's pivot pin, which sits in a hole in the housing; drive_near: on its drive pin, which rides in the actuator ring's radial slot. The aperture range is Thorlabs' (3doptix.com's listing of it, read 2026-10-28). ID36/M's blades have no drive pin: a round corner sits in a pocket of the actuator, which is treated as a radial slot",
+    "blades": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+    "pivot_near": [31.156, 47.219, 47.706],
+    "drive_near": [-0.925, 23.206, 47.706],
+    "aperture_range": [1.3, 36.0]
+   },
+   "lettering_colors": [
+    [0.7961, 0.8235, 0.9373]
+   ]
+  },
+  {
+   "model": "ID50/M",
+   "kind": "iris",
+   "step": "Iris-ID50_M.step",
+   "comment": "Aperture along +z in the file, lever on top. The file includes the iris's TR75/M post, which is removed: the bench's procedural post replaces it. Each blade is its own part, turning about its pivot as the lever turns (tools/optical_models/iris.py).",
+   "frame": {
+    "origin": {"cylinder": { "solid": 22, "radius": 39.6875, "near": [17.3585, 44.7248, 67.3504] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"housing": [1, 4, 21, 22], "actuator": [2, 3]},
+   "remove_solids": [0],
+   "mates": {
+    "aperture_center": {
+     "comment": "the blades' mid-plane on the iris's axis",
+     "origin": {"cylinder": { "solid": 22, "radius": 39.6875, "near": [17.3585, 44.7248, 67.3504] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "housing",
+     "aperture_modeled": 0.011699
+    },
+    "post_tap": {
+     "comment": "where the removed post's top met the housing, on the post's axis, z down",
+     "origin": {"cylinder": { "solid": 0, "radius": 6.3373, "near": [17.3585, 5.304, 65.5755] }},
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "housing"
+    },
+    "lever_axis": {
+     "comment": "the actuator's axis, the iris's own; the lever as modeled points along y",
+     "origin": {"cylinder": { "solid": 22, "radius": 39.6875, "near": [17.3585, 44.7248, 67.3504] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "actuator",
+     "lever_angle_modeled": 0.0
+    }
+   },
+   "budget": 20000,
+   "iris": {
+    "comment": "pivot_near: a point on the first blade's pivot pin, which sits in a hole in the housing; drive_near: on its drive pin, which rides in the actuator ring's radial slot. The aperture range is Thorlabs' (3doptix.com's listing of it, read 2026-10-28)",
+    "blades": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+    "pivot_near": [46.06, 49.79, 67.35],
+    "drive_near": [-9.08, 49.86, 67.35],
+    "aperture_range": [2.0, 50.0]
+   },
+   "lettering_colors": [
+    [0.7961, 0.8235, 0.9373]
+   ]
+  },
+  {
+   "model": "PF05-03",
+   "kind": "mirror_blank",
+   "step": "Mirror_blank-PF05-03.step",
+   "comment": "Symmetric; +z in the file is taken as the front (the coated face), as example mirror.FCStd seats PF05-03.",
+   "frame": {
+    "origin": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [0, 0, 3.0] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"blank": [0]},
+   "default_finish": "glass",
+   "mates": {
+    "front_center": {
+     "origin": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [0, 0, 3.0] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "blank"
+    },
+    "back_center": {
+     "comment": "rests on a mount's optic_seat",
+     "origin": {"plane": { "solid": 0, "normal": [0, 0, -1], "near": [0, 0, -3.0] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "blank"
+    }
+   },
+   "budget": 2000
+  },
+  {
+   "model": "PF10-03",
+   "kind": "mirror_blank",
+   "step": "Mirror_blank-PF10-03.step",
+   "comment": "Symmetric; +z in the file is taken as the front (the coated face), as example mirror.FCStd seats PF05-03.",
+   "frame": {
+    "origin": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [0, 0, 3.0] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"blank": [0]},
+   "default_finish": "glass",
+   "mates": {
+    "front_center": {
+     "origin": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [0, 0, 3.0] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "blank"
+    },
+    "back_center": {
+     "comment": "rests on a mount's optic_seat",
+     "origin": {"plane": { "solid": 0, "normal": [0, 0, -1], "near": [0, 0, -3.0] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "blank"
+    }
+   },
+   "budget": 2000
+  },
+  {
+   "model": "PF20-03",
+   "kind": "mirror_blank",
+   "step": "Mirror_blank-PF20-03.step",
+   "comment": "Symmetric; +z in the file is taken as the front (the coated face), as example mirror.FCStd seats PF05-03.",
+   "frame": {
+    "origin": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [0, 0, 6.0] }},
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"blank": [0]},
+   "default_finish": "glass",
+   "mates": {
+    "front_center": {
+     "origin": {"plane": { "solid": 0, "normal": [0, 0, 1], "near": [0, 0, 6.0] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "blank"
+    },
+    "back_center": {
+     "comment": "rests on a mount's optic_seat",
+     "origin": {"plane": { "solid": 0, "normal": [0, 0, -1], "near": [0, 0, -6.0] }},
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "blank"
+    }
+   },
+   "budget": 2000
+  },
+  {
+   "model": "PH50E/M",
+   "kind": "post_holder",
+   "step": "Post_holder-PH50E_M.step",
+   "comment": "The post axis is +y in the file; the thumbscrew points along +z.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 0, "radius": 6.3881, "near": [-18.0565, 10.0, 4.5054] }},
+     "plane": {"plane": { "solid": 5, "normal": [0, -1, 0], "near": [-18.0565, -22.5988, 4.5054] }}
+    },
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"holder": [0, 1, 2, 3, 4, 5, 6, 7, 8]},
+   "mates": {
+    "base_contact": {
+     "comment": "the bottom face's center, z out of the face",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 6.3881, "near": [-18.0565, 10.0, 4.5054] }},
+      "plane": {"plane": { "solid": 5, "normal": [0, -1, 0], "near": [-18.0565, -22.5988, 4.5054] }}
+     },
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "holder",
+     "flange_height": 0.004699
+    },
+    "post_entry": {
+     "comment": "the bore's axis at the top face, z out of the face; depth is down to the base's boss",
+     "origin": {
+      "axis": {"cylinder": { "solid": 0, "radius": 6.3881, "near": [-18.0565, 10.0, 4.5054] }},
+      "plane": {"plane": { "solid": 0, "normal": [0, 1, 0], "near": [-18.0565, 32.1002, 4.5054] }}
+     },
+     "z": [0, 1, 0],
+     "y": [0, 0, -1],
+     "part": "holder",
+     "bore_diameter": 0.0127762,
+     "depth": 0.0445392
+    },
+    "thumbscrew": {
+     "comment": "the thumbscrew's axis where it meets the bore's axis, z outward",
+     "origin": {"cylinder": { "solid": 1, "radius": 7.239, "near": [-18.0565, 20.2, 4.5054] }},
+     "z": [0, 0, 1],
+     "part": "holder"
+    }
+   },
+   "budget": 10000
+  },
+  {
+   "model": "CF125C/M",
+   "kind": "clamping_fork",
+   "step": "Post_holder_clamp-CF125C_M.STEP",
+   "comment": "Up is +y in the file. The holder end's recess is exactly as deep as PH50E/M's base flange (4.699 mm), so the holder's base and the fork's underside share a plane, as example mirror.FCStd has them; the foot at the far end reaches 1.016 mm below it, which the bolt springs flat. No STEP colors: everything but the bolt and washer is anodized.",
+   "frame": {
+    "origin": {
+     "axis": {"cylinder": { "solid": 3, "radius": 16.129, "near": [0, -3.0, 0] }},
+     "plane": {"plane": { "solid": 3, "normal": [0, -1, 0], "near": [0, -5.588, 2.0] }}
+    },
+    "z": [0, 0, 1],
+    "y": [0, 1, 0]
+   },
+   "parts": {"fork": [3], "bolt": [0, 1, 2]},
+   "finishes": {"stainless": [1, 2]},
+   "mates": {
+    "holder_seat": {
+     "comment": "where the post holder's base_contact goes: the recess's axis at the underside, z down",
+     "origin": {
+      "axis": {"cylinder": { "solid": 3, "radius": 16.129, "near": [0, -3.0, 0] }},
+      "plane": {"plane": { "solid": 3, "normal": [0, -1, 0], "near": [0, -5.588, 2.0] }}
+     },
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "fork",
+     "recess_radius": 0.016129,
+     "foot_drop": 0.001016
+    },
+    "slot": {
+     "comment": "the slot's center line on the underside, from the end nearer the holder; length to the far end",
+     "origin": {
+      "axis": {"cylinder": { "solid": 3, "radius": 3.3655, "near": [0, -4.0, 26.797] }},
+      "plane": {"plane": { "solid": 3, "normal": [0, -1, 0], "near": [0, -5.588, 30.0] }}
+     },
+     "z": [0, 0, 1],
+     "y": [0, 1, 0],
+     "part": "fork",
+     "length": 0.031496
+    },
+    "bolt": {
+     "comment": "the bolt's axis on the underside, z down into the table",
+     "origin": {
+      "axis": {"cylinder": { "solid": 2, "radius": 5.0, "near": [0, 2.5, 41.7195] }},
+      "plane": {"plane": { "solid": 3, "normal": [0, -1, 0], "near": [0, -5.588, 30.0] }}
+     },
+     "z": [0, -1, 0],
+     "y": [0, 0, 1],
+     "part": "bolt"
+    }
+   },
+   "motions": {"bolt": { "kind": "slide", "mate": "slot", "range": [0.0, 0.031496] }},
+   "budget": 5000,
+   "proxies": [
+    {"comment": "the M6 x 1 bolt's modeled thread, from inside its head to its tip, at the major diameter", "solid": 2, "kind": "thread", "from": [0.0, 0.0, 41.719], "to": [0.0, -10.383, 41.719], "radius": 3.0}
+   ],
+   "find_lettering": true
+  }
+ ]
+}

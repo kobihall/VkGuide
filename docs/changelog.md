@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-10-28
+
+### New
+
+- An iris's blades move. Each is its own part, turning about its pivot pin, and the mates file's `aperture` drive gives the lever's and every blade's angle for each aperture from Thorlabs' smallest to its largest: 1 to 25 mm on ID25/M. `driveMotionValue()` reads it.
+- `bin/mesh_visibility --trace` traces rays from a file against a model, for the converter's texture bakes, and `--compare --farther-only` counts only where a cleaned model lets a ray through or farther.
+
+### Changed
+
+- Lettering and scale graduations on the optical models are a texture, no longer geometry. Each model's `.glb` embeds one decal atlas, and the faces the lettering was cut into are flat again. LMR2/M and CF125C/M, whose files have no colors, have their lettering found from its shape. The library is 297,959 triangles, from 370,207, and RSP2/M 15,840 from 34,834.
+- The kinematic mounts' springs and CF125C/M's threaded bolt are textured cylinders. KM200's and KM200PM/M's springs keep their hooks, which show on the mounts' backs.
+- RSP1/M and RSP2/M have no thrust bearings: a grazing view between rotor and housing now sees through where they were.
+- The converter checks each model for holes as well as hidden geometry, and takes 45 minutes for all 23. `review.py` shows the textures and has `--zoom`.
+- The app reads and uploads an optical model the first time something asks for it, no longer all 31 at startup. Startup reads only whether each model's files exist, so the **Scene** panel still warns about a missing one.
+
+### Fixed
+
+- Fixed CF125C/M's modeled M6 thread being kept as geometry: the converter had looked only for the white cylinders Thorlabs paints in place of a thread.
+
+### Internal
+
+- `tools/optical_models/decals.py` flattens lettering into the faces it is cut into, builds the charts and atlas, bakes it and cuts the faces' triangles along the decals; `iris.py` solves the blades' kinematics. The manifest gains `"proxies"`, `"iris"`, `"lettering_colors"` and `"find_lettering"`.
+- `MountSurface` gains `textured` and `uvs`, `MountModel` `decalPixels` and `drives`, `MountMotion` `drive`. `rt_optic_models` decodes the textures with its own static stb_image. `ImportedImage::rgba8` carries an image that is already decoded. `MountLibrary::open()` replaces `load()`; `model()` and `meshes()` read and upload on their first call, and `loadMountModel()` reads one model.
+
+## 2026-10-27
+
+### New
+
+- The optomechanical models: 23 Thorlabs parts converted from their STEP files into `assets/optical_models/meshes/`. These are KM05T/M, KM100, KM200 and KM200PM/M kinematic mounts, LMR05/M, LMR1/M and LMR2/M fixed mounts, RSP05/M, RSP1/M and RSP2/M rotation mounts, the FP01 plate holder, seven ID-series irises, the PF05-03, PF10-03 and PF20-03 mirror blanks, the PH50E/M post holder and the CF125C/M clamping fork. Each is a `.glb` with a node per moving part and a `.mates.json` naming the frames where it meets other parts. The app loads them at startup, in 0.36 s, and nothing draws or traces them yet; a scene renders bit-identical to before.
+- Procedural placeholders for a laser head, a diode module, a fiber collimator, a power meter head, a camera, a beam profiler, an alignment card and a beam dump, each with the mates its real part will have.
+- `tools/optical_models/convert.py`, run with FreeCAD's Python, converts the STEP files from `tools/optical_models/manifest.json`. It keeps the parts' finishes and white lettering, drops what no view reaches, meshes to each model's triangle budget, and checks the result's silhouettes against the original from 26 directions. `--check-example` checks the mates against `example mirror.FCStd`; `tools/optical_models/review.py` renders review sheets with Blender.
+- `bin/mesh_visibility` finds the hidden triangles and compares silhouettes, and `bin/optic_models_test` checks that every model reads, carries its mates and fits its budget. `run_all.py` runs the test.
+- The **Scene** panel warns when an optical model's files are missing and a box stands in for it.
+
+### Internal
+
+- `rt_optic_models` (`src/optic_models.h/.cpp`, no Vulkan) holds `mountModels()`, the readers and the placeholders; `MountLibrary` (`src/mount_library.h/.cpp`) uploads them through `loadImportedModel()` and lives beside `VulkanEngine::m_models`, never in it.
+- `docs/plans/physoptics-optomechanical-models.md` moved to `docs/plans/completed/`, with "As built", "Not built" and "Pending answers" sections.
+
 ## 2026-10-26
 
 ### New

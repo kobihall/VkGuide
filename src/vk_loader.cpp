@@ -804,14 +804,20 @@ std::optional<AllocatedImage> loadImportedImage(VulkanEngine* engine, const Impo
 			}
 		}
 	} else {
-		int channels = 0;
-		stbi_uc* data = stbi_load(source.path.string().c_str(), &width, &height, &channels, 4);
-		if (data == nullptr) {
-			error = fmt::format("{}: {}", source.path.filename().string(), stbi_failure_reason());
-			return std::nullopt;
+		if (!source.rgba8.empty()) {
+			width = (int)source.width;
+			height = (int)source.height;
+			bytes = source.rgba8;
+		} else {
+			int channels = 0;
+			stbi_uc* data = stbi_load(source.path.string().c_str(), &width, &height, &channels, 4);
+			if (data == nullptr) {
+				error = fmt::format("{}: {}", source.path.filename().string(), stbi_failure_reason());
+				return std::nullopt;
+			}
+			bytes.assign(data, data + (size_t)width * height * 4);
+			stbi_image_free(data);
 		}
-		bytes.assign(data, data + (size_t)width * height * 4);
-		stbi_image_free(data);
 		//an 8-bit file already in the texture array's encoding needs no conversion
 		if ((!source.data && source.encoding != ImageEncoding::Srgb) || source.invert) {
 			linear.resize(bytes.size());

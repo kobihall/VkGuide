@@ -1,0 +1,127 @@
+{
+ "model": "FP01",
+ "step": "Filter_mount-FP01.step",
+ "units": "meters",
+ "frame": "+y up, +z along the optical axis toward the incoming light",
+ "source_frame": {
+  "comment": "the canonical frame's origin and axes in the STEP file's millimeters",
+  "origin": [
+   11.684,
+   -3.81,
+   0.0
+  ],
+  "x": [
+   0.0,
+   0.0,
+   1.0
+  ],
+  "y": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "z": [
+   -1.0,
+   0.0,
+   0.0
+  ]
+ },
+ "parts": [
+  "body",
+  "jaw"
+ ],
+ "mates": {
+  "plate_seat": {
+   "origin": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the fixed wall's face at the slot's floor and center: the plate's back face and bottom edge",
+   "part": "body",
+   "body_width": 0.02286
+  },
+  "jaw": {
+   "origin": [
+    0.0,
+    0.008941,
+    0.007366
+   ],
+   "x": [
+    -1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "comment": "the jaw's pad face, z the way it closes",
+   "part": "jaw",
+   "gap": 0.007366
+  },
+  "post_tap": {
+   "origin": [
+    0.0,
+    -0.006604,
+    0.01143
+   ],
+   "x": [
+    -1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "z": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "comment": "the bottom face on the tapped hole's axis, z out of the face",
+   "part": "body"
+  }
+ },
+ "motions": {
+  "jaw": {
+   "kind": "slide",
+   "mate": "jaw",
+   "range": [
+    -0.007239,
+    0.007366
+   ]
+  }
+ },
+ "triangles": 3448,
+ "budget": 20000,
+ "decals": {
+  "comment": "the lettering, scales, springs and threads, baked into the .glb's texture",
+  "size": 512,
+  "texel": 4e-05
+ },
+ "kind": "plate_holder"
+}

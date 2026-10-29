@@ -14,7 +14,7 @@ Every beam axis starts at a laser. To the beam solver a laser is a chief ray and
 
 ### The element
 
-`laser` is an `OPTIC_TRAITS` row. Its housing is a parameter, one of the placeholders of [physoptics-optomechanical-models.md](physoptics-optomechanical-models.md) (laser head, diode module, fiber collimator), which sets its model, its mount and where its output aperture sits. Its one port is **Output**, along the body frame's +z from the aperture's center. Its parameters:
+`laser` is an `OPTIC_TRAITS` row. Its housing is a parameter, one of the placeholders of [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md) (laser head, diode module, fiber collimator), which sets its model, its mount and where its output aperture sits. Its one port is **Output**, along the body frame's +z from the aperture's center. Its parameters:
 
 | Group | Parameters |
 |---|---|

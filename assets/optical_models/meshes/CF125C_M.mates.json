@@ -1,0 +1,128 @@
+{
+ "model": "CF125C/M",
+ "step": "Post_holder_clamp-CF125C_M.STEP",
+ "units": "meters",
+ "frame": "+y up, +z along the optical axis toward the incoming light",
+ "source_frame": {
+  "comment": "the canonical frame's origin and axes in the STEP file's millimeters",
+  "origin": [
+   0.0,
+   -5.588,
+   0.0
+  ],
+  "x": [
+   1.0,
+   0.0,
+   0.0
+  ],
+  "y": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "z": [
+   0.0,
+   0.0,
+   1.0
+  ]
+ },
+ "parts": [
+  "fork",
+  "bolt"
+ ],
+ "mates": {
+  "holder_seat": {
+   "origin": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "z": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "comment": "where the post holder's base_contact goes: the recess's axis at the underside, z down",
+   "part": "fork",
+   "recess_radius": 0.016129,
+   "foot_drop": 0.001016
+  },
+  "slot": {
+   "origin": [
+    0.0,
+    0.0,
+    0.026797
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the slot's center line on the underside, from the end nearer the holder; length to the far end",
+   "part": "fork",
+   "length": 0.031496
+  },
+  "bolt": {
+   "origin": [
+    0.0,
+    0.0,
+    0.0417195
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "z": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "comment": "the bolt's axis on the underside, z down into the table",
+   "part": "bolt"
+  }
+ },
+ "motions": {
+  "bolt": {
+   "kind": "slide",
+   "mate": "slot",
+   "range": [
+    0.0,
+    0.031496
+   ]
+  }
+ },
+ "triangles": 4559,
+ "budget": 5000,
+ "decals": {
+  "comment": "the lettering, scales, springs and threads, baked into the .glb's texture",
+  "size": 1024,
+  "texel": 4e-05
+ },
+ "kind": "clamping_fork"
+}

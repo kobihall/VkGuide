@@ -890,6 +890,20 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 	ImGui::Spacing();
 	drawIoResultLine(engine->m_lastFileResult);
 
+	//optomechanical models whose converted files could not be read, and stand in as boxes (mount_library.h)
+	const std::vector<std::string>& modelWarnings = engine->m_mountLibrary.warnings();
+	if (!modelWarnings.empty()) {
+		ImGui::Spacing();
+		ImGui::TextColored(ImVec4(1.f, 0.7f, 0.2f, 1.f), "%zu optical models are placeholder boxes", modelWarnings.size());
+		if (ImGui::IsItemHovered()) {
+			std::string tip;
+			for (const std::string& line : modelWarnings) {
+				tip += line + "\n";
+			}
+			ImGui::SetTooltip("%s", tip.c_str());
+		}
+	}
+
 	ImGui::End();
 }
 

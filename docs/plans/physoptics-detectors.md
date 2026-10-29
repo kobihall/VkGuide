@@ -15,7 +15,7 @@ A simulated experiment is only as useful as what it lets you measure. In the lab
 
 ### Detector kinds
 
-Each is an `OPTIC_TRAITS` row with a sensor surface in its body and a placeholder model ([physoptics-optomechanical-models.md](physoptics-optomechanical-models.md)):
+Each is an `OPTIC_TRAITS` row with a sensor surface in its body and a placeholder model ([physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md)):
 
 | Kind | Sensor | After depositing | Reports |
 |---|---|---|---|

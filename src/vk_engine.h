@@ -16,6 +16,7 @@
 #include <rt_textures.h>
 #include <vk_gizmo.h>
 #include <gpu_selftest.h>
+#include <mount_library.h>
 
 #include <chrono>
 #include <filesystem>
@@ -324,6 +325,9 @@ public:
 	// (identity root transform); the shapes in m_raytraceScene and m_environmentMap are the
 	// rest of the scene, and openScene()/saveScene() move all three together
 	std::map<std::string, std::shared_ptr<LoadedModel>> m_models;
+	// the optomechanical models (mount_library.h): fixed resources loaded at startup, outside m_models, so
+	// they are never saved with a scene or listed under Models
+	MountLibrary m_mountLibrary;
 
 	// the models as the raytracer sees them, rebuilt by rebuildSceneDerivedData() exactly when
 	// m_models changes and shared immutably with every render snapshot - see RaytraceMeshData

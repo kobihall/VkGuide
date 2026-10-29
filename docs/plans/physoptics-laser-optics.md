@@ -45,7 +45,7 @@ The user settled these on 2026-10-18. Treat them as fixed.
 | Prisms | Height equals the leg (right angle) or the side (equilateral), editable. |
 | Curved mirror substrates | Thorlabs CM-series and MPD-series catalog thicknesses (CM254: 6.0 mm at the center). |
 | Square filters | Held in an FP01 plate holder (`assets/optical_models/Filter_mount-FP01.step`), which has no upper size limit and holds plates up to 14.7 mm thick. The SFH3 model is not used. |
-| Missing models | Lasers and detectors get procedural placeholders now, and [physoptics-optomechanical-models.md](physoptics-optomechanical-models.md) lists Thorlabs parts whose STEP files replace them later. |
+| Missing models | Lasers and detectors get procedural placeholders now, and [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md) lists Thorlabs parts whose STEP files replace them later. |
 | References | Zemax OpticStudio, open-source Python ray tracers (Optiland, RayOptics) and open-source wave optics (LightPipes, POPPY) are all available for comparison. |
 | Wave optics | Not planned here. The user builds the coherent backend last. See "The wave backend" below. |
 | Scene modes | The optics editor is a scene capability, **Optical bench**, which a scene lists in its file and which adds the optics' folders, windows, menus and recommended settings without changing how anything renders. Capabilities combine; **New Scene** offers templates that turn them on; a capability cannot be turned off while its objects exist; its recommended settings are offered once, never forced; named workspaces come later ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)). |
@@ -86,7 +86,7 @@ Two consumers read the same optics. The solver traces one chief ray per segment 
 | [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md) | The surface-list optical body: surface kinds, apertures, media, the `CRT_SHAPE_OPTIC` instance, `crt_optic.glsl`, `rt_optics` |
 | [physoptics-optical-materials.md](physoptics-optical-materials.md) | Glass catalogs (AGF, Sellmeier), coatings (ideal, tabulated, thin-film stacks, metals, absorbers), the optical interface material |
 | [physoptics-optical-elements.md](physoptics-optical-elements.md) | `SceneOptic` and `OPTIC_TRAITS`: every element of the request with its Thorlabs sizes, the Optics folder, the scene file |
-| [physoptics-optomechanical-models.md](physoptics-optomechanical-models.md) | The offline STEP-to-mesh pipeline, cleanup, connection nodes, the mount library, placeholders and the parts list |
+| [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md) | The offline STEP-to-mesh pipeline, cleanup, connection nodes, the mount library, placeholders and the parts list |
 | [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) | The breadboard, posts, post holders and clamps, mount poses, hole snapping, fine adjusters, mounts as traced geometry |
 | [physoptics-laser-sources.md](physoptics-laser-sources.md) | The laser element: Gaussian emission, line spectra, power, polarization, emitted-ray sampling |
 | [physoptics-beam-axis.md](physoptics-beam-axis.md) | The authored graph of elements and ports, its editor, the traced graph beside it |
@@ -119,7 +119,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 ### Milestone 1: the bench
 
 9. [physoptics-scene-capabilities.md](physoptics-scene-capabilities.md). Capabilities and templates, so every later plan registers its UI under **Optical bench** and a plain render scene never shows it.
-10. [physoptics-optomechanical-models.md](physoptics-optomechanical-models.md). Offline work, which can start in parallel with milestone 0.
+10. [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md). Offline work, which can start in parallel with milestone 0.
 11. [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md)
 12. [physoptics-optical-materials.md](physoptics-optical-materials.md)
 13. [physoptics-optical-elements.md](physoptics-optical-elements.md)

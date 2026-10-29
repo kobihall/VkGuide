@@ -58,6 +58,7 @@ void VulkanEngine::init()
 	initPipeline();
 	initIMGUI();
 	initDefaultData();
+	m_mountLibrary.open(this, m_rootPath + "assets/optical_models/meshes");
 
 	//before the tracer: its descriptor sets always name the array's view, so it must exist first
 	m_raytraceTextures.init(this);
@@ -3264,6 +3265,7 @@ void VulkanEngine::cleanup()
 		m_raytracer.shutdown(this);
 
 		m_models.clear();
+		m_mountLibrary.clear();
 		m_raytraceMeshData.reset();
 		m_meshNodes.clear();
 		//after the tracer, whose descriptor sets name the array's view

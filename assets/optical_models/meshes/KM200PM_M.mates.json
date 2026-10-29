@@ -1,0 +1,190 @@
+{
+ "model": "KM200PM/M",
+ "step": "Prism_mount-KM200PM_M.step",
+ "units": "meters",
+ "frame": "+y up, +z along the optical axis toward the incoming light",
+ "source_frame": {
+  "comment": "the canonical frame's origin and axes in the STEP file's millimeters",
+  "origin": [
+   -19.71,
+   3.063875,
+   32.88
+  ],
+  "x": [
+   1.0,
+   0.0,
+   0.0
+  ],
+  "y": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "z": [
+   0.0,
+   0.0,
+   1.0
+  ]
+ },
+ "parts": [
+  "base",
+  "plate",
+  "adjuster_x",
+  "adjuster_y"
+ ],
+ "mates": {
+  "prism_seat": {
+   "origin": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the platform's top face, over the post; y is the platform's normal",
+   "part": "plate"
+  },
+  "post_tap": {
+   "origin": [
+    -4e-07,
+    -0.022977475,
+    -0.03288
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "z": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "comment": "the bottom face on the middle tapped hole's axis, z out of the face",
+   "part": "base"
+  },
+  "pivot": {
+   "origin": [
+    0.0317496,
+    -0.015103475,
+    -0.02605375
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "part": "base"
+  },
+  "adjuster_x_tip": {
+   "origin": [
+    -0.0304804,
+    -0.015103475,
+    -0.025353609
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the ball on the screw's tip; z is the way the screw advances",
+   "part": "adjuster_x",
+   "pitch": 0.0003175,
+   "pitch_source": "1/4-80 (to confirm)"
+  },
+  "adjuster_y_tip": {
+   "origin": [
+    0.0317496,
+    0.047126525,
+    -0.02444008
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "part": "adjuster_y",
+   "pitch": 0.0003175,
+   "pitch_source": "1/4-80 (to confirm)"
+  }
+ },
+ "motions": {
+  "plate": {
+   "kind": "tilt",
+   "mate": "pivot",
+   "range": 0.0698
+  },
+  "adjuster_x": {
+   "kind": "screw",
+   "mate": "adjuster_x_tip",
+   "range": [
+    -0.0025,
+    0.0025
+   ]
+  },
+  "adjuster_y": {
+   "kind": "screw",
+   "mate": "adjuster_y_tip",
+   "range": [
+    -0.0025,
+    0.0025
+   ]
+  }
+ },
+ "triangles": 35398,
+ "budget": 40000,
+ "decals": {
+  "comment": "the lettering, scales, springs and threads, baked into the .glb's texture",
+  "size": 1024,
+  "texel": 4e-05
+ },
+ "kind": "prism_mount"
+}

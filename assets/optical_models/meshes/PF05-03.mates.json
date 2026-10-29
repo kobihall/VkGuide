@@ -1,0 +1,85 @@
+{
+ "model": "PF05-03",
+ "step": "Mirror_blank-PF05-03.step",
+ "units": "meters",
+ "frame": "+y up, +z along the optical axis toward the incoming light",
+ "source_frame": {
+  "comment": "the canonical frame's origin and axes in the STEP file's millimeters",
+  "origin": [
+   0.0,
+   0.0,
+   3.0
+  ],
+  "x": [
+   1.0,
+   0.0,
+   0.0
+  ],
+  "y": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "z": [
+   0.0,
+   0.0,
+   1.0
+  ]
+ },
+ "parts": [
+  "blank"
+ ],
+ "mates": {
+  "front_center": {
+   "origin": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "part": "blank"
+  },
+  "back_center": {
+   "origin": [
+    0.0,
+    0.0,
+    -0.006
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "rests on a mount's optic_seat",
+   "part": "blank"
+  }
+ },
+ "motions": {},
+ "triangles": 444,
+ "budget": 2000,
+ "kind": "mirror_blank"
+}

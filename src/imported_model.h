@@ -47,6 +47,7 @@ enum class ImageEncoding : uint8_t {
 
 // an image file a material reads, decoded by the engine when it builds the model
 struct ImportedImage {
+	// the file, or with `rgba8` only its name, for messages
 	std::filesystem::path path;
 	ImageEncoding encoding { ImageEncoding::Srgb };
 	float gamma { 1.f };
@@ -54,6 +55,11 @@ struct ImportedImage {
 	bool invert { false };
 	// values the shaders read as they are (a normal map), not a color they decode from sRGB
 	bool data { false };
+	// the image already decoded instead of a file (a texture a .glb embeds): rgba8 rows of width x height, in the
+	// encoding `encoding` says
+	std::vector<uint8_t> rgba8;
+	uint32_t width { 0 };
+	uint32_t height { 0 };
 };
 
 struct ImportedMaterial {

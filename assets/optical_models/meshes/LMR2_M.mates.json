@@ -1,0 +1,126 @@
+{
+ "model": "LMR2/M",
+ "step": "Fixed_mount-LMR2_M.step",
+ "units": "meters",
+ "frame": "+y up, +z along the optical axis toward the incoming light",
+ "source_frame": {
+  "comment": "the canonical frame's origin and axes in the STEP file's millimeters",
+  "origin": [
+   -31.159593687,
+   -32.340786824,
+   9.170420112
+  ],
+  "x": [
+   1.0,
+   0.0,
+   0.0
+  ],
+  "y": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "z": [
+   0.0,
+   0.0,
+   1.0
+  ]
+ },
+ "parts": [
+  "body",
+  "retaining_ring"
+ ],
+ "mates": {
+  "optic_seat": {
+   "origin": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the lip at the back of the threaded bore, which the optic's back face rests on",
+   "part": "body",
+   "bore_diameter": 0.051689
+  },
+  "retaining_ring_seat": {
+   "origin": [
+    0.0,
+    0.0,
+    0.009144
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the ring's back face, which presses on the optic's front face",
+   "part": "retaining_ring"
+  },
+  "post_tap": {
+   "origin": [
+    0.0,
+    -0.034417,
+    0.005334
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "z": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "comment": "the bottom face on the tapped hole's axis, z out of the face",
+   "part": "body"
+  }
+ },
+ "motions": {
+  "retaining_ring": {
+   "kind": "slide",
+   "mate": "retaining_ring_seat",
+   "range": [
+    -0.009144,
+    0.0
+   ]
+  }
+ },
+ "triangles": 4283,
+ "budget": 10000,
+ "decals": {
+  "comment": "the lettering, scales, springs and threads, baked into the .glb's texture",
+  "size": 512,
+  "texel": 4e-05
+ },
+ "kind": "fixed_mount"
+}

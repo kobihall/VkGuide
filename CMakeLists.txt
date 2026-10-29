@@ -136,6 +136,22 @@ if (NOT MSVC)
     target_compile_options(image_diff PRIVATE -O2)
 endif()
 
+# CPU-only check of the optomechanical model library: every model reads, carries its mates, and fits its
+# budget: ./bin/optic_models_test
+add_executable(optic_models_test tests/optic_models_test.cpp)
+target_link_libraries(optic_models_test PRIVATE rt_optic_models fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(optic_models_test PRIVATE -O2)
+endif()
+
+# The optomechanical model converter's hidden-geometry pass and silhouette comparison
+# (tools/optical_models/convert.py runs it): ./bin/mesh_visibility <in.omv> <out.mask>
+add_executable(mesh_visibility tools/mesh_visibility.cpp)
+target_link_libraries(mesh_visibility PRIVATE rt_bvh)
+if (NOT MSVC)
+    target_compile_options(mesh_visibility PRIVATE -O2)
+endif()
+
 
 find_program(GLSL_VALIDATOR glslangValidator HINTS /usr/bin /usr/local/bin $ENV{VULKAN_SDK}/Bin/ $ENV{VULKAN_SDK}/Bin32/)
 

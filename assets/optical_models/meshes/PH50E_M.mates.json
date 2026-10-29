@@ -1,0 +1,118 @@
+{
+ "model": "PH50E/M",
+ "step": "Post_holder-PH50E_M.step",
+ "units": "meters",
+ "frame": "+y up, +z along the optical axis toward the incoming light",
+ "source_frame": {
+  "comment": "the canonical frame's origin and axes in the STEP file's millimeters",
+  "origin": [
+   -18.056499165,
+   -22.598782932,
+   4.505428632
+  ],
+  "x": [
+   1.0,
+   0.0,
+   0.0
+  ],
+  "y": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "z": [
+   0.0,
+   0.0,
+   1.0
+  ]
+ },
+ "parts": [
+  "holder"
+ ],
+ "mates": {
+  "base_contact": {
+   "origin": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "z": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "comment": "the bottom face's center, z out of the face",
+   "part": "holder",
+   "flange_height": 0.004699
+  },
+  "post_entry": {
+   "origin": [
+    0.0,
+    0.054699,
+    0.0
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "z": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "comment": "the bore's axis at the top face, z out of the face; depth is down to the base's boss",
+   "part": "holder",
+   "bore_diameter": 0.0127762,
+   "depth": 0.0445392
+  },
+  "thumbscrew": {
+   "origin": [
+    0.0,
+    0.042799,
+    -2.9e-08
+   ],
+   "x": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "y": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "z": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "comment": "the thumbscrew's axis where it meets the bore's axis, z outward",
+   "part": "holder"
+  }
+ },
+ "motions": {},
+ "triangles": 9061,
+ "budget": 10000,
+ "decals": {
+  "comment": "the lettering, scales, springs and threads, baked into the .glb's texture",
+  "size": 512,
+  "texel": 4e-05
+ },
+ "kind": "post_holder"
+}
