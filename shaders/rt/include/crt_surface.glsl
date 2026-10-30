@@ -281,7 +281,8 @@ void main()
 		const HitRecord hit = hits[entry];
 		const vec3 inDir = normalize(path.direction);
 #ifndef CRT_SPECTRAL
-		const Spectrum pathThroughput = path.throughput;
+		// not const: an optical body's glass absorbs along the segment just traveled (below)
+		Spectrum pathThroughput = path.throughput;
 #else
 		spectralBegin(path.lambdaU);
 		// not const: a dispersive glass terminates the secondary lanes below
@@ -324,6 +325,27 @@ void main()
 				const float pick = spectralBanded() ? randomFloat(rng) : 0.0;
 				const uint lane = terminateSecondary(pathThroughput, path.laneMask, pick);
 				material.bxdf.eta = scalarFromRef(materialSpectrumRef(materialIndex, CRT_SLOT_AUX0), lane);
+			}
+#endif
+#if CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
+			// AN OPTICAL BODY'S SURFACE (crt_optic_material.glsl). The segment since the last vertex ran through the incident
+			// medium, whose absorption the throughput carries first (Beer-Lambert), for the light sample and the
+			// continuation alike. A refraction between dispersive media keeps one lane, as a dispersive glass does, and
+			// every index of the vertex is read at it
+			if (CRT_OPTICS && material.isOptic) {
+				pathThroughput = spectrumMul(pathThroughput, opticAbsorption(material.optic));
+#ifdef CRT_SPECTRAL
+				if (opticDisperses(material.optic)) {
+					const float pick = spectralBanded() ? randomFloat(rng) : 0.0;
+					material.optic.lane = terminateSecondary(pathThroughput, path.laneMask, pick);
+					if (material.isBxdf) {
+						const uint lane = material.optic.lane;
+						const float nPlus = opticIndex(material.optic.fromPlus ? material.optic.incident : material.optic.other, lane);
+						const float nMinus = opticIndex(material.optic.fromPlus ? material.optic.other : material.optic.incident, lane);
+						material.bxdf.eta = nMinus / nPlus;
+					}
+				}
+#endif
 			}
 #endif
 
@@ -370,12 +392,18 @@ void main()
 #endif
 				path.bounce = nextBounce;
 				// THE MIS RECORD for the light the new ray finds
+				// a surface that is part delta and part glossy (an optical interface's ABg lobe) says which this continuation was
+#if CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
+				const bool continuationDelta = specular || (CRT_OPTICS && material.isOptic && !material.isBxdf && g_opticSampledDelta);
+#else
+				const bool continuationDelta = specular;
+#endif
 #if CRT_DIRECT_LIGHTING == CRT_DIRECT_BSDF
 				path.misPdf = CRT_MIS_FULL;
 #elif CRT_DIRECT_LIGHTING == CRT_DIRECT_LIGHT
-				path.misPdf = specular ? CRT_MIS_FULL : 0.0;
+				path.misPdf = continuationDelta ? CRT_MIS_FULL : 0.0;
 #else
-				path.misPdf = specular ? CRT_MIS_FULL : pdfSurface(material, inDir, normal, normalize(outDir));
+				path.misPdf = continuationDelta ? CRT_MIS_FULL : pdfSurface(material, inDir, normal, normalize(outDir));
 				path.misExponent = CRT_MIS_EXPONENT;
 #endif
 				paths[pathIndex] = path;

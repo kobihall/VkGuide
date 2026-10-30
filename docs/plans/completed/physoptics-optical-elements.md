@@ -2,7 +2,7 @@
 
 The request lists thirteen kinds of optic, from planar mirrors to round wedge prisms, each in the sizes Thorlabs sells. This plan makes each kind a scene object, `SceneOptic`, described by one row of a traits table the way `SHAPE_TRAITS` describes shapes: its sizes, its parameters, its material slots, its mounts, its output ports, and a builder that turns the parameters into the surface prescription of [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md). The Scene panel gains an **Optics** folder, the scene file an `"optics"` list, and the path tracer one optical body per element.
 
-*Not implemented. Depends on [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md), [physoptics-optical-materials.md](physoptics-optical-materials.md) and [physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md), whose **Optical bench** capability its UI registers under. [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) replaces this plan's free placement with mount poses. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Implemented 2026-10-29, together with [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md) and [physoptics-optical-materials.md](physoptics-optical-materials.md); see "As built" at the end for the user's answers to the pending questions and what changed from the design below. Depends on [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md), [physoptics-optical-materials.md](physoptics-optical-materials.md) and [physoptics-scene-capabilities.md](physoptics-scene-capabilities.md), whose **Optical bench** capability its UI registers under. [physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md) replaces this plan's free placement with mount poses. Part of the [laser optics plan](../physoptics-laser-optics.md).*
 
 ## Decisions already made
 
@@ -40,9 +40,9 @@ struct SceneOptic {
 };
 ```
 
-Positions are `double` because the beam solver, which places beams to a fraction of a micron over a meter of table, reads them directly ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)). The GPU instance rounds them to float when the scene is built.
+Positions are `double` because the beam solver, which places beams to a fraction of a micron over a meter of table, reads them directly ([physoptics-gaussian-beam-solver.md](../physoptics-gaussian-beam-solver.md)). The GPU instance rounds them to float when the scene is built.
 
-`OpticParams` stores values by name, as [pbrt-material-system.md](completed/pbrt-material-system.md)'s `ParamSet` does for materials, so switching a lens from bi-convex to plano-convex and back keeps both radii.
+`OpticParams` stores values by name, as [pbrt-material-system.md](pbrt-material-system.md)'s `ParamSet` does for materials, so switching a lens from bi-convex to plano-convex and back keeps both radii.
 
 ### The traits table
 
@@ -64,7 +64,7 @@ struct OpticTraits {
 };
 ```
 
-`OPTIC_TRAITS` is indexed by `OpticKind` and is the only place outside the builders that knows anything about a kind. Later plans add kinds by appending rows: the laser ([physoptics-laser-sources.md](physoptics-laser-sources.md)), detectors ([physoptics-detectors.md](physoptics-detectors.md)), wave plates, polarizers and crystals ([physoptics-polarization-optics.md](physoptics-polarization-optics.md)), gratings and toroidal mirrors ([physoptics-gratings-and-xuv.md](physoptics-gratings-and-xuv.md)).
+`OPTIC_TRAITS` is indexed by `OpticKind` and is the only place outside the builders that knows anything about a kind. Later plans add kinds by appending rows: the laser ([physoptics-laser-sources.md](../physoptics-laser-sources.md)), detectors ([physoptics-detectors.md](../physoptics-detectors.md)), wave plates, polarizers and crystals ([physoptics-polarization-optics.md](../physoptics-polarization-optics.md)), gratings and toroidal mirrors ([physoptics-gratings-and-xuv.md](../physoptics-gratings-and-xuv.md)).
 
 `OpticBuildContext` carries what a builder needs from outside the element: the glass catalog and the design wavelength, which a wedge needs to turn a deviation into an angle.
 
@@ -93,7 +93,7 @@ Builders worth spelling out:
 - Off-axis parabola. The parent paraboloid's focal length is `PFL = RFL (1 + cos θ) / 2` and its off-axis distance `OAD = RFL sin θ`, for reflected focal length RFL and off-axis angle θ. The surface is a conic with `k = −1` and `c = 1 / (2 PFL)`, its vertex at the parent's, its circular aperture centered at OAD. The body frame follows Thorlabs' MPD drawings: +z along the parent axis, the datum at the aperture's center on the surface, the back face perpendicular to the parent axis, so a collimated beam along −z focuses at RFL from the datum at θ to the axis.
 - Wedges. A deviation δ becomes the wedge angle α that deviates a ray at normal incidence on the front face by δ at the design wavelength, `δ = asin(n sin α) − α`, solved by Newton's method. The readout shows α, and the deviation at the current wavelength once the scene is spectral.
 - Lenses. The form fixes the signs and the planarity of R1 and R2, so a plano-convex lens has R2 = ∞ whatever was typed. The edge thickness follows from the sags at the semi-diameter, and the panel refuses a lens whose edge thickness would be below zero. The readout shows the effective and back focal lengths at the design wavelength, from a paraxial trace in `rt_optics`.
-- Iris. The blades are an annulus with the opening as inner diameter and the housing's clear aperture as outer, two-sided, in the iris's absorbing blade material. The housing itself is the iris model's mesh, which the tracer hits like any mount ([physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)).
+- Iris. The blades are an annulus with the opening as inner diameter and the housing's clear aperture as outer, two-sided, in the iris's absorbing blade material. The housing itself is the iris model's mesh, which the tracer hits like any mount ([physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md)).
 
 Values marked "live" change with a slider while the beam solver re-solves, and while a render restarts on change.
 
@@ -103,22 +103,22 @@ Each kind's material slots are created as owned library entries when the element
 
 ### Ports
 
-Each kind names its output beams, which the beam axis connects ([physoptics-beam-axis.md](physoptics-beam-axis.md)): a mirror's **Reflected**, a lens's or filter's **Transmitted**, a splitter's **Reflected** and **Transmitted**, a right-angle prism's **Turned** (two TIR passes) and **Retro**, a dispersing prism's **Refracted**. A port is defined by the sequence of reflections and refractions that produces it inside the body, which the traits record and the solver matches. Ghosts, the weaker sequences, are the solver's concern, not named ports.
+Each kind names its output beams, which the beam axis connects ([physoptics-beam-axis.md](../physoptics-beam-axis.md)): a mirror's **Reflected**, a lens's or filter's **Transmitted**, a splitter's **Reflected** and **Transmitted**, a right-angle prism's **Turned** (two TIR passes) and **Retro**, a dispersing prism's **Refracted**. A port is defined by the sequence of reflections and refractions that produces it inside the body, which the traits record and the solver matches. Ghosts, the weaker sequences, are the solver's concern, not named ports.
 
 ### Editing
 
-- While the scene's **Optical bench** capability is on ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)), the Scene panel's tree has an **Optics** folder with one sub-folder per kind, the arrangement the user chose for shapes, and **Add** → **Optic** lists the kinds. A scene without the capability shows neither, and adding an optic by any other route (pasting, opening a file) turns the capability on.
-- An element's panel shows the size combo (presets and **Custom**), its parameters in millimeters and degrees with their units, the read-only readout, the material slots, and **Edit Transform**. Whether millimeters are a per-scene length unit for every panel or only the optics panels' is open (`docs/physical-optics-overview.md` §7); the scene capabilities plan recommends "showing millimeters" and has no setting to change yet.
-- **Edit Transform** in this plan moves the optic freely with the shared `TransformGizmo`. [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) replaces it with the mount's breadboard-physical controls.
+- While the scene's **Optical bench** capability is on ([physoptics-scene-capabilities.md](physoptics-scene-capabilities.md)), the Scene panel's tree has an **Optics** folder with one sub-folder per kind, the arrangement the user chose for shapes, and **Add** → **Optic** lists the kinds. A scene without the capability shows neither, and adding an optic by any other route (pasting, opening a file) turns the capability on.
+- An element's panel shows the size combo (presets and **Custom**), its parameters in millimeters and degrees with their units, the read-only readout, the material slots, and **Edit Transform**. Whether millimeters are a per-scene length unit for every panel or only the optics panels' is open (`docs/physical-optics-overview.md` §8); the scene capabilities plan recommends "showing millimeters" and has no setting to change yet.
+- **Edit Transform** in this plan moves the optic freely with the shared `TransformGizmo`. [physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md) replaces it with the mount's breadboard-physical controls.
 - Invalid parameters (an edge thickness below zero, a filter too thick for its holder, an iris opening outside its range) are clamped by the widget and explained beside it, never silently.
 
 ### The preview
 
-Planar mirrors draw their PF blank model from the mount library, and so do concave mirrors and off-axis parabolas for now, as the request asks ([physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md)). Every other kind draws its tessellated prescription (`src/optic_mesh.cpp`) through the raster pass's transparent pipeline, tinted by its glass. The preview geometry is rebuilt when a parameter changes, which takes well under a millisecond for one element.
+Planar mirrors draw their PF blank model from the mount library, and so do concave mirrors and off-axis parabolas for now, as the request asks ([physoptics-optomechanical-models.md](physoptics-optomechanical-models.md)). Every other kind draws its tessellated prescription (`src/optic_mesh.cpp`) through the raster pass's transparent pipeline, tinted by its glass. The preview geometry is rebuilt when a parameter changes, which takes well under a millisecond for one element.
 
 ### The path tracer
 
-`buildSceneAccel()` takes the optics with the shapes: each element's prescription is built (and cached by kind and parameters, so twenty identical lenses build once), packed into binding 55, and placed as one instance under the element's transform. Its owned materials join `materials` and `instanceMaterials`. An element's mount, post and holders join the TLAS as mesh instances in [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md).
+`buildSceneAccel()` takes the optics with the shapes: each element's prescription is built (and cached by kind and parameters, so twenty identical lenses build once), packed into binding 55, and placed as one instance under the element's transform. Its owned materials join `materials` and `instanceMaterials`. An element's mount, post and holders join the TLAS as mesh instances in [physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md).
 
 ### Scene file
 
@@ -138,7 +138,7 @@ Parameters are saved by name in SI units, only when they differ from the kind's 
 ## Registry, bindings and data
 
 - `OpticKind`, `OpticTraits`, `OPTIC_TRAITS`, `SceneOptic`, `OpticParams` (`src/optic_catalog.h/.cpp`); builders and readouts in `src/optic_builders.cpp`, part of `rt_optics` so that `bin/optics_test` can build every kind without Vulkan.
-- `RaytraceSceneEditor` gains the optics list, `findOptic()`, `replaceOptics()` and the Optics folder, registered through **Optical bench**'s `sceneFolders` and `addMenu` hooks, with every optic listed by its `dependentObjects` (`docs/physical-optics-overview.md` §7 has the checks).
+- `RaytraceSceneEditor` gains the optics list, `findOptic()`, `replaceOptics()` and the Optics folder, registered through **Optical bench**'s `sceneFolders` and `addMenu` hooks, with every optic listed by its `dependentObjects` (`docs/physical-optics-overview.md` §8 has the checks).
 - `buildSceneAccel()` gains the optics; `drawRaytraceShapes()` gains their preview.
 - No new binding beyond binding 55; no kernel change.
 
@@ -176,8 +176,82 @@ The request asks that uncertain part parameters be checked against Thorlabs and 
 ### Design questions
 
 - Chamfers on mirror blanks (0.2 to 0.25 mm on the PF blanks) are left out of the traced body: a beam that reaches the chamfer is already clipping, which the solver reports. Modeling them is a later refinement if ghosts off a chamfer ever matter.
-- Whether a lens should also offer meniscus forms and achromatic doublets as catalog kinds, or leave both to [physoptics-prescription-import.md](physoptics-prescription-import.md). The request lists neither.
+- Whether a lens should also offer meniscus forms and achromatic doublets as catalog kinds, or leave both to [physoptics-prescription-import.md](../physoptics-prescription-import.md). The request lists neither.
 
 ## Sources
 
 Thorlabs product pages and drawings: PF05-03, PF10-03, PF20-03 mirror blanks; CM127, CM254 and CM508 concave mirrors; MPD-series off-axis parabolic mirrors (the RFL, PFL and OAD relations in their tutorial tab); LA, LB, LC and LD lens series; BSW and BSN plate beamsplitters; BS and PBS cube beamsplitters; PS9xx right-angle prisms; PS85x equilateral prisms; PS810 to PS814 round wedge prisms; ID-series mounted irises; FP01 plate holder. Smith 2008, *Modern optical engineering*, chapters 3 and 4 (thick lenses, prisms and wedges); Hecht 2017, *Optics*, §5.5 (prisms and minimum deviation).
+
+## As built
+
+Implemented on 2026-10-29, all four steps of the order of work, in the same change as the surfaces and materials plans.
+`src/optic_catalog.{h,cpp}` holds the kinds, their traits, the builders and readouts, and `traceEvents()`, which
+follows a port's events through a body in double; `src/optic_mesh.{h,cpp}` tessellates a body for the preview.
+The editor side is `src/rt_scene_editor_optics.cpp`, and `docs/physical-optics-overview.md` §6 is the readable account.
+
+The user's answers to the pending questions:
+
+- **Planar mirrors**: a new mirror's front is Thorlabs `-P01` protected silver, on N-BK7 with a fine ground back.
+- **Prisms and cubes**: the equilateral prism is F2; the right-angle prism N-BK7, uncoated, with 10, 25 and 60 mm legs; the
+  non-polarizing cube N-BK7 and the polarizing cube N-SF1. The cube's cement is folded into the diagonal's coating.
+- **Wedges**: a round wedge's thin edge scales with its size, 2 mm at 1/2 in, 3 mm at 1 in and 6 mm at 2 in; a plate
+  wedge's is 3 mm. All are N-BK7.
+- **Lengths**: a per-scene length unit, meters or millimeters (**Edit** → **Length Unit**), which every panel follows,
+  not only the optics. **Optical bench** recommends millimeters.
+
+Values read from the Thorlabs drawings and set without a question, for the user to review:
+
+- Concave mirrors CM127, CM254 and CM508: center thicknesses 3.0, 6.0 and 9.0 mm, R = 200 mm by default.
+- Off-axis parabolas: the thin edge is 0.75 of the diameter, and the reflected focal length is 2 in at 1/2 in and 4 in
+  at 1 and 2 in. At 1 in and 90 degrees this gives 30.95 mm where MPD149's drawing gives 31.75 mm.
+- Plate beamsplitters 3, 5 and 8 mm thick, with a BSW front and an `-A` back; circular and square filters 3 mm; the
+  cube's outer faces `-A`.
+- Lenses: center thicknesses 2.8, 3.6 and 9.7 mm at R1 = 51.5 mm.
+
+What differs from the design above:
+
+- **The builders are in `optic_catalog.cpp`**, not a separate `optic_builders.cpp`.
+- **The equilateral prism's design axis is its minimum-deviation input**, not normal to a face. At 30 degrees incidence
+  F2 totally reflects at the second face. The readout gives that incidence and the deviation.
+- **A size preset decides the values it sets**: a scene file that gives a center thickness for a lens at a preset size
+  is overridden by the preset. A custom size (`"size": "custom"` in the file) keeps every value.
+- **Slot materials** are library entries the element owns (`OpticSlotOrigin`), made when the element is added and
+  removed with it. A duplicate copies them. **Reset to default** in a slot's details remakes it from the kind's default.
+- **The preview**: planar mirrors at a preset size draw the PF blank models of the mount library; every other optic,
+  concave mirrors and parabolas included, draws its tessellated prescription, cached by `opticBodyKey()`. The request
+  names the PF blanks for planar mirrors only.
+- **Mounts and ports** are listed in the panel. The mounts are the placeholders of
+  [physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md); the ports' directions come from `traceEvents()` and
+  are what [physoptics-beam-axis.md](../physoptics-beam-axis.md) reads.
+- **A kernel change after all.** The plan expected none beyond binding 55, but `optical_interface`'s absorption and
+  lane termination need kernel 06 (`crt_surface.glsl`), and the materials plan's record describes them.
+
+Verification:
+
+- A scene without optics renders bit-identical: the 10 renders listed in the surfaces plan's record.
+- `bin/optics_test` builds every kind at every size, checks that its bounds hold every surface, and runs the
+  closed-body test on each closed kind (all but the iris). Also:
+    - an off-axis parabola focuses a collimated bundle to its focus within 1 um in double, at every size and at 15, 30,
+      45, 60 and 90 degrees;
+    - every wedge deviates a normally incident ray by its nominal deviation within 1e-6 rad;
+    - the lensmaker's equation matches a real ray within 1e-9 relative;
+    - a right-angle prism's **Turned** port leaves at 90 degrees and its **Retro** port at 180 degrees, within 1e-9 rad;
+      a cube's **Reflected** port leaves along -y and its **Transmitted** port along +z;
+    - the equilateral prism's readout deviation equals a traced ray's at minimum deviation within 1e-9;
+    - a lens with a negative edge thickness and a square filter thicker than an FP01 holds (14.7 mm) are refused, with the
+      reason in the readout; a lens keeps R2 across a change of form.
+- Save, reopen and save again gives the same bytes, with all 13 kinds, before and after editing a lens's form, R2 and
+  front coating.
+- `tools/verify/optics_scenes.py` writes six scenes to `assets/scenes/`: `optics_furnace`, `optics_nd_filter`,
+  `optics_cube_split`, `optics_lens_focus`, `optics_prism` and `optics_bench`, the last with one of each kind. The first
+  five are what `tools/verify/optics_check.py` renders. Besides the materials plan's checks, it finds a plano-convex
+  lens's image of a bright square on the screen at 2.13 against 0 around it, and the F2 prism's spectrum of a white
+  slit with its red centroid at row 88.1 and its blue at row 63.7.
+- `tools/verify/run_all.py --quick --skip-pbrt` passes all 19 of its checks, `bin/optics_test` and `optics_check.py`
+  among them.
+
+Known limits:
+
+- About 1 in 10^6 lines ends inside a body in float, at an edge, which the surfaces plan's record describes.
+- Chamfers are left out, as the design question proposed. Meniscus lenses and doublets are left to
+  [physoptics-prescription-import.md](../physoptics-prescription-import.md).

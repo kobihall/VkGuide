@@ -48,6 +48,10 @@ layout (constant_id = 2) const bool CRT_LIGHT_GROUPS = false;
 // ChannelSums, after the light groups' and the weight sum, which kernel 09 adds (docs/plans/completed/pbrt-spectral-rendering.md).
 // constant_id 3 and 4 are the spectral builds' representation and wavelength sampling (crt_spectrum.glsl)
 layout (constant_id = 5) const bool CRT_SPECTRAL_IMAGES = false;
+// CRT_OPTICS: the scene holds optical bodies (docs/plans/completed/physoptics-optical-surfaces.md). The traversal tests them, kernel
+// 02 and surfaceInteraction() rebuild their hits, and kernel 06 evaluates the optical interface; a scene without any is
+// built without that code. Every kernel that reads the instances is specialized for it
+layout (constant_id = 6) const bool CRT_OPTICS = false;
 
 #define CRT_DEBUG_NONE 0u
 #define CRT_DEBUG_PRIMARY_DIRECTION 1u
@@ -82,6 +86,8 @@ layout (constant_id = 5) const bool CRT_SPECTRAL_IMAGES = false;
 #define CRT_MATERIAL_DIFFUSE_TRANSMISSION 10u
 // chooses one of two other materials per hit (crt_scatter.glsl resolveMixMaterial()); it has no BxDF of its own
 #define CRT_MATERIAL_MIX 11u
+// a surface of an optical body (docs/plans/completed/physoptics-optical-materials.md, crt_optic_material.glsl)
+#define CRT_MATERIAL_OPTICAL_INTERFACE 12u
 
 // PathState.misPdf's sentinel: whatever emission this path's next ray finds counts at full weight,
 // because no light was sampled towards it - a camera ray, a ray leaving a specular surface, or a
@@ -232,8 +238,10 @@ struct GpuInstance {
 	// CRT_NO_LIGHT. A mesh: where its triangles' entries start in triangleLights[], or CRT_NO_LIGHT
 	// for a mesh with no emitting triangle
 	uint lightBase;
-	uint pad1;
-	uint pad2;
+	// an optic: its media table's first vec4 in binding 55, and its material slot count, after which its per-surface
+	// coating tables follow in instanceMaterials[]. Unused otherwise
+	uint opticMedia;
+	uint opticSlots;
 };
 
 #define CRT_INSTANCE_SHAPE 0xFFFFFFFFu
@@ -562,6 +570,12 @@ layout (std430, set = 0, binding = 45) buffer ChannelSumBuffer { float channelSu
 layout (std430, set = 0, binding = 46) readonly buffer SamplerTableBuffer { uint samplerTables[]; };
 // the outlier-reweighted film's cascade (crt_film.glsl): CRT_OUTLIER_BUFFERS vec4s per pixel, each the sum
 // of alpha w rgb in xyz and of alpha S in w for one brightness level. A stub while another film runs
+// the optical bodies' surface records, payloads and media tables (crt_optic.glsl), and the coatings' tables
+// (crt_coating.glsl); docs/plans/completed/physoptics-optical-surfaces.md and -materials.md. A 16-byte stub while the scene has
+// no optics
+layout (std430, set = 0, binding = 55) readonly buffer OpticSurfaceBuffer { vec4 opticData[]; };
+layout (std430, set = 0, binding = 56) readonly buffer OpticCoatingBuffer { vec4 coatingData[]; };
+
 layout (std430, set = 0, binding = 62) buffer FilmCascadeBuffer { vec4 filmCascade[]; };
 #ifdef CRT_SPECTRAL
 // the throughput of every path of a spectral family, by path index: CRT_LANES floats. The exact RGB build keeps it in

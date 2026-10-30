@@ -73,7 +73,7 @@ Not built. Nothing planned needs it: the laser optics scenes sit within a meter 
 
 ## For later plans
 
-- [physoptics-optical-surfaces.md](../physoptics-optical-surfaces.md) adds its surfaces to the error-bound table: a conic hit reprojected along its normal and bounded like a quadric, and a plane's error zero along its normal. The `toWorldPoint()` round trip applies to a surface frame's transform the same way. A cemented interface a few microns thick is the case the offsets decide.
+- [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md) adds its surfaces to the error-bound table: a conic hit reprojected along its normal and bounded like a quadric, and a plane's error zero along its normal. The `toWorldPoint()` round trip applies to a surface frame's transform the same way. A cemented interface a few microns thick is the case the offsets decide.
 - `src/robust.h` is `float` only. The beam solver's double-precision geometry needs `gammaBound()` and the offsets templated on the scalar.
 - [pbrt-analytic-shapes.md](../pbrt-analytic-shapes.md) adds a case to `shapeReproject()` and `shapeHitPoint()` for each kind. A kind that function does not know gets `γ5 |p|` and is not reprojected.
 - [pbrt-csg.md](../pbrt-csg.md) can read `pError` to treat interval ends within the error bound as coincident.

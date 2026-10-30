@@ -2,7 +2,7 @@
 
 On a real table an optic is never just somewhere. It sits in a mount, the mount sits on a post, the post slides in a post holder, and a clamping fork bolts the holder to the breadboard, whose holes are 25 mm apart. That stack decides which motions are possible: the post slides across the table and turns about itself and up and down, and everything else (tip, tilt, rotation about the optical axis) comes from the mount's adjusters. It also puts metal near the beam, which is where a misaligned beam clips. This plan builds the bench from the models of [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md): a procedural breadboard, the stack under every optic, placement in the degrees of freedom the stack allows, snapping to holes, real kinematics for the fine adjusters, and every part as geometry the tracer can hit.
 
-*Not implemented. Depends on [physoptics-optical-elements.md](physoptics-optical-elements.md) and [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) and [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
@@ -16,7 +16,7 @@ On 2026-10-18 the user chose:
 ## What the renderer does today
 
 - `TransformGizmo` (`src/vk_gizmo.h`) edits one target through a getter and a setter closure, with an `ImGuizmo::OPERATION` that can be any combination of single axes (`TRANSLATE_X`, `ROTATE_Y` and so on).
-- [physoptics-optical-elements.md](physoptics-optical-elements.md) places an optic by a free `position` and `orientation`.
+- [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) places an optic by a free `position` and `orientation`.
 - Shapes, mesh objects and their BLASes join the TLAS in `buildSceneAccel()`.
 
 ## Design
@@ -123,7 +123,7 @@ A file from before this plan, whose optics have free transforms, opens with each
 
 - `BenchSettings`, `MountPose`, `FineAdjust`, `opticWorldTransform()`, `buildBreadboardMesh()`, the stack assembly and the adjuster solver (`src/optic_bench.h/.cpp`, in `rt_optics` so that `bin/optics_test` can check them).
 - `RaytraceSceneEditor` gains the bench settings and the constrained gizmo setter; **Optics** → **Bench settings...** is registered under the **Optical bench** capability.
-- The raster preview has no capability hook for geometry yet (`docs/physical-optics-overview.md` §7). This plan adds one to `CapabilityInfo` for the table, posts and mounts, and adds what they draw to `RasterKey`, or the paused preview keeps the old picture. The **Optics** menu is the capability's `menus` hook.
+- The raster preview has no capability hook for geometry yet (`docs/physical-optics-overview.md` §8). This plan adds one to `CapabilityInfo` for the table, posts and mounts, and adds what they draw to `RasterKey`, or the paused preview keeps the old picture. The **Optics** menu is the capability's `menus` hook.
 - `buildSceneAccel()` gains the bench instances, each tagged with its optic and part.
 - No binding or kernel change.
 

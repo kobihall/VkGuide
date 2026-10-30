@@ -35,7 +35,7 @@ struct OpticPathState {
 
 It is allocated only while some beam axis has a mode other than **Full**, as `MediumPathState` is allocated only when a scene has a medium ([pbrt-participating-media.md](pbrt-participating-media.md)). `PathState` does not grow. Stage 11 sets `node` to the root of the laser's axis when it emits.
 
-Binding 58, `BeamGraph`, is the axes flattened by the CPU when the scene is built: per node, its optic's instance slot, its mode and guide strength, and its ports, each a child node and the (entry surface, exit surface, internal reflections) triples that identify it ([physoptics-optical-elements.md](physoptics-optical-elements.md) defines ports by such sequences).
+Binding 58, `BeamGraph`, is the axes flattened by the CPU when the scene is built: per node, its optic's instance slot, its mode and guide strength, and its ports, each a child node and the (entry surface, exit surface, internal reflections) triples that identify it ([physoptics-optical-elements.md](completed/physoptics-optical-elements.md) defines ports by such sequences).
 
 ### Following the graph
 
@@ -77,7 +77,7 @@ The light integrator's counters gain, per frame: paths on the graph and off it, 
 ## Registry, bindings and data
 
 - Binding 57 `OpticPathState`; binding 58 `BeamGraph`; `CrtBinding::OpticPathState`, `CrtBinding::BeamGraph`.
-- `CRT_FLAG_BEAM_GRAPH`; the seeded and sequential branch in kernel 02 (`crt_intersect.glsl`); the state update and the guided choice in the light paths' scatter stage and in `optical_interface`'s sampling ([physoptics-optical-materials.md](physoptics-optical-materials.md)).
+- `CRT_FLAG_BEAM_GRAPH`; the seeded and sequential branch in kernel 02 (`crt_intersect.glsl`); the state update and the guided choice in the light paths' scatter stage and in `optical_interface`'s sampling ([physoptics-optical-materials.md](completed/physoptics-optical-materials.md)).
 - `buildBeamGraph()` (`src/beam_graph.h/.cpp`).
 - The mode and guide strength are the beam axis's, saved with it ([physoptics-beam-axis.md](physoptics-beam-axis.md)).
 

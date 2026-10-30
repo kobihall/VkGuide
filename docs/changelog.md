@@ -12,10 +12,26 @@
 - The window title names the scene's file and the template it started from.
 - **First-Person Edit** shows the flown camera's whole frame in the **Viewport**, outlined in yellow, whatever the shapes of the viewport and the render. The viewport widens its field of view to fit the frame and greys what it sees beyond it.
 - `docs/physical-optics-overview.md` describes the laser optics simulator as built, and lists the checks every later physoptics plan runs.
+- Optical elements: **+ Add** → **Optic** places any of thirteen kinds in Thorlabs sizes: planar, concave and off-axis parabolic mirrors, circular and square filters, irises, plate and cube beamsplitters, spherical lenses, right-angle, equilateral and wedge prisms. Each is listed in the Scene panel's **Optics** folder, and its panel shows its size, parameters, a readout (a lens's focal length, a prism's minimum deviation), its faces' coatings, its output ports and its mounts. They need **Optical bench**.
+- The path tracer traces an optic as exact surfaces (conics, cylinders and even aspheres with their apertures), not triangles, between the media of its glass and the surrounding air. A glass's index follows its dispersion formula in the spectral modes, and its internal transmittance absorbs.
+- The `optical_interface` material is what every face of an optic is made of: polished or ground, coated or bare, with optional surface scatter (total integrated scatter and an ABg lobe).
+- Glass catalogs: `assets/glass/bundled.agf` holds 17 glasses (seven Schott glasses, fused silica, CaF2, MgF2, sapphire, five coating oxides and the absorbing ND-OD1), and **Optics** → **Load Glass Catalog...** reads any Zemax AGF file. The **Materials** window lists them under **Glasses**, with plots of index and internal transmittance.
+- Coatings: ideal splitters and mirrors, curves read from a CSV (**Optics** → **Import Coating Curve**), thin-film stacks and protected metals, with presets for Thorlabs' E02, P01, G01, F01, A, B, C, BSW and BSN. The **Materials** window lists them under **Coatings**, with plots of R and T against wavelength and angle.
+- **Render Settings** → **Optics** picks the surrounding medium (air by Ciddor 1996, or vacuum), shows the design wavelength, and turns on **Exact coatings**, which evaluates each thin-film coating's transfer matrix at every hit instead of its table.
+- **Edit** → **Length Unit** shows every length in the Scene panel in meters or millimeters. It is saved with the scene, and **Optical bench** recommends millimeters.
+- The **Camera** menu sets the **Viewport**'s speed, vertical field of view and near and far clip planes, which are saved with the scene, and the orbit pivot, look sensitivity and trackpad gestures, which are kept in `imgui.ini`. **Camera** → **Controls** lists the bindings. The field of view is greyed out during **First-Person Edit**, which fits the flown camera's frame and leaves its own fov alone.
+- The **Viewport** takes Unreal's controls. While you hold the right button, Q and E move down and up, and the wheel changes the speed. Option + left-drag orbits, Option + right-drag dollies, a middle-drag pans, and the wheel moves along the view.
+- F, or **Camera** → **Frame Selected**, eases the **Viewport** in to frame the object selected in the Scene panel, or the whole scene when nothing is selected. **Frame All** frames the whole scene.
+- An orbit turns around the selected object. With nothing selected it turns around the camera's pivot. Under **Camera** → **Orbit Pivot** → **View Center**, the default, the pivot is a point ahead of the camera that flying carries along. Under **Look-At Point** it is the point the last F framed, as in Unreal.
+- On a Mac trackpad the **Viewport** takes Blender's gestures: a two-finger swipe orbits, Shift + swipe pans, and a pinch or Control + swipe dollies. **Camera** → **Trackpad Gestures** turns them off, and a swipe then moves along the view as a wheel does.
+- `bin/optics_test` checks the surfaces, bodies, glasses, coatings and elements on the CPU, **Windows** → **Debug** → **GPU self-tests** gains **Optic parity**, and `tools/verify/optics_check.py` renders the scenes `tools/verify/optics_scenes.py` writes to `assets/scenes/optics_*.gltf`. `run_all.py` runs all three.
 
 ### Changed
 
-- Scene files are payload version 20, which adds `"capabilities"`, `"template"` and a template's `"templateInfo"`. A scene without a capability saves as before, apart from the version.
+- Scene files are payload version 22. Version 20 adds `"capabilities"`, `"template"` and a template's `"templateInfo"`. Version 21 adds `"optics"`, `"opticalLibrary"`, `"lengthUnit"` and `render.optics`. Version 22 adds `"viewport"`, so a scene opens looking where it was saved from. An older file opens with a new scene's viewport settings and leaves the view where it was.
+- The **Viewport** flies at a set speed in meters per second, 5 by default, no longer half a unit per frame. That was about 30 m/s at 60 frames a second, so flying is slower than before. The look no longer turns past straight up or down.
+- The **Optical bench** template flies the **Viewport** at 0.5 m/s with a 5 mm near clip plane.
+- A scene without optics renders bit-identical to before: every optic branch of the kernels is behind a specialization constant.
 - The settings sections of **Raytrace Render** are a window of their own, **Render Settings**. **Raytrace Render** keeps the camera, **Render**, progress, the readouts and **Compare to reference**.
 - The window opens maximized. An `imgui.ini` from before the dock space is replaced once by the default layout, so windows lose their old floating positions.
 - **Windows** lists the panels, then **Images**, **Debug** (**Stats**, **background**, **GPU self-tests** and the ImGui demo) and **Workspace**. **Stats** and **background** start closed.
@@ -24,8 +40,19 @@
 - The raster preview is not drawn while the **Viewport** window is closed or behind another tab.
 - The warning about optical models that are placeholder boxes shows only in scenes with **Optical bench**.
 
+### Fixed
+
+- Fixed **Render** after a change of resolution flashing ImGui's font atlas in **Raytraced Output** for a frame. The button recreated the display image after the image windows had drawn the old one. **Render** now starts the render at the beginning of the next frame.
+- Fixed the **Optics** workspace tab and the **Optics** menu sharing one ImGui id in the menu bar.
+- Fixed the raster preview's transparent draw list not being cleared on a paused frame, which reset the frame's descriptor pool while a set from it was still in use (`VUID-vkResetDescriptorPool-00313`).
+
 ### Internal
 
+- The static library `rt_optics` (`src/optic_*.{h,cpp}`, no Vulkan) holds the optical bodies, glasses, coatings, the optical library and the element kinds, and `rt_bvh` links it. `shaders/rt/include/crt_optic.glsl` and `crt_coating.glsl` mirror it line for line, and `crt_optic_material.glsl` is the optical interface.
+- An optic is a shape instance of kind 255 (`CRT_SHAPE_OPTIC`). Binding 55 `OpticSurfaces` holds its surfaces and media, binding 56 `OpticCoatings` the coating tables, and `GpuInstance`'s pad words are now `opticMedia` and `opticSlots`. Every kernel that declares `Instances` declares both, behind the specialization constant `CRT_OPTICS` (constant 6), and `GpuRenderer` publishes stubs when the scene has no optics.
+- `MaterialType::OpticalInterface` (12), `ParamKind::Coating`, `MaterialDef::opticOrigin` and `isUserMaterial()`. An element's slot materials are library entries it owns, hidden from the User folder and from material combos.
+- The Optical bench capability fills the `sceneFolders`, `addMenu`, `menus`, `renderSettings` and `materialFolders` hooks, and the new `materialDetails` hook draws the details of an entry a capability's folder selected.
+- Length widgets go through `src/length_unit.h` (`dragLength()`, `formatLength()`).
 - `src/scene_capabilities.{h,cpp}` is the capability registry (`CAPABILITIES`, one `CapabilityInfo` per `CapabilityId`, with a hook per UI site) and the built-in templates. `src/workspace.{h,cpp}` holds the window registry (`AppWindow`, registered in `VulkanEngine::registerWindows()`), the dock space, the workspaces and their `[Workspace]` entries in `imgui.ini`.
 - Overlays and the gizmo draw from a `ViewportView` (`src/viewport_view.h`) into the **Viewport** window's draw list. `TransformGizmo::draw()` takes the view and whether the preview is hovered.
 - `draw()` no longer blits the draw image to the swapchain: `drawImgui()` clears the swapchain image and the **Viewport** window samples the draw image. The "Scene Mirror" display window is gone, and `DisplayRegistry::registerTexture()` holds an image its owner draws itself.

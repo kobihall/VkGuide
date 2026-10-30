@@ -466,6 +466,8 @@ ClassicMaterial resolveMaterial(uint materialIndex, vec2 uv)
 #include "crt_fresnel.glsl"
 #include "crt_microfacet.glsl"
 #include "crt_bxdf.glsl"
+#include "crt_coating.glsl"
+#include "crt_optic_material.glsl"
 
 // src/rt_material_record.h CRT_BXDF_FLAG_*
 #define CRT_BXDF_FLAG_REFLECTANCE 1u
@@ -483,6 +485,10 @@ struct ComplexMaterial {
 	// the ray arrived on the outside of the surface as authored: which way a glass's index reads. Kernel 06 sets it
 	// with the shading normal (materialShadingNormal())
 	bool frontFace;
+	// an optical body's surface (crt_optic_material.glsl): a polished one samples its own delta lobes, a ground one is
+	// the rough glass in `bxdf` between the surface's media (isBxdf also set)
+	bool isOptic;
+	OpticInterface optic;
 };
 
 bool isBxdfMaterialType(uint type)
@@ -585,8 +591,26 @@ ComplexMaterial resolveComplexMaterial(uint index, SurfaceInteraction si)
 	m.index = index;
 	m.bxdfFlags = 0u;
 	m.frontFace = si.frontFace;
+	m.isOptic = CRT_OPTICS && m.classic.type == CRT_MATERIAL_OPTICAL_INTERFACE;
+	if (m.isOptic) {
+		m.optic = resolveOpticInterface(index, si);
+	}
 	if (m.isBxdf) {
 		m.bxdf = resolveBxdfMaterial(index, m.bxdfFlags);
+	} else if (m.isOptic && m.optic.finish == CRT_OPTIC_FINISH_GROUND) {
+		// pbrt's dielectric at roughness 1 between the surface's media: eta inside (minus) over outside (plus)
+		m.isBxdf = true;
+		m.bxdf.type = CRT_MATERIAL_GLASS;
+		m.bxdf.alpha = trowbridgeReitz(1.0, 1.0);
+		const float nPlus = m.optic.fromPlus ? m.optic.incident.nDesign : m.optic.other.nDesign;
+		const float nMinus = m.optic.fromPlus ? m.optic.other.nDesign : m.optic.incident.nDesign;
+		m.bxdf.eta = nMinus / nPlus;
+		m.bxdf.conductorEta = spectrumConst(1.0);
+		m.bxdf.conductorK = spectrumConst(0.0);
+		m.bxdf.reflectance = spectrumConst(0.0);
+		m.bxdf.transmittance = spectrumConst(0.0);
+		m.bxdf.orenA = 1.0;
+		m.bxdf.orenB = 0.0;
 	} else {
 		m.bxdf.type = 0u;
 		m.bxdf.alpha = vec2(0.0);
@@ -617,6 +641,9 @@ mat3 bxdfFrame(ComplexMaterial m, vec3 normal, bool frontFace)
 
 bool scatterSurface(ComplexMaterial m, vec3 inDir, vec3 normal, bool frontFace, uint pathIndex, inout uint rng, out Spectrum attenuation, out vec3 outDir)
 {
+	if (m.isOptic && !m.isBxdf) {
+		return scatterOpticInterface(m.optic, inDir, m.frontFace ? normal : -normal, pathIndex, rng, attenuation, outDir);
+	}
 	if (!m.isBxdf) {
 		return scatterSurface(m.classic, inDir, normal, frontFace, pathIndex, rng, attenuation, outDir);
 	}
@@ -638,6 +665,13 @@ bool scatterSurface(ComplexMaterial m, vec3 inDir, vec3 normal, bool frontFace, 
 // f cos for a direction someone else chose: both hemispheres, since glass transmits
 Spectrum evalSurface(ComplexMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 {
+	// a polished interface is delta, but for the share its ABg lobe scatters
+	if (m.isOptic && !m.isBxdf) {
+		Spectrum value;
+		float pdf;
+		opticLobe(m.optic, inDir, m.frontFace ? normal : -normal, wi, value, pdf);
+		return value;
+	}
 	if (!m.isBxdf) {
 		return evalSurface(m.classic, inDir, normal, wi);
 	}
@@ -649,6 +683,12 @@ Spectrum evalSurface(ComplexMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 
 float pdfSurface(ComplexMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 {
+	if (m.isOptic && !m.isBxdf) {
+		Spectrum value;
+		float pdf;
+		opticLobe(m.optic, inDir, m.frontFace ? normal : -normal, wi, value, pdf);
+		return pdf;
+	}
 	if (!m.isBxdf) {
 		return pdfSurface(m.classic, inDir, normal, wi);
 	}
@@ -658,6 +698,9 @@ float pdfSurface(ComplexMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 
 bool isSpecularMaterial(ComplexMaterial m)
 {
+	if (m.isOptic && !m.isBxdf) {
+		return !opticScatters(m.optic);
+	}
 	if (!m.isBxdf) {
 		return isSpecularMaterial(m.classic);
 	}

@@ -49,8 +49,9 @@ struct TraceHit {
 uint g_nodesVisited;
 uint g_primitivesTested;
 
-// the analytic shapes, and the material records the alpha test reads
+// the analytic shapes, the optical bodies, and the material records the alpha test reads
 #include "crt_shape.glsl"
+#include "crt_optic.glsl"
 #include "crt_material.glsl"
 
 // Whether a candidate hit on a CRT_TRIANGLE_CUTOUT triangle lands in one of its material's holes.
@@ -110,9 +111,31 @@ void instanceRay(GpuInstance instance, vec3 origin, vec3 direction, out vec3 loc
 	}
 }
 
-// one placed shape, in its own object space
+// the nearest hit of a body in [tMin, tMax] by a ray of the body frame, lowering tMax; the surface index goes in
+// hit.triangle
+void testOpticBody(GpuInstance instance, uint slot, vec3 o, vec3 d, float tMin, inout float tMax, inout TraceHit hit)
+{
+	for (uint i = 0u; i < instance.triangleCount; i++) {
+		g_primitivesTested++;
+		const OpticSurfaceRecord r = opticInstanceSurface(instance, i);
+		float t;
+		if (opticIntersectSurface(r, opticToSurfacePoint(r, o), opticToSurfaceVector(r, d), tMin, tMax, t)) {
+			tMax = t;
+			hit.t = t;
+			hit.instance = slot;
+			hit.triangle = i;
+		}
+	}
+}
+
+// one placed shape, in its own object space. An optical body is a shape of kind CRT_SHAPE_OPTIC, behind the specialization
+// constant CRT_OPTICS: a scene without optics is built without the branch, and runs the code it always did
 void testShapeInstance(GpuInstance instance, uint slot, vec3 localOrigin, vec3 localDirection, float tMin, inout float tMax, inout TraceHit hit)
 {
+	if (CRT_OPTICS && instance.triangleBase == CRT_SHAPE_OPTIC) {
+		testOpticBody(instance, slot, localOrigin, localDirection, tMin, tMax, hit);
+		return;
+	}
 	g_primitivesTested++;
 	float t;
 	if (hitShape(instance.triangleBase, localOrigin, localDirection, tMin, tMax, t)) {

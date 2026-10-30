@@ -356,6 +356,9 @@ void WorkspaceManager::drawTabs(const SceneCapabilities& scene)
 	if (x > ImGui::GetCursorPosX()) {
 		ImGui::SetCursorPosX(x);
 	}
+	//a tab is named after its workspace, as a capability's menu in the same bar may be (Optics): its own id scope keeps
+	//the two apart
+	ImGui::PushID("WorkspaceTabs");
 	for (const WorkspaceInfo* workspace : list) {
 		const bool active = m_active == workspace->key;
 		const ImVec2 size { ImGui::CalcTextSize(workspace->name).x + style.FramePadding.x * 2.f, 0.f };
@@ -378,6 +381,7 @@ void WorkspaceManager::drawTabs(const SceneCapabilities& scene)
 		}
 		ImGui::SetItemTooltip("Workspace: a layout of windows, kept per user. Right-click to reset it");
 	}
+	ImGui::PopID();
 }
 
 void* WorkspaceManager::readOpen(ImGuiContext*, ImGuiSettingsHandler* handler, const char* name)

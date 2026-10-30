@@ -30,7 +30,7 @@ Partial shapes need an angle or a height range, which no `size` axis expresses. 
 | Hyperboloid | the surface swept by the segment from p1 to p2 around the y axis | p1 and p2 as values, φmax | PBR 3ed §3.5.3 |
 | Bilinear patch | the unit square's corners, each lifted by a height | four corner heights | PBR 4ed §6.6 |
 
-Optical bodies are not among these kinds. [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md) adds them as a compound shape with tag `CRT_SHAPE_OPTIC` (255), above the `ShapeKind` range, so the kinds here keep appending below it. Its conic surfaces are a lens designer's vertex-form conics with clear apertures, not this plan's paraboloid and hyperboloid, which stay for scene geometry.
+Optical bodies are not among these kinds. [physoptics-optical-surfaces.md](completed/physoptics-optical-surfaces.md) adds them as a compound shape with tag `CRT_SHAPE_OPTIC` (255), above the `ShapeKind` range, so the kinds here keep appending below it. Its conic surfaces are a lens designer's vertex-form conics with clear apertures, not this plan's paraboloid and hyperboloid, which stay for scene geometry.
 
 The partial sphere and cylinder are the existing kinds with new values, not new kinds, so an existing shape keeps its record and loads unchanged. An ellipse is a disk with unequal sizes; an elliptical cylinder, a cylinder with unequal x and z sizes.
 

@@ -37,7 +37,7 @@ PBR 4ed §9.3.6 warns that sign conventions differ between sources (the sign of 
 | Smooth dielectric and conductor ([pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md)) | the exact Fresnel matrix from the complex `rs` and `rp` |
 | Rough dielectric and conductor | the Fresnel matrix at the sampled microfacet normal, rotated between the macrosurface frames, times the scalar microfacet terms, as Mitsuba 3's polarized rough BSDFs do |
 | Diffuse, and every legacy material | a depolarizer, `diag(f, 0, 0, 0)` |
-| `optical_interface` with a coating ([physoptics-optical-materials.md](physoptics-optical-materials.md)) | the Fresnel-form matrix built from the coating table's complex `rₛ, rₚ` or `tₛ, tₚ` and their phases, which is how a polarizing beamsplitter splits |
+| `optical_interface` with a coating ([physoptics-optical-materials.md](completed/physoptics-optical-materials.md)) | the Fresnel-form matrix built from the coating table's complex `rₛ, rₚ` or `tₛ, tₚ` and their phases, which is how a polarizing beamsplitter splits |
 | Wave plates, polarizers and uniaxial crystals ([physoptics-polarization-optics.md](physoptics-polarization-optics.md)) | a retarder with a wavelength- and angle-dependent retardance, a diattenuator, or the eigenpolarizations of an ordinary and an extraordinary ray |
 | `linear_polarizer` (new) | an ideal linear polarizer sheet, with its transmission axis at an angle in the surface's tangent frame |
 | `retarder` (new) | a wave plate with retardance δ (a quarter-wave plate at δ = π/2) and a fast-axis angle |

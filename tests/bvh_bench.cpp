@@ -28,6 +28,8 @@
 #include <bvh_layout.h>
 #include <bvh_scene.h>
 #include <shape.h>
+#include <optic_catalog.h>
+#include <optic_library.h>
 
 #include "bvh_robust.h"
 
@@ -140,6 +142,8 @@ void parallelFor(size_t count, Body&& body)
 struct Reference {
 	bool hit { false };
 	float t { 1e30f };
+	// the nearest hit is on an optical body
+	bool optic { false };
 };
 
 // the names of ShapeKind, which rt_scene_types.h's SHAPE_TRAITS holds on the engine side
@@ -385,6 +389,33 @@ int main(int argc, char* argv[])
 	addShape(ShapeKind::Cylinder, center + glm::vec3(0.f, radius * 0.2f, 0.f), glm::vec3(radius * 0.08f, radius * 0.3f, radius * 0.08f));
 	//tilted, so it cuts through the scene rather than lying under it
 	addShape(ShapeKind::Plane, center - glm::vec3(0.f, radius * 0.3f, 0.f), glm::vec3(1.f));
+	//optical bodies (src/optic_catalog.h): a lens, a prism, a cube and an off-axis parabola, scaled up to the scene, so
+	//every surface shape and aperture goes through the TLAS and the CPU traversal
+	OpticalLibrary opticLibrary;
+	std::vector<std::string> glassWarnings;
+	opticLibrary.loadBundled(".", glassWarnings);
+	OpticBuildContext opticContext;
+	opticContext.library = &opticLibrary;
+	auto addOptic = [&](OpticKind kind, const glm::vec3& position) {
+		SceneOptic optic = makeOptic(kind);
+		if (kind == OpticKind::SphericalLens) {
+			setOpticValue(optic, "form", 1);
+			setOpticValue(optic, "r1", 0.1);
+			setOpticValue(optic, "r2", 0.1);
+		}
+		OpticReadout readout;
+		const OpticPrescription body = buildOptic(optic, opticContext, readout);
+		const float scale = radius * 0.2f / glm::length(glm::vec3(body.bounds.max - body.bounds.min));
+		const glm::vec3 axis = glm::normalize(glm::vec3(unit(rng) - 0.5f, unit(rng) - 0.5f, unit(rng) - 0.5f) + 1e-3f);
+		const glm::mat4 rotation = glm::rotate(glm::mat4(1.f), unit(rng) * 6.28f, axis);
+		SceneInstance instance { SceneInstanceKind::Optic, 0, ShapeKind::Sphere, glm::translate(glm::mat4(1.f), position) * rotation * glm::scale(glm::mat4(1.f), glm::vec3(scale)) };
+		instance.optic = std::make_shared<OpticPrescriptionF>(toFloat(body));
+		instances.push_back(instance);
+	};
+	addOptic(OpticKind::SphericalLens, center + glm::vec3(radius * 0.3f, radius * 0.1f, 0.f));
+	addOptic(OpticKind::EquilateralPrism, center - glm::vec3(radius * 0.3f, -radius * 0.1f, radius * 0.1f));
+	addOptic(OpticKind::CubeBeamsplitter, center + glm::vec3(0.f, -radius * 0.1f, radius * 0.3f));
+	addOptic(OpticKind::OffAxisParabola, center + glm::vec3(radius * 0.1f, radius * 0.3f, -radius * 0.2f));
 
 	fmt::println("{}: {} meshes, {} instances, {} unique triangles, {} placed triangles{}", path.filename().string(), loaded.meshes.size(), loaded.nodes.size(), uniqueTriangles, world.size(), perturb ? " (perturbed)" : "");
 	fmt::println("bounds ({:.2f}, {:.2f}, {:.2f}) - ({:.2f}, {:.2f}, {:.2f})", sceneBounds.min.x, sceneBounds.min.y, sceneBounds.min.z, sceneBounds.max.x, sceneBounds.max.y, sceneBounds.max.z);
@@ -430,26 +461,39 @@ int main(int argc, char* argv[])
 			}
 		}
 		for (const SceneInstance& instance : instances) {
-			if (instance.kind != SceneInstanceKind::Shape) {
+			if (instance.kind == SceneInstanceKind::Mesh) {
 				continue;
 			}
 			const glm::mat4 worldToObject = glm::inverse(instance.objectToWorld);
 			const glm::vec3 origin = glm::vec3(worldToObject * glm::vec4(ray.origin, 1.f));
 			const glm::vec3 direction = glm::mat3(worldToObject) * ray.direction;
+			if (instance.kind == SceneInstanceKind::Optic) {
+				OpticHitT<float> opticHit;
+				if (intersectOpticBody(*instance.optic, origin, direction, ray.tMin, tMax, opticHit)) {
+					tMax = opticHit.t;
+					out.hit = true;
+					out.t = opticHit.t;
+					out.optic = true;
+				}
+				continue;
+			}
 			float t;
 			if (intersectShape(instance.shape, origin, direction, ray.tMin, tMax, t)) {
 				tMax = t;
 				out.hit = true;
 				out.t = t;
+				out.optic = false;
 			}
 		}
 	});
 	const double bruteMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bruteStart).count();
 	size_t referenceHits = 0;
+	size_t opticHits = 0;
 	for (const Reference& r : reference) {
 		referenceHits += r.hit;
+		opticHits += r.hit && r.optic;
 	}
-	fmt::println("brute force: {} rays, {} hit, {:.0f} ms ({:.2f} Mrays/s)\n", rayCount, referenceHits, bruteMs, rayCount / bruteMs / 1e3);
+	fmt::println("brute force: {} rays, {} hit ({} first on an optical body), {:.0f} ms ({:.2f} Mrays/s)\n", rayCount, referenceHits, opticHits, bruteMs, rayCount / bruteMs / 1e3);
 
 	fmt::println("{:<24} {:<26} {:>9} {:>8} {:>6} {:>7} {:>8} {:>9} {:>9} {:>8} {:>8} {:>9} {:>9} {:>9}",
 		"builder", "layout", "build ms", "nodes", "dup %", "depth", "BLAS SAH", "scene SAH", "MB", "nodes/r", "tris/r", "Mrays/s", "mismatch", "shadow");

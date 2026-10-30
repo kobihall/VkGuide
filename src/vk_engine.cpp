@@ -8,6 +8,11 @@
 #include <shape_mesh.h>
 #include <file_dialog.h>
 #include <vk_ui.h>
+#include <optics_ui.h>
+#include <optic_mesh.h>
+
+#include <fstream>
+#include <sstream>
 
 #include <fmt/ranges.h>
 
@@ -64,6 +69,14 @@ void VulkanEngine::init()
 	initIMGUI();
 	initDefaultData();
 	m_mountLibrary.open(this, m_rootPath + "assets/optical_models/meshes");
+	{
+		std::vector<std::string> warnings;
+		m_opticalLibrary.loadBundled(m_rootPath, warnings);
+		for (const std::string& warning : warnings) {
+			fmt::println("optical library: {}", warning);
+		}
+		setOpticsUiLibrary(&m_opticalLibrary);
+	}
 
 	//before the tracer: its descriptor sets always name the array's view, so it must exist first
 	m_raytraceTextures.init(this);
@@ -72,12 +85,6 @@ void VulkanEngine::init()
 	//the raster preview reaches the screen through the Viewport window, which samples the draw image
 	m_displayRegistry.registerTexture(VIEWPORT_TEXTURE_NAME, m_drawImage.imageView, { m_drawImage.imageExtent.width, m_drawImage.imageExtent.height });
 	registerWindows();
-
-	m_mainCamera.velocity = glm::vec3(0.f);
-	m_mainCamera.position = glm::vec3(0, 0, 5);
-
-	m_mainCamera.pitch = 0;
-	m_mainCamera.yaw = 0;
 
 	//the startup scene is a file like any other, opened through the same path File > Open Scene
 	//uses - nothing about it is hardcoded, so editing and saving it changes what the app starts
@@ -236,7 +243,11 @@ void VulkanEngine::updateScene()
 	//begin clock
 	auto start = std::chrono::system_clock::now();
 
+	//both lists, every frame: a frame whose raster pass is paused never reaches drawGeometry(), which used to be the only
+	//place the transparent list was cleared, and an optic's glass preview drawn into it then piled up across frames and
+	//bound descriptor sets from a frame slot whose pool had since been reset
 	m_mainDrawContext.opaqueSurfaces.clear();
+	m_mainDrawContext.transparentSurfaces.clear();
 
 	//the mesh objects' surfaces change only when the scene or the models do, so the list is rebuilt then and not
 	//every frame: a pbrt scene places tens of thousands of objects
@@ -246,7 +257,7 @@ void VulkanEngine::updateScene()
 		m_meshDrawList.sceneRevision = m_sceneRevision;
 	}
 
-	glm::mat4 view = m_mainCamera.getViewMatrix();
+	glm::mat4 view = m_viewportNav.camera.getViewMatrix();
 	//vulkan's clip space has y down, so the raster path flips what rasterProjection() returns
 	glm::mat4 projection = rasterProjection();
 	projection[1][1] *= -1;
@@ -681,6 +692,7 @@ void VulkanEngine::run()
 		if (ImGui::BeginMainMenuBar()) {
 			drawFileMenu();
 			drawEditMenu();
+			drawCameraMenu();
 			if (ImGui::BeginMenu("Windows")) {
 				m_workspaces.drawWindowsMenu(m_capabilities, [this]() { m_displayRegistry.drawWindowsMenu(); });
 				ImGui::EndMenu();
@@ -811,11 +823,15 @@ void VulkanEngine::drawViewportWindow()
 	const ImVec2 uvMax { (float)m_drawExtent.width / (float)m_drawImage.imageExtent.width, (float)m_drawExtent.height / (float)m_drawImage.imageExtent.height };
 	ImGui::Image(m_displayRegistry.textureId(VIEWPORT_TEXTURE_NAME), size, ImVec2(0.f, 0.f), uvMax);
 	m_viewportHovered = ImGui::IsItemHovered();
+	//F frames the selection, over the preview or with its window focused, unless a text field has the keyboard
+	if ((m_viewportHovered || ImGui::IsWindowFocused()) && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+		frameInViewport(false);
+	}
 
 	ViewportView view;
 	view.pos = pos;
 	view.size = size;
-	view.view = m_mainCamera.getViewMatrix();
+	view.view = m_viewportNav.camera.getViewMatrix();
 	view.projection = rasterProjection();
 	view.viewProj = view.projection * view.view;
 	view.drawList = ImGui::GetWindowDrawList();
@@ -939,14 +955,27 @@ IoResult VulkanEngine::saveTemplate(const std::string& key, const std::string& n
 	return IoResult::success(fmt::format("Saved the template '{}' to {}", name, path.filename().string()));
 }
 
-void VulkanEngine::setViewportPose(const glm::vec3& position, const glm::vec3& forward)
+void VulkanEngine::setViewportPose(const glm::vec3& position, const glm::vec3& target)
 {
-	//as beginFirstPersonEdit(): the free camera is yaw and pitch only
-	const glm::vec3 direction = glm::normalize(forward);
-	m_mainCamera.position = position;
-	m_mainCamera.pitch = glm::asin(glm::clamp(direction.y, -1.f, 1.f));
-	m_mainCamera.yaw = glm::atan(direction.x, -direction.z);
-	m_mainCamera.velocity = glm::vec3(0.f);
+	m_viewportNav.lookAt(position, target);
+}
+
+void VulkanEngine::frameInViewport(bool all)
+{
+	std::optional<Aabb> box = all ? std::nullopt : m_raytraceScene.selectionBounds(this);
+	if (!box) {
+		box = m_raytraceScene.sceneBounds(this);
+	}
+	if (!box) {
+		return;
+	}
+	//a first-person edit frames what the flown camera renders, not the wider preview around it
+	if (const SceneCamera* flown = m_firstPersonCameraId != 0 ? m_raytraceScene.findCamera(m_firstPersonCameraId) : nullptr) {
+		m_viewportNav.frame(*box, glm::radians(flown->vfovDegrees), renderAspect());
+		return;
+	}
+	const float aspect = (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u);
+	m_viewportNav.frame(*box, glm::radians(rasterVerticalFov()), aspect);
 }
 
 void VulkanEngine::initGLFW()
@@ -988,15 +1017,8 @@ void VulkanEngine::initGLFW()
 	}
 	glfwSetWindowUserPointer(m_window, this);
 
-	//both of these are gated on the one capture flag rather than on separate heuristics, so there
-	//is a single boundary between driving the camera and using the ui
-	glfwSetKeyCallback(m_window, [](GLFWwindow* w, int key, int, int action, int) {
-		auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
-		if (!engine->m_cameraCaptureActive) {
-			return;
-		}
-		engine->m_mainCamera.processKeyEvent(key, action);
-	});
+	//the cursor's motion reaches the camera only while a drag holds it captured, so there is a single boundary between
+	//driving the camera and using the ui. The keys a look flies with are read once a frame (updateViewportCamera())
 	glfwSetCursorPosCallback(m_window, [](GLFWwindow* w, double x, double y) {
 		auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
 		if (!engine->m_cameraCaptureActive) {
@@ -1008,25 +1030,39 @@ void VulkanEngine::initGLFW()
 			engine->m_firstMouse = false;
 			return;
 		}
-		engine->m_mainCamera.processMouseMotion(x - engine->m_lastMouseX, y - engine->m_lastMouseY);
+		engine->m_viewportNav.mouseMoved(x - engine->m_lastMouseX, y - engine->m_lastMouseY);
 		engine->m_lastMouseX = x;
 		engine->m_lastMouseY = y;
 	});
-	glfwSetMouseButtonCallback(m_window, [](GLFWwindow* w, int button, int action, int) {
-		if (button != GLFW_MOUSE_BUTTON_RIGHT) {
-			return;
-		}
+	glfwSetMouseButtonCallback(m_window, [](GLFWwindow* w, int button, int action, int mods) {
 		auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
+		ViewportNavigation& navigation = engine->m_viewportNav;
 		if (action == GLFW_PRESS) {
-			//only a press over the raster preview, with no window in front of it, looks around - and a press on or
-			//near an active gizmo handle is a gizmo drag, not a look
-			if (engine->m_viewportHovered && !engine->m_transformGizmo.wantsMouse()) {
+			//only a press over the raster preview, with no window in front of it, starts a drag - and a press on or
+			//near an active gizmo handle is a gizmo drag, not the camera's. One drag at a time: a second button
+			//pressed during one is ignored
+			const ViewportDrag drag = ViewportNavigation::dragFor(button, mods);
+			if (drag != ViewportDrag::None && navigation.drag() == ViewportDrag::None && engine->m_viewportHovered && !engine->m_transformGizmo.wantsMouse()) {
+				navigation.beginDrag(drag, button);
 				engine->setCameraCapture(true);
 			}
-		} else if (action == GLFW_RELEASE) {
+		} else if (action == GLFW_RELEASE && button == navigation.dragButton()) {
+			navigation.endDrag();
 			engine->setCameraCapture(false);
 		}
 	});
+	glfwSetScrollCallback(m_window, [](GLFWwindow* w, double, double yoffset) {
+		auto* engine = static_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
+		ViewportNavigation& navigation = engine->m_viewportNav;
+		//while looking every scroll changes the speed; otherwise a trackpad's swipe is a gesture when they are on,
+		//which updateViewportCamera() takes from the monitor, and everything else over the preview moves along the view
+		if (navigation.drag() == ViewportDrag::Look) {
+			navigation.scrolled(yoffset);
+		} else if (engine->m_viewportHovered && !(navigation.prefs.trackpadGestures && scrollIsFromTrackpad())) {
+			navigation.scrolled(yoffset);
+		}
+	});
+	installTrackpadMonitor();
 }
 
 void VulkanEngine::setCameraCapture(bool active)
@@ -1040,17 +1076,16 @@ void VulkanEngine::setCameraCapture(bool active)
 		//unbounded relative mouse-look, with no screen edge to run into
 		glfwSetInputMode(m_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 		//the glfw backend still feeds imgui the disabled cursor's virtual position, which drifts
-		//freely while looking around - without this it would wander over windows and hover them
-		ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;
+		//freely while looking around - without this it would wander over windows and hover them. The keys are the
+		//camera's too, so W A S D never type into a text field that kept the focus
+		ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard;
 		//re-arm, so the first delta is not measured against wherever the free cursor last sat
 		m_firstMouse = true;
 	} else {
 		glfwSetInputMode(m_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 		//the virtual position has drifted, so put the visible cursor back where the user left it
 		glfwSetCursorPos(m_window, m_capturedCursorX, m_capturedCursorY);
-		ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
-		//a key released after this point never reaches the camera, so held movement would stick
-		m_mainCamera.velocity = glm::vec3(0.f);
+		ImGui::GetIO().ConfigFlags &= ~(ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard);
 	}
 
 	m_cameraCaptureActive = active;
@@ -1092,7 +1127,7 @@ float VulkanEngine::rasterVerticalFov() const
 			return glm::degrees(2.f * glm::atan(half.y));
 		}
 	}
-	return CAMERA_VERTICAL_FOV_DEGREES;
+	return m_viewportNav.settings.vfovDegrees;
 }
 
 std::optional<glm::vec2> VulkanEngine::flownCameraFrame() const
@@ -1112,15 +1147,16 @@ glm::mat4 VulkanEngine::rasterProjection() const
 {
 	//forward-z, not vkguide's reversed near/far - see CLAUDE.md's MoltenVK notes
 	//the Viewport window's aspect, which m_drawExtent keeps at every render scale
-	return glm::perspective(glm::radians(rasterVerticalFov()), (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u), 0.1f, 10000.f);
+	const ViewportCameraSettings& settings = m_viewportNav.settings;
+	return glm::perspective(glm::radians(rasterVerticalFov()), (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u), settings.nearClip, settings.farClip);
 }
 
 SceneCamera VulkanEngine::cameraFromViewport() const
 {
 	SceneCamera camera;
-	camera.position = m_mainCamera.position;
-	camera.orientation = glm::normalize(glm::quat_cast(glm::mat3(const_cast<Camera&>(m_mainCamera).getRotationMatrix())));
-	camera.vfovDegrees = CAMERA_VERTICAL_FOV_DEGREES;
+	camera.position = m_viewportNav.camera.position;
+	camera.orientation = glm::normalize(glm::quat_cast(glm::mat3(m_viewportNav.camera.getRotationMatrix())));
+	camera.vfovDegrees = m_viewportNav.settings.vfovDegrees;
 	return camera;
 }
 
@@ -1132,13 +1168,12 @@ void VulkanEngine::beginFirstPersonEdit(uint64_t cameraId)
 	}
 
 	//the free camera is yaw/pitch only (no roll), so the scene camera's orientation is reduced
-	//to the yaw and pitch of its forward vector: Camera::getRotationMatrix() yaws about -y then
-	//pitches about +x, giving forward = (sin yaw cos pitch, sin pitch, -cos yaw cos pitch)
-	const glm::vec3 forward = glm::normalize(camera->forward());
-	m_mainCamera.position = camera->position;
-	m_mainCamera.pitch = glm::asin(glm::clamp(forward.y, -1.f, 1.f));
-	m_mainCamera.yaw = glm::atan(forward.x, -forward.z);
-	m_mainCamera.velocity = glm::vec3(0.f);
+	//to the yaw and pitch of its forward vector. A pivot that follows the view goes where the camera focuses
+	Camera& view = m_viewportNav.camera;
+	view.setPose(camera->position, camera->forward());
+	if (m_viewportNav.carriesPivot()) {
+		view.pivot = view.position + view.forward() * camera->focusDistance;
+	}
 	m_firstPersonCameraId = cameraId;
 }
 
@@ -1150,7 +1185,29 @@ void VulkanEngine::endFirstPersonEdit()
 
 void VulkanEngine::updateViewportCamera()
 {
-	m_mainCamera.update();
+	//real time, held to a tenth of a second so a slow frame (pbrt's landscape takes seconds) is not one long jump
+	const auto now = std::chrono::steady_clock::now();
+	const float dt = m_lastCameraUpdate == std::chrono::steady_clock::time_point {} ? 0.f : std::min(std::chrono::duration<float>(now - m_lastCameraUpdate).count(), 0.1f);
+	m_lastCameraUpdate = now;
+
+	ViewportFrameInput input;
+	input.dt = dt;
+	input.hovered = m_viewportHovered;
+	if (m_viewportNav.drag() == ViewportDrag::Look) {
+		auto held = [this](int key) { return glfwGetKey(m_window, key) == GLFW_PRESS ? 1.f : 0.f; };
+		input.move = glm::vec3(held(GLFW_KEY_D) - held(GLFW_KEY_A), held(GLFW_KEY_E) - held(GLFW_KEY_Q), held(GLFW_KEY_W) - held(GLFW_KEY_S));
+	}
+	//taken every frame, so a gesture over another window is not saved up for when the cursor reaches the preview
+	input.gestures = takeTrackpadGestures();
+	input.vfovRadians = glm::radians(rasterVerticalFov());
+	input.viewportHeight = std::max(m_viewportView.size.y, 1.f);
+	input.selectionCenter = [this]() -> std::optional<glm::vec3> {
+		if (const std::optional<Aabb> box = m_raytraceScene.selectionBounds(this)) {
+			return 0.5f * (box->min + box->max);
+		}
+		return std::nullopt;
+	};
+	m_viewportNav.update(input);
 
 	if (m_firstPersonCameraId == 0) {
 		return;
@@ -1161,7 +1218,8 @@ void VulkanEngine::updateViewportCamera()
 		return;
 	}
 	//the viewport's pose becomes the camera's; a resting viewport writes nothing
-	m_raytraceScene.setCameraPose(m_firstPersonCameraId, m_mainCamera.position, glm::normalize(glm::quat_cast(glm::mat3(m_mainCamera.getRotationMatrix()))));
+	const Camera& view = m_viewportNav.camera;
+	m_raytraceScene.setCameraPose(m_firstPersonCameraId, view.position, glm::normalize(glm::quat_cast(glm::mat3(view.getRotationMatrix()))));
 }
 
 void VulkanEngine::drawCameraOverlays(const ViewportView& view)
@@ -1321,6 +1379,9 @@ void VulkanEngine::rebuildSceneDerivedData()
 	m_raytraceTextures.rebuild(this);
 	//and the glTF materials' library entries, whose texture layers just moved
 	m_raytraceScene.refreshModelMaterials([this](MaterialDef& material) {
+		if (!material.origin.has_value()) {
+			return false;
+		}
 		const auto model = m_models.find(material.origin->modelKey);
 		if (model == m_models.end() || model->second == nullptr || material.origin->index >= model->second->materialsByIndex.size()) {
 			return false;
@@ -1566,7 +1627,13 @@ void VulkanEngine::newScene()
 	m_firstPersonCameraId = 0;
 	m_raytraceScene.replaceShapes({});
 	m_raytraceScene.replaceLights({});
+	//the optics before the materials: an optic removes the slot materials it owns
+	m_raytraceScene.replaceOptics({});
 	m_raytraceScene.replaceMaterials({});
+	m_opticalLibrary.clearScene();
+	setLengthUnit(LengthUnit::Meters);
+	//the view stays where it is
+	m_viewportNav.settings = ViewportCameraSettings {};
 	//an empty scene still has somewhere to render from
 	SceneCamera camera;
 	camera.name = "render_camera";
@@ -1611,6 +1678,10 @@ SceneDescription VulkanEngine::describeScene()
 	//each glTF material only as the parameters the user changed
 	std::map<uint64_t, int> userIndices;
 	for (const MaterialDef& material : m_raytraceScene.materials()) {
+		//an optical element's slots are saved with the element
+		if (material.opticOrigin.has_value()) {
+			continue;
+		}
 		if (!material.origin.has_value()) {
 			userIndices[material.id] = (int)scene.materials.size();
 			scene.materials.push_back(material);
@@ -1726,6 +1797,26 @@ SceneDescription VulkanEngine::describeScene()
 	}
 	scene.capabilities = capabilityKeys(m_capabilities);
 	scene.templateKey = m_sceneTemplate;
+	//the optical elements, with only the slots that differ from the kind's defaults; the library's scene-owned part
+	for (const SceneOptic& optic : m_raytraceScene.optics()) {
+		SceneOpticRecord record;
+		record.optic = optic;
+		record.optic.id = 0;
+		for (size_t slot = 0; slot < opticTraits(optic.kind).slots.size(); slot++) {
+			const MaterialDef* material = m_raytraceScene.findMaterial(optic.materials[slot]);
+			const MaterialDef fallback = defaultSlotMaterial(optic, slot);
+			if (material != nullptr && (material->type != fallback.type || material->params != fallback.params || material->lightGroup != fallback.lightGroup)) {
+				record.slots[slot] = *material;
+			}
+		}
+		scene.optics.push_back(std::move(record));
+	}
+	scene.glassCatalogs = m_opticalLibrary.loadedCatalogPaths();
+	scene.userGlasses = m_opticalLibrary.userGlasses();
+	scene.userCoatings = m_opticalLibrary.userCoatings();
+	scene.lengthUnit = m_lengthUnit;
+	const Camera& view = m_viewportNav.camera;
+	scene.viewport = SceneViewportRecord { m_viewportNav.settings, view.position, glm::normalize(glm::quat_cast(glm::mat3(view.getRotationMatrix()))), view.pivot };
 	return scene;
 }
 
@@ -1746,8 +1837,24 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	//the previous scene's lights go too: a file older than lights has only what its models bring.
 	//So do its user materials; each import below brings its model's
 	m_raytraceScene.replaceLights({});
+	m_raytraceScene.replaceOptics({});
 	m_raytraceScene.replaceMaterials({});
 	std::vector<std::string> problems;
+	//the optical library's scene-owned part before anything names its glasses or coatings
+	m_opticalLibrary.clearScene();
+	for (const std::filesystem::path& catalog : scene.glassCatalogs) {
+		std::vector<std::string> warnings;
+		std::string error;
+		if (!m_opticalLibrary.loadCatalog(catalog, warnings, &error)) {
+			problems.push_back(fmt::format("glass catalog {}: {}", catalog.filename().string(), error));
+		}
+	}
+	for (const OpticGlass& glass : scene.userGlasses) {
+		m_opticalLibrary.setUserGlass(glass);
+	}
+	for (const OpticCoating& coating : scene.userCoatings) {
+		m_opticalLibrary.setUserCoating(coating);
+	}
 	//the key each model actually got, by its position in the file's list: importGltf() derives a
 	//key from the file stem and uniquifies it, so the same file twice is two different keys
 	std::vector<std::string> modelKeys;
@@ -1891,6 +1998,30 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 		shapes.push_back(std::move(record.shape));
 	}
 	m_raytraceScene.replaceShapes(std::move(shapes));
+	//the optics, each with its default slots, then the slots the file changed
+	{
+		std::vector<SceneOptic> optics;
+		for (const SceneOpticRecord& record : scene.optics) {
+			optics.push_back(record.optic);
+		}
+		m_raytraceScene.replaceOptics(std::move(optics));
+		for (size_t i = 0; i < scene.optics.size() && i < m_raytraceScene.optics().size(); i++) {
+			const uint64_t id = m_raytraceScene.optics()[i].id;
+			for (size_t slot = 0; slot < MAX_OPTIC_MATERIAL_SLOTS; slot++) {
+				if (scene.optics[i].slots[slot]) {
+					m_raytraceScene.setOpticSlotMaterial(id, slot, *scene.optics[i].slots[slot]);
+				}
+			}
+		}
+	}
+	setLengthUnit(scene.lengthUnit);
+	if (scene.viewport) {
+		m_viewportNav.settings = scene.viewport->settings;
+		m_viewportNav.lookAt(scene.viewport->position, scene.viewport->position + scene.viewport->orientation * glm::vec3(0.f, 0.f, -1.f));
+		m_viewportNav.camera.pivot = scene.viewport->pivot;
+	} else {
+		m_viewportNav.settings = ViewportCameraSettings {};
+	}
 	m_raytraceScene.replaceCameras(std::move(scene.cameras));
 	//the light groups last of the objects that name one: a light or material in a group the file does not list moves to group 0
 	m_raytraceScene.setLightGroups(scene.lightGroupNames, scene.environmentGroup);
@@ -2181,8 +2312,48 @@ void VulkanEngine::drawEditMenu()
 			ImGui::SetWindowFocus("Scene Capabilities");
 		}
 		ImGui::SetItemTooltip("What this scene uses beyond a plain render, such as the optical bench");
+		//every panel's lengths, saved with the scene; the scene itself is meters whatever this says
+		if (ImGui::BeginMenu("Length Unit")) {
+			for (const LengthUnit unit : { LengthUnit::Meters, LengthUnit::Millimeters }) {
+				if (ImGui::MenuItem(lengthUnitLabel(unit), nullptr, m_lengthUnit == unit)) {
+					setLengthUnit(unit);
+				}
+			}
+			ImGui::EndMenu();
+		}
 		ImGui::EndMenu();
 	}
+}
+
+void VulkanEngine::drawCameraMenu()
+{
+	if (ImGui::BeginMenu("Camera")) {
+		const bool selected = m_raytraceScene.selectionBounds(this).has_value();
+		if (ImGui::MenuItem("Frame Selected", "F", false, selected)) {
+			frameInViewport(false);
+		}
+		if (ImGui::MenuItem("Frame All")) {
+			frameInViewport(true);
+		}
+		ImGui::Separator();
+		m_viewportNav.drawMenuSettings(m_firstPersonCameraId != 0);
+		ImGui::EndMenu();
+	}
+}
+
+void VulkanEngine::setLengthUnit(LengthUnit unit)
+{
+	m_lengthUnit = unit;
+	setCurrentLengthUnit(unit);
+}
+
+OpticBuildContext VulkanEngine::opticBuildContext() const
+{
+	OpticBuildContext context;
+	context.library = &m_opticalLibrary;
+	context.designWavelength = m_raytracer.settings().spectral.designWavelength;
+	context.surrounding = surroundingGlass(m_raytracer.settings().optics.surrounding);
+	return context;
 }
 
 bool VulkanEngine::beginBatch()
@@ -2441,6 +2612,39 @@ void VulkanEngine::runPendingFileAction()
 		break;
 	case FileAction::NewFromTemplate:
 		newSceneFromTemplate(m_pendingTemplate);
+		break;
+	case FileAction::LoadGlassCatalog:
+		if (auto chosen = showOpenFileDialog("Load Glass Catalog", { "agf", "AGF" }, assetsDirectory / "glass")) {
+			std::vector<std::string> warnings;
+			std::string error;
+			if (m_opticalLibrary.loadCatalog(*chosen, warnings, &error)) {
+				m_lastFileResult = IoResult::success(fmt::format("Loaded the glass catalog '{}'{}", chosen->filename().string(), warnings.empty() ? "" : fmt::format(" ({} warnings)", warnings.size())));
+				for (const std::string& warning : warnings) {
+					fmt::println("glass catalog: {}", warning);
+				}
+			} else {
+				m_lastFileResult = IoResult::failure(fmt::format("The glass catalog '{}' did not load: {}", chosen->filename().string(), error));
+			}
+		}
+		break;
+	case FileAction::ImportCoatingReflectance:
+	case FileAction::ImportCoatingTransmittance:
+		if (auto chosen = showOpenFileDialog("Import Coating Curve", { "csv", "txt" }, sceneDirectory)) {
+			std::ifstream file(*chosen);
+			std::stringstream text;
+			text << file.rdbuf();
+			std::string error;
+			std::optional<OpticCoating> coating = readCoatingCsv(text.str(), action == FileAction::ImportCoatingTransmittance, 0.0, &error);
+			if (coating) {
+				coating->key = m_opticalLibrary.uniqueCoatingKey(chosen->stem().string());
+				coating->name = chosen->stem().string();
+				coating->source = fmt::format("Measured, from {} (normal incidence)", chosen->filename().string());
+				m_opticalLibrary.setUserCoating(*coating);
+				m_lastFileResult = IoResult::success(fmt::format("Imported the coating '{}'", coating->key));
+			} else {
+				m_lastFileResult = IoResult::failure(fmt::format("'{}' is not a coating curve: {}", chosen->filename().string(), error));
+			}
+		}
 		break;
 	}
 
@@ -3279,6 +3483,7 @@ void VulkanEngine::initIMGUI()
 	//the workspaces' own entries in imgui.ini, then the file itself, read now rather than at the first frame so a file
 	//from before the dock space can be discarded before any window takes its old position
 	m_workspaces.init();
+	m_viewportNav.registerSettingsHandler();
 	if (ImGui::GetIO().IniFilename != nullptr) {
 		ImGui::LoadIniSettingsFromDisk(ImGui::GetIO().IniFilename);
 	}
@@ -3361,24 +3566,27 @@ static MeshAsset makeShapePreviewMesh(VulkanEngine* engine, ShapeKind kind)
 void VulkanEngine::drawRaytraceShapes()
 {
 	const std::vector<SceneShape>& shapes = m_raytraceScene.shapes();
+	const std::vector<SceneOptic>& optics = m_raytraceScene.optics();
 
-	if (shapes.empty()) {
+	if (shapes.empty() && optics.empty()) {
 		return;
 	}
+	//the slot's materials: one per shape, then one per optic
+	const size_t entries = shapes.size() + optics.size();
 
 	PreviewShapeSlot& slot = m_previewShapeSlots[m_frameNumber % FRAME_OVERLAP];
 	const size_t stride = sizeof(GLTFMetallic_Roughness::MaterialConstants);
 
 	//the slot's last frame has been waited on, so its buffer and sets are free to rewrite - and
 	//they only are rewritten when something about the shapes changed
-	if (slot.revision != m_raytraceScene.revision() || slot.capacity < shapes.size()) {
-		if (slot.capacity < shapes.size()) {
+	if (slot.revision != m_raytraceScene.revision() || slot.capacity < entries) {
+		if (slot.capacity < entries) {
 			if (slot.capacity > 0) {
 				destroyBuffer(slot.materialBuffer);
 			}
 			//one buffer for the whole set, indexed per shape by offset - the same layout
 			//loadGltf() uses for a file's materials
-			slot.capacity = shapes.size();
+			slot.capacity = entries;
 			slot.materialBuffer = createBuffer(stride * slot.capacity, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
 		}
 
@@ -3386,7 +3594,7 @@ void VulkanEngine::drawRaytraceShapes()
 
 		slot.descriptors.clearPools(m_device);
 		slot.materials.clear();
-		slot.materials.resize(shapes.size());
+		slot.materials.resize(entries);
 
 		for (size_t i = 0; i < shapes.size(); i++) {
 			const MaterialDef* material = m_raytraceScene.findMaterial(shapes[i].materialId);
@@ -3404,9 +3612,30 @@ void VulkanEngine::drawRaytraceShapes()
 			slot.materials[i] = m_metalRoughMaterial.writeMaterial(m_device, MaterialPass::MainColor, resources, slot.descriptors);
 		}
 
-		vmaFlushAllocation(m_memAllocator, slot.materialBuffer.allocation, 0, stride * shapes.size());//flush vma on MoltenVK
+		//an optic in a flat color by what it is: glass a dim tint, drawn additively without depth (the transparent
+		//pass); a mirror light gray; an iris's blades nearly black
+		for (size_t i = 0; i < optics.size(); i++) {
+			const size_t entry = shapes.size() + i;
+			const OpticKind kind = optics[i].kind;
+			const bool mirror = kind == OpticKind::PlanarMirror || kind == OpticKind::ConcaveMirror || kind == OpticKind::OffAxisParabola;
+			const bool blades = kind == OpticKind::Iris;
+			const glm::vec3 color = mirror ? glm::vec3(0.75f) : (blades ? glm::vec3(0.04f) : 0.22f * glm::vec3(0.75f, 0.85f, 1.f));
+			constants[entry].colorFactors = glm::vec4(color, 1.f);
+			constants[entry].metalRoughFactors = glm::vec4(mirror ? 1.f : 0.f, 0.3f, 0.f, 0.f);
+			GLTFMetallic_Roughness::MaterialResources resources;
+			resources.colorImage = m_whiteImage;
+			resources.colorSampler = m_defaultSamplerLinear;
+			resources.metalRoughImage = m_whiteImage;
+			resources.metalRoughSampler = m_defaultSamplerLinear;
+			resources.dataBuffer = slot.materialBuffer.buffer;
+			resources.dataBufferOffset = (uint32_t)(entry * stride);
+			slot.materials[entry] = m_metalRoughMaterial.writeMaterial(m_device, mirror || blades ? MaterialPass::MainColor : MaterialPass::Transparent, resources, slot.descriptors);
+		}
+
+		vmaFlushAllocation(m_memAllocator, slot.materialBuffer.allocation, 0, stride * entries);//flush vma on MoltenVK
 		slot.revision = m_raytraceScene.revision();
 	}
+	drawOpticPreviews(slot, shapes.size());
 
 	for (size_t i = 0; i < shapes.size(); i++) {
 		const SceneShape& shape = shapes[i];
@@ -3423,6 +3652,87 @@ void VulkanEngine::drawRaytraceShapes()
 		obj.vertexBuffer = mesh.meshBuffers.vertexBuffer.buffer;
 
 		m_mainDrawContext.opaqueSurfaces.push_back(obj);
+	}
+}
+
+void VulkanEngine::drawOpticPreviews(PreviewShapeSlot& slot, size_t firstMaterial)
+{
+	const std::vector<SceneOptic>& optics = m_raytraceScene.optics();
+	const OpticBuildContext context = opticBuildContext();
+	static const char* const BLANKS[] = { "PF05-03", "PF10-03", "PF20-03" };
+	for (size_t i = 0; i < optics.size(); i++) {
+		const SceneOptic& optic = optics[i];
+		const glm::mat4 transform(optic.bodyToWorld());
+		//a planar mirror at one of Thorlabs' sizes is its blank's model, which shares its frame (the front's center)
+		if (opticTraits(optic.kind).previewFromModel && optic.sizePreset >= 0 && optic.sizePreset < 3) {
+			if (const std::shared_ptr<LoadedModel> model = m_mountLibrary.meshes(BLANKS[optic.sizePreset])) {
+				for (const auto& node : model->topNodes) {
+					node->Draw(transform, m_mainDrawContext);
+				}
+				continue;
+			}
+		}
+		const std::string key = fmt::format("{}|{}|{}|{}", opticBodyKey(optic), context.designWavelength, context.surrounding, m_opticalLibrary.revision());
+		OpticPreviewMesh& entry = m_opticPreviewMeshes[key];
+		if (entry.mesh == nullptr) {
+			OpticReadout readout;
+			const OpticMesh tessellated = tessellateOptic(buildOptic(optic, context, readout));
+			if (tessellated.indices.empty()) {
+				m_opticPreviewMeshes.erase(key);
+				continue;
+			}
+			std::vector<Vertex> vertices;
+			vertices.reserve(tessellated.vertices.size());
+			for (const OpticMeshVertex& v : tessellated.vertices) {
+				vertices.push_back(Vertex { v.position, 0.f, v.normal, 0.f, glm::vec4(1.f) });
+			}
+			std::vector<uint32_t> indices = tessellated.indices;
+			auto mesh = std::make_shared<MeshAsset>();
+			mesh->name = fmt::format("optic_{}", opticTraits(optic.kind).name);
+			glm::vec3 lo = vertices[0].position;
+			glm::vec3 hi = lo;
+			for (const Vertex& v : vertices) {
+				lo = glm::min(lo, v.position);
+				hi = glm::max(hi, v.position);
+			}
+			GeoSurface surface;
+			surface.startIndex = 0;
+			surface.count = (uint32_t)indices.size();
+			surface.bounds.origin = 0.5f * (lo + hi);
+			surface.bounds.extents = 0.5f * (hi - lo);
+			surface.bounds.sphereRadius = glm::length(surface.bounds.extents);
+			mesh->surfaces.push_back(surface);
+			mesh->meshBuffers = uploadMesh(indices, vertices);
+			entry.mesh = std::move(mesh);
+		}
+		entry.lastFrame = m_frameNumber;
+		const GeoSurface& surface = entry.mesh->surfaces[0];
+		RenderObject object;
+		object.indexCount = surface.count;
+		object.firstIndex = surface.startIndex;
+		object.indexBuffer = entry.mesh->meshBuffers.indexBuffer.buffer;
+		object.material = &slot.materials[firstMaterial + i];
+		object.bounds = surface.bounds;
+		object.transform = transform;
+		object.vertexBuffer = entry.mesh->meshBuffers.vertexBuffer.buffer;
+		if (object.material->passType == MaterialPass::Transparent) {
+			m_mainDrawContext.transparentSurfaces.push_back(object);
+		} else {
+			m_mainDrawContext.opaqueSurfaces.push_back(object);
+		}
+	}
+	//a body no optic drew this frame is retired once the frames that may still draw it are done
+	for (auto it = m_opticPreviewMeshes.begin(); it != m_opticPreviewMeshes.end();) {
+		if (it->second.lastFrame != m_frameNumber) {
+			const GPUMeshBuffers buffers = it->second.mesh->meshBuffers;
+			getCurrentFrame().deletionQueue.push_function([this, buffers]() {
+				destroyBuffer(buffers.indexBuffer);
+				destroyBuffer(buffers.vertexBuffer);
+			});
+			it = m_opticPreviewMeshes.erase(it);
+		} else {
+			++it;
+		}
 	}
 }
 
@@ -3517,6 +3827,11 @@ void VulkanEngine::cleanup()
 
 		m_models.clear();
 		m_mountLibrary.clear();
+		for (const auto& [key, preview] : m_opticPreviewMeshes) {
+			destroyBuffer(preview.mesh->meshBuffers.indexBuffer);
+			destroyBuffer(preview.mesh->meshBuffers.vertexBuffer);
+		}
+		m_opticPreviewMeshes.clear();
 		m_raytraceMeshData.reset();
 		m_meshNodes.clear();
 		//after the tracer, whose descriptor sets name the array's view
@@ -3747,3 +4062,5 @@ bool is_visible(const RenderObject& obj, const glm::mat4& viewproj) {
 		return true;
 	}
 }
+
+

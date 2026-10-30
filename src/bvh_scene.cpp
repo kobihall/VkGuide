@@ -113,7 +113,8 @@ Tlas buildTlas(std::span<const Blas* const> blases, std::span<const SceneInstanc
 		const Blas* blas = isMesh && instance.blas < blases.size() ? blases[instance.blas] : nullptr;
 		//a zero scale collapses the instance to nothing and has no inverse to carry a ray with
 		const float determinant = glm::determinant(glm::mat3(instance.objectToWorld));
-		if ((isMesh && (blas == nullptr || !blas->usable())) || !(std::abs(determinant) > 1e-12f)) {
+		const bool isOptic = instance.kind == SceneInstanceKind::Optic;
+		if ((isMesh && (blas == nullptr || !blas->usable())) || (isOptic && (instance.optic == nullptr || instance.optic->bounds.empty())) || !(std::abs(determinant) > 1e-12f)) {
 			continue;
 		}
 		tlas.worldToObject[i] = glm::inverse(instance.objectToWorld);
@@ -123,6 +124,11 @@ Tlas buildTlas(std::span<const Blas* const> blases, std::span<const SceneInstanc
 			for (const Aabb& box : blas->frontier) {
 				boxes[i].grow(transformBox(box, instance.objectToWorld));
 			}
+		} else if (isOptic) {
+			Aabb body;
+			body.grow(instance.optic->bounds.min);
+			body.grow(instance.optic->bounds.max);
+			boxes[i] = transformBox(body, instance.objectToWorld);
 		} else if (shapeBounded(instance.shape)) {
 			boxes[i] = transformBox(shapeObjectBounds(instance.shape), instance.objectToWorld);
 		} else {
@@ -155,7 +161,10 @@ Tlas buildTlas(std::span<const Blas* const> blases, std::span<const SceneInstanc
 			}
 			for (uint32_t i = node.first; i < node.first + node.count; i++) {
 				const SceneInstance& instance = instances[bvh.primRefs[i]];
-				const double cost = instance.kind == SceneInstanceKind::Shape ? 1.0 : 1.0 + blases[instance.blas]->stats.sahCost;
+				//an optic tests each of its surfaces
+				const double cost = instance.kind == SceneInstanceKind::Shape ? 1.0
+					: instance.kind == SceneInstanceKind::Optic ? (double)instance.optic->surfaces.size()
+					: 1.0 + blases[instance.blas]->stats.sahCost;
 				leafCost += node.bounds.halfArea() * cost;
 			}
 		}
@@ -190,6 +199,19 @@ SceneHit traceScene(const Tlas& tlas, std::span<const Blas* const> blases, std::
 		local.watertight = ray.watertight;
 
 		const SceneInstance& instance = instances[index];
+		if (instance.kind == SceneInstanceKind::Optic) {
+			hit.trianglesTested += (uint32_t)instance.optic->surfaces.size();
+			OpticHitT<float> opticHit;
+			if (intersectOpticBody(*instance.optic, local.origin, local.direction, local.tMin, local.tMax, opticHit)) {
+				t = opticHit.t;
+				hit.hit = true;
+				hit.t = opticHit.t;
+				hit.instance = index;
+				hit.slot = opticHit.surface;
+				hit.barycentrics = glm::vec2(opticHit.local);
+			}
+			return;
+		}
 		if (instance.kind == SceneInstanceKind::Shape) {
 			hit.trianglesTested++;
 			float shapeT;
@@ -274,7 +296,24 @@ SceneHitPoint sceneHitPoint(const Tlas& tlas, std::span<const Blas* const> blase
 	glm::vec3 objectNormal;
 	glm::vec3 objectPoint;
 	glm::vec3 objectError;
-	if (instance.kind == SceneInstanceKind::Shape) {
+	if (instance.kind == SceneInstanceKind::Optic) {
+		// the body frame's point from the object-space ray, bounded by the surface frame's rounding: the coordinates and
+		// the surface's own origin, both carried through its rotation (shaders/rt/include/crt_optic.glsl opticObjectHit())
+		const glm::vec3 localOrigin = glm::vec3(worldToObject * glm::vec4(ray.origin, 1.f));
+		const glm::vec3 localDirection = glm::mat3(worldToObject) * ray.direction;
+		for (int i = 0; i < 3; i++) {
+			objectPoint[i] = std::fma(hit.t, localDirection[i], localOrigin[i]);
+		}
+		const OpticSurfaceT<float>& surface = instance.optic->surfaces[hit.slot];
+		const glm::vec3 surfaceOrigin = toBodyPoint(surface, glm::vec3(0.f));
+		objectPoint = toBodyPoint(surface, reprojectOntoSurface(surface, toSurfacePoint(surface, objectPoint)));
+		const glm::vec3 a = glm::abs(objectPoint);
+		const glm::vec3 o = glm::abs(surfaceOrigin);
+		objectError = glm::vec3(gammaBound(12) * (std::max({ a.x, a.y, a.z }) + std::max({ o.x, o.y, o.z })));
+		out.part = hit.slot;
+		out.objectPoint = objectPoint;
+		objectNormal = toBodyVector(surface, surfaceNormalLocal(surface, toSurfacePoint(surface, objectPoint)));
+	} else if (instance.kind == SceneInstanceKind::Shape) {
 		const glm::vec3 localOrigin = glm::vec3(worldToObject * glm::vec4(ray.origin, 1.f));
 		const glm::vec3 localDirection = glm::mat3(worldToObject) * ray.direction;
 		glm::vec3 point;

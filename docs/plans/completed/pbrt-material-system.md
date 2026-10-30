@@ -42,7 +42,7 @@ struct MaterialDef {
 
 Importing a glTF file creates one library entry per glTF material, named after it (or `material3` for an unnamed one, as `uniqueKey()` names them today). Removing the model removes its entries. If a user object still references one, the entry converts to a user material instead, with a load message naming it.
 
-An optical element ([physoptics-optical-elements.md](../physoptics-optical-elements.md)) owns one entry per material slot the same way: `origin` gains a second variant, the element's id and the slot, so editing an element's coating edits its own entry, the scene file saves only what differs from the kind's defaults, and deleting the element deletes its entries.
+An optical element ([physoptics-optical-elements.md](physoptics-optical-elements.md)) owns one entry per material slot the same way: `origin` gains a second variant, the element's id and the slot, so editing an element's coating edits its own entry, the scene file saves only what differs from the kind's defaults, and deleting the element deletes its entries.
 
 ### Parameters as data
 
@@ -104,7 +104,7 @@ Other plans add types through the same table, and none needs more than a traits 
 | `subsurface` | [pbrt-subsurface-scattering.md](../pbrt-subsurface-scattering.md) | complex |
 | `interface` | [pbrt-participating-media.md](../pbrt-participating-media.md): no BSDF; kernels 02 and 05 continue the ray into the next medium instead of queueing it | neither |
 | `linear_polarizer`, `retarder` | [pbrt-polarization.md](../pbrt-polarization.md) | basic |
-| `optical_interface` | [physoptics-optical-materials.md](../physoptics-optical-materials.md): every optical surface of an optical body; its two indices come from the surface's media, its reflectance and transmittance from a coating | basic |
+| `optical_interface` | [physoptics-optical-materials.md](physoptics-optical-materials.md): every optical surface of an optical body; its two indices come from the surface's media, its reflectance and transmittance from a coating | basic |
 | `detector` | [physoptics-detectors.md](../physoptics-detectors.md): a sensor surface, absorbing, diffuse or transparent by detector kind; kernel 02 sends light paths that hit it to the detector queue | basic |
 | `laser_aperture` | [physoptics-laser-sources.md](../physoptics-laser-sources.md): a laser's output aperture, emitting the beam's phase-space radiance toward a camera ray that hits it | basic |
 
@@ -122,7 +122,7 @@ The registry gains one field: `KernelVariant::perMaterialClass`, set on every ke
 
 A **Materials** window under **Windows**:
 
-- The library as a tree: **User** materials, then one folder per imported model. The laser optics plans add **Glasses** and **Coatings** folders, whose entries are not materials but are referenced by them ([physoptics-optical-materials.md](../physoptics-optical-materials.md)), and a folder per optical element for the materials it owns.
+- The library as a tree: **User** materials, then one folder per imported model. The laser optics plans add **Glasses** and **Coatings** folders, whose entries are not materials but are referenced by them ([physoptics-optical-materials.md](physoptics-optical-materials.md)), and a folder per optical element for the materials it owns.
 - Selecting one shows a parameter editor generated from its traits. Color parameters get a color picker; texturable ones a texture picker once [pbrt-textures.md](../pbrt-textures.md) exists.
 - For a glTF material, edited parameters are marked, and **Revert** restores the imported value.
 - **+ New** and **Duplicate**.

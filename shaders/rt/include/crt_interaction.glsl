@@ -24,6 +24,10 @@
 // Requires crt_common.glsl.
 
 #include "crt_shape.glsl"
+#include "crt_optic.glsl"
+
+// SurfaceInteraction::opticSurface and opticCoating for none
+#define CRT_NO_OPTIC 0xFFFFFFFFu
 
 struct SurfaceInteraction {
 	// world space
@@ -51,6 +55,14 @@ struct SurfaceInteraction {
 	uint lightIndex;
 	// the ray arrived against n, on the outside of the surface as authored
 	bool frontFace;
+	// AN OPTICAL BODY'S SURFACE (crt_optic.glsl), CRT_NO_OPTIC for any other hit: its record's first vec4 in binding 55,
+	// its body's media table, and its coating table in binding 56 (CRT_NO_OPTIC for uncoated). For an optic, n is the
+	// surface's normal and frontFace says the ray came from its plus medium
+	uint opticSurface;
+	uint opticMedia;
+	uint opticCoating;
+	// the hit's distance along the ray: the length of the segment a ray inside a body traveled in its medium
+	float t;
 };
 
 // crt_common.glsl GpuTriangleAttributes.tangents: one octahedral-encoded unit vector.
@@ -148,6 +160,10 @@ SurfaceInteraction surfaceInteraction(HitRecord hit, vec3 rayOrigin, vec3 rayDir
 	si.p = fma(vec3(hit.t), rayDirection, rayOrigin);
 	si.pError = vec3(0.0);
 	si.lightIndex = CRT_NO_LIGHT;
+	si.opticSurface = CRT_NO_OPTIC;
+	si.opticMedia = 0u;
+	si.opticCoating = CRT_NO_OPTIC;
+	si.t = hit.t;
 	const bool robust = (pc.flags & CRT_FLAG_ERROR_BOUNDS) != 0u;
 
 	vec3 objectN;
@@ -156,7 +172,27 @@ SurfaceInteraction surfaceInteraction(HitRecord hit, vec3 rayOrigin, vec3 rayDir
 	vec3 dpdv;
 	vec3 dndu;
 	vec3 dndv;
-	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
+	if (CRT_OPTICS && instance.nodeBase == CRT_INSTANCE_SHAPE && instance.triangleBase == CRT_SHAPE_OPTIC) {
+		// an optical body's surface: its exact normal at the hit, toward its plus side; a frame around it for the
+		// tangents (an optical interface has no texture to orient); the slot's material and the surface's coating
+		const uint surfaceOffset = instance.attributeBase + CRT_OPTIC_SURFACE_VEC4S * hit.primitive;
+		const OpticSurfaceRecord surface = opticSurfaceRecord(surfaceOffset);
+		vec3 objectError;
+		const vec3 objectPoint = opticObjectHit(instance, surface, rayOrigin, rayDirection, hit.t, objectError);
+		if (robust) {
+			si.p = toWorldPoint(instance, objectPoint, objectError, si.pError);
+		}
+		objectN = opticToBodyVector(surface, opticSurfaceNormal(surface, opticToSurfacePoint(surface, objectPoint)));
+		objectNs = objectN;
+		interactionFrame(normalize(objectN), dpdu, dpdv);
+		dndu = vec3(0.0);
+		dndv = vec3(0.0);
+		si.uv = hit.barycentrics;
+		si.material = instanceMaterials[instance.materialBase + opticSlot(surface)];
+		si.opticSurface = surfaceOffset;
+		si.opticMedia = instance.opticMedia;
+		si.opticCoating = instanceMaterials[instance.materialBase + instance.opticSlots + hit.primitive];
+	} else if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
 		const uint kind = instance.triangleBase;
 		// the hit point back in the unit primitive's space, where the shape is defined (the same
 		// point kernel 02 took the part and uv from)

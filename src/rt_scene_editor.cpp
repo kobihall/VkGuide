@@ -1,6 +1,9 @@
 #include <spectrum_edit.h>
 #include <rt_scene_editor.h>
 
+#include <length_unit.h>
+#include <optics_ui.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -97,7 +100,22 @@ bool drawMaterialParam(MaterialDef& material, const MaterialParam& param, const 
 	} else if (bool* b = std::get_if<bool>(&value)) {
 		changed = ImGui::Checkbox(param.label, b);
 	} else if (int* i = std::get_if<int>(&value)) {
-		changed = ImGui::InputInt(param.label, i);
+		if (!param.labels.empty()) {
+			const int current = std::clamp(*i, 0, (int)param.labels.size() - 1);
+			if (ImGui::BeginCombo(param.label, param.labels[(size_t)current])) {
+				for (int option = 0; option < (int)param.labels.size(); option++) {
+					if (ImGui::Selectable(param.labels[(size_t)option], option == current) && option != current) {
+						*i = option;
+						changed = true;
+					}
+				}
+				ImGui::EndCombo();
+			}
+		} else {
+			changed = ImGui::InputInt(param.label, i);
+		}
+	} else if (CoatingRef* coating = std::get_if<CoatingRef>(&value)) {
+		changed = drawCoatingCombo(param.label, coating->key);
 	} else if (MaterialLink* link = std::get_if<MaterialLink>(&value)) {
 		//a library material that scatters and does not lead back to this mix
 		const auto current = std::find_if(library.begin(), library.end(), [link](const MaterialDef& m) { return m.id == link->id; });
@@ -161,6 +179,7 @@ bool drawMaterialParams(MaterialDef& material, const MaterialDef* imported, cons
 std::string materialLabel(const MaterialDef& material)
 {
 	return material.origin.has_value() ? fmt::format("{} / {}", material.origin->modelKey, material.name) : material.name;
+	//an optical element's slot is named after its element already
 }
 
 }
@@ -169,7 +188,7 @@ bool drawShapeParams(SceneShape& shape)
 {
 	const ShapeTraits& traits = shapeTraits(shape.kind);
 
-	bool changed = ImGui::DragFloat3("position", &shape.position.x, 0.01f, 0.f, 0.f, "%.3f");
+	bool changed = dragLength3("position", shape.position);
 	if (traits.rotatable) {
 		changed |= drawOrientation(shape.orientation);
 	}
@@ -181,7 +200,7 @@ bool drawShapeParams(SceneShape& shape)
 	//logarithmic slider for every size keep the same controls without that trap
 	for (const ShapeParam& param : traits.params) {
 		float value = shapeParamValue(shape, param);
-		if (ImGui::SliderFloat(param.name, &value, 0.001f, 200.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
+		if (sliderLength(param.name, value, 0.001f, 200.f, true)) {
 			setShapeParam(shape, param, value);
 			changed = true;
 		}
@@ -191,12 +210,12 @@ bool drawShapeParams(SceneShape& shape)
 
 bool drawCameraParams(SceneCamera& camera, bool& displayChanged)
 {
-	bool changed = ImGui::DragFloat3("position", &camera.position.x, 0.01f, 0.f, 0.f, "%.3f");
+	bool changed = dragLength3("position", camera.position);
 	changed |= drawOrientation(camera.orientation);
 
 	changed |= ImGui::SliderFloat("vertical fov", &camera.vfovDegrees, 10.f, 120.f, "%.1f");
-	changed |= ImGui::SliderFloat("aperture", &camera.aperture, 0.f, 1.f, "%.3f");
-	changed |= ImGui::SliderFloat("focus distance", &camera.focusDistance, 0.1f, 50.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+	changed |= sliderLength("aperture", camera.aperture, 0.f, 1.f);
+	changed |= sliderLength("focus distance", camera.focusDistance, 0.01f, 50.f, true);
 
 	//display only: applied by the tonemap every frame, so a running render need not restart
 	displayChanged = ImGui::SliderFloat("exposure", &camera.exposure, 0.f, 4.f);
@@ -210,7 +229,7 @@ bool drawLightParams(SceneLight& light)
 
 	//a directional light has no position that matters to the render: it only places the viewport's
 	//arrow. Its direction is all there is
-	bool changed = ImGui::DragFloat3("position", &light.position.x, 0.01f, 0.f, 0.f, "%.3f");
+	bool changed = dragLength3("position", light.position);
 	if (light.kind != LightKind::Point) {
 		changed |= drawOrientation(light.orientation);
 	}
@@ -224,7 +243,11 @@ bool drawLightParams(SceneLight& light)
 	}
 
 	if (light.kind != LightKind::Directional) {
-		changed |= ImGui::SliderFloat("range", &light.range, 0.f, 1000.f, light.range > 0.f ? "%.2f" : "none", ImGuiSliderFlags_Logarithmic);
+		if (light.range > 0.f) {
+			changed |= sliderLength("range", light.range, 0.f, 1000.f, true);
+		} else {
+			changed |= ImGui::SliderFloat("range", &light.range, 0.f, 1000.f, "none", ImGuiSliderFlags_Logarithmic);
+		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("glTF's window: the light fades smoothly to nothing at this distance. 0 for a plain inverse square");
 		}
@@ -249,7 +272,11 @@ bool drawMeshObjectParams(SceneMeshObject& object)
 	float scale[3];
 	ImGuizmo::DecomposeMatrixToComponents(&object.transform[0][0], translation, rotation, scale);
 
-	bool transformChanged = ImGui::DragFloat3("position", translation, 0.01f, 0.f, 0.f, "%.3f");
+	glm::vec3 position(translation[0], translation[1], translation[2]);
+	bool transformChanged = dragLength3("position", position);
+	translation[0] = position.x;
+	translation[1] = position.y;
+	translation[2] = position.z;
 	transformChanged |= ImGui::DragFloat3("rotation", rotation, 0.5f, 0.f, 0.f, "%.1f");
 	transformChanged |= ImGui::DragFloat3("scale", scale, 0.01f, 0.f, 0.f, "%.3f");
 	if (transformChanged) {
@@ -275,6 +302,7 @@ bool drawMeshObjectParams(SceneMeshObject& object)
 RaytraceSceneEditor::RaytraceSceneEditor()
 {
 	m_nextShapeNumber.fill(1);
+	m_nextOpticNumber.fill(1);
 
 	//an empty scene still has somewhere to render from. Everything else arrives from the file the
 	//engine opens at startup, or from File > New Scene
@@ -475,6 +503,7 @@ MaterialDef RaytraceSceneEditor::userCopyOf(const MaterialDef& source, std::stri
 	copy.id = 0;
 	copy.name = std::move(name);
 	copy.origin.reset();
+	copy.opticOrigin.reset();
 	copy.edited.clear();
 	//a texture layer means something only for as long as the array is not rebuilt, and nothing in a
 	//scene file: a user material keeps none until texture references exist (pbrt-textures.md). Every type's,
@@ -720,6 +749,142 @@ void RaytraceSceneEditor::select(SelectionKind kind, uint64_t id)
 	m_renamingId = 0;
 }
 
+namespace {
+
+// about what a camera's or a light's overlay spans around its position (drawCameraOverlays(), drawLightOverlays())
+constexpr float OVERLAY_HALF_SIZE = 0.3f;
+
+Aabb boxAround(const glm::vec3& point, float half)
+{
+	Aabb box;
+	box.grow(point - glm::vec3(half));
+	box.grow(point + glm::vec3(half));
+	return box;
+}
+
+// the world box of an object-space box under `transform`, from its eight corners
+Aabb transformedBox(const glm::mat4& transform, const glm::vec3& lo, const glm::vec3& hi)
+{
+	Aabb box;
+	for (int i = 0; i < 8; i++) {
+		const glm::vec3 corner((i & 1) ? hi.x : lo.x, (i & 2) ? hi.y : lo.y, (i & 4) ? hi.z : lo.z);
+		box.grow(glm::vec3(transform * glm::vec4(corner, 1.f)));
+	}
+	return box;
+}
+
+bool boxEmpty(const Aabb& box)
+{
+	return box.min.x > box.max.x;
+}
+
+Aabb shapeBox(const SceneShape& shape)
+{
+	if (!shapeBounded(shape.kind)) {
+		return boxAround(shape.position, OVERLAY_HALF_SIZE);
+	}
+	const Aabb local = shapeObjectBounds(shape.kind);
+	return transformedBox(shape.objectToWorld(), local.min, local.max);
+}
+
+// empty once the object's model is gone
+Aabb meshObjectBox(const VulkanEngine* engine, const SceneMeshObject& object)
+{
+	Aabb box;
+	const auto found = engine->m_meshNodes.find({ object.modelKey, object.nodeIndex });
+	if (found == engine->m_meshNodes.end() || found->second->mesh == nullptr) {
+		return box;
+	}
+	for (const GeoSurface& surface : found->second->mesh->surfaces) {
+		box.grow(transformedBox(object.transform, surface.bounds.origin - surface.bounds.extents, surface.bounds.origin + surface.bounds.extents));
+	}
+	return box;
+}
+
+// empty for a body with no surfaces
+Aabb opticBox(const VulkanEngine* engine, const SceneOptic& optic)
+{
+	OpticReadout readout;
+	const OpticPrescription body = buildOptic(optic, engine->opticBuildContext(), readout);
+	if (body.surfaces.empty() || body.bounds.empty()) {
+		return Aabb {};
+	}
+	return transformedBox(glm::mat4(optic.bodyToWorld()), glm::vec3(body.bounds.min), glm::vec3(body.bounds.max));
+}
+
+}
+
+std::optional<Aabb> RaytraceSceneEditor::selectionBounds(const VulkanEngine* engine) const
+{
+	Aabb box;
+	switch (m_selectionKind) {
+	case SelectionKind::None:
+		break;
+	case SelectionKind::Camera:
+		if (const SceneCamera* camera = findCamera(m_selectionId)) {
+			box = boxAround(camera->position, OVERLAY_HALF_SIZE);
+		}
+		break;
+	case SelectionKind::Shape:
+		if (const SceneShape* shape = findShape(m_selectionId)) {
+			box = shapeBox(*shape);
+		}
+		break;
+	case SelectionKind::Light:
+		if (const SceneLight* light = findLight(m_selectionId)) {
+			box = boxAround(light->position, OVERLAY_HALF_SIZE);
+		}
+		break;
+	case SelectionKind::MeshObject:
+		if (const SceneMeshObject* object = findMeshObject(m_selectionId)) {
+			box = meshObjectBox(engine, *object);
+		}
+		break;
+	case SelectionKind::Optic:
+		if (const SceneOptic* optic = findOptic(m_selectionId)) {
+			box = opticBox(engine, *optic);
+			if (boxEmpty(box)) {
+				box = boxAround(glm::vec3(optic->position), OVERLAY_HALF_SIZE);
+			}
+		}
+		break;
+	}
+	return boxEmpty(box) ? std::nullopt : std::optional<Aabb>(box);
+}
+
+std::optional<Aabb> RaytraceSceneEditor::sceneBounds(const VulkanEngine* engine) const
+{
+	Aabb box;
+	for (const SceneShape& shape : m_shapes) {
+		if (shapeBounded(shape.kind)) {
+			box.grow(shapeBox(shape));
+		}
+	}
+	for (const SceneMeshObject& object : m_meshObjects) {
+		if (object.visible) {
+			const Aabb objectBox = meshObjectBox(engine, object);
+			if (!boxEmpty(objectBox)) {
+				box.grow(objectBox);
+			}
+		}
+	}
+	for (const SceneOptic& optic : m_optics) {
+		const Aabb body = opticBox(engine, optic);
+		if (!boxEmpty(body)) {
+			box.grow(body);
+		}
+	}
+	if (boxEmpty(box)) {
+		for (const SceneCamera& camera : m_cameras) {
+			box.grow(boxAround(camera.position, OVERLAY_HALF_SIZE));
+		}
+		for (const SceneLight& light : m_lights) {
+			box.grow(boxAround(light.position, OVERLAY_HALF_SIZE));
+		}
+	}
+	return boxEmpty(box) ? std::nullopt : std::optional<Aabb>(box);
+}
+
 void RaytraceSceneEditor::createShape(ShapeKind kind)
 {
 	SceneShape shape = makeShape(kind);
@@ -800,6 +965,29 @@ void RaytraceSceneEditor::duplicateSelection()
 		select(SelectionKind::Camera, addCamera(std::move(copy)));
 		break;
 	}
+	case SelectionKind::Optic: {
+		const SceneOptic* source = findOptic(m_selectionId);
+		if (source == nullptr) {
+			return;
+		}
+		//the copy owns copies of the slots' materials, so editing one element's coating never changes the other's
+		SceneOptic copy = *source;
+		copy.name = fmt::format("{}_copy", source->name);
+		std::array<std::optional<MaterialDef>, MAX_OPTIC_MATERIAL_SLOTS> slots;
+		for (size_t slot = 0; slot < MAX_OPTIC_MATERIAL_SLOTS; slot++) {
+			if (const MaterialDef* material = findMaterial(source->materials[slot])) {
+				slots[slot] = *material;
+			}
+		}
+		const uint64_t id = addOptic(std::move(copy));
+		for (size_t slot = 0; slot < MAX_OPTIC_MATERIAL_SLOTS; slot++) {
+			if (slots[slot]) {
+				setOpticSlotMaterial(id, slot, *slots[slot]);
+			}
+		}
+		select(SelectionKind::Optic, id);
+		break;
+	}
 	case SelectionKind::Light: {
 		const SceneLight* source = findLight(m_selectionId);
 		if (source == nullptr) {
@@ -836,6 +1024,9 @@ void RaytraceSceneEditor::deleteSelection()
 		//the model stays loaded: another object may place the same node, and the model row's
 		//"Restore objects" can put this one back
 		std::erase_if(m_meshObjects, [this](const SceneMeshObject& o) { return o.id == m_selectionId; });
+		break;
+	case SelectionKind::Optic:
+		removeOptic(m_selectionId);
 		break;
 	case SelectionKind::None:
 		return;
@@ -1032,6 +1223,11 @@ bool RaytraceSceneEditor::drawObjectRow(SelectionKind kind, uint64_t id, const s
 			case SelectionKind::MeshObject:
 				if (SceneMeshObject* object = findMeshObject(id)) {
 					target = &object->name;
+				}
+				break;
+			case SelectionKind::Optic:
+				if (SceneOptic* optic = findOptic(id)) {
+					target = &optic->name;
 				}
 				break;
 			case SelectionKind::None:
@@ -1267,6 +1463,11 @@ void RaytraceSceneEditor::drawSelection(VulkanEngine* engine)
 			drawSelectedMeshObject(engine, *object);
 		}
 		break;
+	case SelectionKind::Optic:
+		if (SceneOptic* optic = findOptic(m_selectionId)) {
+			drawSelectedOptic(engine, *optic);
+		}
+		break;
 	case SelectionKind::None:
 		break;
 	}
@@ -1485,7 +1686,8 @@ bool RaytraceSceneEditor::drawMaterialReference(uint64_t& materialId, const std:
 		//the user's materials, then each model's
 		for (const bool user : { true, false }) {
 			for (const MaterialDef& material : m_materials) {
-				if (material.origin.has_value() == user) {
+				//an optical element's slots are its own, and are not offered to anything else
+				if (material.origin.has_value() == user || material.opticOrigin.has_value()) {
 					continue;
 				}
 				ImGui::PushID((int)material.id);
@@ -1551,8 +1753,9 @@ void RaytraceSceneEditor::drawMaterialsWindow(VulkanEngine* engine)
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
-	//a glTF material belongs to its model, and one in use would leave its objects pointing at nothing
-	const bool deletable = selected != nullptr && !selected->origin.has_value() && materialUsers(selected->id) == 0;
+	//a glTF material belongs to its model and an optic's slot to its element, and one in use would leave its objects
+	//pointing at nothing
+	const bool deletable = selected != nullptr && isUserMaterial(*selected) && materialUsers(selected->id) == 0;
 	ImGui::BeginDisabled(!deletable);
 	if (ImGui::Button("Delete")) {
 		const uint64_t id = selected->id;
@@ -1563,11 +1766,13 @@ void RaytraceSceneEditor::drawMaterialsWindow(VulkanEngine* engine)
 	}
 	ImGui::EndDisabled();
 	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && selected != nullptr && !deletable) {
-		ImGui::SetTooltip(selected->origin.has_value() ? "A glTF material goes when its model is removed" : "Still used by an object");
+		ImGui::SetTooltip(selected->origin.has_value() ? "A glTF material goes when its model is removed"
+				: selected->opticOrigin.has_value()                  ? "An optic's slot goes when the optic is deleted"
+																	 : "Still used by an object");
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Remove unused")) {
-		std::erase_if(m_materials, [this](const MaterialDef& m) { return !m.origin.has_value() && materialUsers(m.id) == 0; });
+		std::erase_if(m_materials, [this](const MaterialDef& m) { return isUserMaterial(m) && materialUsers(m.id) == 0; });
 		markChanged();
 		selected = findMaterial(m_selectedMaterialId);
 	}
@@ -1579,6 +1784,14 @@ void RaytraceSceneEditor::drawMaterialsWindow(VulkanEngine* engine)
 	selected = findMaterial(m_selectedMaterialId);
 	if (selected != nullptr) {
 		drawMaterialDetails(engine, *selected);
+	} else {
+		//an entry a capability's folder selected instead, such as a glass or a coating of the optical library
+		bool drawn = false;
+		forEachEnabledCapability(engine->m_capabilities, [engine, &drawn](const CapabilityInfo& capability) {
+			if (!drawn && capability.materialDetails != nullptr) {
+				drawn = capability.materialDetails(engine);
+			}
+		});
 	}
 
 	ImGui::End();
@@ -1599,7 +1812,7 @@ void RaytraceSceneEditor::drawMaterialTree(VulkanEngine* engine)
 		};
 		if (ImGui::TreeNodeEx("User", ImGuiTreeNodeFlags_DefaultOpen)) {
 			for (const MaterialDef& material : m_materials) {
-				if (!material.origin.has_value()) {
+				if (isUserMaterial(material)) {
 					row(material);
 				}
 			}
@@ -1646,7 +1859,25 @@ void RaytraceSceneEditor::drawMaterialDetails(VulkanEngine* engine, MaterialDef&
 		}
 	}
 
-	if (material.origin.has_value()) {
+	if (material.opticOrigin.has_value()) {
+		//an optical element's slot: named after it, owned by it, and saved with it where it differs from the kind's default
+		ImGui::SeparatorText(material.name.c_str());
+		const SceneOptic* optic = findOptic(material.opticOrigin->opticId);
+		const uint32_t slot = material.opticOrigin->slot;
+		if (optic != nullptr) {
+			ImGui::TextDisabled("slot %s of %s, owned by it", slot < opticTraits(optic->kind).slots.size() ? opticTraits(optic->kind).slots[slot].name : "?", optic->name.c_str());
+			MaterialDef reset = defaultSlotMaterial(*optic, slot);
+			reset.id = material.id;
+			reset.name = material.name;
+			ImGui::BeginDisabled(reset == material);
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Reset to default")) {
+				material = reset;
+				changed = true;
+			}
+			ImGui::EndDisabled();
+		}
+	} else if (material.origin.has_value()) {
 		ImGui::SeparatorText(material.name.c_str());
 		ImGui::TextDisabled("material %u of %s, edited in place", material.origin->index, material.origin->modelKey.c_str());
 		if (!material.edited.empty() && imported.has_value()) {
@@ -1668,7 +1899,9 @@ void RaytraceSceneEditor::drawMaterialDetails(VulkanEngine* engine, MaterialDef&
 		}
 	}
 	const size_t users = materialUsers(material.id);
-	ImGui::TextDisabled(material.origin.has_value() ? "its model's objects, and %zu shape(s) or override(s)" : "used by %zu shape(s) or override(s)", users);
+	if (!material.opticOrigin.has_value()) {
+		ImGui::TextDisabled(material.origin.has_value() ? "its model's objects, and %zu shape(s) or override(s)" : "used by %zu shape(s) or override(s)", users);
+	}
 
 	//a glTF material is the glTF model: its type is not the user's to change
 	ImGui::BeginDisabled(material.origin.has_value());

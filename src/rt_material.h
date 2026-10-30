@@ -61,7 +61,11 @@ enum class MaterialType : uint8_t {
 	// pbrt-v4's diffuse transmission: Lambertian reflection and transmission
 	DiffuseTransmission,
 	// pbrt-v4's mix: each hit takes one of two other library materials, the second with the chance `amount`
-	Mix
+	Mix,
+	// a surface of an optical body (docs/plans/completed/physoptics-optical-materials.md): exact Fresnel or a coating between the
+	// surface's two media, which the body's record names, never the material. Only an optic's surface can use it; on
+	// anything else it reflects and refracts as an uncoated surface between air and air would, passing light through
+	OpticalInterface
 };
 
 inline constexpr MaterialType MATERIAL_TYPES[] = {
@@ -77,6 +81,7 @@ inline constexpr MaterialType MATERIAL_TYPES[] = {
 	MaterialType::ThinGlass,
 	MaterialType::DiffuseTransmission,
 	MaterialType::Mix,
+	MaterialType::OpticalInterface,
 };
 
 inline constexpr size_t MATERIAL_TYPE_COUNT = sizeof(MATERIAL_TYPES) / sizeof(MATERIAL_TYPES[0]);
@@ -112,11 +117,19 @@ enum class ParamKind : uint8_t {
 	Texture,
 	Enum,
 	Bool,
-	Material
+	Material,
+	Coating
+};
+
+// A coating of the optical library (src/optic_library.h), by its key, which is what the scene file saves: an empty key
+// is an uncoated surface
+struct CoatingRef {
+	std::string key;
+	bool operator==(const CoatingRef&) const = default;
 };
 
 // one alternative per ParamKind, in ParamKind's order
-using ParamValue = std::variant<float, SpectrumRef, TexRef, int, bool, MaterialLink>;
+using ParamValue = std::variant<float, SpectrumRef, TexRef, int, bool, MaterialLink, CoatingRef>;
 using ParamSet = std::map<std::string, ParamValue, std::less<>>;
 
 // MaterialParam::flags
@@ -144,16 +157,26 @@ struct MaterialParam {
 	// a Spectrum parameter: what its value means, which decides how an RGB value becomes a spectrum and how a
 	// spectrum becomes exact RGB's color (src/color_space.h)
 	SpectrumRole role { SpectrumRole::Albedo };
+	// an Enum parameter: the combo's labels, the value an index into them; empty for a plain integer
+	std::span<const char* const> labels {};
 };
 
 //---------------------------------------------------------------- materials
 
-// a glTF material: its model's key in VulkanEngine::m_models and its index in the file's materials.
-// The physoptics plans add an optical element's slot as a second kind of origin
+// a glTF material: its model's key in VulkanEngine::m_models and its index in the file's materials
 struct ModelMaterialOrigin {
 	std::string modelKey;
 	uint32_t index { 0 };
 	bool operator==(const ModelMaterialOrigin&) const = default;
+};
+
+// an optical element's slot (docs/plans/completed/physoptics-optical-elements.md): the element that owns the entry, by id, and
+// which of its material slots it is. Editing it is an edit to the element's own entry, and the scene file saves it with
+// the element, only where it differs from the kind's default
+struct OpticSlotOrigin {
+	uint64_t opticId { 0 };
+	uint32_t slot { 0 };
+	bool operator==(const OpticSlotOrigin&) const = default;
 };
 
 struct MaterialDef {
@@ -165,6 +188,8 @@ struct MaterialDef {
 	ParamSet params;
 	// empty for a user material, else the glTF material it was imported from
 	std::optional<ModelMaterialOrigin> origin;
+	// set for an optical element's slot, which is neither a user material nor a model's
+	std::optional<OpticSlotOrigin> opticOrigin;
 	// for a glTF material: the parameters the user changed from the imported values, which are all
 	// the scene file saves of it
 	std::set<std::string, std::less<>> edited;
@@ -189,6 +214,12 @@ glm::vec3 materialColor(const MaterialDef& material, std::string_view name, cons
 SpectrumRef materialSpectrum(const MaterialDef& material, std::string_view name);
 SpectrumRole materialSpectrumRole(MaterialType type, std::string_view name);
 int materialTextureLayer(const MaterialDef& material, std::string_view name);
+std::string materialCoating(const MaterialDef& material, std::string_view name);
+// neither a model's material nor an optical element's: one the user made
+inline bool isUserMaterial(const MaterialDef& material)
+{
+	return !material.origin.has_value() && !material.opticOrigin.has_value();
+}
 
 //---------------------------------------------------------------- the GPU record
 

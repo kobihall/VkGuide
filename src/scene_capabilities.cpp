@@ -1,5 +1,7 @@
 #include <scene_capabilities.h>
 
+#include <length_unit.h>
+#include <optics_ui.h>
 #include <scene_io.h>
 #include <vk_engine.h>
 #include <vk_ui.h>
@@ -34,12 +36,38 @@ void opticalBenchRecommendedSettings(const VulkanEngine* engine, std::vector<Set
 			},
 		});
 	}
+	//a bench is millimeters: optics are sold and drawn in them (docs/plans/completed/physoptics-optical-elements.md)
+	if (engine->m_lengthUnit != LengthUnit::Millimeters) {
+		out.push_back(SettingChange {
+			.label = "Length unit",
+			.current = lengthUnitLabel(engine->m_lengthUnit),
+			.recommended = lengthUnitLabel(LengthUnit::Millimeters),
+			.apply = [](VulkanEngine* e) { e->setLengthUnit(LengthUnit::Millimeters); },
+		});
+	}
 }
 
-void opticalBenchDependentObjects(const VulkanEngine*, std::vector<ObjectRef>&)
+void opticalBenchDependentObjects(const VulkanEngine* engine, std::vector<ObjectRef>& out)
 {
-	//no optics object exists yet: physoptics-optical-elements.md adds the optics, then the lasers, beam axes and
-	//detectors follow
+	//the optical elements (physoptics-optical-elements.md); the lasers, beam axes and detectors follow as their plans land
+	for (const SceneOptic& optic : engine->m_raytraceScene.optics()) {
+		const uint64_t id = optic.id;
+		out.push_back(ObjectRef {
+			.kind = opticTraits(optic.kind).label,
+			.name = optic.name,
+			.erase = [id](VulkanEngine* e) { e->m_raytraceScene.removeOptic(id); },
+		});
+	}
+}
+
+void opticalBenchSceneFolders(VulkanEngine* engine)
+{
+	engine->m_raytraceScene.drawOpticRows(engine);
+}
+
+void opticalBenchAddMenu(VulkanEngine* engine)
+{
+	engine->m_raytraceScene.drawOpticAddMenu(engine);
 }
 
 void opticalBenchSceneStatus(VulkanEngine* engine)
@@ -98,7 +126,10 @@ void populateOpticalBench(VulkanEngine* engine)
 	camera.orientation = glm::quatLookAt(glm::normalize(target - position), glm::vec3(0.f, 1.f, 0.f));
 	engine->m_raytraceScene.replaceCameras({ camera });
 	engine->m_raytracer.setRenderCamera(engine->m_raytraceScene.cameras().front().id);
-	engine->setViewportPose(position, target - position);
+	engine->setViewportPose(position, target);
+	//a bench is a third of a meter across, its optics a few millimeters thick
+	engine->m_viewportNav.settings.speed = 0.5f;
+	engine->m_viewportNav.settings.nearClip = 0.005f;
 	//an empty environment: a bench is lit by its lasers, and stray light is what it is there to show
 	engine->m_solidBackground = true;
 	engine->m_backgroundColor = glm::vec3(0.f);
@@ -115,13 +146,14 @@ const CapabilityInfo CAPABILITIES[] = {
 			"Adds their folders, menus, windows and settings, and the Optics workspace. Changes nothing about how anything renders.",
 		.recommendedSettings = opticalBenchRecommendedSettings,
 		.dependentObjects = opticalBenchDependentObjects,
-		.sceneFolders = nullptr,
-		.addMenu = nullptr,
+		.sceneFolders = opticalBenchSceneFolders,
+		.addMenu = opticalBenchAddMenu,
 		.sceneStatus = opticalBenchSceneStatus,
-		.menus = nullptr,
+		.menus = drawOpticsMenu,
 		.fileMenu = nullptr,
-		.renderSettings = nullptr,
-		.materialFolders = nullptr,
+		.renderSettings = drawOpticsRenderSettings,
+		.materialFolders = drawOpticalLibraryFolders,
+		.materialDetails = drawOpticalLibraryDetails,
 		.viewportOverlays = nullptr,
 		.workspace = &OPTICS_WORKSPACE,
 	},

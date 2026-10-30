@@ -54,6 +54,13 @@ if (NOT MSVC)
     target_compile_options(bsdf_test PRIVATE -O2)
 endif()
 
+# CPU-only verification of the optical bodies, glasses, coatings and elements: ./bin/optics_test
+add_executable(optics_test tests/optics_test.cpp)
+target_link_libraries(optics_test PRIVATE rt_optics rt_bsdf fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(optics_test PRIVATE -O2)
+endif()
+
 # CPU-only verification of the film behind kernels 00 and 09: ./bin/film_test
 add_executable(film_test tests/film_test.cpp)
 target_link_libraries(film_test PRIVATE rt_film fmt::fmt)

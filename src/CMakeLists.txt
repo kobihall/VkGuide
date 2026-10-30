@@ -14,7 +14,8 @@ add_library(rt_bvh STATIC
     shape.cpp
     shape.h)
 target_include_directories(rt_bvh PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(rt_bvh PUBLIC glm fmt::fmt)
+# the CPU traversal intersects optical bodies through rt_optics' float intersector
+target_link_libraries(rt_bvh PUBLIC rt_optics glm fmt::fmt)
 # optimised even in a Debug build: BLAS construction runs at model import, and unoptimised glm is
 # one to two orders of magnitude slower - minutes instead of seconds on a large model
 option(RT_BVH_ALWAYS_OPTIMIZE "Compile the BVH library with -O2 in every configuration" ON)
@@ -165,6 +166,30 @@ if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
     target_compile_options(rt_pbrt PRIVATE -O2)
 endif()
 
+# Optical bodies, glasses, coatings and the optical element catalog as plain C++ (docs/plans/completed/physoptics-optical-*.md):
+# the surface prescriptions and their exact intersector, templated on the scalar type (the float instantiation is the
+# line-for-line mirror of shaders/rt/include/crt_optic.glsl), the AGF glass reader, the thin-film transfer matrix, the
+# element traits and builders and their preview meshes. Checked by tests/optics_test.cpp; the CPU traversal in rt_bvh
+# intersects optics through it
+add_library(rt_optics STATIC
+    optic_catalog.cpp
+    optic_catalog.h
+    optic_coating.cpp
+    optic_coating.h
+    optic_glass.cpp
+    optic_glass.h
+    optic_library.cpp
+    optic_library.h
+    optic_mesh.cpp
+    optic_mesh.h
+    optic_surface.cpp
+    optic_surface.h)
+target_include_directories(rt_optics PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(rt_optics PUBLIC rt_material rt_spectrum glm fmt::fmt)
+if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
+    target_compile_options(rt_optics PRIVATE -O2)
+endif()
+
 # Add source to this project's executable.
 add_executable(vulkan_guide
     main.cpp
@@ -204,6 +229,11 @@ add_executable(vulkan_guide
     rt_scene.h
     rt_scene_editor.cpp
     rt_scene_editor.h
+    rt_scene_editor_optics.cpp
+    length_unit.cpp
+    length_unit.h
+    optics_ui.cpp
+    optics_ui.h
     rt_textures.cpp
     rt_textures.h
     scene_io.cpp
@@ -239,15 +269,19 @@ add_executable(vulkan_guide
     gpu_selftest_film.cpp
     gpu_selftest_aov.cpp
     gpu_selftest_spectral.cpp
+    gpu_selftest_optics.cpp
     camera.cpp
-    camera.h)
+    camera.h
+    viewport_navigation.cpp
+    viewport_navigation.h
+    trackpad.h)
 
 
 set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:vulkan_guide>")
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide PUBLIC rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_aov rt_image rt_material rt_spectrum rt_pbrt rt_optic_models vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
+target_link_libraries(vulkan_guide PUBLIC rt_optics rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_aov rt_image rt_material rt_spectrum rt_pbrt rt_optic_models vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
 
 target_link_libraries(vulkan_guide PRIVATE GPUOpen::VulkanMemoryAllocator)
 
@@ -259,13 +293,13 @@ endif()
 
 if (APPLE)
     target_compile_options(vulkan_guide PRIVATE -Wno-nullability-completeness)
-    # native NSOpenPanel/NSSavePanel file dialogs, Objective-C++
+    # native NSOpenPanel/NSSavePanel file dialogs and the trackpad's gestures, Objective-C++
     enable_language(OBJCXX)
-    target_sources(vulkan_guide PRIVATE file_dialog.mm)
-    set_source_files_properties(file_dialog.mm PROPERTIES SKIP_PRECOMPILE_HEADERS ON COMPILE_OPTIONS "-fobjc-arc")
+    target_sources(vulkan_guide PRIVATE file_dialog.mm trackpad.mm)
+    set_source_files_properties(file_dialog.mm trackpad.mm PROPERTIES SKIP_PRECOMPILE_HEADERS ON COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(vulkan_guide PRIVATE "-framework Cocoa" "-framework UniformTypeIdentifiers")
 else()
-    target_sources(vulkan_guide PRIVATE file_dialog_stub.cpp)
+    target_sources(vulkan_guide PRIVATE file_dialog_stub.cpp trackpad_stub.cpp)
 endif()
 
 target_link_libraries(vulkan_guide PUBLIC Vulkan::Vulkan)

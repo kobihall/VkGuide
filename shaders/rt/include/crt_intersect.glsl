@@ -36,7 +36,8 @@
 // surface index in BvhTriangle.v1.w, so the closest hit's attribute record is not fetched here at
 // all. A shape's part and parameters (crt_shape.glsl shapePart(), shapeUv()) are solved here once,
 // since the point is at hand. Adding a primitive kind changes this file, crt_shape.glsl and
-// crt_interaction.glsl; it changes no kernel after 02.
+// crt_interaction.glsl; it changes no kernel after 02. An optical body's hit (crt_optic.glsl) records its surface as the
+// primitive and the surface frame's (x, y) as the barycentrics.
 //
 // Requires crt_common.glsl and a traceScene() from one of the strategy headers.
 
@@ -77,7 +78,15 @@ uint intersectPath(uint queue, uint index)
 	record.instance = trace.instance;
 
 	uint material;
-	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
+	if (CRT_OPTICS && instance.nodeBase == CRT_INSTANCE_SHAPE && instance.triangleBase == CRT_SHAPE_OPTIC) {
+		// an optical body: the surface hit, its frame's (x, y) at the hit, and its slot's material
+		const OpticSurfaceRecord surface = opticInstanceSurface(instance, trace.triangle);
+		vec3 objectError;
+		const vec3 objectPoint = opticObjectHit(instance, surface, origin, direction, trace.t, objectError);
+		record.primitive = trace.triangle;
+		record.barycentrics = opticToSurfacePoint(surface, objectPoint).xy;
+		material = instanceMaterials[instance.materialBase + opticSlot(surface)];
+	} else if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
 		// the hit point back in the unit primitive's space, where its parts and parameters are
 		// defined. The same point crt_interaction.glsl rebuilds from the same ray, fused the same way
 		vec3 objectError;

@@ -21,5 +21,5 @@ The answer may differ by role (a reflectance, an emitter, a texture) and may be 
 ## Who is affected
 
 - Monochromatic renders and spectral bands outside the visible range, such as a 1064 nm laser scene with RGB-colored mounts and walls.
-- The infrared and XUV work of [physoptics-gratings-and-xuv.md](physoptics-gratings-and-xuv.md) and [physoptics-optical-materials.md](physoptics-optical-materials.md), whose materials are measured and so are unaffected, but whose surroundings are often RGB.
+- The infrared and XUV work of [physoptics-gratings-and-xuv.md](physoptics-gratings-and-xuv.md) and [physoptics-optical-materials.md](completed/physoptics-optical-materials.md), whose materials are measured and so are unaffected, but whose surroundings are often RGB.
 - `bin/spectrum_test`, whose uplift checks assert today's hold.

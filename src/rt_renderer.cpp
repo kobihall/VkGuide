@@ -78,6 +78,12 @@ void RaytraceRenderer::update(VulkanEngine* engine, const RaytraceSceneEditor& e
 			fmt::println("RaytraceRenderer: save when finished: {}", m_exportIo.message);
 		}
 	}
+	//the Render button's start, made here before any window is built: a new resolution recreates the display image,
+	//which the image windows would otherwise have recorded this frame by the descriptor set being freed
+	if (m_startRequested) {
+		m_startRequested = false;
+		startRender(engine, editor);
+	}
 	m_wasRunning = m_gpu.isRunning();
 
 	//restart on change: while a render is running and the camera moves, the scene or the
@@ -224,7 +230,7 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, RaytraceSceneEditor& edit
 
 	ImGui::BeginDisabled(running || camera == nullptr || blocked);
 	if (ImGui::Button("Render")) {
-		startRender(engine, editor);
+		m_startRequested = true;
 	}
 	ImGui::EndDisabled();
 
@@ -665,6 +671,13 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 		spectral.spectra.table = upliftTable(engine->m_rootPath, m_settings.spectral.colorSpace);
 	}
 	spectral.designWavelength = m_settings.spectral.designWavelength;
+	//and what the optical bodies' coating tables are packed for (docs/plans/completed/physoptics-optical-materials.md)
+	spectral.exactRgb = m_settings.spectral.representation == SpectralRepresentation::ExactRgb;
+	spectral.lambdaMin = m_settings.spectral.lambdaMin;
+	spectral.lambdaMax = m_settings.spectral.lambdaMax;
+	spectral.monochromatic = m_settings.spectral.representation == SpectralRepresentation::Monochromatic ? m_settings.spectral.monochromaticWavelength : 0.f;
+	spectral.surrounding = m_settings.optics.surrounding;
+	spectral.libraryRevision = engine->m_opticalLibrary.revision();
 	const bool sameBuild = m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
 		&& m_sceneAccelEnvironment == environment && m_sceneAccelSpectral == spectral;
 	if (sameBuild && m_sceneAccelContentRevision == editor.contentRevision()) {
@@ -673,7 +686,7 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	//an edit happened, but one that leaves the scene as it was (a slider let go where it started) still rebuilds
 	//nothing. Compared by value only here, since a scene of tens of thousands of objects takes milliseconds to compare
 	if (sameBuild && m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelShapes == editor.shapes() && m_sceneAccelLights == editor.lights()
-		&& m_sceneAccelMaterials == editor.materials()) {
+		&& m_sceneAccelMaterials == editor.materials() && m_sceneAccelOptics == editor.optics()) {
 		m_sceneAccelContentRevision = editor.contentRevision();
 		return;
 	}
@@ -693,8 +706,9 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 		}
 	}
 	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), editor.lights(), editor.materials(), modelMaterialIds,
-		environment, engine->m_raytraceTextures, spectral);
+		environment, engine->m_raytraceTextures, spectral, editor.optics(), &engine->m_opticalLibrary);
 	m_sceneAccelSpectral = spectral;
+	m_sceneAccelOptics = editor.optics();
 
 	m_sceneAccelObjects = editor.meshObjects();
 	m_sceneAccelShapes = editor.shapes();

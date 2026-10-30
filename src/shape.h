@@ -47,6 +47,10 @@ inline constexpr ShapeKind SHAPE_KINDS[] = {
 
 inline constexpr size_t SHAPE_KIND_COUNT = sizeof(SHAPE_KINDS) / sizeof(SHAPE_KINDS[0]);
 
+// the kind tag of an optical body's instance (crt_optic.glsl CRT_SHAPE_OPTIC), outside ShapeKind so that SHAPE_TRAITS
+// and the Geometry menu never see it (docs/plans/completed/physoptics-optical-surfaces.md)
+inline constexpr uint32_t GPU_SHAPE_OPTIC = 255u;
+
 // false only for the infinite plane
 bool shapeBounded(ShapeKind kind);
 

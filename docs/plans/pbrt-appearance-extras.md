@@ -30,7 +30,7 @@ Soap bubbles, oil on water and heat-tinted metal are colored by interference in 
 - In spectral modes it is evaluated exactly per lane at the lane's wavelength, since each lane is one wavelength. This is where spectral rendering makes a feature simpler.
 - In exact RGB it uses Belcour and Barla's closed-form integration of the interference terms against the color-matching functions, which avoids the aliasing of evaluating at three wavelengths.
 
-The single film is the one-layer case of the transfer-matrix method that [physoptics-optical-materials.md](physoptics-optical-materials.md) implements for coatings (`crt_tmm.glsl`), and the spectral evaluation reuses it rather than a second implementation.
+The single film is the one-layer case of the transfer-matrix method that [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) implements for coatings (`crt_tmm.glsl`), and the spectral evaluation reuses it rather than a second implementation.
 
 It becomes a thin-film thickness and IOR on `conductor`, `glass` and `pbr`, replacing the Fresnel term of the top interface, and imports from `KHR_materials_iridescence` (thickness range from a texture).
 

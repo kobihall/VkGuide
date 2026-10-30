@@ -250,6 +250,7 @@ private:
 	std::shared_ptr<const RaytraceSceneAccel> m_sceneAccel;
 	std::vector<SceneMeshObject> m_sceneAccelObjects;
 	std::vector<SceneShape> m_sceneAccelShapes;
+	std::vector<SceneOptic> m_sceneAccelOptics;
 	std::vector<SceneLight> m_sceneAccelLights;
 	std::vector<MaterialDef> m_sceneAccelMaterials;
 	EnvironmentLight m_sceneAccelEnvironment;
@@ -281,6 +282,8 @@ private:
 	double m_acceptedWork { 0.0 };
 	// why the last startRender() refused, empty when it did not
 	std::string m_blockedReason;
+	// Render was pressed: update() starts it next frame, before the image windows record the display image
+	bool m_startRequested { false };
 
 	bool m_showPanel { true };
 	bool m_showSettingsPanel { true };

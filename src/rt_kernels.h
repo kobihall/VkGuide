@@ -118,7 +118,12 @@ enum class CrtBinding : uint32_t {
 	ChannelSums = 45,
 	// pbrt's Sobol matrices and the other tables the samplers read, uploaded once
 	SamplerTables = 46,
-	// 47 to 61 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
+	// 47 to 54 and 57 to 61 are reserved by docs/plans/pbrt-roadmap.md and the laser optics plan for plans not built yet
+	// the optical bodies' surface records, payloads and media tables, and the coatings' tables
+	// (docs/plans/completed/physoptics-optical-surfaces.md, -materials.md). Every kernel that reads Instances declares both
+	// (GpuRenderer::bindingsOf()), as it may meet an optic; a scene without one binds stubs
+	OpticSurfaces = 55,
+	OpticCoatings = 56,
 	// the outlier-reweighted film's cascade of buffers (docs/plans/completed/pbrt-film-and-reconstruction.md)
 	FilmCascade = 62,
 	// a spectral build's path throughputs, CRT_LANES floats per path (docs/plans/completed/pbrt-spectral-rendering.md)

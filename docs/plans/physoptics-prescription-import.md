@@ -2,7 +2,7 @@
 
 Optical designs live in lens design files. A camera lens from a patent, a microscope objective from a vendor, a telescope from a textbook all arrive as a sequence of surfaces: radius, thickness, glass, semi-diameter, surface by surface. OpticStudio's `.zmx` format is the common one, and pbrt ships its own small format for the lenses of its realistic camera. This plan reads both into the renderer's own representation, interpreting a sequence of surfaces as a set of optical elements on an assembly, and refuses a file it cannot interpret faithfully rather than guessing. It is a one-way import: nothing is written back.
 
-*Not implemented. Depends on [physoptics-optical-elements.md](physoptics-optical-elements.md), [physoptics-beam-axis.md](physoptics-beam-axis.md) (assemblies) and [physoptics-optical-materials.md](physoptics-optical-materials.md) (the AGF reader and glasses). [pbrt-cameras.md](pbrt-cameras.md)'s realistic camera uses what this plan imports. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-beam-axis.md](physoptics-beam-axis.md) (assemblies) and [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) (the AGF reader and glasses). [pbrt-cameras.md](pbrt-cameras.md)'s realistic camera uses what this plan imports. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
@@ -12,7 +12,7 @@ Optical designs live in lens design files. A camera lens from a patent, a micros
 ## What exists today
 
 - `assets/models/pbrt-v4-scenes/lenses/` holds pbrt's prescriptions: `dgauss.50mm.dat` (a 50 mm f/2 double Gauss, from US patent 2,673,491 scaled from 100 mm), `wide.22mm.dat`, `fisheye.10mm.dat` and `telephoto.250mm.dat`, with unscaled versions. Each line is a radius, the thickness to the next surface, an index of refraction (0 for the aperture stop) and an aperture diameter, in millimeters, ordered from the scene to the film.
-- Nothing reads `.zmx`. [physoptics-optical-materials.md](physoptics-optical-materials.md) reads AGF glass catalogs.
+- Nothing reads `.zmx`. [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) reads AGF glass catalogs.
 
 ## Design
 
@@ -44,7 +44,7 @@ Anything else refuses the import, with the line and the keyword: other surface t
 
 ### Interpreting surfaces as elements
 
-The interpreter walks the sequence and groups surfaces into the elements of [physoptics-optical-elements.md](physoptics-optical-elements.md):
+The interpreter walks the sequence and groups surfaces into the elements of [physoptics-optical-elements.md](completed/physoptics-optical-elements.md):
 
 - A run of surfaces separated by glass (a surface whose `GLAS` is not air, up to the next surface that returns to air) is one optical body. Two surfaces make a singlet; three or more a cemented doublet or triplet, with the inner surfaces `Internal`. The body's edge is a cylinder at the larger of each surface's mechanical semi-diameter, or its clear one when none is given, between the faces' sags.
 - A mirror surface becomes a mirror body: the surface as its front, and a substrate behind it whose thickness the file does not give. The importer uses the mechanical semi-diameter's sixth as the thickness, a common ratio for mirror blanks, and the report says so.

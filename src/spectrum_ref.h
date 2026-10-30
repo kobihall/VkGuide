@@ -65,7 +65,7 @@ enum class SpectrumKind : uint8_t {
 //   100 Cauchy       n = A + B / l^2 + C / l^4
 // Schott, Sellmeier 1, 3 and 5, Herzberger, Conrady and the Extended formula are checked against Schott's data in
 // bin/spectrum_test; formulas 4, 7, 8, 12 and 13 follow the manual's forms and wait for a catalog glass to check them
-// (docs/plans/physoptics-optical-materials.md)
+// (docs/plans/completed/physoptics-optical-materials.md)
 enum class DispersionFormula : uint8_t {
 	Schott = 1,
 	Sellmeier1 = 2,

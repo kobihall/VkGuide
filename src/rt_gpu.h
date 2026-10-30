@@ -466,6 +466,8 @@ private:
 	// light list. Small, host-visible, and replaced whenever the scene changes - a gizmo drag under
 	// restart-on-change rebuilds it every frame, which is why the geometry lives elsewhere
 	AllocatedBuffer m_sceneBuffer {};
+	// bindings 55 and 56: the optical bodies' records and the coatings' tables, stubs while the scene has none
+	AllocatedBuffer m_opticBuffer {};
 	uint32_t m_tlasInstanceCount { 0 };
 	uint32_t m_unboundedCount { 0 };
 	// every instance, TLAS or not: what the linear traversal scans

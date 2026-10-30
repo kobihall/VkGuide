@@ -21,6 +21,7 @@
 
 #include <bvh.h>
 #include <bvh_layout.h>
+#include <optic_surface.h>
 #include <shape.h>
 
 // One mesh's bottom-level structure
@@ -49,7 +50,9 @@ Blas buildBlas(std::span<const glm::vec3> triangleVertices, const BvhBuildOption
 
 enum class SceneInstanceKind : uint32_t {
 	Mesh,
-	Shape
+	Shape,
+	// an optical body (docs/plans/completed/physoptics-optical-surfaces.md): its surfaces, in its own frame, stand in for a BLAS
+	Optic
 };
 
 struct SceneInstance {
@@ -60,6 +63,8 @@ struct SceneInstance {
 	ShapeKind shape { ShapeKind::Sphere };
 	// where the BLAS or the unit primitive is placed
 	glm::mat4 objectToWorld { 1.f };
+	// Optic: the body, in float as the GPU reads it. Its bounds are its box in the TLAS
+	std::shared_ptr<const OpticPrescriptionF> optic;
 };
 
 struct Tlas {
@@ -90,7 +95,8 @@ struct SceneHit {
 	float t { 1e30f };
 	uint32_t instance { 0 };
 	// Mesh: the hit triangle's slot in its BLAS (Blas::triangles), and its barycentrics. Nothing more
-	// for a shape: its normal follows from the hit point
+	// for a shape: its normal follows from the hit point. Optic: the surface index, and the hit's (x, y) in the
+	// surface's frame, what the GPU's hit record keeps
 	uint32_t slot { 0 };
 	glm::vec2 barycentrics { 0.f };
 	uint32_t nodesVisited { 0 };
@@ -115,7 +121,8 @@ struct SceneHitPoint {
 	glm::vec3 p { 0.f };
 	glm::vec3 pError { 0.f };
 	glm::vec3 n { 0.f, 1.f, 0.f };
-	// a shape: the point in the unit primitive's space and the part of it hit (shapePart())
+	// a shape: the point in the unit primitive's space and the part of it hit (shapePart()); an optic: the point in the
+	// body frame and the surface
 	glm::vec3 objectPoint { 0.f };
 	uint32_t part { 0 };
 };

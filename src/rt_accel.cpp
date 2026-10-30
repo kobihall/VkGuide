@@ -11,6 +11,7 @@
 #include <fmt/format.h>
 #include <glm/gtc/packing.hpp>
 
+#include <optic_library.h>
 #include <rt_textures.h>
 #include <vk_loader.h>
 
@@ -254,6 +255,115 @@ void setModelReadOnlyParams(MaterialDef& entry, const GLTFMaterial& material, co
 
 }
 
+namespace {
+
+//---------------------------------------------------------------- optics
+
+constexpr uint32_t NO_COATING = 0xFFFFFFFFu;
+constexpr double RGB_LAMBDAS[3] = { 630.0, 532.0, 465.0 };
+
+float floatOf(uint32_t bits)
+{
+	return std::bit_cast<float>(bits);
+}
+
+// A coating's table on one pair of media for one grid, kept across scene builds: a thin-film stack's table takes tens of
+// milliseconds, and a gizmo drag rebuilds the scene every frame. The key names everything the table depends on
+struct CoatingTableCache {
+	std::map<std::string, std::shared_ptr<const CoatingTable>> tables;
+	std::shared_ptr<const CoatingTable> get(const std::string& key, const std::function<CoatingTable()>& make)
+	{
+		const auto found = tables.find(key);
+		if (found != tables.end()) {
+			return found->second;
+		}
+		// a bound on what stale entries can hold
+		if (tables.size() > 256) {
+			tables.clear();
+		}
+		auto table = std::make_shared<const CoatingTable>(make());
+		tables[key] = table;
+		return table;
+	}
+};
+CoatingTableCache s_coatingTables;
+
+// What packing the optics needs beyond the scene: the library, the design wavelength and grid, and the binding-56 tables
+// already written in this build, by (coating, media)
+struct OpticPacker {
+	const OpticalLibrary& library;
+	const SpectralSceneContext& spectral;
+	RaytraceSceneAccel& accel;
+	std::map<std::string, uint32_t> tables;
+
+	std::string glassName(const std::string& name) const
+	{
+		return name.empty() ? std::string(surroundingGlassName(spectral.surrounding)) : name;
+	}
+
+	// two vec4 per medium (crt_optic_material.glsl): n at the design wavelength and alpha at red, green and blue; the
+	// index's and the absorption's SceneSpectra entries, and whether the index varies
+	void packMedia(const OpticPrescription& body)
+	{
+		for (const OpticMedium& medium : body.media) {
+			const OpticGlass* glass = library.findGlass(glassName(medium.glass));
+			const OpticGlass fallback = vacuumGlass();
+			const OpticGlass& g = glass != nullptr ? *glass : fallback;
+			accel.opticData.push_back(glm::vec4((float)glassIndex(g, spectral.designWavelength), (float)glassAbsorption(g, RGB_LAMBDAS[0]),
+				(float)glassAbsorption(g, RGB_LAMBDAS[1]), (float)glassAbsorption(g, RGB_LAMBDAS[2])));
+			const uint32_t index = accel.spectra.add(g.index, SpectrumRole::Scalar);
+			const uint32_t absorption = accel.spectra.add(g.absorption, SpectrumRole::Scalar);
+			accel.opticData.push_back(glm::vec4(floatOf(index), floatOf(absorption), floatOf(isConstantSpectrum(g.index) ? 0u : 1u), 0.f));
+		}
+	}
+
+	// the table header's offset in binding 56 for a coating between two media, NO_COATING for an uncoated surface
+	uint32_t coatingTable(const std::string& key, const std::string& plusGlass, const std::string& minusGlass)
+	{
+		const OpticCoating* coating = library.findCoating(key);
+		if (coating == nullptr || coating->kind == CoatingKind::Uncoated) {
+			return NO_COATING;
+		}
+		const std::string plus = glassName(plusGlass);
+		const std::string minus = glassName(minusGlass);
+		const std::string tableKey = fmt::format("{}|{}|{}", key, plus, minus);
+		if (const auto found = tables.find(tableKey); found != tables.end()) {
+			return found->second;
+		}
+		const IndexLookup index = library.indexLookup();
+		// the grid: three projected columns in exact RGB, one wavelength for a monochromatic render, else 1 nm over the range
+		std::vector<float> wavelengths;
+		float lambdaMin = 0.f;
+		float lambdaStep = 0.f;
+		if (!spectral.exactRgb) {
+			if (spectral.monochromatic > 0.f) {
+				wavelengths.push_back(spectral.monochromatic);
+				lambdaMin = spectral.monochromatic;
+			} else {
+				lambdaMin = std::floor(spectral.lambdaMin);
+				const int count = std::clamp((int)std::ceil(spectral.lambdaMax) - (int)lambdaMin + 1, 2, 4096);
+				for (int i = 0; i < count; i++) {
+					wavelengths.push_back(lambdaMin + (float)i);
+				}
+				lambdaStep = 1.f;
+			}
+		}
+		const std::string cacheKey = fmt::format("{}|{}|{}|{}|{}|{}|{}|{}", tableKey, library.revision(), spectral.exactRgb, lambdaMin, wavelengths.size(),
+			spectral.designWavelength, (int)spectral.spectra.space, (const void*)spectral.spectra.table);
+		const std::shared_ptr<const CoatingTable> table = s_coatingTables.get(cacheKey, [&]() {
+			return spectral.exactRgb ? coatingTableRgb(*coating, index, plus, minus, spectral.spectra, spectral.designWavelength)
+									 : ::coatingTable(*coating, index, plus, minus, wavelengths);
+		});
+
+		const uint32_t header = library.packCoatingRecord(*coating, *table, lambdaMin, lambdaStep, spectral.exactRgb,
+			[this](const SpectrumRef& ref) { return accel.spectra.add(ref, SpectrumRole::Scalar); }, accel.coatingData);
+		tables[tableKey] = header;
+		return header;
+	}
+};
+
+}
+
 MaterialDef gltfMaterialDef(const GLTFMaterial& material, const RaytraceTextureArray& textures)
 {
 	MaterialDef entry;
@@ -302,7 +412,7 @@ void refreshModelMaterialDef(MaterialDef& entry, const GLTFMaterial& material, c
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
 	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures,
-	const SpectralSceneContext& spectral)
+	const SpectralSceneContext& spectral, const std::vector<SceneOptic>& optics, const OpticalLibrary* library)
 {
 	auto accel = std::make_shared<RaytraceSceneAccel>();
 
@@ -372,6 +482,71 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		lightBase.push_back(lightList.addShape(shapes[i].kind, instance.objectToWorld, accel->materials[material].emission, materialGroups[material], emitterSpectrum(material)));
 	}
 	accel->shapeCount = (uint32_t)shapes.size();
+
+	//THE OPTICAL BODIES: each element's prescription, built once per distinct body, its records and media table in
+	//binding 55, and one instance under the element's transform. Its table in instanceMaterials is its slots'
+	//materials, then each surface's coating table (crt_optic.glsl)
+	struct OpticInstanceRecord {
+		uint32_t base;
+		uint32_t surfaces;
+		uint32_t media;
+		uint32_t slots;
+	};
+	std::map<size_t, OpticInstanceRecord> opticRecords;
+	if (library != nullptr && !optics.empty()) {
+		OpticPacker packer { *library, spectral, *accel, {} };
+		OpticBuildContext context;
+		context.library = library;
+		context.designWavelength = spectral.designWavelength;
+		context.surrounding = surroundingGlassName(spectral.surrounding);
+		struct Body {
+			OpticPrescription prescription;
+			std::shared_ptr<const OpticPrescriptionF> floats;
+			uint32_t base;
+			uint32_t media;
+		};
+		std::map<std::string, Body> bodies;
+		for (const SceneOptic& optic : optics) {
+			const std::string key = opticBodyKey(optic);
+			auto found = bodies.find(key);
+			if (found == bodies.end()) {
+				OpticReadout readout;
+				Body body;
+				body.prescription = buildOptic(optic, context, readout);
+				if (body.prescription.surfaces.empty()) {
+					continue;
+				}
+				body.floats = std::make_shared<const OpticPrescriptionF>(toFloat(body.prescription));
+				body.base = packOpticBody(*body.floats, accel->opticData);
+				body.media = (uint32_t)accel->opticData.size();
+				packer.packMedia(body.prescription);
+				found = bodies.emplace(key, std::move(body)).first;
+			}
+			const Body& body = found->second;
+			const OpticTraits& traits = opticTraits(optic.kind);
+			const uint32_t tableBase = (uint32_t)accel->instanceMaterials.size();
+			for (size_t slot = 0; slot < traits.slots.size(); slot++) {
+				accel->instanceMaterials.push_back(materialIndex(optic.materials[slot], false));
+			}
+			for (const OpticSurface& surface : body.prescription.surfaces) {
+				const auto material = std::find_if(materials.begin(), materials.end(), [&](const MaterialDef& m) { return m.id == optic.materials[surface.materialSlot]; });
+				uint32_t coating = NO_COATING;
+				if (material != materials.end() && material->type == MaterialType::OpticalInterface && std::get<int>(materialValue(*material, "finish")) == 0) {
+					coating = packer.coatingTable(materialCoating(*material, "coating"), body.prescription.media[surface.mediumPlus].glass, body.prescription.media[surface.mediumMinus].glass);
+				}
+				accel->instanceMaterials.push_back(coating);
+			}
+			SceneInstance instance;
+			instance.kind = SceneInstanceKind::Optic;
+			instance.objectToWorld = glm::mat4(optic.bodyToWorld());
+			instance.optic = body.floats;
+			opticRecords[instances.size()] = OpticInstanceRecord { body.base, (uint32_t)body.prescription.surfaces.size(), body.media, (uint32_t)traits.slots.size() };
+			instances.push_back(instance);
+			materialBase.push_back(tableBase);
+			lightBase.push_back(GPU_NO_LIGHT);
+			accel->opticCount++;
+		}
+	}
 
 	for (const SceneMeshObject& object : objects) {
 		if (!object.visible || blases == nullptr) {
@@ -461,7 +636,15 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		}
 		gpu.materialBase = materialBase[index];
 		gpu.lightBase = lightBase[index];
-		if (instance.kind == SceneInstanceKind::Shape) {
+		if (instance.kind == SceneInstanceKind::Optic) {
+			const OpticInstanceRecord& record = opticRecords.at(index);
+			gpu.nodeBase = GPU_INSTANCE_SHAPE;
+			gpu.triangleBase = GPU_SHAPE_OPTIC;
+			gpu.attributeBase = record.base;
+			gpu.triangleCount = record.surfaces;
+			gpu.opticMedia = record.media;
+			gpu.opticSlots = record.slots;
+		} else if (instance.kind == SceneInstanceKind::Shape) {
 			gpu.nodeBase = GPU_INSTANCE_SHAPE;
 			gpu.triangleBase = (uint32_t)instance.shape;
 		} else {
@@ -497,3 +680,4 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	accel->lights = lightList.finish(sceneRadius);
 	return accel;
 }
+

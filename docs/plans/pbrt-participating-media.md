@@ -92,7 +92,7 @@ The walk needs closest hits, not the any-hit `occluded()` query. Kernel 08 there
 
 ### On an optical bench
 
-A thin homogeneous fog (σs around 0.01 m⁻¹) makes a laser beam visible in a render the way smoke does in a lab, and is the only way the path tracer itself draws a beam in free space. The glass inside an optical body does not need this plan: [physoptics-optical-materials.md](physoptics-optical-materials.md) applies Beer–Lambert absorption locally at each exit surface. A body can instead name a medium here for scattering glass or a cell of turbid water.
+A thin homogeneous fog (σs around 0.01 m⁻¹) makes a laser beam visible in a render the way smoke does in a lab, and is the only way the path tracer itself draws a beam in free space. The glass inside an optical body does not need this plan: [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) applies Beer–Lambert absorption locally at each exit surface. A body can instead name a medium here for scattering glass or a cell of turbid water.
 
 ### Later
 

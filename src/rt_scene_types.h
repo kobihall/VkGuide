@@ -185,6 +185,41 @@ struct SceneCamera {
 	bool operator==(const SceneCamera&) const = default;
 };
 
+// How the raster viewport's free camera moves and projects, set in the Camera menu and saved with the scene (payload
+// version 22), since a scene's scale decides what speed and clip planes suit it. Not a SceneCamera: nothing renders
+// from it
+struct ViewportCameraSettings {
+	// meters per second while flying; a mouse wheel step moves a fifth of a second's worth
+	float speed { 5.f };
+	// the preview's own; a first-person edit fits the flown camera's frame instead (VulkanEngine::rasterVerticalFov())
+	float vfovDegrees { 70.f };
+	// meters
+	float nearClip { 0.1f };
+	float farClip { 10000.f };
+
+	// what the Camera menu's sliders reach, which a file is held to as well
+	static constexpr float MIN_SPEED = 1e-3f;
+	static constexpr float MAX_SPEED = 1e4f;
+	static constexpr float MIN_FOV = 10.f;
+	static constexpr float MAX_FOV = 120.f;
+	static constexpr float MIN_NEAR = 1e-5f;
+	static constexpr float MAX_NEAR = 10.f;
+	static constexpr float MIN_FAR = 1.f;
+	static constexpr float MAX_FAR = 1e7f;
+
+	ViewportCameraSettings clamped() const
+	{
+		ViewportCameraSettings out = *this;
+		out.speed = std::clamp(speed, MIN_SPEED, MAX_SPEED);
+		out.vfovDegrees = std::clamp(vfovDegrees, MIN_FOV, MAX_FOV);
+		out.nearClip = std::clamp(nearClip, MIN_NEAR, MAX_NEAR);
+		out.farClip = std::clamp(farClip, std::max(MIN_FAR, out.nearClip * 2.f), MAX_FAR);
+		return out;
+	}
+
+	bool operator==(const ViewportCameraSettings&) const = default;
+};
+
 //---------------------------------------------------------------- punctual lights
 
 // glTF's KHR_lights_punctual three, the values saved in the scene file by name (lightKindName())
@@ -433,6 +468,27 @@ inline constexpr int DEFAULT_RESOLUTION_PRESET = 1;
 inline constexpr int MIN_RENDER_DIMENSION = 2;
 inline constexpr int MAX_RENDER_DIMENSION = 8192;
 
+// What surrounds every optical body (docs/plans/completed/physoptics-optical-materials.md): medium 0 of each, by the glass name
+// the optical library knows it as
+enum class SurroundingMedium : uint8_t {
+	Air,
+	Vacuum
+};
+
+// the optical library's name for the surrounding medium (src/optic_glass.h GLASS_AIR, GLASS_VACUUM)
+inline const char* surroundingGlassName(SurroundingMedium medium)
+{
+	return medium == SurroundingMedium::Vacuum ? "VACUUM" : "AIR";
+}
+
+// the optics a render reads: the surrounding medium, and whether coatings are evaluated per hit (crt_tmm.glsl) rather
+// than looked up in their tables
+struct OpticsSettings {
+	SurroundingMedium surrounding { SurroundingMedium::Air };
+	bool exactCoatings { false };
+	bool operator==(const OpticsSettings&) const = default;
+};
+
 // How a render is made. Owned by RaytraceRenderer and saved with the scene. The camera's own
 // settings (lens, exposure) live on the SceneCamera, and which camera renders is the
 // renderer's choice
@@ -496,6 +552,9 @@ struct RenderSettings {
 	// wavelength, three Gaussian bands, N fixed bands or N hero wavelengths; the range, the working space the scene's RGB
 	// values are in, and the design wavelength. Any change restarts the render
 	SpectralSettings spectral;
+	// OPTICS (docs/plans/completed/physoptics-optical-materials.md): the surrounding medium and exact coatings. Changes nothing in a
+	// scene without optical bodies
+	OpticsSettings optics;
 
 	bool operator==(const RenderSettings&) const = default;
 };

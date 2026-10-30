@@ -21,6 +21,7 @@
 #include <bvh_scene.h>
 #include <light_sampling.h>
 #include <rt_lights.h>
+#include <optic_catalog.h>
 #include <rt_scene_types.h>
 
 struct MeshAsset;
@@ -122,7 +123,10 @@ struct GpuInstance {
 	// mesh: where its run starts in RaytraceLightList::triangleLights, or GPU_NO_LIGHT for a mesh
 	// with no emitting triangle. What kernel 02 names the light it hit by
 	uint32_t lightBase;
-	uint32_t pad[2];
+	// an optic: its media table's first vec4 in binding 55, and its material slot count, after which one coating table
+	// per surface follows in instanceMaterials (shaders/rt/include/crt_optic.glsl). 0 otherwise
+	uint32_t opticMedia;
+	uint32_t opticSlots;
 };
 static_assert(sizeof(GpuInstance) == 128);
 
@@ -174,6 +178,11 @@ struct RaytraceSceneAccel {
 	// name theirs in GpuLight::spectrum. Independent of the representation, which only the SpectralData packs for
 	SceneSpectra spectra;
 	std::vector<MaterialSpectralRecord> materialSpectra;
+	// THE OPTICAL BODIES (docs/plans/completed/physoptics-optical-surfaces.md): binding 55, each distinct body's surface records,
+	// payloads and media table once however many elements share it; binding 56, the coatings' tables
+	std::vector<glm::vec4> opticData;
+	std::vector<glm::vec4> coatingData;
+	uint32_t opticCount { 0 };
 };
 
 // what the scene's records are read in: the working space RGB values are in, and the wavelength exact RGB reads a
@@ -181,11 +190,23 @@ struct RaytraceSceneAccel {
 struct SpectralSceneContext {
 	SpectrumContext spectra;
 	float designWavelength { DEFAULT_DESIGN_WAVELENGTH };
+	// what the optics' records are packed for: exact RGB or a spectral grid (the range, or the one wavelength of a
+	// monochromatic render), the surrounding medium, and the optical library's revision
+	bool exactRgb { true };
+	float lambdaMin { 360.f };
+	float lambdaMax { 830.f };
+	float monochromatic { 0.f };
+	SurroundingMedium surrounding { SurroundingMedium::Air };
+	uint64_t libraryRevision { 0 };
 	bool operator==(const SpectralSceneContext& other) const
 	{
-		return spectra.table == other.spectra.table && spectra.space == other.spectra.space && designWavelength == other.designWavelength;
+		return spectra.table == other.spectra.table && spectra.space == other.spectra.space && designWavelength == other.designWavelength && exactRgb == other.exactRgb
+			&& lambdaMin == other.lambdaMin && lambdaMax == other.lambdaMax && monochromatic == other.monochromatic && surrounding == other.surrounding
+			&& libraryRevision == other.libraryRevision;
 	}
 };
+
+class OpticalLibrary;
 
 // What the light list needs of the background: the environment map's tables when the map is what a
 // missed ray sees (not a solid colour, not the sky gradient), and its intensity
@@ -223,4 +244,4 @@ using ModelMaterialIds = std::unordered_map<const GLTFMaterial*, uint64_t>;
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
 	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures,
-	const SpectralSceneContext& spectral = {});
+	const SpectralSceneContext& spectral = {}, const std::vector<SceneOptic>& optics = {}, const OpticalLibrary* library = nullptr);

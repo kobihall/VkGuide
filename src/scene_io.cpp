@@ -74,7 +74,17 @@ namespace {
 //   "template", the template it started from, and in a template file "templateInfo" ("name", "description"). Each is
 //   written only when it has something to say, so a scene without them saves as before apart from the version. An
 //   older file has no capabilities and no template
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 20;
+//21: adds "optics", the optical elements (docs/plans/completed/physoptics-optical-elements.md): each a "type", "name", "size" (a
+//   preset's key or "custom"), the "params" that differ from the kind's defaults by name in SI units (an enum by its
+//   key), a double-precision "position" and "orientation", and "materials", the slots whose material differs from the
+//   default, by slot name, written as a user material is. "opticalLibrary" holds the loaded AGF "catalogs" by path and
+//   the user's "glasses" and "coatings" in full. "render" gains "optics" ("surrounding", "exactCoatings"), and the top
+//   level "lengthUnit" ("mm"; meters when absent). A material's "coating" is a coating key. Each is written only when
+//   it has something to say, so a scene without optics saves as before apart from the version
+//22: adds "viewport", the raster viewport's free camera: its "position", "orientation" and "pivot", and its "speed" in
+//   meters per second, vertical "fov" in degrees, and "near" and "far" clip planes in meters. Absent in an older file,
+//   which opens with a new scene's speed, fov and clip planes, and leaves the view where it was
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 22;
 
 //---------------------------------------------------------------- writing
 
@@ -188,6 +198,8 @@ std::string materialParamsJson(const MaterialDef& material, const std::set<std::
 			json += fmt::format(R"(,"{}":{})", param.name, *i);
 		} else if (const bool* b = std::get_if<bool>(&value)) {
 			json += fmt::format(R"(,"{}":{})", param.name, *b);
+		} else if (const CoatingRef* coating = std::get_if<CoatingRef>(&value)) {
+			json += fmt::format(R"(,"{}":{})", param.name, jsonString(coating->key));
 		} else if (const MaterialLink* link = std::get_if<MaterialLink>(&value)) {
 			//version 19: written as a shape's material reference is, once saveScene() has turned the id into a file reference
 			if (link->fileModel >= 0 || link->fileUser >= 0) {
@@ -225,6 +237,121 @@ std::string portablePath(const std::filesystem::path& absolutePath, const std::f
 		relative = absolutePath;
 	}
 	return relative.generic_string();
+}
+
+std::string jsonDouble(double value)
+{
+	return std::isfinite(value) ? fmt::format("{:.17g}", value) : std::string("0.0");
+}
+
+std::string jsonDoubles(const std::vector<double>& values)
+{
+	std::string out = "[";
+	for (size_t i = 0; i < values.size(); i++) {
+		out += (i > 0 ? "," : "") + jsonDouble(values[i]);
+	}
+	return out + "]";
+}
+
+std::string glassJson(const OpticGlass& glass)
+{
+	std::string lines;
+	for (size_t i = 0; i < glass.transmittance.size(); i++) {
+		const glm::dvec3& line = glass.transmittance[i];
+		lines += fmt::format("{}[{},{},{}]", i > 0 ? "," : "", jsonDouble(line.x), jsonDouble(line.y), jsonDouble(line.z));
+	}
+	return fmt::format(R"({{"name":{},"index":{},"range":[{},{}],"nd":{},"vd":{},"transmittance":[{}],"thermal":{}}})", jsonString(glass.name), spectrumJson(glass.index),
+		jsonDouble(glass.range.x), jsonDouble(glass.range.y), jsonDouble(glass.catalogNd), jsonDouble(glass.catalogVd), lines, jsonString(glass.thermal));
+}
+
+std::string coatingJson(const OpticCoating& c)
+{
+	std::string layers;
+	for (size_t i = 0; i < c.layers.size(); i++) {
+		layers += fmt::format(R"({}{{"material":{},"thickness":{},"quarterWaves":{}}})", i > 0 ? "," : "", jsonString(c.layers[i].material), jsonDouble(c.layers[i].thickness),
+			jsonDouble(c.layers[i].quarterWaves));
+	}
+	std::string curves;
+	for (size_t i = 0; i < c.curves.size(); i++) {
+		const CoatingCurve& curve = c.curves[i];
+		curves += fmt::format(R"({}{{"angle":{},"lambda":{},"rs":{},"rp":{},"ts":{},"tp":{}}})", i > 0 ? "," : "", jsonDouble(curve.angle), jsonDoubles(curve.lambda), jsonDoubles(curve.rs),
+			jsonDoubles(curve.rp), jsonDoubles(curve.ts), jsonDoubles(curve.tp));
+	}
+	return fmt::format(R"({{"key":{},"name":{},"kind":"{}","source":{},"polarizing":{},"rs":{},"rp":{},"ts":{},"tp":{},"designWavelength":{},"metal":{},"layers":[{}],"curves":[{}]}})",
+		jsonString(c.key), jsonString(c.name), coatingKindName(c.kind), jsonString(c.source), c.polarizing, jsonDouble(c.rs), jsonDouble(c.rp), jsonDouble(c.ts), jsonDouble(c.tp),
+		jsonDouble(c.designWavelength), jsonString(c.metal), layers, curves);
+}
+
+std::string opticalLibraryJson(const SceneDescription& scene, const std::filesystem::path& sceneDirectory)
+{
+	if (scene.glassCatalogs.empty() && scene.userGlasses.empty() && scene.userCoatings.empty()) {
+		return {};
+	}
+	std::string json = R"(,"opticalLibrary":{"catalogs":[)";
+	for (size_t i = 0; i < scene.glassCatalogs.size(); i++) {
+		json += (i > 0 ? "," : "") + jsonString(portablePath(scene.glassCatalogs[i], sceneDirectory));
+	}
+	json += R"(],"glasses":[)";
+	for (size_t i = 0; i < scene.userGlasses.size(); i++) {
+		json += (i > 0 ? "," : "") + glassJson(scene.userGlasses[i]);
+	}
+	json += R"(],"coatings":[)";
+	for (size_t i = 0; i < scene.userCoatings.size(); i++) {
+		json += (i > 0 ? "," : "") + coatingJson(scene.userCoatings[i]);
+	}
+	return json + "]}";
+}
+
+// a parameter's value as the file holds it: a number in SI units, an enum by its key, a bool, a glass's name
+std::string opticValueJson(const OpticParam& param, const OpticValue& value)
+{
+	if (const double* d = std::get_if<double>(&value)) {
+		return jsonDouble(*d);
+	}
+	if (const int* i = std::get_if<int>(&value)) {
+		if (*i >= 0 && *i < (int)param.keys.size()) {
+			return jsonString(param.keys[(size_t)*i]);
+		}
+		return fmt::format("{}", *i);
+	}
+	if (const bool* b = std::get_if<bool>(&value)) {
+		return *b ? "true" : "false";
+	}
+	return jsonString(std::get<std::string>(value));
+}
+
+std::string opticsJson(const SceneDescription& scene)
+{
+	if (scene.optics.empty()) {
+		return {};
+	}
+	std::string json = R"(,"optics":[)";
+	for (size_t i = 0; i < scene.optics.size(); i++) {
+		const SceneOptic& optic = scene.optics[i].optic;
+		const OpticTraits& traits = opticTraits(optic.kind);
+		const std::string size = optic.sizePreset >= 0 && optic.sizePreset < (int)traits.sizes.size() ? traits.sizes[(size_t)optic.sizePreset].key : "custom";
+		std::string params;
+		for (const OpticParam& param : traits.params) {
+			const auto found = optic.params.find(param.name);
+			if (found == optic.params.end() || found->second == param.defaultValue) {
+				continue;
+			}
+			params += fmt::format(R"({}"{}":{})", params.empty() ? "" : ",", param.name, opticValueJson(param, found->second));
+		}
+		std::string materials;
+		for (size_t slot = 0; slot < traits.slots.size(); slot++) {
+			const std::optional<MaterialDef>& material = scene.optics[i].slots[slot];
+			if (!material) {
+				continue;
+			}
+			materials += fmt::format(R"({}"{}":{{"type":"{}"{}}})", materials.empty() ? "" : ",", traits.slots[slot].name, materialTypeName(material->type), materialParamsJson(*material, nullptr));
+		}
+		const glm::dquat& q = optic.orientation;
+		json += fmt::format(R"({}{{"type":"{}","name":{},"size":"{}","params":{{{}}},"position":[{},{},{}],"orientation":[{},{},{},{}],"materials":{{{}}}}})", i > 0 ? "," : "", traits.name,
+			jsonString(optic.name), size, params, jsonDouble(optic.position.x), jsonDouble(optic.position.y), jsonDouble(optic.position.z), jsonDouble(q.x), jsonDouble(q.y), jsonDouble(q.z),
+			jsonDouble(q.w), materials);
+	}
+	return json + "]";
 }
 
 std::string sceneJson(const SceneDescription& scene, const std::filesystem::path& sceneDirectory)
@@ -298,6 +425,11 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		json += fmt::format(R"(,"spectral":{{"representation":{},"lanes":{},"range":[{},{}],"wavelength":{},"designWavelength":{},"bandBasis":{},"gaussians":[{}],"sampling":{},"emittersShare":{},"colorSpace":{},"images":{},"matching":"cie1931"}}}})",
 			jsonString(spectralRepresentationKey(s.representation)), s.lanes, jsonNumber(s.lambdaMin), jsonNumber(s.lambdaMax), jsonNumber(s.monochromaticWavelength), jsonNumber(s.designWavelength),
 			jsonString(bandBasisKey(s.bandBasis)), gaussians, jsonString(wavelengthSamplingKey(s.sampling)), jsonNumber(s.lightSamplingShare), jsonString(colorSpace(s.colorSpace).key), s.imageBuckets);
+	}
+	//version 21: the optics settings, still inside "render", only when they differ from the defaults
+	if (r.optics != OpticsSettings {}) {
+		json.pop_back();
+		json += fmt::format(R"(,"optics":{{"surrounding":"{}","exactCoatings":{}}}}})", r.optics.surrounding == SurroundingMedium::Vacuum ? "vacuum" : "air", r.optics.exactCoatings);
 	}
 	//version 18: how a monochromatic render is shown
 	{
@@ -412,6 +544,21 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 			edit.lightGroup != 0 ? fmt::format(R"(,"lightGroup":{})", edit.lightGroup) : std::string());
 	}
 	json += ']';
+
+	//version 22: the viewport's free camera
+	if (scene.viewport) {
+		const SceneViewportRecord& viewport = *scene.viewport;
+		json += fmt::format(R"(,"viewport":{{"position":{},"orientation":{},"pivot":{},"speed":{},"fov":{},"near":{},"far":{}}})", jsonVec3(viewport.position),
+			jsonQuat(viewport.orientation), jsonVec3(viewport.pivot), jsonNumber(viewport.settings.speed), jsonNumber(viewport.settings.vfovDegrees),
+			jsonNumber(viewport.settings.nearClip), jsonNumber(viewport.settings.farClip));
+	}
+
+	//version 21: the length unit, the optical library and the optical elements
+	if (scene.lengthUnit != LengthUnit::Meters) {
+		json += fmt::format(R"(,"lengthUnit":"{}")", lengthUnitKey(scene.lengthUnit));
+	}
+	json += opticalLibraryJson(scene, sceneDirectory);
+	json += opticsJson(scene);
 
 	//every kind through its traits: the sizes go out under the names the editor shows, so a
 	//cylinder reads {"radius":0.5,"height":2} rather than as a raw scale vector
@@ -861,6 +1008,19 @@ void readAccelSettings(JsonElement element, AccelSettings& out)
 	readOptionalFloat(object["spatialBudget"], blas.spatialBudget);
 }
 
+void readOpticsSettings(JsonElement element, OpticsSettings& out)
+{
+	simdjson::dom::object object;
+	if (element.get_object().get(object) != simdjson::SUCCESS) {
+		return;
+	}
+	std::string_view surrounding;
+	if (object["surrounding"].get_string().get(surrounding) == simdjson::SUCCESS) {
+		out.surrounding = surrounding == "vacuum" ? SurroundingMedium::Vacuum : SurroundingMedium::Air;
+	}
+	readOptionalBool(object["exactCoatings"], out.exactCoatings);
+}
+
 void readRenderSettings(JsonElement element, RenderSettings& out)
 {
 	//a file before version 15 has no filter, and its renders placed a sample uniformly in its pixel
@@ -926,6 +1086,7 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 		readOptionalBool(aov["captureThroughSpecular"], out.aov.captureThroughSpecular);
 	}
 	readOptionalBool(object["lightGroups"], out.lightGroups);
+	readOpticsSettings(object["optics"], out.optics);
 	//version 18: the spectral settings; an older file renders in exact RGB with sRGB colors
 	simdjson::dom::object spectral;
 	if (object["spectral"].get_object().get(spectral) == simdjson::SUCCESS) {
@@ -1221,10 +1382,229 @@ void readMaterialParams(simdjson::dom::object object, MaterialType type, ParamSe
 			}
 			break;
 		}
+		case ParamKind::Coating: {
+			std::string_view key;
+			if (element.get_string().get(key) == simdjson::SUCCESS) {
+				params[param.name] = CoatingRef { std::string(key) };
+			}
+			break;
+		}
 		case ParamKind::Texture:
 			break;
 		}
 	}
+}
+
+bool readDoubles(simdjson::dom::element element, std::vector<double>& out)
+{
+	simdjson::dom::array array;
+	if (element.get_array().get(array) != simdjson::SUCCESS) {
+		return false;
+	}
+	out.clear();
+	for (simdjson::dom::element value : array) {
+		double d = 0.0;
+		if (!readDouble(value, d)) {
+			return false;
+		}
+		out.push_back(d);
+	}
+	return true;
+}
+
+bool readDoubles(JsonElement element, std::vector<double>& out)
+{
+	simdjson::dom::element value;
+	return element.get(value) == simdjson::SUCCESS && readDoubles(value, out);
+}
+
+void readOptionalDouble(JsonElement element, double& out)
+{
+	simdjson::dom::element value;
+	if (element.get(value) == simdjson::SUCCESS) {
+		readDouble(value, out);
+	}
+}
+
+std::string readOptionalString(JsonElement element)
+{
+	std::string_view text;
+	return element.get_string().get(text) == simdjson::SUCCESS ? std::string(text) : std::string();
+}
+
+//one user glass of "opticalLibrary"
+bool readGlass(simdjson::dom::object object, OpticGlass& out)
+{
+	out.name = readOptionalString(object["name"]);
+	if (out.name.empty() || !readSpectrum(object["index"], out.index)) {
+		return false;
+	}
+	std::vector<double> range;
+	if (readDoubles(object["range"], range) && range.size() == 2) {
+		out.range = glm::dvec2(range[0], range[1]);
+	}
+	readOptionalDouble(object["nd"], out.catalogNd);
+	readOptionalDouble(object["vd"], out.catalogVd);
+	simdjson::dom::array lines;
+	if (object["transmittance"].get_array().get(lines) == simdjson::SUCCESS) {
+		for (simdjson::dom::element line : lines) {
+			std::vector<double> values;
+			if (readDoubles(line, values) && values.size() == 3) {
+				out.transmittance.emplace_back(values[0], values[1], values[2]);
+			}
+		}
+	}
+	out.absorption = absorptionFromTransmittance(out.transmittance);
+	out.thermal = readOptionalString(object["thermal"]);
+	return true;
+}
+
+//one user coating of "opticalLibrary"
+bool readCoating(simdjson::dom::object object, OpticCoating& out)
+{
+	out.key = readOptionalString(object["key"]);
+	const std::optional<CoatingKind> kind = findCoatingKind(readOptionalString(object["kind"]));
+	if (out.key.empty() || !kind) {
+		return false;
+	}
+	out.kind = *kind;
+	out.name = readOptionalString(object["name"]);
+	out.source = readOptionalString(object["source"]);
+	readOptionalBool(object["polarizing"], out.polarizing);
+	readOptionalDouble(object["rs"], out.rs);
+	readOptionalDouble(object["rp"], out.rp);
+	readOptionalDouble(object["ts"], out.ts);
+	readOptionalDouble(object["tp"], out.tp);
+	readOptionalDouble(object["designWavelength"], out.designWavelength);
+	out.metal = readOptionalString(object["metal"]);
+	simdjson::dom::array layers;
+	if (object["layers"].get_array().get(layers) == simdjson::SUCCESS) {
+		for (simdjson::dom::element entry : layers) {
+			simdjson::dom::object layerObject;
+			if (entry.get_object().get(layerObject) != simdjson::SUCCESS) {
+				continue;
+			}
+			CoatingLayer layer;
+			layer.material = readOptionalString(layerObject["material"]);
+			readOptionalDouble(layerObject["thickness"], layer.thickness);
+			readOptionalDouble(layerObject["quarterWaves"], layer.quarterWaves);
+			out.layers.push_back(std::move(layer));
+		}
+	}
+	simdjson::dom::array curves;
+	if (object["curves"].get_array().get(curves) == simdjson::SUCCESS) {
+		for (simdjson::dom::element entry : curves) {
+			simdjson::dom::object curveObject;
+			if (entry.get_object().get(curveObject) != simdjson::SUCCESS) {
+				continue;
+			}
+			CoatingCurve curve;
+			readOptionalDouble(curveObject["angle"], curve.angle);
+			readDoubles(curveObject["lambda"], curve.lambda);
+			readDoubles(curveObject["rs"], curve.rs);
+			readDoubles(curveObject["rp"], curve.rp);
+			readDoubles(curveObject["ts"], curve.ts);
+			readDoubles(curveObject["tp"], curve.tp);
+			out.curves.push_back(std::move(curve));
+		}
+	}
+	return true;
+}
+
+bool readMaterialDef(simdjson::dom::object object, size_t index, MaterialDef& out, std::string& error);
+
+//one "optics" record. An unknown type is skipped with a warning, as an unknown kernel id is
+bool readOptic(simdjson::dom::object object, size_t index, SceneOpticRecord& out, std::vector<std::string>& warnings)
+{
+	const std::string typeName = readOptionalString(object["type"]);
+	const std::optional<OpticKind> kind = findOpticKind(typeName);
+	if (!kind) {
+		warnings.push_back(fmt::format("optic {} has type '{}', which this build does not know; it is skipped", index, typeName));
+		return false;
+	}
+	SceneOptic& optic = out.optic;
+	optic.kind = *kind;
+	const OpticTraits& traits = opticTraits(optic.kind);
+	optic.name = readOptionalString(object["name"]);
+	if (optic.name.empty()) {
+		optic.name = fmt::format("{}_{}", traits.name, index + 1);
+	}
+	const std::string size = readOptionalString(object["size"]);
+	optic.sizePreset = -1;
+	for (int i = 0; i < (int)traits.sizes.size(); i++) {
+		if (size == traits.sizes[(size_t)i].key) {
+			optic.sizePreset = i;
+		}
+	}
+	simdjson::dom::object params;
+	if (object["params"].get_object().get(params) == simdjson::SUCCESS) {
+		for (const OpticParam& param : traits.params) {
+			simdjson::dom::element element;
+			if (params[param.name].get(element) != simdjson::SUCCESS) {
+				continue;
+			}
+			double d = 0.0;
+			bool b = false;
+			std::string_view text;
+			switch (param.kind) {
+			case OpticParamKind::Length:
+			case OpticParamKind::Angle:
+			case OpticParamKind::Number:
+				if (readDouble(element, d)) {
+					optic.params[param.name] = d;
+				}
+				break;
+			case OpticParamKind::Enum:
+				if (element.get_string().get(text) == simdjson::SUCCESS) {
+					for (size_t key = 0; key < param.keys.size(); key++) {
+						if (text == param.keys[key]) {
+							optic.params[param.name] = (int)key;
+						}
+					}
+				} else if (readDouble(element, d)) {
+					optic.params[param.name] = (int)d;
+				}
+				break;
+			case OpticParamKind::Bool:
+				if (element.get_bool().get(b) == simdjson::SUCCESS) {
+					optic.params[param.name] = b;
+				}
+				break;
+			case OpticParamKind::Glass:
+				if (element.get_string().get(text) == simdjson::SUCCESS) {
+					optic.params[param.name] = std::string(text);
+				}
+				break;
+			}
+		}
+	}
+	std::vector<double> position;
+	if (readDoubles(object["position"], position) && position.size() == 3) {
+		optic.position = glm::dvec3(position[0], position[1], position[2]);
+	}
+	std::vector<double> orientation;
+	if (readDoubles(object["orientation"], orientation) && orientation.size() == 4) {
+		const glm::dquat q(orientation[3], orientation[0], orientation[1], orientation[2]);
+		const double length = glm::length(q);
+		optic.orientation = length > 0.0 ? (std::abs(length - 1.0) > 1e-12 ? q / length : q) : glm::dquat(1.0, 0.0, 0.0, 0.0);
+	}
+	simdjson::dom::object materials;
+	if (object["materials"].get_object().get(materials) == simdjson::SUCCESS) {
+		for (size_t slot = 0; slot < traits.slots.size(); slot++) {
+			simdjson::dom::object materialObject;
+			if (materials[traits.slots[slot].name].get_object().get(materialObject) != simdjson::SUCCESS) {
+				continue;
+			}
+			MaterialDef material;
+			std::string error;
+			if (readMaterialDef(materialObject, slot, material, error)) {
+				out.slots[slot] = std::move(material);
+			} else {
+				warnings.push_back(fmt::format("optic \"{}\" slot {}: {}", optic.name, traits.slots[slot].name, error));
+			}
+		}
+	}
+	return true;
 }
 
 //one "materials" record: a user material
@@ -1549,6 +1929,71 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			readOptionalUint(overrideObject["lightGroup"], edit.lightGroup);
 			edit.lightGroup = std::min(edit.lightGroup, MAX_LIGHT_GROUPS - 1u);
 			ctx.scene.materialOverrides.push_back(std::move(edit));
+		}
+	}
+
+	//version 22: the viewport's free camera, kept only with a valid pose
+	simdjson::dom::object viewportObject;
+	if (root["viewport"].get_object().get(viewportObject) == simdjson::SUCCESS) {
+		SceneViewportRecord viewport;
+		if (readVec3(viewportObject["position"], viewport.position) && readQuat(viewportObject["orientation"], viewport.orientation)) {
+			readVec3(viewportObject["pivot"], viewport.pivot);
+			ViewportCameraSettings& settings = viewport.settings;
+			readOptionalFloat(viewportObject["speed"], settings.speed);
+			readOptionalFloat(viewportObject["fov"], settings.vfovDegrees);
+			readOptionalFloat(viewportObject["near"], settings.nearClip);
+			readOptionalFloat(viewportObject["far"], settings.farClip);
+			settings = settings.clamped();
+			ctx.scene.viewport = viewport;
+		}
+	}
+
+	//version 21: the length unit, the optical library and the optical elements
+	if (const std::optional<LengthUnit> unit = findLengthUnit(readOptionalString(root["lengthUnit"]))) {
+		ctx.scene.lengthUnit = *unit;
+	}
+	simdjson::dom::object library;
+	if (root["opticalLibrary"].get_object().get(library) == simdjson::SUCCESS) {
+		simdjson::dom::array catalogs;
+		if (library["catalogs"].get_array().get(catalogs) == simdjson::SUCCESS) {
+			for (simdjson::dom::element entry : catalogs) {
+				std::string_view path;
+				if (entry.get_string().get(path) == simdjson::SUCCESS) {
+					ctx.scene.glassCatalogs.push_back(resolvePath(path, ctx.sceneDirectory));
+				}
+			}
+		}
+		simdjson::dom::array glasses;
+		if (library["glasses"].get_array().get(glasses) == simdjson::SUCCESS) {
+			for (simdjson::dom::element entry : glasses) {
+				simdjson::dom::object glassObject;
+				OpticGlass glass;
+				if (entry.get_object().get(glassObject) == simdjson::SUCCESS && readGlass(glassObject, glass)) {
+					ctx.scene.userGlasses.push_back(std::move(glass));
+				}
+			}
+		}
+		simdjson::dom::array coatings;
+		if (library["coatings"].get_array().get(coatings) == simdjson::SUCCESS) {
+			for (simdjson::dom::element entry : coatings) {
+				simdjson::dom::object coatingObject;
+				OpticCoating coating;
+				if (entry.get_object().get(coatingObject) == simdjson::SUCCESS && readCoating(coatingObject, coating)) {
+					ctx.scene.userCoatings.push_back(std::move(coating));
+				}
+			}
+		}
+	}
+	simdjson::dom::array optics;
+	if (root["optics"].get_array().get(optics) == simdjson::SUCCESS) {
+		size_t opticIndex = 0;
+		for (simdjson::dom::element entry : optics) {
+			simdjson::dom::object opticObject;
+			SceneOpticRecord record;
+			if (entry.get_object().get(opticObject) == simdjson::SUCCESS && readOptic(opticObject, opticIndex, record, ctx.scene.kernelWarnings)) {
+				ctx.scene.optics.push_back(std::move(record));
+			}
+			opticIndex++;
 		}
 	}
 

@@ -6,7 +6,7 @@ Constructive solid geometry (CSG) builds a solid from others by union, intersect
 
 ## Relation to the optics plans
 
-On 2026-10-18 the user chose surface-list optical bodies ([physoptics-optical-surfaces.md](physoptics-optical-surfaces.md)) over CSG for lenses and prisms, because CSG cannot express an internal interface (a cube beamsplitter's diagonal, a cemented doublet) and a lens prescription is already a list of surfaces. This plan's lens made from two spheres stays as a test: rendered beside the same lens as an optical body, it must give the same image within noise.
+On 2026-10-18 the user chose surface-list optical bodies ([physoptics-optical-surfaces.md](completed/physoptics-optical-surfaces.md)) over CSG for lenses and prisms, because CSG cannot express an internal interface (a cube beamsplitter's diagonal, a cemented doublet) and a lens prescription is already a list of surfaces. This plan's lens made from two spheres stays as a test: rendered beside the same lens as an optical body, it must give the same image within noise.
 
 ## What the renderer does today
 

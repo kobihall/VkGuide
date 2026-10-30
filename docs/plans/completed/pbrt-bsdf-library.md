@@ -41,7 +41,7 @@ Each is a `MATERIAL_TRAITS` entry ([pbrt-material-system.md](pbrt-material-syste
 | `diffuse_transmission` | Lambertian reflection and transmission | reflectance, transmittance |
 | `mix` | chooses one of two materials | two material ids, amount |
 
-The ones the other plans add through the same table: `coated_diffuse` and `coated_conductor` ([pbrt-layered-materials.md](../pbrt-layered-materials.md)), `measured` ([pbrt-measured-bsdfs.md](../pbrt-measured-bsdfs.md)), `hair` ([pbrt-curves-and-hair.md](../pbrt-curves-and-hair.md)), `subsurface` ([pbrt-subsurface-scattering.md](../pbrt-subsurface-scattering.md)), `interface` ([pbrt-participating-media.md](../pbrt-participating-media.md)). The laser optics plans add `optical_interface` ([physoptics-optical-materials.md](../physoptics-optical-materials.md)), which reuses this plan's `frDielectric()`, `frComplex()` and dielectric BxDF with a coating in place of the bare Fresnel term, and its rough `glass` for ground lens edges.
+The ones the other plans add through the same table: `coated_diffuse` and `coated_conductor` ([pbrt-layered-materials.md](../pbrt-layered-materials.md)), `measured` ([pbrt-measured-bsdfs.md](../pbrt-measured-bsdfs.md)), `hair` ([pbrt-curves-and-hair.md](../pbrt-curves-and-hair.md)), `subsurface` ([pbrt-subsurface-scattering.md](../pbrt-subsurface-scattering.md)), `interface` ([pbrt-participating-media.md](../pbrt-participating-media.md)). The laser optics plans add `optical_interface` ([physoptics-optical-materials.md](physoptics-optical-materials.md)), which reuses this plan's `frDielectric()`, `frComplex()` and dielectric BxDF with a coating in place of the bare Fresnel term, and its rough `glass` for ground lens edges.
 
 ### The BxDF interface in GLSL
 

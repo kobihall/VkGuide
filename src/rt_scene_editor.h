@@ -13,8 +13,11 @@
 
 #include <array>
 #include <functional>
+#include <optional>
 #include <string_view>
 
+#include <bvh.h>
+#include <optic_catalog.h>
 #include <rt_scene_types.h>
 #include <vk_types.h>
 
@@ -41,6 +44,8 @@ public:
 	const std::vector<SceneCamera>& cameras() const { return m_cameras; }
 	const std::vector<SceneLight>& lights() const { return m_lights; }
 	const std::vector<SceneMeshObject>& meshObjects() const { return m_meshObjects; }
+	// THE OPTICAL ELEMENTS (docs/plans/completed/physoptics-optical-elements.md), each owning one library material per slot
+	const std::vector<SceneOptic>& optics() const { return m_optics; }
 	// THE MATERIAL LIBRARY: user materials, and one entry per glTF material of every loaded model
 	const std::vector<MaterialDef>& materials() const { return m_materials; }
 
@@ -54,8 +59,16 @@ public:
 	const SceneLight* findLight(uint64_t id) const;
 	SceneMeshObject* findMeshObject(uint64_t id);
 	const SceneMeshObject* findMeshObject(uint64_t id) const;
+	SceneOptic* findOptic(uint64_t id);
+	const SceneOptic* findOptic(uint64_t id) const;
 	MaterialDef* findMaterial(uint64_t id);
 	const MaterialDef* findMaterial(uint64_t id) const;
+
+	// world boxes, for the viewport to frame and orbit: the selected object's, and the scene's (its shapes, mesh
+	// objects and optics, or its cameras and lights when it has none of those). A camera or light is a box around its
+	// overlay; the infinite plane, a box around its position. nullopt with nothing selected, or an empty scene
+	std::optional<Aabb> selectionBounds(const VulkanEngine* engine) const;
+	std::optional<Aabb> sceneBounds(const VulkanEngine* engine) const;
 	// the entry a model's import made for its glTF material at `index`, or null
 	MaterialDef* findModelMaterial(std::string_view modelKey, uint32_t index);
 	const MaterialDef* findModelMaterial(std::string_view modelKey, uint32_t index) const;
@@ -67,6 +80,21 @@ public:
 	void replaceLights(std::vector<SceneLight>&& lights);
 	void replaceMeshObjects(std::vector<SceneMeshObject>&& objects);
 	void replaceMaterials(std::vector<MaterialDef>&& materials);
+	// the optics of a loaded file, each given an id and its slots' default materials; the load path then sets the slots
+	// the file changed (setOpticSlotMaterial())
+	void replaceOptics(std::vector<SceneOptic>&& optics);
+	// a new optic, with its slots' default materials; returns its id
+	uint64_t addOptic(SceneOptic optic);
+	// removes an optic and the materials it owns
+	void removeOptic(uint64_t id);
+	// replaces the material in one of an optic's slots, keeping the entry's id and origin
+	void setOpticSlotMaterial(uint64_t opticId, size_t slot, MaterialDef material);
+	// the Optics folder of the Scene panel's tree (the Optical bench capability draws it), a sub-folder per kind, and the
+	// Add menu's Optic entries
+	void drawOpticRows(VulkanEngine* engine);
+	void drawOpticAddMenu(VulkanEngine* engine);
+	// the Materials window's Optics folder: each element's slot materials
+	void drawOpticMaterialRows();
 
 	// THE LIGHT GROUPS (docs/plans/completed/pbrt-aovs-and-image-output.md): up to MAX_LIGHT_GROUPS named groups.
 	// A light, an emissive material and the background each carry the index of one, so a render that keeps the
@@ -94,6 +122,9 @@ public:
 	size_t materialUsers(uint64_t id) const;
 	// shows the Materials window with the entry selected
 	void openMaterial(uint64_t id);
+	// the Materials window's selected library entry, 0 for none: a capability's folder clears it to show its own entry
+	uint64_t selectedMaterial() const { return m_selectedMaterialId; }
+	void selectMaterial(uint64_t id) { m_selectedMaterialId = id; }
 
 	// appends and returns the new id
 	uint64_t addCamera(SceneCamera camera);
@@ -140,7 +171,8 @@ private:
 		Camera,
 		Shape,
 		Light,
-		MeshObject
+		MeshObject,
+		Optic
 	};
 
 	void drawToolbar(VulkanEngine* engine);
@@ -159,6 +191,13 @@ private:
 	void drawSelectedCamera(VulkanEngine* engine, SceneCamera& camera);
 	void drawSelectedLight(VulkanEngine* engine, SceneLight& light);
 	void drawSelectedMeshObject(VulkanEngine* engine, SceneMeshObject& object);
+	void drawSelectedOptic(VulkanEngine* engine, SceneOptic& optic);
+	void beginOpticGizmo(TransformGizmo& gizmo, uint64_t id);
+	void createOptic(VulkanEngine* engine, OpticKind kind);
+	// the next name for an optic of a kind
+	std::string nextOpticName(OpticKind kind);
+	// re-derives the slots whose materials are still a kind's defaults, after a parameter that decides them changed
+	void refreshDefaultSlots(const SceneOptic& before, SceneOptic& after);
 	// a material combo over the whole library, with Edit and New from this. Returns whether the
 	// reference changed
 	bool drawMaterialReference(uint64_t& materialId, const std::string& ownerName);
@@ -197,6 +236,7 @@ private:
 	std::vector<SceneCamera> m_cameras;
 	std::vector<SceneLight> m_lights;
 	std::vector<SceneMeshObject> m_meshObjects;
+	std::vector<SceneOptic> m_optics;
 	std::vector<MaterialDef> m_materials;
 	std::vector<std::string> m_lightGroupNames { "Default" };
 	uint32_t m_environmentGroup { 0 };
@@ -211,6 +251,7 @@ private:
 	std::array<int, SHAPE_KIND_COUNT> m_nextShapeNumber {};
 	int m_nextCameraNumber { 1 };
 	int m_nextLightNumber { 1 };
+	std::array<int, OPTIC_KIND_COUNT> m_nextOpticNumber {};
 	// the Materials window's selection, 0 for none
 	uint64_t m_selectedMaterialId { 0 };
 	bool m_showMaterials { true };

@@ -2,7 +2,7 @@
 
 On a lab notebook sketch, an experiment is a line: laser, turning mirror, lens, iris, beamsplitter, then two arms. That line is the design intent, and the alignment is the work of making the real beam follow it. The beam axis is that sketch as a scene object: a tree whose nodes are visits to optical elements and whose edges leave each element by a named port. You build it by hand, or from the beam the solver traces, and the solver then reports every place where the real beam leaves it. The tree also tells the locked transforms what moves with what ([physoptics-locked-transforms.md](physoptics-locked-transforms.md)), and the path tracer which surfaces a light path is meant to reach next ([physoptics-guided-tracing.md](physoptics-guided-tracing.md)).
 
-*Not implemented. Depends on [physoptics-optical-elements.md](physoptics-optical-elements.md) and [physoptics-laser-sources.md](physoptics-laser-sources.md). The solver that compares it with the real beam is [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) and [physoptics-laser-sources.md](physoptics-laser-sources.md). The solver that compares it with the real beam is [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
@@ -41,7 +41,7 @@ struct BeamAxis {
 
 A node is a visit, not an optic, so the same optic can appear more than once: the double pass through a lens in front of a retroreflector, the beamsplitter of a Michelson interferometer, which the beam crosses going out and coming back. Every visit has exactly one parent, so the authored graph is a tree. Two branches that end on the same detector, as in a Mach–Zehnder interferometer, are two nodes visiting one detector; their powers add, and the phases that would make them interfere are the wave backend's.
 
-Each element kind names its ports ([physoptics-optical-elements.md](physoptics-optical-elements.md)): **Reflected**, **Transmitted**, **Turned**, **Retro**, **Refracted**, and later **Order m** for gratings, **Ordinary** and **Extraordinary** for birefringent crystals. A port is defined by the sequence of reflections and refractions at the element's surfaces that produces it, so the solver can match a traced branch to a port exactly. A port has at most one child node: a beam leaving a port goes to one element next.
+Each element kind names its ports ([physoptics-optical-elements.md](completed/physoptics-optical-elements.md)): **Reflected**, **Transmitted**, **Turned**, **Retro**, **Refracted**, and later **Order m** for gratings, **Ordinary** and **Extraordinary** for birefringent crystals. A port is defined by the sequence of reflections and refractions at the element's surfaces that produces it, so the solver can match a traced branch to a port exactly. A port has at most one child node: a beam leaving a port goes to one element next.
 
 ### Assemblies
 

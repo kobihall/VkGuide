@@ -1,0 +1,74 @@
+#version 460
+
+// GPU SELF-TEST: the optical bodies' intersector (crt_optic.glsl) and the coatings (crt_coating.glsl) on a batch of fixed
+// inputs, to be compared with their C++ mirrors (src/optic_surface.cpp, src/optic_coating.cpp) by
+// src/gpu_selftest_optics.cpp. Three kinds of case: a ray against a whole body, giving the surface it hits first, the t
+// and the normal there; a coating table's lookup; and a coating's transfer matrix at a hit, Exact coatings' path. Binding
+// 55 holds the bodies and 56 the coatings, as the renderer packs them; 90 and 91 are the test's own.
+
+#extension GL_GOOGLE_include_directive : require
+#include "rt/include/crt_common.glsl"
+#include "rt/include/crt_spectrum.glsl"
+#include "rt/include/crt_fresnel.glsl"
+#include "rt/include/crt_optic.glsl"
+#include "rt/include/crt_coating.glsl"
+
+layout (local_size_x = 64) in;
+
+// src/gpu_selftest_optics.cpp OpticParityCase, 64 bytes
+struct OpticParityCase {
+	// the kind (0 a body, 1 a table lookup, 2 a transfer matrix), the body's first record or the table, its surface count
+	// or the direction, the channel
+	uvec4 ids;
+	// a body: the ray's origin and tMin, its direction and tMax. A coating: (column, cosine, eta, 0) and the media's
+	// indices (n incident, k incident, n other, k other)
+	vec4 a;
+	vec4 b;
+	vec4 pad;
+};
+
+// src/gpu_selftest_optics.cpp OpticParityResult, 32 bytes
+struct OpticParityResult {
+	// a body: the surface (uint bits, ~0 for a miss), t and the body-frame normal; a coating: (Rs, Rp, Ts, Tp)
+	vec4 first;
+	vec4 second;
+};
+
+layout (std430, set = 0, binding = 90) readonly buffer CaseBuffer { OpticParityCase cases[]; };
+layout (std430, set = 0, binding = 91) writeonly buffer ResultBuffer { OpticParityResult results[]; };
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= cases.length()) {
+		return;
+	}
+	const OpticParityCase c = cases[index];
+	OpticParityResult result;
+	result.first = vec4(0.0);
+	result.second = vec4(0.0);
+	if (c.ids.x == 0u) {
+		// the body test of crt_traverse.glsl testOpticBody(), its loop written out without the trace's bookkeeping
+		float tMax = c.b.w;
+		uint surface = 0xFFFFFFFFu;
+		vec3 normal = vec3(0.0);
+		for (uint i = 0u; i < c.ids.z; i++) {
+			const OpticSurfaceRecord r = opticSurfaceRecord(c.ids.y + CRT_OPTIC_SURFACE_VEC4S * i);
+			const vec3 o = opticToSurfacePoint(r, c.a.xyz);
+			const vec3 d = opticToSurfaceVector(r, c.b.xyz);
+			float t;
+			if (opticIntersectSurface(r, o, d, c.a.w, tMax, t)) {
+				tMax = t;
+				surface = i;
+				normal = opticToBodyVector(r, opticSurfaceNormal(r, o + t * d));
+			}
+		}
+		result.first = vec4(uintBitsToFloat(surface), tMax, 0.0, 0.0);
+		result.second = vec4(normal, 0.0);
+	} else if (c.ids.x == 1u) {
+		result.first = coatingLookup(c.ids.y, c.ids.z, c.a.x, c.a.y, c.a.z);
+	} else {
+		result.first = coatingExact(c.ids.y, c.ids.z, c.ids.w, 0u, c.ids.w == 0u ? 630.0 : (c.ids.w == 1u ? 532.0 : 465.0), c.a.y, c.b.xy, c.b.zw);
+	}
+	results[index] = result;
+}

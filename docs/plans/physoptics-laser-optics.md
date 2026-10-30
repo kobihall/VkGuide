@@ -19,7 +19,7 @@ What this plan keeps:
 
 What it does differently:
 
-- Every optic is real geometry with exact surfaces, not an active plane, so thick lenses, prisms, wedges, off-axis parabolas and cube beamsplitters behave as glass does ([physoptics-optical-surfaces.md](physoptics-optical-surfaces.md)).
+- Every optic is real geometry with exact surfaces, not an active plane, so thick lenses, prisms, wedges, off-axis parabolas and cube beamsplitters behave as glass does ([physoptics-optical-surfaces.md](completed/physoptics-optical-surfaces.md)).
 - The Gaussian beam is general astigmatic, propagated by the ray-transfer matrix of the real surfaces at the chief ray, which femtoPro leaves out.
 - Behind the interactive solver sits the physically based path tracer. Light tracing from the laser through the full scene finds clipping by mounts, stray reflections, ghosts and back reflections, which femtoPro's single-beam graph only partly captures.
 - The beam axis is authored by you, as the intended path, and the solver reports where the real beam departs from it ([physoptics-beam-axis.md](physoptics-beam-axis.md)).
@@ -83,9 +83,9 @@ Two consumers read the same optics. The solver traces one chief ray per segment 
 | Plan | What it adds |
 |---|---|
 | [physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md) | Scene capabilities (**Optical bench** first), templates for **New Scene**, and later workspaces, so the optics editor never shows in a plain render scene |
-| [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md) | The surface-list optical body: surface kinds, apertures, media, the `CRT_SHAPE_OPTIC` instance, `crt_optic.glsl`, `rt_optics` |
-| [physoptics-optical-materials.md](physoptics-optical-materials.md) | Glass catalogs (AGF, Sellmeier), coatings (ideal, tabulated, thin-film stacks, metals, absorbers), the optical interface material |
-| [physoptics-optical-elements.md](physoptics-optical-elements.md) | `SceneOptic` and `OPTIC_TRAITS`: every element of the request with its Thorlabs sizes, the Optics folder, the scene file |
+| [physoptics-optical-surfaces.md](completed/physoptics-optical-surfaces.md) | The surface-list optical body: surface kinds, apertures, media, the `CRT_SHAPE_OPTIC` instance, `crt_optic.glsl`, `rt_optics` |
+| [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) | Glass catalogs (AGF, Sellmeier), coatings (ideal, tabulated, thin-film stacks, metals, absorbers), the optical interface material |
+| [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) | `SceneOptic` and `OPTIC_TRAITS`: every element of the request with its Thorlabs sizes, the Optics folder, the scene file |
 | [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md) | The offline STEP-to-mesh pipeline, cleanup, connection nodes, the mount library, placeholders and the parts list |
 | [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) | The breadboard, posts, post holders and clamps, mount poses, hole snapping, fine adjusters, mounts as traced geometry |
 | [physoptics-laser-sources.md](physoptics-laser-sources.md) | The laser element: Gaussian emission, line spectra, power, polarization, emitted-ray sampling |
@@ -120,9 +120,9 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 9. [physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md). Implemented 2026-10-29, with the dock space, the Viewport window and workspaces. Capabilities and templates, so every later plan registers its UI under **Optical bench** and a plain render scene never shows it. `docs/physical-optics-overview.md` tracks what is built and the checks each later plan runs.
 10. [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md). Offline work, which can start in parallel with milestone 0.
-11. [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md)
-12. [physoptics-optical-materials.md](physoptics-optical-materials.md)
-13. [physoptics-optical-elements.md](physoptics-optical-elements.md)
+11. [physoptics-optical-surfaces.md](completed/physoptics-optical-surfaces.md). Implemented 2026-10-29, with items 12 and 13 in one change.
+12. [physoptics-optical-materials.md](completed/physoptics-optical-materials.md). Implemented 2026-10-29.
+13. [physoptics-optical-elements.md](completed/physoptics-optical-elements.md). Implemented 2026-10-29, with a per-scene length unit that every panel follows.
 14. [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)
 
 ### Milestone 2: beams
@@ -239,19 +239,19 @@ The realistic camera's trace through its lens runs inside kernel 00, which [pbrt
 
 ### Instances and path state
 
-- An optic is a shape instance of kind `CRT_SHAPE_OPTIC`. It uses `GpuInstance`'s existing fields: `attributeBase` is its first record in `OpticSurfaces` and `triangleCount` its surface count, `materialBase` indexes `instanceMaterials[]` by surface as a mesh's does, and `lightBase` is `CRT_NO_LIGHT`. The struct does not grow, and its padding words stay the media's and motion blur's.
+- An optic is a shape instance of kind `CRT_SHAPE_OPTIC`. It uses `GpuInstance`'s existing fields: `attributeBase` is its first record in `OpticSurfaces` and `triangleCount` its surface count, `materialBase` indexes `instanceMaterials[]` by surface as a mesh's does, and `lightBase` is `CRT_NO_LIGHT`. The struct does not grow. On an optic its two padding words are `opticMedia` (the body's media table in `OpticSurfaces`) and `opticSlots` (its slot count, after which `instanceMaterials[]` holds one coating table per surface); on every other instance they stay free for the media's and motion blur's use.
 - `PathState` does not grow. The beam-axis state a light path needs (its graph node and port, and the guided mode's bookkeeping) lives in `OpticPathState`, allocated only while a beam axis requests a mode other than full, as [pbrt-participating-media.md](pbrt-participating-media.md) allocates `MediumPathState` only when a scene has a medium.
 
 ### Libraries and tests
 
 | Library | GLSL it mirrors | Test | Plan |
 |---|---|---|---|
-| `rt_optics` | `crt_optic.glsl`, `crt_coating.glsl`, `crt_tmm.glsl`, `crt_birefringence.glsl` | `bin/optics_test` | optical-surfaces, optical-materials, polarization-optics, gratings-and-xuv |
+| `rt_optics` | `crt_optic.glsl`, `crt_coating.glsl` (the tables and the transfer matrix), `crt_optic_material.glsl`, `crt_birefringence.glsl` | `bin/optics_test` | optical-surfaces, optical-materials, polarization-optics, gratings-and-xuv |
 | `rt_optics` (solver) | none: CPU only | `bin/beam_test` | gaussian-beam-solver |
 
 ### Scene file keys
 
-The plans add, each in the payload version it lands in: `"capabilities"` and `"template"`, `"bench"` (table size, beam height, snapping), `"optics"`, `"beamAxes"`, and the optics' owned entries in `"materials"`. They do not pre-assign versions.
+The plans add, each in the payload version it lands in: `"capabilities"` and `"template"` (version 20), `"bench"` (table size, beam height, snapping), `"optics"`, `"opticalLibrary"`, `"lengthUnit"` and `render.optics` (version 21), and `"beamAxes"`. An optic's owned slot materials are saved inside its `"optics"` record, and only when they differ from the kind's default, rather than in `"materials"`. The plans do not pre-assign versions.
 
 ### Files and directories
 
@@ -259,7 +259,7 @@ The plans add, each in the payload version it lands in: `"capabilities"` and `"t
 - `src/optic_*.{h,cpp}` for the optics code and `src/beam_*.{h,cpp}` for the beam axis and solver, flat in `src/` as the rest of the codebase is.
 - `shaders/rt/include/crt_optic.glsl`, `crt_coating.glsl`, `crt_detector.glsl`; `shaders/rt/2601_deposit_detector.comp`; `shaders/optics/beam_preview.vert` and `.frag` for the raster beams.
 - `tools/optical_models/` for the FreeCAD conversion scripts, and `assets/optical_models/meshes/` for their committed output.
-- `assets/glass/` and `assets/coatings/` for the bundled material data, and `assets/lenses/` for lens prescriptions.
+- `assets/glass/` for the bundled glass catalog, and `assets/lenses/` for lens prescriptions. The coating presets are code (`presetCoatings()`), so no `assets/coatings/` exists.
 - `assets/scenes/optics/` for the verification scenes.
 
 ## Notes on the request's source files

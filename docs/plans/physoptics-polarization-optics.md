@@ -2,12 +2,12 @@
 
 Polarization is how a laser lab controls power. A half-wave plate in a rotation mount ahead of a polarizing beamsplitter divides a beam between two arms in any ratio; a quarter-wave plate makes it circular; a window at Brewster's angle passes one polarization without loss; a calcite displacer splits it into two parallel beams. The request lists these as its polarization goals, with birefringent crystals. [pbrt-polarization.md](pbrt-polarization.md) carries Stokes vectors and Mueller matrices through the path tracer and adds polarizer and retarder materials. This plan builds the optical elements on top: wave plates, polarizers and Brewster windows as catalog kinds, polarizing coatings put to work, the rotation mount driving each element's axis, uniaxial crystals that split rays into ordinary and extraordinary with walk-off, and the same physics in the beam solver.
 
-*Not implemented. Depends on [pbrt-polarization.md](pbrt-polarization.md), [physoptics-optical-materials.md](physoptics-optical-materials.md) (complex coating amplitudes), [physoptics-optical-elements.md](physoptics-optical-elements.md), [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) (rotation mounts) and [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) (the chief ray's Jones vector). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [pbrt-polarization.md](pbrt-polarization.md), [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) (complex coating amplitudes), [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) (rotation mounts) and [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) (the chief ray's Jones vector). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer will have
 
 - [pbrt-polarization.md](pbrt-polarization.md): a polarized lane family whose throughput is, per lane, an adjoint Stokes row for camera paths; Mueller matrices for exact Fresnel, rough microfacets, depolarizers, an ideal `linear_polarizer` and a `retarder`; a polarizing filter on the camera.
-- [physoptics-optical-materials.md](physoptics-optical-materials.md): coatings that return complex `rₛ, rₚ, tₛ, tₚ`, and the optical interface material, which averages s and p while the polarized family is off.
+- [physoptics-optical-materials.md](completed/physoptics-optical-materials.md): coatings that return complex `rₛ, rₚ, tₛ, tₚ`, and the optical interface material, which averages s and p while the polarized family is off.
 - [physoptics-laser-sources.md](physoptics-laser-sources.md): lasers with a Stokes vector.
 - [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md): a Jones vector on every chief ray, through every coating.
 
@@ -46,7 +46,7 @@ The split's amplitudes are each eigenpolarization's projection of the arriving f
 
 ### Polarizing coatings at work
 
-Nothing new is needed for a polarizing beamsplitter beyond the coating tables of [physoptics-optical-materials.md](physoptics-optical-materials.md): with the polarized family on, the interface material builds its Mueller matrix from the table's `rₛ, rₚ` (or `tₛ, tₚ`) and their phases, as [pbrt-polarization.md](pbrt-polarization.md) does for exact Fresnel, and the s and p powers go to their ports. The warning the materials plan shows for polarizing coatings with polarization off stays.
+Nothing new is needed for a polarizing beamsplitter beyond the coating tables of [physoptics-optical-materials.md](completed/physoptics-optical-materials.md): with the polarized family on, the interface material builds its Mueller matrix from the table's `rₛ, rₚ` (or `tₛ, tₚ`) and their phases, as [pbrt-polarization.md](pbrt-polarization.md) does for exact Fresnel, and the s and p powers go to their ports. The warning the materials plan shows for polarizing coatings with polarization off stays.
 
 ### Measuring polarization
 

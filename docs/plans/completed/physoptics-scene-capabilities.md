@@ -66,9 +66,9 @@ Each plan registers its UI under a capability. For **Optical bench**:
 
 | Where | What appears |
 |---|---|
-| Scene panel tree | the **Optics**, **Beam axes** and **Detectors** folders ([physoptics-optical-elements.md](../physoptics-optical-elements.md), [physoptics-beam-axis.md](../physoptics-beam-axis.md), [physoptics-detectors.md](../physoptics-detectors.md)) |
+| Scene panel tree | the **Optics**, **Beam axes** and **Detectors** folders ([physoptics-optical-elements.md](physoptics-optical-elements.md), [physoptics-beam-axis.md](../physoptics-beam-axis.md), [physoptics-detectors.md](../physoptics-detectors.md)) |
 | **Add** menu | **Optic**, **Laser**, **Detector**, **Beam axis** |
-| Menu bar | an **Optics** menu: **Import prescription...**, **Load glass catalog...**, **Bench settings...** ([physoptics-prescription-import.md](../physoptics-prescription-import.md), [physoptics-optical-materials.md](../physoptics-optical-materials.md), [physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md)) |
+| Menu bar | an **Optics** menu: **Import prescription...**, **Load glass catalog...**, **Bench settings...** ([physoptics-prescription-import.md](../physoptics-prescription-import.md), [physoptics-optical-materials.md](physoptics-optical-materials.md), [physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md)) |
 | **File** menu | **Export Optical Data...** ([physoptics-data-export.md](../physoptics-data-export.md)) |
 | **Windows** menu | **Beam**, **Detectors** ([physoptics-gaussian-beam-solver.md](../physoptics-gaussian-beam-solver.md), [physoptics-detectors.md](../physoptics-detectors.md)) |
 | Viewport | the breadboard, beams, beam-axis overlays ([physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md), [physoptics-beam-preview.md](../physoptics-beam-preview.md)) |
@@ -167,7 +167,7 @@ Verification, against the list above:
 - Turning **Optical bench** on showed its note and the Optics tab, and changed no setting; turning it off removed both. A scene saved with it on and then off differs only in `"capabilities"`.
 - A scene with an unknown key, `future_thing`, opened with one warning and saved the key back.
 - **Save as Template...** followed by **New from Template** gave an untitled scene whose file equals the template's, less `"templateInfo"`.
-- Not yet testable, and listed in `docs/physical-optics-overview.md` §7 for the plans that add objects: the refusal with an optic in the scene, **Delete them and turn off**, and an older optics file opening with the capability on.
+- Not yet testable, and listed in `docs/physical-optics-overview.md` §8 for the plans that add objects: the refusal with an optic in the scene, **Delete them and turn off**, and an older optics file opening with the capability on.
 
 ## Sources
 

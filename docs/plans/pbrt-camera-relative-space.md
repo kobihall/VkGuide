@@ -50,7 +50,7 @@ Every plan that puts a world-space position in a GPU buffer routes it through `R
 
 - [pbrt-participating-media.md](pbrt-participating-media.md): grid and medium transforms.
 - [pbrt-motion-blur.md](pbrt-motion-blur.md): the two poses per object and camera.
-- [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md), [physoptics-detectors.md](physoptics-detectors.md) and [physoptics-beam-axis.md](physoptics-beam-axis.md): surface frames, detector frames and the beam graph's world positions.
+- [physoptics-optical-surfaces.md](completed/physoptics-optical-surfaces.md), [physoptics-detectors.md](physoptics-detectors.md) and [physoptics-beam-axis.md](physoptics-beam-axis.md): surface frames, detector frames and the beam graph's world positions.
 - [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md): the light vertex cache holds render-space positions, which is consistent because everything GPU-side shares one origin.
 - [physoptics-data-export.md](physoptics-data-export.md): ray records and detector data leave in world coordinates, so the exporter adds the origin back.
 

@@ -76,9 +76,11 @@ struct CapabilityInfo {
 	// the menu bar: whole menus after Windows, and items in File before Export Render
 	void (*menus)(VulkanEngine*);
 	void (*fileMenu)(VulkanEngine*);
-	// sections at the end of the Render Settings window, and folders after the models' in the Materials window
+	// sections at the end of the Render Settings window, and folders after the models' in the Materials window, with the
+	// details of an entry such a folder selected, drawn while no material is (returns whether it drew anything)
 	void (*renderSettings)(VulkanEngine*);
 	void (*materialFolders)(VulkanEngine*);
+	bool (*materialDetails)(VulkanEngine*);
 	// drawn over the Viewport after the camera and light markers
 	void (*viewportOverlays)(VulkanEngine*, const ViewportView&);
 	// a workspace offered beside Render while the capability is on; null for none

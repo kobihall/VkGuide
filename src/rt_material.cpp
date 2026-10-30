@@ -1,6 +1,7 @@
 #include <rt_material.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include <bxdf.h>
@@ -105,6 +106,21 @@ const MaterialParam MIX_PARAMS[] = {
 	{ "materialB", "second material", ParamKind::Material, MaterialLink {}, 0.f, 0.f, 0, "A hit takes this one with the chance amount" },
 	{ "amount", "amount", ParamKind::Float, 0.5f, 0.f, 1.f, 0,
 		"The chance of the second material. The choice is a hash of the hit point and the direction, so a hit chooses the same child each time it is evaluated" },
+};
+
+const char* const OPTIC_FINISHES[] = { "Polished", "Ground" };
+
+// the optical interface (docs/plans/completed/physoptics-optical-materials.md): its coating, its finish and its surface scatter.
+// No index: the two indices are the surface's media
+const MaterialParam OPTICAL_INTERFACE_PARAMS[] = {
+	{ "coating", "coating", ParamKind::Coating, CoatingRef { "uncoated" }, 0.f, 0.f, 0,
+		"The optical library's coating: exact Fresnel when uncoated, an ideal or tabulated splitter, a thin-film stack or a protected metal" },
+	{ "finish", "finish", ParamKind::Enum, 0, 0.f, 1.f, 0, "Polished: a delta reflection and refraction. Ground: rough glass of roughness 1 between the same media",
+		SpectrumRole::Albedo, OPTIC_FINISHES },
+	{ "tis", "scatter (TIS)", ParamKind::Float, 0.f, 0.f, 0.05f, 0,
+		"The total integrated scatter of an ABg lobe around the specular directions: about 0.001 for a polished optic. 0 for none" },
+	{ "abgB", "ABg B", ParamKind::Float, 1e-3f, 1e-6f, 1.f, PARAM_LOGARITHMIC, "The ABg model's shoulder, in direction-cosine units" },
+	{ "abgG", "ABg g", ParamKind::Float, 2.f, 0.f, 3.f, 0, "The ABg model's fall-off exponent" },
 };
 
 //---------------------------------------------------------------- packing
@@ -338,6 +354,67 @@ void packMix(const MaterialDef& material, const PackContext& context, MaterialRe
 	writer.out.flags |= CRT_MATERIAL_FLAG_SCATTERS;
 }
 
+void packOpticalInterface(const MaterialDef& material, const PackContext&, MaterialRecordWriter& writer)
+{
+	CrtOpticMaterial out {};
+	const ParamValue finish = materialValue(material, "finish");
+	const int* finishIndex = std::get_if<int>(&finish);
+	out.finish = finishIndex != nullptr && *finishIndex == 1 ? CRT_OPTIC_FINISH_GROUND : CRT_OPTIC_FINISH_POLISHED;
+	out.tis = std::clamp(materialFloat(material, "tis"), 0.f, 0.5f);
+	out.abgB = std::max(materialFloat(material, "abgB"), 1e-6f);
+	out.abgG = std::clamp(materialFloat(material, "abgG"), 0.f, 3.f);
+	out.type = (uint32_t)MaterialType::OpticalInterface;
+	out.albedoLayer = -1;
+	out.normalLayer = -1;
+	out.metalRoughLayer = -1;
+	out.emissiveLayer = -1;
+	writer.write(&out, sizeof(out));
+	writer.out.flags |= CRT_MATERIAL_FLAG_SCATTERS;
+	// the ABg lobe (Stover, Optical scattering, ch. 4): BSDF = A / (B + |beta - beta0|^g) in projected directions, its
+	// A normalizing it to one over the disk of radius 2 about the specular direction's beta0, and its radial inverse CDF
+	if (out.tis > 0.f) {
+		CrtAbgLobe lobe {};
+		lobe.rMax = 2.f;
+		const int steps = 20000;
+		std::vector<double> cumulative(steps + 1, 0.0);
+		std::vector<double> radius(steps + 1, 0.0);
+		for (int i = 1; i <= steps; i++) {
+			// dense toward r = 0, where a small B puts most of the lobe
+			const double s = (double)i / steps;
+			radius[i] = lobe.rMax * s * s * s;
+			auto density = [&](double r) { return r / (out.abgB + std::pow(r, (double)out.abgG)); };
+			cumulative[i] = cumulative[i - 1] + 0.5 * (density(radius[i - 1]) + density(radius[i])) * (radius[i] - radius[i - 1]);
+		}
+		const double total = cumulative[steps];
+		lobe.a = (float)(1.0 / (2.0 * 3.14159265358979323846 * total));
+		for (uint32_t j = 0; j < CRT_ABG_TABLE; j++) {
+			const double target = total * (double)j / (double)(CRT_ABG_TABLE - 1);
+			const auto it = std::lower_bound(cumulative.begin(), cumulative.end(), target);
+			const size_t i = std::min((size_t)(it - cumulative.begin()), (size_t)steps);
+			const double before = i > 0 ? cumulative[i - 1] : 0.0;
+			const double f = i > 0 && cumulative[i] > before ? (target - before) / (cumulative[i] - before) : 0.0;
+			lobe.radius[j] = (float)(i > 0 ? radius[i - 1] + f * (radius[i] - radius[i - 1]) : 0.0);
+		}
+		// the share inside |beta| < 1 for a lobe about beta0: each ring of radius r about it lies inside by the arc
+		// acos((r^2 + b0^2 - 1) / (2 r b0)) / pi of its turn
+		for (uint32_t j = 0; j < CRT_ABG_VISIBLE; j++) {
+			const double b0 = (double)j / (double)(CRT_ABG_VISIBLE - 1);
+			double inside = 0.0;
+			for (int i = 1; i <= steps; i++) {
+				const double r = 0.5 * (radius[i - 1] + radius[i]);
+				double arc = 1.0;
+				if (r + b0 > 1.0) {
+					const double c = b0 > 0.0 ? (r * r + b0 * b0 - 1.0) / (2.0 * r * b0) : 2.0;
+					arc = c >= 1.0 ? 0.0 : (c <= -1.0 ? 1.0 : std::acos(c) / 3.14159265358979323846);
+				}
+				inside += (cumulative[i] - cumulative[i - 1]) * arc;
+			}
+			lobe.visible[j] = (float)std::max(inside / total, 1e-6);
+		}
+		writer.write(&lobe, sizeof(lobe));
+	}
+}
+
 // a smooth metal reads as its normal-incidence reflectance; glass as the classic dielectric's tint
 glm::vec3 conductorPreview(const MaterialDef& material)
 {
@@ -402,6 +479,8 @@ const MaterialTraits MATERIAL_TRAITS[] = {
 	{ "thin_glass", "Thin glass (pbrt)", THIN_GLASS_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX | MATERIAL_TYPE_DELTA, packBxdf, noEmission, glassPreview },
 	{ "diffuse_transmission", "Diffuse transmission (pbrt)", DIFFUSE_TRANSMISSION_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX, packBxdf, noEmission, albedoPreview },
 	{ "mix", "Mix (pbrt)", MIX_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX, packMix, noEmission, mixPreview },
+	{ "optical_interface", "Optical interface", OPTICAL_INTERFACE_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX | MATERIAL_TYPE_DELTA, packOpticalInterface,
+		noEmission, glassPreview },
 };
 static_assert(sizeof(MATERIAL_TRAITS) / sizeof(MATERIAL_TRAITS[0]) == MATERIAL_TYPE_COUNT);
 
@@ -506,6 +585,13 @@ int materialTextureLayer(const MaterialDef& material, std::string_view name)
 	const ParamValue value = materialValue(material, name);
 	const TexRef* t = std::get_if<TexRef>(&value);
 	return t != nullptr ? t->layer : -1;
+}
+
+std::string materialCoating(const MaterialDef& material, std::string_view name)
+{
+	const ParamValue value = materialValue(material, name);
+	const CoatingRef* c = std::get_if<CoatingRef>(&value);
+	return c != nullptr ? c->key : std::string();
 }
 
 void MaterialRecordWriter::write(const void* data, size_t bytes)

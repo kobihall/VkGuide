@@ -382,6 +382,10 @@ void GpuRenderer::destroy(VulkanEngine* engine)
 	m_pool.destroy(engine, m_resources);
 	freeFilm(engine);
 
+	if (m_opticBuffer.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_opticBuffer);
+		m_opticBuffer = {};
+	}
 	if (m_sceneBuffer.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_sceneBuffer);
 		m_sceneBuffer = {};
@@ -476,6 +480,10 @@ std::vector<CrtBinding> GpuRenderer::bindingsOf(const KernelVariant& variant, ui
 			bindings.insert(bindings.end(), search->bindings.begin(), search->bindings.end());
 		}
 	}
+	//a kernel that reads the instances may meet an optical body: its surfaces and its coatings
+	if (std::find(bindings.begin(), bindings.end(), CrtBinding::Instances) != bindings.end()) {
+		bindings.insert(bindings.end(), { CrtBinding::OpticSurfaces, CrtBinding::OpticCoatings });
+	}
 	//each once: a kernel that samples textures itself and a traversal whose alpha test does both
 	//name MaterialTextures, and a set layout may hold a binding number only once
 	std::sort(bindings.begin(), bindings.end());
@@ -490,8 +498,11 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 	//the features that matter to this kernel: bit 0 the sample record to a kernel that reads it, bits 1 and 2 the
 	//outputs to a kernel that writes or folds them
 	const uint32_t family = variant.laneDependent ? (features >> 8u) & 0xFFu : 0u;
+	//and bit 4 the optical bodies to a kernel that reads the instances
+	const std::vector<CrtBinding> declared = bindingsOf(variant, traversal, family);
+	const bool readsInstances = std::find(declared.begin(), declared.end(), CrtBinding::Instances) != declared.end();
 	const uint32_t recordKey = (variant.readsRecord ? (features & 1u) : 0u) | (variant.usesOutputs ? (features & 14u) : 0u) | (family << 8u)
-		| (family != 0 ? features & 0xFF0000u : 0u);
+		| (family != 0 ? features & 0xFF0000u : 0u) | (readsInstances ? (features & 16u) : 0u);
 	const auto found = m_passes.find({ &variant, key, classKey, recordKey });
 	if (found != m_passes.end()) {
 		return found->second;
@@ -531,6 +542,11 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 		builder.addSpecialization(2, (recordKey >> 2) & 1u);
 		builder.addSpecialization(5, (recordKey >> 3) & 1u);
 	}
+	//every kernel that reads the instances for whether the scene has optical bodies (CRT_OPTICS), so a scene without any
+	//runs the code it always did
+	if (readsInstances) {
+		builder.addSpecialization(6, (recordKey >> 4) & 1u);
+	}
 	//a spectral build, for its representation (CRT_REPRESENTATION_SPEC) and wavelength sampling (CRT_SAMPLING_SPEC),
 	//so it carries one representation's code (crt_spectrum.glsl)
 	if (family != 0) {
@@ -562,7 +578,8 @@ uint32_t GpuRenderer::pipelineFeatures(const KernelSelection& selection) const
 	const SpectralSettings& spectral = m_snapshot.settings.spectral;
 	const uint32_t family = laneFamily(spectral);
 	const uint32_t spectralBits = family != 0 ? ((uint32_t)spectral.representation << 16u) | ((uint32_t)spectral.sampling << 20u) : 0u;
-	return (samplerWritesRecord(selection) ? 1u : 0u) | m_outputFeatures | (family << 8u) | spectralBits;
+	const uint32_t optics = m_snapshot.scene != nullptr && m_snapshot.scene->opticCount > 0 ? 16u : 0u;
+	return (samplerWritesRecord(selection) ? 1u : 0u) | m_outputFeatures | optics | (family << 8u) | spectralBits;
 }
 
 void GpuRenderer::preparePipelines(VulkanEngine* engine, const KernelSelection& selection)
@@ -1174,6 +1191,24 @@ void GpuRenderer::uploadScene(VulkanEngine* engine)
 	m_resources.setBuffer(CrtBinding::Lights, m_sceneBuffer.buffer, lightsBytes, lightsOffset);
 	m_resources.setBuffer(CrtBinding::TriangleLights, m_sceneBuffer.buffer, triangleLightsBytes, triangleLightsOffset);
 
+	//the optical bodies and the coatings' tables (bindings 55 and 56), a vec4 stub each while the scene has none
+	{
+		const std::vector<glm::vec4> stub(1, glm::vec4(0.f));
+		const std::vector<glm::vec4>& optic = scene != nullptr && !scene->opticData.empty() ? scene->opticData : stub;
+		const std::vector<glm::vec4>& coating = scene != nullptr && !scene->coatingData.empty() ? scene->coatingData : stub;
+		const VkDeviceSize opticBytes = sizeof(glm::vec4) * optic.size();
+		const VkDeviceSize coatingOffset = alignUp(opticBytes, alignment);
+		const VkDeviceSize coatingBytes = sizeof(glm::vec4) * coating.size();
+		retireBuffer(engine, m_opticBuffer);
+		m_opticBuffer = engine->createBuffer(coatingOffset + coatingBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+		uint8_t* opticMapped = (uint8_t*)m_opticBuffer.info.pMappedData;
+		memcpy(opticMapped, optic.data(), opticBytes);
+		memcpy(opticMapped + coatingOffset, coating.data(), coatingBytes);
+		vmaFlushAllocation(engine->m_memAllocator, m_opticBuffer.allocation, 0, coatingOffset + coatingBytes); //flush vma on MoltenVK
+		m_resources.setBuffer(CrtBinding::OpticSurfaces, m_opticBuffer.buffer, opticBytes, 0);
+		m_resources.setBuffer(CrtBinding::OpticCoatings, m_opticBuffer.buffer, coatingBytes, coatingOffset);
+	}
+
 	m_uploadedScene = scene;
 	fmt::println("GpuRenderer: scene uploaded - {} instance(s) ({} shape(s), {} unbounded), {} material(s), {} TLAS node(s), {} light(s), {:.2f} MB",
 		instances, scene != nullptr ? scene->shapeCount : 0, m_unboundedCount, materials, tlasWords / 4, scene != nullptr ? scene->lights.header.count : 0, double(totalBytes) / (1024.0 * 1024.0));
@@ -1779,7 +1814,8 @@ CrtParams GpuRenderer::baseParams(VulkanEngine* engine) const
 		| ((m_snapshot.useEnvironmentMap && engine->m_environmentMap.image != VK_NULL_HANDLE) ? CRT_FLAG_ENVIRONMENT_MAP : 0u)
 		| (m_snapshot.solidBackground ? CRT_FLAG_SOLID_BACKGROUND : 0u)
 		| (settings.errorBoundedOffsets ? CRT_FLAG_ERROR_BOUNDS : 0u)
-		| (settings.watertightTriangles ? CRT_FLAG_WATERTIGHT : 0u);
+		| (settings.watertightTriangles ? CRT_FLAG_WATERTIGHT : 0u)
+		| (settings.optics.exactCoatings ? CRT_FLAG_EXACT_COATINGS : 0u);
 	params.background = glm::vec4(m_snapshot.backgroundColor, 0.f);
 	params.minBouncesBeforeRoulette = (uint32_t)std::max(settings.minBouncesBeforeRoulette, 0);
 	params.debugView = (uint32_t)debugView;

@@ -20,7 +20,8 @@
 // than a library: each object's becomes a user material named after it), 12 to 14 (render settings
 // that a file without them reads as the defaults a scene of its time had), 15 (no auxiliary outputs,
 // light groups or export settings), 16 (no shape or environment brought by a model) and 17 to 19 (material types and
-// spectral settings that a file without them never uses). Version 20 adds the scene's capabilities and its template.
+// spectral settings that a file without them never uses). Version 20 adds the scene's capabilities and its template, and
+// 21 the optical elements, the optical library's catalogs, glasses and coatings, the optics settings and the length unit.
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -29,6 +30,10 @@
 #include <optional>
 #include <vector>
 
+#include <length_unit.h>
+#include <optic_catalog.h>
+#include <optic_coating.h>
+#include <optic_glass.h>
 #include <rt_accel.h>
 #include <rt_kernels.h>
 #include <rt_scene_types.h>
@@ -81,6 +86,22 @@ struct SceneMeshObjectRecord {
 struct SceneLightRecord {
 	SceneLight light;
 	int model { -1 };
+};
+
+// one optical element as a file records it (docs/plans/completed/physoptics-optical-elements.md): the element, without an id, and
+// the material of each slot that differs from the kind's default. A slot the file says nothing of gets the default
+struct SceneOpticRecord {
+	SceneOptic optic;
+	std::array<std::optional<MaterialDef>, MAX_OPTIC_MATERIAL_SLOTS> slots;
+};
+
+// version 22: the raster viewport's free camera, how it moves and where it is, so a scene opens at the speed and clip
+// planes that suit its scale, looking where it was saved from
+struct SceneViewportRecord {
+	ViewportCameraSettings settings;
+	glm::vec3 position { 0.f, 0.f, 5.f };
+	glm::quat orientation { 1.f, 0.f, 0.f, 0.f };
+	glm::vec3 pivot { 0.f };
 };
 
 // in a template file only (assets/templates/): what File -> New from Template lists it as
@@ -143,6 +164,16 @@ struct SceneDescription {
 	std::vector<std::string> capabilities;
 	std::string templateKey;
 	std::optional<SceneTemplateInfo> templateInfo;
+	// version 21: the optical elements; the AGF catalogs the scene loaded (absolute paths), the user's own glasses and
+	// coatings; and the length unit every panel shows (docs/plans/completed/physoptics-optical-*.md). An older file has none of
+	// them, and shows meters
+	std::vector<SceneOpticRecord> optics;
+	std::vector<std::filesystem::path> glassCatalogs;
+	std::vector<OpticGlass> userGlasses;
+	std::vector<OpticCoating> userCoatings;
+	LengthUnit lengthUnit { LengthUnit::Meters };
+	// version 22: absent in an older file, which opens with a new scene's viewport settings and the view where it was
+	std::optional<SceneViewportRecord> viewport;
 };
 
 IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);

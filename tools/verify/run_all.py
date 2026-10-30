@@ -2,11 +2,11 @@
 """Runs every verification check and prints one line per result:
 
   bin/bsdf_test, bin/light_test, bin/sampler_test, bin/film_test, bin/aov_test, bin/spectrum_test, bin/pbrt_test,
-  bin/bvh_bench, bin/optic_models_test                             the CPU tests
+  bin/bvh_bench, bin/optic_models_test, bin/optics_test           the CPU tests
   VKGUIDE_SELFTEST=1 bin/vulkan_guide                              shaders against their C++ mirrors
-  furnace_check.py, cornell_check.py, filter_check.py, film_check.py, aov_check.py, spectral_check.py, bsdf_check.py
-                                                                   scene-level energy, reference, filter, film, output
-                                                                   and spectral checks
+  furnace_check.py, cornell_check.py, filter_check.py, film_check.py, aov_check.py, spectral_check.py, bsdf_check.py,
+  optics_check.py                                                  scene-level energy, reference, filter, film, output,
+                                                                   spectral and optics checks
 
 Build first (cd build && cmake --build .). The renders need the GPU and take a few minutes; --cpu-only
 skips them, --quick shrinks them.
@@ -55,6 +55,7 @@ def main():
     ok &= run("pbrt_test", [str(BIN / "pbrt_test")])
     ok &= run("bvh_bench", [str(BIN / "bvh_bench"), str(ROOT / "assets/models/structure.glb"), "--rays", "2000"])
     ok &= run("optic_models_test", [str(BIN / "optic_models_test")], cwd=ROOT)
+    ok &= run("optics_test", [str(BIN / "optics_test")], cwd=ROOT)
     if not args.cpu_only:
         env = dict(os.environ, VKGUIDE_WINDOW="background", VKGUIDE_SELFTEST="1")
         ok &= run("GPU self-tests", [str(BIN / "vulkan_guide")], env=env, cwd=BIN)
@@ -70,6 +71,7 @@ def main():
         ok &= run("aov_check", [sys.executable, os.path.join(HERE, "aov_check.py")], cwd=HERE)
         ok &= run("spectral_check", [sys.executable, os.path.join(HERE, "spectral_check.py")] + quick, cwd=HERE)
         ok &= run("bsdf_check", [sys.executable, os.path.join(HERE, "bsdf_check.py")], cwd=HERE)
+        ok &= run("optics_check", [sys.executable, os.path.join(HERE, "optics_check.py")] + quick, cwd=HERE)
     print("all checks passed" if ok else "some checks failed")
     return 0 if ok else 1
 

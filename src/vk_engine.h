@@ -8,7 +8,6 @@
 #include <vk_descriptors.h>
 #include <vk_display.h>
 #include <vk_loader.h>
-#include <camera.h>
 #include <vk_compute.h>
 #include <vk_tonemap.h>
 #include <rt_renderer.h>
@@ -16,9 +15,12 @@
 #include <rt_textures.h>
 #include <vk_gizmo.h>
 #include <gpu_selftest.h>
+#include <length_unit.h>
 #include <mount_library.h>
+#include <optic_library.h>
 #include <scene_capabilities.h>
 #include <scene_io.h>
+#include <viewport_navigation.h>
 #include <viewport_view.h>
 #include <workspace.h>
 
@@ -66,10 +68,6 @@ struct FrameData {
 };
 
 constexpr unsigned int FRAME_OVERLAP = 2;
-
-// the raster camera's vertical field of view. Shared so the cpu raytracer frames its render
-// the same way the viewport it was aimed from does
-constexpr float CAMERA_VERTICAL_FOV_DEGREES = 70.f;
 
 // the push-constant block shared by gradient_color.comp and sky.comp: four raw vec4s each
 // shader reads what it likes from
@@ -312,7 +310,8 @@ public:
 	VkPipeline m_meshPipeline;
 
 	// scene
-	Camera m_mainCamera;
+	// the raster viewport's free camera and its controls, settings and preferences
+	ViewportNavigation m_viewportNav;
 	RaytraceSceneEditor m_raytraceScene;
 	// the raytracer: its panel, settings, the GPU path tracer and the output window
 	RaytraceRenderer m_raytracer;
@@ -333,6 +332,14 @@ public:
 	// the optomechanical models (mount_library.h): fixed resources loaded at startup, outside m_models, so
 	// they are never saved with a scene or listed under Models
 	MountLibrary m_mountLibrary;
+	// the glasses and coatings optical bodies are made of (optic_library.h): the bundled catalog and presets, loaded at
+	// startup, and the scene's own catalogs, glasses and coatings, which openScene() and newScene() replace
+	OpticalLibrary m_opticalLibrary;
+	// what every panel shows lengths in (length_unit.h); saved with the scene
+	LengthUnit m_lengthUnit { LengthUnit::Meters };
+	void setLengthUnit(LengthUnit unit);
+	// what an optical element's builder reads from the scene: the library, the design wavelength, the surrounding medium
+	OpticBuildContext opticBuildContext() const;
 
 	// the models as the raytracer sees them, rebuilt by rebuildSceneDerivedData() exactly when
 	// m_models changes and shared immutably with every render snapshot - see RaytraceMeshData
@@ -427,6 +434,16 @@ public:
 		uint64_t revision { 0 };
 	};
 	PreviewShapeSlot m_previewShapeSlots[FRAME_OVERLAP];
+	// THE OPTICS' PREVIEW (docs/plans/completed/physoptics-optical-elements.md): each distinct body's tessellation (optic_mesh.h),
+	// by opticBodyKey() and the build context, uploaded the first frame it is drawn and retired through the frame's
+	// deletion queue the first frame no optic draws it
+	struct OpticPreviewMesh {
+		std::shared_ptr<MeshAsset> mesh;
+		uint64_t lastFrame { 0 };
+	};
+	std::map<std::string, OpticPreviewMesh> m_opticPreviewMeshes;
+	// the raster pass's view of the optics this frame, drawn by drawRaytraceShapes()
+	void drawOpticPreviews(PreviewShapeSlot& slot, size_t firstMaterial);
 
 	// textures
 	AllocatedImage m_whiteImage;
@@ -471,7 +488,10 @@ public:
 		SaveReference,
 		LoadReference,
 		ExportRender,
-		NewFromTemplate
+		NewFromTemplate,
+		LoadGlassCatalog,
+		ImportCoatingReflectance,
+		ImportCoatingTransmittance
 	};
 	FileAction m_pendingFileAction { FileAction::None };
 	// the template FileAction::NewFromTemplate starts from
@@ -525,8 +545,11 @@ public:
 	std::filesystem::path templatesDirectory() const;
 	void requestNewScene(const SceneTemplate& entry);
 	IoResult saveTemplate(const std::string& key, const std::string& name, const std::string& description);
-	// puts the free camera at `position` looking along `forward` (no roll), as a template's first view
-	void setViewportPose(const glm::vec3& position, const glm::vec3& forward);
+	// puts the free camera at `position` looking at `target` (no roll), which becomes its pivot, as a template's first view
+	void setViewportPose(const glm::vec3& position, const glm::vec3& target);
+	// eases the viewport to frame the selected object, or the whole scene with nothing selected (F, Camera -> Frame
+	// Selected), or the whole scene with `all`
+	void frameInViewport(bool all);
 
 	// the raster camera's projection in OpenGL clip convention (y up). updateScene() flips y for
 	// vulkan; the gizmo wants it as-is. During a first-person edit the fov is wider than the flown
@@ -619,6 +642,7 @@ private:
 
 	void drawFileMenu();
 	void drawEditMenu();
+	void drawCameraMenu();
 	void runPendingFileAction();
 	// the scene in its file's form: what saveScene() and saveTemplate() write
 	SceneDescription describeScene();
@@ -647,6 +671,7 @@ private:
 	// At the top of the frame, before anything reads the camera - the gizmo, the panels, the
 	// raster pass - so they all see the same pose
 	void updateViewportCamera();
+	std::chrono::steady_clock::time_point m_lastCameraUpdate {};
 	// wireframe frustums for the scene's cameras, drawn over the viewport into its window's draw
 	// list; the render camera brighter, the flown one not at all
 	void drawCameraOverlays(const ViewportView& view);

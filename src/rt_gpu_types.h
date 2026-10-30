@@ -132,6 +132,9 @@ inline constexpr uint32_t CRT_FLAG_SOLID_BACKGROUND = 1u << 3;
 // RenderSettings::errorBoundedOffsets and watertightTriangles (crt_common.glsl)
 inline constexpr uint32_t CRT_FLAG_ERROR_BOUNDS = 1u << 4;
 inline constexpr uint32_t CRT_FLAG_WATERTIGHT = 1u << 5;
+// an optical surface's coating is evaluated by its transfer matrix at every hit, not looked up in its table
+// (shaders/rt/include/crt_optic_material.glsl)
+inline constexpr uint32_t CRT_FLAG_EXACT_COATINGS = 1u << 6;
 
 // Params.bounce for kernel 01's pass over the whole pool before kernel 00 (crt_common.glsl)
 inline constexpr uint32_t CRT_CAMERA_PASS = 0xFFFFFFFFu;

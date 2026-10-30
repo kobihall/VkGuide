@@ -109,3 +109,44 @@ struct CrtMixMaterial {
 	float unusedNormalScale;
 };
 static_assert(sizeof(CrtMixMaterial) == 64);
+
+// CrtOpticMaterial::finish
+inline constexpr uint32_t CRT_OPTIC_FINISH_POLISHED = 0u;
+inline constexpr uint32_t CRT_OPTIC_FINISH_GROUND = 1u;
+
+// The parameter record of the optical interface (crt_optic_material.glsl), four vec4s laid out as a ClassicMaterial reader
+// finds them: no textures and no alpha test. The coating and the two media are not here: they are a property of the
+// surface, in its body's record and the instance's coating table (docs/plans/completed/physoptics-optical-materials.md)
+struct CrtOpticMaterial {
+	uint32_t finish;
+	// the total integrated scatter of the ABg lobe (0 for none), and the lobe's B and g
+	float tis;
+	float abgB;
+	float abgG;
+	uint32_t type;
+	int32_t albedoLayer;
+	float alphaCutoff;
+	float unusedMetallic;
+	float unusedEmission[3];
+	float unusedRoughness;
+	int32_t normalLayer;
+	int32_t metalRoughLayer;
+	int32_t emissiveLayer;
+	float unusedNormalScale;
+};
+static_assert(sizeof(CrtOpticMaterial) == 64);
+
+// After a scattering interface's record (tis above 0): the ABg lobe's normalization A, so that A / (B + r^g) integrates to
+// 1 over the disk |beta - beta0| < 2 of projected directions; the lobe's inverse cumulative distribution in r at 32
+// evenly spaced probabilities, which crt_optic_material.glsl samples the lobe's radius from; and the share of the lobe
+// inside the unit disk, the directions that exist, at 16 values of |beta0| from 0 to 1, which renormalizes it
+inline constexpr uint32_t CRT_ABG_TABLE = 32;
+inline constexpr uint32_t CRT_ABG_VISIBLE = 16;
+struct CrtAbgLobe {
+	float a;
+	float rMax;
+	float unused[2];
+	float radius[CRT_ABG_TABLE];
+	float visible[CRT_ABG_VISIBLE];
+};
+static_assert(sizeof(CrtAbgLobe) == 208);

@@ -82,7 +82,7 @@ Each shape kind gets PBR's parametric coordinates and derivatives, in `crt_shape
 | Quad | object x and z mapped to [0, 1] | object +x |
 | Box | per face, that face's two axes mapped to [0, 1] | the face's first axis |
 | Plane | world x and z, unscaled, so a texture tiles once per unit | +x |
-| Optical body ([physoptics-optical-surfaces.md](../physoptics-optical-surfaces.md)) | the hit's x and y in its surface's own frame, with `primitive` the surface's index in the body | the surface frame's +x |
+| Optical body ([physoptics-optical-surfaces.md](physoptics-optical-surfaces.md)) | the hit's x and y in its surface's own frame, with `primitive` the surface's index in the body | the surface frame's +x |
 
 `shapeParameters(kind, objectPoint)` returns the uv, dp/du and dp/dv. Kernel 02 stores what it needs in `barycentrics` (a sphere's φ and θ, for example), so the interaction does not solve for them again.
 

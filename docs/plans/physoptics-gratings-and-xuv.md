@@ -1,14 +1,14 @@
 # Gratings, toroidal mirrors and XUV optics
 
-The request's spectral goals are prism dispersion, lens chromatic aberration, XUV optics with gratings and a toroidal mirror, and dichroic mirrors. Two of them come free once [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) and the glass catalogs of [physoptics-optical-materials.md](physoptics-optical-materials.md) exist: a dispersing prism and a singlet's color error are glass with a wavelength-dependent index, traced per lane. Dichroic mirrors are thin-film coatings from the same plan. What is missing is the XUV bench: toroidal and cylindrical surfaces, diffraction gratings with their orders and efficiencies (including the variable line spacing XUV spectrometers use), and mirror reflectivities at grazing incidence from atomic scattering data, in vacuum, at wavelengths where every material's index is within a percent of 1.
+The request's spectral goals are prism dispersion, lens chromatic aberration, XUV optics with gratings and a toroidal mirror, and dichroic mirrors. Two of them come free once [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) and the glass catalogs of [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) exist: a dispersing prism and a singlet's color error are glass with a wavelength-dependent index, traced per lane. Dichroic mirrors are thin-film coatings from the same plan. What is missing is the XUV bench: toroidal and cylindrical surfaces, diffraction gratings with their orders and efficiencies (including the variable line spacing XUV spectrometers use), and mirror reflectivities at grazing incidence from atomic scattering data, in vacuum, at wavelengths where every material's index is within a percent of 1.
 
-*Not implemented. Depends on [physoptics-optical-surfaces.md](physoptics-optical-surfaces.md), [physoptics-optical-materials.md](physoptics-optical-materials.md), [physoptics-optical-elements.md](physoptics-optical-elements.md) and [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) (arbitrary wavelength ranges). Non-visible beams are drawn with [pbrt-display-and-color.md](pbrt-display-and-color.md)'s false color. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-surfaces.md](completed/physoptics-optical-surfaces.md), [physoptics-optical-materials.md](completed/physoptics-optical-materials.md), [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) and [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) (arbitrary wavelength ranges). Non-visible beams are drawn with [pbrt-display-and-color.md](pbrt-display-and-color.md)'s false color. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer will have
 
-- Exact surfaces of the conic and even-asphere kinds, intersected in `crt_optic.glsl` and `rt_optics` ([physoptics-optical-surfaces.md](physoptics-optical-surfaces.md)).
+- Exact surfaces of the conic and even-asphere kinds, intersected in `crt_optic.glsl` and `rt_optics` ([physoptics-optical-surfaces.md](completed/physoptics-optical-surfaces.md)).
 - Spectral lanes over any range from 1 to 20,000 nm, with hero wavelengths uniform outside the visible range, spectral images (`S0.<nm>` EXR channels) for non-visible results, and a monochromatic representation whose display shows a wavelength outside the visible range in a chosen color or through a colormap ([pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md), [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md)). RGB-authored data beyond 360 to 830 nm holds its end values until [spectral-out-of-range.md](spectral-out-of-range.md) decides otherwise.
-- Glasses with dispersion formulas, a vacuum surrounding medium, thin-film stacks with complex indices, and a surface finish with an rms roughness ([physoptics-optical-materials.md](physoptics-optical-materials.md)).
+- Glasses with dispersion formulas, a vacuum surrounding medium, thin-film stacks with complex indices, and a surface finish with an rms roughness ([physoptics-optical-materials.md](completed/physoptics-optical-materials.md)).
 
 ## Design
 
@@ -43,7 +43,7 @@ The scalar blaze model gives a ruled grating of blaze angle `θ_B` the efficienc
 
 Sampling picks an order with probability proportional to its efficiency (the zeroth order included, as the specular reflection or transmission), and the weight is the total efficiency over the probability, as at any partial interface. The beam solver follows every order above the ghost threshold as a port, **Order m**, and its automatic differentiation through the grating equation gives each order's anamorphic magnification, `cos α / cos β`, with no special case.
 
-The `grating` coating kind and the grating attribute live in [physoptics-optical-materials.md](physoptics-optical-materials.md)'s library, so a ruled surface can still carry a reflective coating's reflectance and phase.
+The `grating` coating kind and the grating attribute live in [physoptics-optical-materials.md](completed/physoptics-optical-materials.md)'s library, so a ruled surface can still carry a reflective coating's reflectance and phase.
 
 ### XUV mirror reflectivity
 
@@ -51,7 +51,7 @@ At XUV and soft X-ray wavelengths a material's index is `n = 1 − δ + iβ` wit
 
 ### The XUV bench
 
-- **Surrounding medium** is vacuum ([physoptics-optical-materials.md](physoptics-optical-materials.md)); the panel warns when an XUV source is set in air, which absorbs it within millimeters.
+- **Surrounding medium** is vacuum ([physoptics-optical-materials.md](completed/physoptics-optical-materials.md)); the panel warns when an XUV source is set in air, which absorbs it within millimeters.
 - A laser element at an XUV wavelength is a fine model of a high-harmonic beam, which is close to Gaussian with a divergence of milliradians ([physoptics-laser-sources.md](physoptics-laser-sources.md)).
 - The spectral range, the band set and the false color for the display follow the scene's sources: a setup whose lasers are all below 100 nm defaults to a hero-wavelength range around their lines, and to band images on detectors.
 - XUV optics are not on posts in a lab; they sit in vacuum chambers. They use **Free placement** ([physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)), and a chamber model is not planned.
