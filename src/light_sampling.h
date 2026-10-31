@@ -183,6 +183,12 @@ float piecewiseConstant2DPdf(const PiecewiseConstant2D& table, const glm::vec2& 
 // v runs from +y at the top to -y at the bottom
 glm::vec2 equirectUvOf(const glm::vec3& direction);
 glm::vec3 equirectDirectionOf(const glm::vec2& uv);
+// the map turned about +y (shaders/equirect.glsl): a world direction in the map's frame, and back. `rotation` is the
+// angle's cosine and sine (environmentRotation()); a positive angle turns the map counterclockwise seen from above
+glm::vec3 environmentToMap(const glm::vec3& direction, const glm::vec2& rotation);
+glm::vec3 environmentFromMap(const glm::vec3& direction, const glm::vec2& rotation);
+// the cosine and sine of an angle in degrees, as the shaders take a rotation
+glm::vec2 environmentRotation(float degrees);
 
 // What sampling an equirectangular environment map needs, built once when the map loads
 struct EnvironmentDistribution {
@@ -218,7 +224,7 @@ float environmentStorageScale(float peak);
 // the map as rgba16f, two packed uint32 per texel, colour divided by `scale` and alpha kept
 std::vector<uint32_t> packEnvironmentTexels(const float* rgba, size_t pixelCount, float scale);
 
-// a direction towards the environment and its solid-angle density; false where the table cannot
+// a direction towards the environment, turned by `rotation`, and its solid-angle density; false where the table cannot
 // sample (all zero, or a pole)
-bool sampleEnvironment(const PiecewiseConstant2D& table, const glm::vec2& u, glm::vec3& direction, float& pdf);
-float environmentPdf(const PiecewiseConstant2D& table, const glm::vec3& direction);
+bool sampleEnvironment(const PiecewiseConstant2D& table, const glm::vec2& u, const glm::vec2& rotation, glm::vec3& direction, float& pdf);
+float environmentPdf(const PiecewiseConstant2D& table, const glm::vec3& direction, const glm::vec2& rotation);

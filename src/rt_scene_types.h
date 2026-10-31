@@ -308,6 +308,52 @@ struct SceneLight {
 	bool operator==(const SceneLight&) const = default;
 };
 
+//---------------------------------------------------------------- the background
+
+// What a ray that leaves the scene sees in a render, and what the raster preview shows behind the models. The gradient
+// is the editor's, not the scene's: the preview shows it and a render sees black, the void of a scene lit only by its
+// own lights. An environment choice with no map loaded renders as the gradient does
+enum class BackgroundMode : uint8_t {
+	Gradient,
+	Solid,
+	// Ray Tracing in One Weekend's sky: white at the horizon blending to light blue overhead
+	Sky,
+	Environment,
+};
+
+inline constexpr BackgroundMode BACKGROUND_MODES[] = { BackgroundMode::Gradient, BackgroundMode::Solid, BackgroundMode::Sky, BackgroundMode::Environment };
+
+// the key a scene file saves
+inline const char* backgroundModeName(BackgroundMode mode)
+{
+	switch (mode) {
+	case BackgroundMode::Gradient:
+		return "gradient";
+	case BackgroundMode::Solid:
+		return "solid";
+	case BackgroundMode::Sky:
+		return "sky";
+	case BackgroundMode::Environment:
+		return "environment";
+	}
+	return "gradient";
+}
+
+inline const char* backgroundModeLabel(BackgroundMode mode)
+{
+	switch (mode) {
+	case BackgroundMode::Gradient:
+		return "Gradient";
+	case BackgroundMode::Solid:
+		return "Solid color";
+	case BackgroundMode::Sky:
+		return "Sky";
+	case BackgroundMode::Environment:
+		return "Environment map";
+	}
+	return "Gradient";
+}
+
 //---------------------------------------------------------------- glTF geometry
 
 struct MeshAsset;

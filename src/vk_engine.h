@@ -21,6 +21,7 @@
 #include <optic_library.h>
 #include <scene_capabilities.h>
 #include <scene_io.h>
+#include <stats_window.h>
 #include <viewport_navigation.h>
 #include <viewport_view.h>
 #include <workspace.h>
@@ -67,6 +68,10 @@ struct FrameData {
 	uint32_t occlusionCapacity { 0 };
 	std::vector<uint32_t> occlusionEntries;
 	uint64_t occlusionGeneration { 0 };
+	// two timestamps around this slot's raster pass, read back when the slot comes round again (the Stats window's
+	// Raster (GPU)); rasterTimed says the last use of the slot wrote them. Null without timestamps on the device
+	VkQueryPool rasterTimestamps { VK_NULL_HANDLE };
+	bool rasterTimed { false };
 };
 
 constexpr unsigned int FRAME_OVERLAP = 2;
@@ -101,12 +106,12 @@ struct RasterKey {
 	uint64_t drawImages { 0 };
 	uint64_t editorRevision { 0 };
 	uint64_t sceneRevision { 0 };
-	int backgroundEffect { -1 };
-	ComputePushConstants gradient {};
-	ComputePushConstants sky {};
+	BackgroundMode background { BackgroundMode::Gradient };
+	glm::vec3 backgroundColor { 0.f };
 	// VulkanEngine::m_environmentMapsLoaded
 	uint64_t environmentMaps { 0 };
 	float environmentExposure { 0.f };
+	float environmentRotation { 0.f };
 	bool occlusionCulling { false };
 	// BenchScene::revision(): the breadboard re-meshed, a mount model uploaded
 	uint64_t benchAssets { 0 };
@@ -121,19 +126,6 @@ struct GPUSceneData {
 	glm::vec4 ambientColor;
 	glm::vec4 sunlightDirection; // w for sun power
 	glm::vec4 sunlightColor;
-};
-
-// one selectable compute effect that fills the draw image before the raster pass. Effects bind
-// different resources and take differently shaped push constants, so each carries the two
-// pieces of code that know its shape: how to record it and how to edit its settings
-struct BackgroundEffect {
-	const char* name;
-	ComputePass pass;
-	// allocates this frame's descriptor set, fills the push constants and dispatches, with the
-	// draw image in VK_IMAGE_LAYOUT_GENERAL
-	std::function<void(VkCommandBuffer cmd, const ComputePass& pass)> record;
-	// the effect's imgui controls, inside the "background" window
-	std::function<void()> drawSettings;
 };
 
 struct RenderObject {
@@ -242,6 +234,9 @@ struct EngineStats {
 	uint64_t occludedTriangles;
 	float sceneUpdateTime;
 	float meshDrawTime;
+	// the raster pass on the GPU, in ms, FRAME_OVERLAP frames late; NaN when that frame drew none or the device has no
+	// timestamps
+	float rasterGpuTime;
 };
 
 bool is_visible(const RenderObject& obj, const glm::mat4& viewproj);
@@ -386,8 +381,8 @@ public:
 	// simulation plane's intersections, say) can compare against the revision it last acted on
 	uint64_t m_sceneRevision { 0 };
 
-	// hdr environment lighting, part of the scene: the "environment" background effect shows it
-	// behind the models and the GPU path tracer lights the render with it on a miss
+	// hdr environment lighting, part of the scene: while the background is the environment map, the raster preview shows
+	// it behind the models and the GPU path tracer lights the render with it on a miss
 	AllocatedImage m_environmentMap {};
 	VkExtent2D m_environmentMapExtent { 0, 0 };
 	std::filesystem::path m_environmentMapPath;
@@ -411,11 +406,17 @@ public:
 	// sky is. A scene property, saved with the scene; the picture's brightness is the
 	// renderer's exposure setting
 	float m_environmentIntensity { 1.f };
-	// a solid colour a ray that leaves the scene sees in the path tracer, replacing the environment
-	// map or the sky gradient - the black void of a scene lit only by its own lights. A scene
-	// property, saved with the scene
-	bool m_solidBackground { false };
+	// the map turned about the up axis, in degrees, -180 to 180 (0 by default): what the viewport and the render both
+	// see. A scene property, saved with the scene
+	float m_environmentRotation { 0.f };
+	// what a ray that leaves the scene sees and the raster preview shows behind the models (Scene -> Background), and
+	// the color BackgroundMode::Solid shows, kept while another mode is chosen. Scene properties, saved with the scene
+	BackgroundMode m_backgroundMode { BackgroundMode::Gradient };
 	glm::vec3 m_backgroundColor { 0.f };
+	// the environment map is the background and there is one to show
+	bool environmentShown() const { return m_backgroundMode == BackgroundMode::Environment && m_environmentMap.image != VK_NULL_HANDLE; }
+	// shows the "Environment Map" window, which loading a map leaves closed
+	void showEnvironmentPreview();
 
 	// the file the current scene was opened from or last saved to; empty for an unsaved scene
 	std::filesystem::path m_scenePath;
@@ -476,21 +477,24 @@ public:
 	MaterialInstance m_defaultData;
 	GLTFMetallic_Roughness m_metalRoughMaterial;
 
-	EngineStats m_stats;
+	EngineStats m_stats {};
+	// every frame's timings and counts, for the Stats window's plots (stats_window.h); recorded whether it is open or not
+	FrameHistory m_frameHistory;
+	// the device's timestamp tick in ns, 0 when it cannot time graphics and compute work
+	float m_timestampPeriodNs { 0.f };
 
 	// immediate submit structures
 	VkFence m_immFence;
 	VkCommandBuffer m_immCommandBuffer;
 	VkCommandPool m_immCommandPool;
 
-	std::vector<BackgroundEffect> m_backgroundEffects;
+	// the raster preview's background, before the models (drawBackground()): the editor's gradient
+	// (shaders/gradient_color.comp), and the sky or the environment map by view direction (shaders/env_background.comp).
+	// A solid color is a clear
+	ComputePass m_gradientPass;
+	ComputePass m_environmentPass;
 	// shaders/viewport_encode.comp, after every raster pass
 	ComputePass m_viewportEncodePass;
-	int m_currentBackgroundEffect{0};
-	// each effect's editable settings, owned here so the effect closures can capture `this`
-	// rather than a pointer into the vector above
-	ComputePushConstants m_gradientParams {};
-	ComputePushConstants m_skyParams {};
 
 	// a File-menu click only records the action; the native dialog it needs runs a modal loop,
 	// so runPendingFileAction() executes it once the imgui frame is finished
@@ -521,9 +525,9 @@ public:
 	// the windows' flags, toggled from the "Windows" menu and set by the workspaces. The panels of the scene editor,
 	// the raytracer and the self-tests own their own flags, since they own their own windows
 	bool m_showViewport{ true };
-	bool m_showBackgroundWindow{ false };
-	bool m_showStatsWindow{ false };
+	bool m_showStatsWindow{ true };
 	bool m_showDemoWindow{ false };
+	bool m_showPlotDemoWindow{ false };
 	bool m_showCapabilities{ false };
 	// the raster preview this frame: where the Viewport window shows it, whether it is on screen at all (a closed
 	// window or a hidden tab skips the raster pass), and whether the cursor is over it with no window in front, which
@@ -665,6 +669,8 @@ private:
 	void drawFileMenu();
 	void drawEditMenu();
 	void drawCameraMenu();
+	// the View menu: the raster preview's render scale, when it pauses, and occlusion culling
+	void drawViewMenu();
 	void runPendingFileAction();
 	// the scene in its file's form: what saveScene() and saveTemplate() write
 	SceneDescription describeScene();

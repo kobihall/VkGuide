@@ -78,24 +78,26 @@ ImGuiID dockspaceId()
 	return ImHashStr(DOCKSPACE_NAME);
 }
 
-// Render: the scene and the materials on the left, the viewport and the render's output in the middle, the render
-// and its settings on the right, and the instruments as closed tabs behind the settings, so they open there
+// Raytracing: the scene and the materials on the left, the viewport and the render's output in the middle, the stats and
+// the render's settings on the right, and the instruments as closed tabs behind the settings, so they open there
 void buildRenderLayout(uint32_t dockspace, std::vector<std::string>& open)
 {
-	const DockColumns columns = splitDockColumns(dockspace, 0.2f, 0.25f, 0.55f, 0.3f);
+	const DockColumns columns = splitDockColumns(dockspace, 0.2f, 0.25f, 0.55f, 0.45f);
 	dockWindow("Scene", columns.leftTop);
 	dockWindow("Materials", columns.leftBottom);
 	dockWindow("Raytraced Output", columns.center);
 	dockWindow("Viewport", columns.center);
-	dockWindow("Raytrace Render", columns.rightTop);
+	dockWindow("Stats", columns.rightTop);
 	dockWindow("Render Settings", columns.rightBottom);
-	for (const char* name : { "Raytracer Shaders", "Scene Capabilities", "Import Report", "Stats", "background", "GPU self-tests" }) {
+	for (const char* name : { "Raytracer Shaders", "Scene Capabilities", "Import Report", "GPU self-tests" }) {
 		dockWindow(name, columns.rightBottom);
 	}
-	open = { "Scene", "Materials", "Viewport", "Raytrace Render", "Render Settings" };
+	open = { "Scene", "Materials", "Viewport", "Stats", "Render Settings" };
 }
 
-const WorkspaceInfo RENDER_WORKSPACE { "render", "Render", buildRenderLayout };
+// named Raytracing, so its tab is not mistaken for the Render button beside it; the key stays "render", which saved
+// layouts are filed under
+const WorkspaceInfo RENDER_WORKSPACE { "render", "Raytracing", buildRenderLayout };
 
 } // namespace
 

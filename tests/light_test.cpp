@@ -286,11 +286,14 @@ float lookupLuminance(const std::vector<float>& rgba, uint32_t width, uint32_t h
 	return (1.f - ty) * ((1.f - tx) * texel(x0, y0) + tx * texel(x0 + 1, y0)) + ty * ((1.f - tx) * texel(x0, y0 + 1) + tx * texel(x0 + 1, y0 + 1));
 }
 
-void testEnvironment(uint32_t width, uint32_t height, uint32_t maxWidth, size_t samples)
+// `degrees` turns the map about +y (the scene's environment rotation): the samples and the pdf are of world directions,
+// and the map is read in its own frame, as the shaders read it
+void testEnvironment(uint32_t width, uint32_t height, uint32_t maxWidth, size_t samples, float degrees)
 {
 	const std::vector<float> rgba = syntheticEnvironment(width, height);
 	const EnvironmentDistribution distribution = buildEnvironmentDistribution(rgba.data(), width, height, maxWidth);
-	fmt::println("  {} x {} map, table {} x {}", width, height, distribution.full.width, distribution.full.height);
+	const glm::vec2 rotation = environmentRotation(degrees);
+	fmt::println("  {} x {} map, table {} x {}, turned {} degrees", width, height, distribution.full.width, distribution.full.height, degrees);
 
 	//the reference integral of the luminance over the sphere, by stratified quadrature on the map
 	double reference = 0.0;
@@ -314,14 +317,14 @@ void testEnvironment(uint32_t width, uint32_t height, uint32_t maxWidth, size_t 
 		for (size_t i = 0; i < samples; i++) {
 			glm::vec3 direction;
 			float pdf;
-			if (!sampleEnvironment(table, glm::vec2(uniform(), uniform()), direction, pdf)) {
+			if (!sampleEnvironment(table, glm::vec2(uniform(), uniform()), rotation, direction, pdf)) {
 				continue;
 			}
-			const float lookup = environmentPdf(table, direction);
+			const float lookup = environmentPdf(table, direction, rotation);
 			if (!(std::abs(lookup - pdf) <= 1e-3f * pdf)) {
 				mismatches++;
 			}
-			estimate += lookupLuminance(rgba, width, height, direction) / pdf;
+			estimate += lookupLuminance(rgba, width, height, environmentToMap(direction, rotation)) / pdf;
 		}
 		estimate /= (double)samples;
 
@@ -333,7 +336,7 @@ void testEnvironment(uint32_t width, uint32_t height, uint32_t maxWidth, size_t 
 			const double cosLatitude = std::cos((0.5 - v) * LIGHT_PI);
 			for (uint32_t i = 0; i < steps * 2; i++) {
 				const float u = ((float)i + 0.5f) / (float)(steps * 2);
-				normalisation += environmentPdf(table, equirectDirectionOf(glm::vec2(u, v))) * cosLatitude;
+				normalisation += environmentPdf(table, equirectDirectionOf(glm::vec2(u, v)), rotation) * cosLatitude;
 			}
 		}
 		normalisation *= (2.0 * LIGHT_PI / (steps * 2)) * (LIGHT_PI / steps);
@@ -345,6 +348,18 @@ void testEnvironment(uint32_t width, uint32_t height, uint32_t maxWidth, size_t 
 			check(std::abs(estimate - reference) < 0.02 * reference, "environment full: the light-sampled estimate is biased");
 		}
 	}
+}
+
+// the turn itself: a quarter turn takes the map's +x to the world's -z, counterclockwise seen from above, and the two
+// directions undo each other at any angle
+void testEnvironmentRotation()
+{
+	const glm::vec3 quarter = environmentFromMap(glm::vec3(1.f, 0.f, 0.f), environmentRotation(90.f));
+	check(glm::length(quarter - glm::vec3(0.f, 0.f, -1.f)) < 1e-6f, "environment rotation: a quarter turn does not take +x to -z");
+	const glm::vec3 direction = glm::normalize(glm::vec3(0.3f, 0.5f, -0.8f));
+	const glm::vec2 rotation = environmentRotation(217.f);
+	check(glm::length(environmentFromMap(environmentToMap(direction, rotation), rotation) - direction) < 1e-6f, "environment rotation: to the map and back is not the identity");
+	check(glm::length(environmentFromMap(direction, environmentRotation(0.f)) - direction) < 1e-7f, "environment rotation: no turn moves the direction");
 }
 
 void testAliasTable(size_t samples)
@@ -466,8 +481,10 @@ int main(int argc, char* argv[])
 	}
 
 	fmt::println("environment map:");
-	testEnvironment(256, 128, 2048, samples * 10);
-	testEnvironment(512, 256, 128, samples * 10);
+	testEnvironment(256, 128, 2048, samples * 10, 0.f);
+	testEnvironment(512, 256, 128, samples * 10, 0.f);
+	testEnvironment(256, 128, 2048, samples * 10, 73.f);
+	testEnvironmentRotation();
 
 	fmt::println("alias table and MIS weights:");
 	testAliasTable(samples * 50);

@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-10-31
+
+### New
+
+- **Scene** → **Background** chooses one of four backgrounds: **Gradient**, **Solid color**, **Sky** or **Environment map**. The raster preview shows the choice, so a solid color or the sky looks the same in the **Viewport** as in the render. **Gradient** is the viewport's backdrop and renders black. **Sky** is Ray Tracing in One Weekend's sky, which used to be the render's background whenever a scene had neither a color nor a map.
+- Editing the solid color's swatch chooses **Solid color**. Choosing **Environment map** with no map loaded asks for one, and loading a map from either place chooses it. **Preview** beside it opens the **Environment Map** window, which loading a map no longer opens.
+- **Scene** → **Background** → **Rotation**, under **Intensity**, turns the environment map about the up axis, from -180° to 180°, counterclockwise seen from above for a positive angle. The viewport, the render's background and its light sampling all turn with it.
+- **Render** sits in the middle of the main menu bar, and turns into **Stop** while a render runs. The progress bar appears to its right, and hovering it shows the GPU time and the samples a frame. A render over the GPU watchdog budget turns the button orange, and clicking it asks before it starts.
+- A **View** menu holds **Render Scale**, **Pause Raster Preview** and **Occlusion Culling**.
+- The **Stats** window plots the frame time, the scene update, the raster pass's recording, the raster pass's GPU time and the path tracer's compute time over the last 10 seconds. A table under the plot gives each series' mean over the last second and its peak, and turns it on or off. The scale follows the 98th percentile, so a spike clips instead of flattening the other lines. The raster pass's GPU time is new, from timestamp queries.
+- **Stats** shows the render's progress and cost, with the work a frame as a share of the watchdog budget, and plots the render's samples a pixel and million rays a second over its run.
+- **Stats** draws a bar chart per bounce for the paths alive, the shadow rays and the surface hits of each material class, one bar per bounce, with a bar more for the paths alive. The counts are on a log scale, so a deep bounce's few paths show beside the camera rays.
+- **Stats** lists the BLAS and TLAS side by side, and shows each GPU memory heap's use against its budget, and the GPU memory the film, the outputs, the wavefront pool, the scene buffers, the environment map and the draw images hold.
+- **Windows** → **Debug** → **ImPlot Demo** shows the plotting library's demo.
+
+### Changed
+
+- The Raytrace Render window is gone. **Render Settings** has the **Camera** combo, between **Integrator** and **Resolution**, and **Compare to reference**, under **Analysis view**. The readouts moved to **Stats**, and the output line, which repeated **Render Settings**, is gone.
+- The background window is gone. Its effect index chose the raster preview's background, which now follows **Scene** → **Background**, and the starfield effect is gone with it.
+- A new scene and the **Optical bench** template have the **Gradient** background, which renders black as their solid black did. A pbrt scene without an infinite light gets it too.
+- **Stats** is a main window, open by default at the top right of the **Raytracing** and **Optics** workspaces, where Raytrace Render was. A saved layout keeps its own arrangement until **Reset Layout**.
+- The **Render** workspace is called **Raytracing**, so its tab is not mistaken for the **Render** button. Its saved layout carries over.
+- The convergence plot under **Compare to reference** has log axes with ticks, a legend and hover readouts.
+- Scene files are payload version 24, which adds `"backgroundMode"` and `"environmentRotation"` and always writes `"background"`, the solid color. An older file renders as it did: one with a `"background"` opens on **Solid color**, one with a map on **Environment map**, and any other on **Sky**.
+
+### Internal
+
+- `BackgroundMode` (`src/rt_scene_types.h`) replaces `VulkanEngine::m_solidBackground`. `BackgroundEffect`, `m_backgroundEffects`, `m_gradientParams` and `m_skyParams` are gone: `drawBackground()` clears for a solid color, runs `m_gradientPass`, or runs `m_environmentPass`, whose `env_background.comp` draws the sky or the map. `shaders/sky_gradient.glsl` holds the sky both it and kernel 03 use. `shaders/sky.comp` is deleted.
+- `environmentToMap()` and `environmentFromMap()` (`shaders/equirect.glsl`, mirrored in `src/light_sampling.cpp`) turn a direction by the environment's rotation, which `CrtParams` carries as `environmentCos` and `environmentSin` in two of its former pad words, so it stays 240 bytes. `sampleEnvironment()` and `environmentPdf()` take the rotation, and `bin/light_test` runs its environment checks turned by 73°.
+- ImPlot 1.0 is vendored at `../CPPLibraries/implot` and built as the `implot` target in the root `CMakeLists.txt`.
+- `src/stats_window.h/.cpp` hold the **Stats** window and `FrameHistory`, which `VulkanEngine::run()` fills every frame. The render's sections are `RaytraceRenderer::drawStats()` in `src/rt_renderer_stats.cpp`.
+- `FrameData::rasterTimestamps` times the raster pass, and `EngineStats::rasterGpuTime` holds the result two frames late. `GpuRenderer::memoryUse()` and `WavefrontPool::deviceBytes()` total the renderer's allocations, through `allocationBytes()` (`src/vk_types.h`).
+
 ## 2026-10-30
 
 ### New

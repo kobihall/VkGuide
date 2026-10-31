@@ -190,6 +190,8 @@ private:
 		Bench
 	};
 
+	// the Background section: the gradient, a solid color, the sky or the environment map, and the map's preview
+	void drawBackground(VulkanEngine* engine);
 	void drawToolbar(VulkanEngine* engine);
 	void drawObjectTree(VulkanEngine* engine);
 	void drawCameraRows();

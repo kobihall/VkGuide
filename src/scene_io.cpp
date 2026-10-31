@@ -90,7 +90,11 @@ namespace {
 //   and z of the optic's origin, opticOrigin()), "yaw", "height", "fork" ("angle", "reach") and the "fine" adjustment
 //   that is not zero ("x" and "y" adjuster turns, a "rotor" angle); an unmounted or "free" optic has its "position" and
 //   "orientation", and a free one its stack besides, where it stood. An optic in an older file is unmounted where the file put it, so it renders as it did
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 23;
+//24: adds "environmentRotation", the map's turn about the up axis in degrees (absent for 0), and "backgroundMode", what a missed ray sees and the raster preview shows: "gradient" (the editor's, black in a
+//   render), "solid", "sky" (Ray Tracing in One Weekend's) or "environment". "background" is always written, the color
+//   "solid" shows. An older file's choice was implied: a "background" was the solid color whatever else the file had,
+//   otherwise a map was the environment, otherwise the sky, which it reads as, so it renders as it did
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 24;
 
 //---------------------------------------------------------------- writing
 
@@ -432,9 +436,10 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	}
 
 	json += fmt::format(R"(,"environmentIntensity":{})", jsonNumber(scene.environmentIntensity));
-	if (scene.backgroundColor.has_value()) {
-		json += fmt::format(R"(,"background":{})", jsonVec3(*scene.backgroundColor));
+	if (scene.environmentRotation != 0.f) {
+		json += fmt::format(R"(,"environmentRotation":{})", jsonNumber(scene.environmentRotation));
 	}
+	json += fmt::format(R"(,"backgroundMode":{},"background":{})", jsonString(backgroundModeName(scene.backgroundMode)), jsonVec3(scene.backgroundColor));
 
 	//every setting, defaults on read, so a scene shared between machines loses nothing and an
 	//older build ignores the block
@@ -1874,12 +1879,33 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 	//version 3: both optional, defaults otherwise
 	readOptionalFloat(root["environmentIntensity"], ctx.scene.environmentIntensity);
 	ctx.scene.environmentIntensity = std::max(ctx.scene.environmentIntensity, 0.f);
+	//version 24: absent for an unturned map
+	readOptionalFloat(root["environmentRotation"], ctx.scene.environmentRotation);
+	//into -180 to 180, the panel's range
+	ctx.scene.environmentRotation = std::remainder(ctx.scene.environmentRotation, 360.f);
 	readRenderSettings(root["render"], ctx.scene.render);
 
-	//version 7: optional, the environment or the sky otherwise
+	//version 7: the solid color, optional. Version 24: the mode, which an older file implied (SCENE_FILE_FORMAT_VERSION)
 	glm::vec3 background;
-	if (readVec3(root["background"], background)) {
+	const bool hasBackground = readVec3(root["background"], background);
+	if (hasBackground) {
 		ctx.scene.backgroundColor = glm::max(background, glm::vec3(0.f));
+	}
+	if (version >= 24) {
+		std::string_view mode;
+		if (root["backgroundMode"].get_string().get(mode) == simdjson::SUCCESS) {
+			for (const BackgroundMode candidate : BACKGROUND_MODES) {
+				if (mode == backgroundModeName(candidate)) {
+					ctx.scene.backgroundMode = candidate;
+				}
+			}
+		}
+	} else if (hasBackground) {
+		ctx.scene.backgroundMode = BackgroundMode::Solid;
+	} else if (!ctx.scene.environmentMapPath.empty() || ctx.scene.environmentModel >= 0) {
+		ctx.scene.backgroundMode = BackgroundMode::Environment;
+	} else {
+		ctx.scene.backgroundMode = BackgroundMode::Sky;
 	}
 
 	//version 8: the kernel selection and the BVH settings. Both optional; an older file simply

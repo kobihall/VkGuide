@@ -136,6 +136,8 @@ struct GpuRenderSnapshot {
 	float environmentIntensity { 1.f };
 	// the power of two the map's texels are stored divided by (VulkanEngine::m_environmentMapScale)
 	float environmentMapScale { 1.f };
+	// the map's rotation about +y, in degrees (VulkanEngine::m_environmentRotation)
+	float environmentRotation { 0.f };
 	// a missed ray sees backgroundColor instead of the environment map or the sky gradient
 	bool solidBackground { false };
 	glm::vec3 backgroundColor { 0.f };
@@ -143,6 +145,19 @@ struct GpuRenderSnapshot {
 	// group the background belongs to. The groups of the lights and materials are in the light list
 	uint32_t lightGroupCount { 0 };
 	uint32_t environmentGroup { 0 };
+};
+
+// The renderer's device memory by owner, in bytes (GpuRenderer::memoryUse()), for the Stats window
+struct GpuMemoryUse {
+	// the accumulation, the samples taken, the film records and cascade, the filter table and the noise base
+	VkDeviceSize film { 0 };
+	// the auxiliary outputs, the light groups' sums, Relight's picture and the outputs' windows
+	VkDeviceSize outputs { 0 };
+	VkDeviceSize wavefront { 0 };
+	// the BLASes' geometry, the per-edit scene, the optics, the environment's sampling tables
+	VkDeviceSize scene { 0 };
+	// the spectral data and uplift table, the sampler tables, the reference and its error pass, the counters
+	VkDeviceSize other { 0 };
 };
 
 // Why a render cannot keep every output its settings ask for, and which it keeps. The AOV layers and the light
@@ -237,6 +252,7 @@ public:
 	// above zero means a kernel produced a NaN or an infinity, and the image is biased by the
 	// samples it lost
 	uint64_t droppedSamples() const { return m_droppedSamples; }
+	GpuMemoryUse memoryUse(VmaAllocator allocator) const;
 	// the active schedule's per-bounce counts, from the last frame read back
 	std::span<const ScheduleCounter> counters() const;
 

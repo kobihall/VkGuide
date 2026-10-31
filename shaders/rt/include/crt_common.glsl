@@ -642,10 +642,17 @@ layout (push_constant) uniform Params {
 	float aoDistance;
 	// the spectral images' wavelength buckets, after the light groups in each pixel's ChannelSums record; 0 for none
 	uint spectralBuckets;
+	// the environment map's rotation about +y, as its cosine and sine (environmentRotation())
+	float environmentCos;
+	float environmentSin;
 	uint paramsPad0;
-	uint paramsPad1;
-	uint paramsPad2;
 } pc;
+
+// the rotation environmentToMap() and environmentFromMap() (equirect.glsl) take
+vec2 environmentRotation()
+{
+	return vec2(pc.environmentCos, pc.environmentSin);
+}
 
 // one pixel's record in ChannelSums: the light groups' rgb, the weight sum, the spectral images' buckets
 uint channelStride()

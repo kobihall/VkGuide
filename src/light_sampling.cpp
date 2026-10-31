@@ -823,6 +823,22 @@ glm::vec3 equirectDirectionOf(const glm::vec2& uv)
 	return glm::vec3(cosLatitude * std::sin(phi), std::sin(latitude), -cosLatitude * std::cos(phi));
 }
 
+glm::vec3 environmentToMap(const glm::vec3& direction, const glm::vec2& rotation)
+{
+	return glm::vec3(rotation.x * direction.x - rotation.y * direction.z, direction.y, rotation.y * direction.x + rotation.x * direction.z);
+}
+
+glm::vec3 environmentFromMap(const glm::vec3& direction, const glm::vec2& rotation)
+{
+	return glm::vec3(rotation.x * direction.x + rotation.y * direction.z, direction.y, -rotation.y * direction.x + rotation.x * direction.z);
+}
+
+glm::vec2 environmentRotation(float degrees)
+{
+	const float radians = degrees * LIGHT_PI / 180.f;
+	return glm::vec2(std::cos(radians), std::sin(radians));
+}
+
 EnvironmentDistribution buildEnvironmentDistribution(const float* rgba, uint32_t width, uint32_t height, uint32_t maxWidth)
 {
 	EnvironmentDistribution out;
@@ -931,7 +947,7 @@ std::vector<uint32_t> packEnvironmentTexels(const float* rgba, size_t pixelCount
 	return packed;
 }
 
-bool sampleEnvironment(const PiecewiseConstant2D& table, const glm::vec2& u, glm::vec3& direction, float& pdf)
+bool sampleEnvironment(const PiecewiseConstant2D& table, const glm::vec2& u, const glm::vec2& rotation, glm::vec3& direction, float& pdf)
 {
 	float uvPdf;
 	const glm::vec2 uv = samplePiecewiseConstant2D(table, u, uvPdf);
@@ -939,17 +955,17 @@ bool sampleEnvironment(const PiecewiseConstant2D& table, const glm::vec2& u, glm
 	if (!(uvPdf > 0.f) || !(cosLatitude > 1e-6f)) {
 		return false;
 	}
-	direction = equirectDirectionOf(uv);
+	direction = environmentFromMap(equirectDirectionOf(uv), rotation);
 	//du dv covers 2 pi^2 cos(latitude) of solid angle
 	pdf = uvPdf / (2.f * LIGHT_PI * LIGHT_PI * cosLatitude);
 	return true;
 }
 
-float environmentPdf(const PiecewiseConstant2D& table, const glm::vec3& direction)
+float environmentPdf(const PiecewiseConstant2D& table, const glm::vec3& direction, const glm::vec2& rotation)
 {
 	const float cosLatitude = safeSqrt(1.f - direction.y * direction.y);
 	if (!(cosLatitude > 1e-6f)) {
 		return 0.f;
 	}
-	return piecewiseConstant2DPdf(table, equirectUvOf(direction)) / (2.f * LIGHT_PI * LIGHT_PI * cosLatitude);
+	return piecewiseConstant2DPdf(table, equirectUvOf(environmentToMap(direction, rotation))) / (2.f * LIGHT_PI * LIGHT_PI * cosLatitude);
 }

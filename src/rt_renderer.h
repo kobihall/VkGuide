@@ -1,8 +1,9 @@
 #pragma once
 
-// The raytracer as the user sees it: the "Raytrace Render" panel, the RenderSettings, the
-// choice of scene camera, the Render/Stop buttons and the "Raytraced Output" window, in front
-// of the GPU renderer (rt_gpu.h) and whichever integrator the selection names.
+// The raytracer as the user sees it: the Render/Stop button and the progress bar in the main menu bar, the "Render
+// Settings" window (the RenderSettings, the choice of scene camera, the reference), the render's part of the "Stats"
+// window (rt_renderer_stats.cpp) and the "Raytraced Output" window, in front of the GPU renderer (rt_gpu.h) and
+// whichever integrator the selection names.
 //
 // A render is of a scene camera. It starts from what the scene, the camera and the settings
 // are at that moment; with "restart on change" (the default) the renderer watches all three
@@ -37,11 +38,17 @@ public:
 	// a finished render and restarts a render whose inputs changed
 	void update(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 
-	// the "Raytrace Render" window: the camera, Render and Stop, progress, readouts and the reference
-	void drawPanel(VulkanEngine* engine, RaytraceSceneEditor& editor);
-	// the "Render Settings" window: every settings section, then each enabled capability's. Non-const: the Outputs
-	// section edits the scene's light groups and the camera's relight gains
+	// inside the main menu bar: Render, or Stop while a render runs, at the bar's middle; then the progress bar, why a
+	// render was refused, and a mark for samples dropped as non-finite. Over the budget, Render asks before it starts
+	void drawMenuBarControls(VulkanEngine* engine, RaytraceSceneEditor& editor);
+	// the "Render Settings" window: the integrator, the camera, every settings section, the reference, then each enabled
+	// capability's. Non-const: the Outputs section edits the scene's light groups and the camera's relight gains
 	void drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEditor& editor);
+	// the render's sections of the "Stats" window (rt_renderer_stats.cpp): the render and its cost, its throughput over
+	// time, the per-bounce counts and the acceleration structure
+	void drawStats(VulkanEngine* engine, const RaytraceSceneEditor& editor);
+	// the render's GPU memory by owner, in bytes, for the Stats window's breakdown
+	GpuMemoryUse memoryUse(VmaAllocator allocator) const;
 
 	// inside draw()'s command buffer, before the raster passes: this frame's path-tracing
 	// work and its tonemap into the display image
@@ -55,7 +62,6 @@ public:
 	// display registry is torn down
 	void shutdown(VulkanEngine* engine);
 
-	bool* visibilityFlag() { return &m_showPanel; }
 	bool* settingsVisibilityFlag() { return &m_showSettingsPanel; }
 
 	// the models changed (an import, a removal, a scene load): builds the BLAS of every mesh not
@@ -152,7 +158,8 @@ private:
 		KernelSelection kernels;
 		std::filesystem::path environmentMapPath;
 		float environmentIntensity { 1.f };
-		bool solidBackground { false };
+		float environmentRotation { 0.f };
+		BackgroundMode background { BackgroundMode::Gradient };
 		glm::vec3 backgroundColor { 0.f };
 		uint32_t width { 0 };
 		uint32_t height { 0 };
@@ -165,6 +172,18 @@ private:
 
 	// the camera the next render would use, or null when the scene has none
 	const SceneCamera* resolveCamera(const RaytraceSceneEditor& editor);
+	// what a render started now would cost a frame, against WORK_PER_FRAME_BUDGET: `blocked` is over it and not
+	// accepted for this cost through Render anyway
+	struct RenderEstimate {
+		double costPerRay { 0.0 };
+		double work { 0.0 };
+		bool overBudget { false };
+		bool blocked { false };
+	};
+	// builds the scene's TLAS if it is stale, so the cost is the scene's as it stands
+	RenderEstimate estimate(VulkanEngine* engine, const RaytraceSceneEditor& editor);
+	// the "Camera" combo of Render Settings
+	void drawCameraCombo(const RaytraceSceneEditor& editor);
 	RenderKey currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const SceneCamera& camera) const;
 	void startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	// the TLAS, instances and materials over the current BLAS set, rebuilt only when the objects or
@@ -276,6 +295,18 @@ private:
 	int m_lastRenderSamples { 0 };
 	bool m_hasLastRender { false };
 
+	// THE THROUGHPUT PLOT (Stats -> Render): a point per frame of the running or last render, its time since the start,
+	// the samples per pixel it had and the rays it had traced; the plot takes the rates over half a second. Halved, every
+	// other point dropped, when it reaches MAX_THROUGHPUT_POINTS
+	struct ThroughputPoint {
+		float seconds { 0.f };
+		uint32_t samples { 0 };
+		double rays { 0.0 };
+	};
+	static constexpr size_t MAX_THROUGHPUT_POINTS = 1u << 15;
+	std::vector<ThroughputPoint> m_throughput;
+	void recordThroughput();
+
 	// the user has explicitly accepted a render over the budget for the scene as it stands. Reset
 	// by anything that changes what would be rendered, so an acknowledgement can never carry over
 	// to a heavier scene than the one it was given for
@@ -286,6 +317,5 @@ private:
 	// Render was pressed: update() starts it next frame, before the image windows record the display image
 	bool m_startRequested { false };
 
-	bool m_showPanel { true };
 	bool m_showSettingsPanel { true };
 };

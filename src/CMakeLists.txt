@@ -254,6 +254,9 @@ add_executable(vulkan_guide
     file_dialog.h
     rt_renderer.cpp
     rt_renderer.h
+    rt_renderer_stats.cpp
+    stats_window.cpp
+    stats_window.h
     rt_gpu.cpp
     rt_gpu.h
     rt_gpu_types.h
@@ -287,7 +290,7 @@ set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGE
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide PUBLIC rt_optics rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_aov rt_image rt_material rt_spectrum rt_pbrt rt_optic_models vk-bootstrap glm imgui imguizmo stb_image glfw fmt::fmt fastgltf::fastgltf)
+target_link_libraries(vulkan_guide PUBLIC rt_optics rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_aov rt_image rt_material rt_spectrum rt_pbrt rt_optic_models vk-bootstrap glm imgui imguizmo implot stb_image glfw fmt::fmt fastgltf::fastgltf)
 
 target_link_libraries(vulkan_guide PRIVATE GPUOpen::VulkanMemoryAllocator)
 

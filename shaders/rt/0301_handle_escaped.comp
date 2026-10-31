@@ -21,6 +21,7 @@
 #include "include/crt_spectrum.glsl"
 #include "include/crt_random.glsl"
 #include "equirect.glsl"
+#include "sky_gradient.glsl"
 #include "include/crt_background.glsl"
 #include "include/crt_light.glsl"
 #include "include/crt_debug.glsl"
@@ -62,7 +63,7 @@ void main()
 	float weight = 1.0;
 	if (path.misPdf >= 0.0 && lightHeader.environment != CRT_NO_LIGHT) {
 		const uint table = path.misPdf > 0.0 ? 1u : 0u;
-		const float lightPdf = lightPmf(lightHeader.environment) * environmentPdf(table, inDir);
+		const float lightPdf = lightPmf(lightHeader.environment) * environmentPdf(table, inDir, environmentRotation());
 		if (lightPdf > 0.0) {
 			weight = misWeight(path.misPdf, lightPdf, path.misExponent);
 		}

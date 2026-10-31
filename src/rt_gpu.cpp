@@ -1833,6 +1833,9 @@ CrtParams GpuRenderer::baseParams(VulkanEngine* engine) const
 	//the map is stored divided by its scale (environmentStorageScale()); the texture reads get
 	//it back here. The light list prices the environment from the file's own values instead
 	params.environmentIntensity = m_snapshot.environmentIntensity * m_snapshot.environmentMapScale;
+	const glm::vec2 rotation = environmentRotation(m_snapshot.environmentRotation);
+	params.environmentCos = rotation.x;
+	params.environmentSin = rotation.y;
 	sampleParams(params);
 	return params;
 }
@@ -1941,4 +1944,26 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 		//the frame that just finished the render still needs its closing timestamp
 		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_queryPool, slot * 2 + 1);
 	}
+}
+
+GpuMemoryUse GpuRenderer::memoryUse(VmaAllocator allocator) const
+{
+	auto sum = [allocator](std::initializer_list<VmaAllocation> allocations) {
+		VkDeviceSize bytes = 0;
+		for (const VmaAllocation allocation : allocations) {
+			bytes += allocationBytes(allocator, allocation);
+		}
+		return bytes;
+	};
+	GpuMemoryUse use;
+	use.film = sum({ m_accumulation.allocation, m_samplesTaken.allocation, m_filmRecords.allocation, m_filmCascade.allocation, m_filterBuffer.allocation, m_noiseBase.allocation });
+	use.outputs = sum({ m_aovImage.allocation, m_channelSums.allocation, m_relit.allocation });
+	for (const AovViewImage& view : m_aovViews) {
+		use.outputs += allocationBytes(allocator, view.image.allocation);
+	}
+	use.wavefront = m_pool.deviceBytes(allocator);
+	use.scene = sum({ m_geometryBuffer.allocation, m_sceneBuffer.allocation, m_opticBuffer.allocation, m_environmentBuffer.allocation });
+	use.other = sum({ m_spectralData.allocation, m_upliftBuffer.allocation, m_samplerTableBuffer.allocation, m_reference.allocation, m_errorPartials.allocation,
+		m_errorReadback.allocation, m_traversalStats.allocation, m_statsReadback.allocation });
+	return use;
 }

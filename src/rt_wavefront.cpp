@@ -79,6 +79,15 @@ bool WavefrontPool::ensure(VulkanEngine* engine, CrtResourceTable& resources, ui
 	return true;
 }
 
+VkDeviceSize WavefrontPool::deviceBytes(VmaAllocator allocator) const
+{
+	VkDeviceSize bytes = 0;
+	for (const AllocatedBuffer* buffer : { &m_pathSpectra, &m_paths, &m_hits, &m_queues, &m_headers, &m_radiance, &m_sampleBudget, &m_shadowRays, &m_raySamples, &m_pixelStates }) {
+		bytes += allocationBytes(allocator, buffer->allocation);
+	}
+	return bytes;
+}
+
 void WavefrontPool::destroy(VulkanEngine* engine, CrtResourceTable& resources)
 {
 	if (!m_allocated) {

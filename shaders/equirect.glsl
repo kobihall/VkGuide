@@ -15,3 +15,16 @@ vec2 equirectUv(vec3 direction)
 	float v = 0.5 - asin(clamp(direction.y, -1.0, 1.0)) / EQUIRECT_PI;
 	return vec2(u, v);
 }
+
+// The map turned about +y by the scene's rotation (VulkanEngine::m_environmentRotation), given as its cosine and sine:
+// a world direction in the map's own frame, which equirectUv() reads, and a direction of the map's frame in the world.
+// A positive angle turns the map counterclockwise seen from above. src/light_sampling.cpp mirrors both
+vec3 environmentToMap(vec3 direction, vec2 rotation)
+{
+	return vec3(rotation.x * direction.x - rotation.y * direction.z, direction.y, rotation.y * direction.x + rotation.x * direction.z);
+}
+
+vec3 environmentFromMap(vec3 direction, vec2 rotation)
+{
+	return vec3(rotation.x * direction.x + rotation.y * direction.z, direction.y, -rotation.y * direction.x + rotation.x * direction.z);
+}

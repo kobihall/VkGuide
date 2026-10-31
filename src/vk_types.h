@@ -51,6 +51,17 @@ struct AllocatedBuffer {
 	VmaAllocationInfo info;
 };
 
+// the device memory an allocation holds, 0 for none: what the Stats window's memory breakdown adds up
+inline VkDeviceSize allocationBytes(VmaAllocator allocator, VmaAllocation allocation)
+{
+	if (allocation == VK_NULL_HANDLE) {
+		return 0;
+	}
+	VmaAllocationInfo info {};
+	vmaGetAllocationInfo(allocator, allocation, &info);
+	return info.size;
+}
+
 struct GPUMeshBuffers {
 	AllocatedBuffer indexBuffer;
 	AllocatedBuffer vertexBuffer;

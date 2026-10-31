@@ -121,7 +121,10 @@ struct CrtParams {
 	float aoDistance;
 	// the spectral images' wavelength buckets, after the light groups in ChannelSums; 0 for none
 	uint32_t spectralBuckets;
-	uint32_t paramsPad[3];
+	// the environment map's rotation about +y, its cosine and sine (environmentRotation(), src/light_sampling.h)
+	float environmentCos;
+	float environmentSin;
+	uint32_t paramsPad;
 };
 static_assert(sizeof(CrtParams) == 240);
 

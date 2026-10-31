@@ -19,6 +19,11 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/fastgltf fastgltf)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../CPPLibraries/ImGuizmo ImGuizmo)
 # ImGuizmo's own CMake only links imgui when it is built standalone
 target_link_libraries(imguizmo PUBLIC imgui)
+# ImPlot (v1.0) ships no CMake of its own: its four sources as one library, its demo included for Windows -> ImPlot Demo
+set(IMPLOT_DIR ${CMAKE_SOURCE_DIR}/../CPPLibraries/implot)
+add_library(implot STATIC ${IMPLOT_DIR}/implot.cpp ${IMPLOT_DIR}/implot_items.cpp ${IMPLOT_DIR}/implot_demo.cpp)
+target_include_directories(implot PUBLIC ${IMPLOT_DIR})
+target_link_libraries(implot PUBLIC imgui)
 add_library(stb_image INTERFACE)
 target_include_directories(stb_image INTERFACE ${CMAKE_SOURCE_DIR}/../CPPLibraries)
 

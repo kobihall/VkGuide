@@ -22,7 +22,8 @@
 // light groups or export settings), 16 (no shape or environment brought by a model) and 17 to 19 (material types and
 // spectral settings that a file without them never uses). Version 20 adds the scene's capabilities and its template, and
 // 21 the optical elements, the optical library's catalogs, glasses and coatings, the optics settings and the length unit,
-// 22 the viewport's camera, and 23 the bench and each optic's mount, which an older file's optics open without.
+// 22 the viewport's camera, 23 the bench and each optic's mount, which an older file's optics open without, and 24 the
+// background mode, which an older file implied.
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -143,8 +144,11 @@ struct SceneDescription {
 	// how to render it, and how bright the environment lights it
 	RenderSettings render;
 	float environmentIntensity { 1.f };
-	// a solid colour replacing the environment map and the sky for missed rays; none by default
-	std::optional<glm::vec3> backgroundColor;
+	// version 24: the map's rotation about the up axis, in degrees
+	float environmentRotation { 0.f };
+	// what a missed ray sees and the raster preview shows (version 24), and the color BackgroundMode::Solid shows
+	BackgroundMode backgroundMode { BackgroundMode::Gradient };
+	glm::vec3 backgroundColor { 0.f };
 	// version 8: which kernel variant runs in each stage of the wavefront, and how the BVH those
 	// kernels read is built; version 11: the integrator and the traversal. Saved by ID, never by index, so a build that registers its variants
 	// in another order still opens the file, and one that has dropped a variant falls back to the

@@ -555,7 +555,7 @@ vec3 equirectDirectionOf(vec2 uv)
 	return vec3(cosLatitude * sin(phi), sin(latitude), -cosLatitude * cos(phi));
 }
 
-bool sampleEnvironment(uint table, vec2 u, out vec3 direction, out float pdf)
+bool sampleEnvironment(uint table, vec2 u, vec2 rotation, out vec3 direction, out float pdf)
 {
 	direction = vec3(0.0, 1.0, 0.0);
 	pdf = 0.0;
@@ -576,20 +576,20 @@ bool sampleEnvironment(uint table, vec2 u, out vec3 direction, out float pdf)
 	if (!(uvPdf > 0.0) || !(cosLatitude > 1e-6)) {
 		return false;
 	}
-	direction = equirectDirectionOf(vec2(uu, v));
+	direction = environmentFromMap(equirectDirectionOf(vec2(uu, v)), rotation);
 	// du dv covers 2 pi^2 cos(latitude) of solid angle
 	pdf = uvPdf / (2.0 * CRT_PI * CRT_PI * cosLatitude);
 	return true;
 }
 
-float environmentPdf(uint table, vec3 direction)
+float environmentPdf(uint table, vec3 direction, vec2 rotation)
 {
 	const float integral = envTableIntegral(table);
 	const float cosLatitude = lightSafeSqrt(1.0 - direction.y * direction.y);
 	if (envWidth == 0u || envHeight == 0u || !(integral > 0.0) || !(cosLatitude > 1e-6)) {
 		return 0.0;
 	}
-	const vec2 uv = equirectUv(direction);
+	const vec2 uv = equirectUv(environmentToMap(direction, rotation));
 	const uint column = uint(clamp(int(uv.x * float(envWidth)), 0, int(envWidth) - 1));
 	const uint row = uint(clamp(int(uv.y * float(envHeight)), 0, int(envHeight) - 1));
 	const uint funcBase = envTableBase(table) + envHeight + 1u + envHeight * (envWidth + 1u);
@@ -782,12 +782,12 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 		}
 		scale *= falloff;
 	} else if (light.kind == CRT_LIGHT_ENVIRONMENT) {
-		if (!sampleEnvironment(environmentTable, u, direction, pdf)) {
+		if (!sampleEnvironment(environmentTable, u, environmentRotation(), direction, pdf)) {
 			return false;
 		}
 		distance = CRT_INFINITY;
 		emission = CRT_SPECTRAL_NONE;
-		tint = srgbToWorking(textureLod(environmentMap, equirectUv(direction), 0.0).rgb);
+		tint = srgbToWorking(textureLod(environmentMap, equirectUv(environmentToMap(direction, environmentRotation())), 0.0).rgb);
 		scale = pc.environmentIntensity;
 	} else {
 		LightSample s;
@@ -861,11 +861,11 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 		}
 		break;
 	case CRT_LIGHT_ENVIRONMENT:
-		if (!sampleEnvironment(environmentTable, u, direction, pdf)) {
+		if (!sampleEnvironment(environmentTable, u, environmentRotation(), direction, pdf)) {
 			return false;
 		}
 		distance = CRT_INFINITY;
-		radiance = textureLod(environmentMap, equirectUv(direction), 0.0).rgb * pc.environmentIntensity;
+		radiance = textureLod(environmentMap, equirectUv(environmentToMap(direction, environmentRotation())), 0.0).rgb * pc.environmentIntensity;
 		return true;
 	}
 	if (!ok) {

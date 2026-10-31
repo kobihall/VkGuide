@@ -1092,15 +1092,9 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 		}
 	}
 
-	//what a ray that leaves the scene sees in a render. The environment map itself is set from the
-	//File menu and shown by the viewport's "environment" background effect
+	//what a ray that leaves the scene sees in a render and the viewport shows behind the models
 	if (ImGui::CollapsingHeader("Background")) {
-		ImGui::Checkbox("solid colour", &engine->m_solidBackground);
-		if (engine->m_solidBackground) {
-			ImGui::ColorEdit3("colour", &engine->m_backgroundColor.x);
-		} else {
-			ImGui::TextDisabled(engine->m_environmentMap.image != VK_NULL_HANDLE ? "environment map" : "sky gradient");
-		}
+		drawBackground(engine);
 	}
 
 	ImGui::Spacing();
@@ -1120,6 +1114,66 @@ void RaytraceSceneEditor::drawPanel(VulkanEngine* engine)
 	});
 
 	ImGui::End();
+}
+
+void RaytraceSceneEditor::drawBackground(VulkanEngine* engine)
+{
+	BackgroundMode& mode = engine->m_backgroundMode;
+	const bool hasMap = engine->m_environmentMap.image != VK_NULL_HANDLE;
+
+	if (ImGui::RadioButton(backgroundModeLabel(BackgroundMode::Gradient), mode == BackgroundMode::Gradient)) {
+		mode = BackgroundMode::Gradient;
+	}
+	ImGui::SetItemTooltip("The viewport's backdrop. A render sees black: the scene is lit only by its own lights");
+
+	if (ImGui::RadioButton(backgroundModeLabel(BackgroundMode::Solid), mode == BackgroundMode::Solid)) {
+		mode = BackgroundMode::Solid;
+	}
+	//the color is kept while another mode is chosen, and editing it chooses this one
+	ImGui::SameLine();
+	if (ImGui::ColorEdit3("##solidColor", &engine->m_backgroundColor.x, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_Float)) {
+		engine->m_backgroundColor = glm::max(engine->m_backgroundColor, glm::vec3(0.f));
+		mode = BackgroundMode::Solid;
+	}
+
+	if (ImGui::RadioButton(backgroundModeLabel(BackgroundMode::Sky), mode == BackgroundMode::Sky)) {
+		mode = BackgroundMode::Sky;
+	}
+	ImGui::SetItemTooltip("Ray Tracing in One Weekend's sky: white at the horizon, light blue overhead. It lights the scene");
+
+	//with no map loaded, choosing the environment asks for one, and loading it chooses the environment
+	if (ImGui::RadioButton(backgroundModeLabel(BackgroundMode::Environment), mode == BackgroundMode::Environment)) {
+		if (hasMap) {
+			mode = BackgroundMode::Environment;
+		} else {
+			engine->m_pendingFileAction = VulkanEngine::FileAction::SetEnvironmentMap;
+		}
+	}
+	if (hasMap) {
+		ImGui::SetItemTooltip("%s", engine->m_environmentMapPath.empty() ? "From a pbrt scene's infinite light" : engine->m_environmentMapPath.string().c_str());
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Preview")) {
+			engine->showEnvironmentPreview();
+		}
+		ImGui::SetItemTooltip("Shows the map as an image, values above 1 clipped");
+	} else {
+		ImGui::SetItemTooltip("Choose an .hdr or .exr map. File -> Set Environment Map replaces it");
+		if (mode == BackgroundMode::Environment) {
+			ImGui::SameLine();
+			ImGui::TextDisabled("(no map loaded)");
+		}
+	}
+	if (mode == BackgroundMode::Environment && hasMap) {
+		//a scene property shared by the viewport and the render's miss lighting. The viewport shows the map unmapped,
+		//so values above 1 clip there
+		ImGui::Indent();
+		ImGui::SliderFloat("Intensity", &engine->m_environmentIntensity, 0.f, 4.f);
+		//about the up axis, counterclockwise seen from above for a positive angle
+		ImGui::SliderFloat("Rotation", &engine->m_environmentRotation, -180.f, 180.f, "%.1f deg");
+		engine->m_environmentRotation = std::clamp(engine->m_environmentRotation, -180.f, 180.f);
+		ImGui::SetItemTooltip("Turns the map about the up axis, counterclockwise seen from above for a positive angle. Ctrl+click to type a value");
+		ImGui::Unindent();
+	}
 }
 
 void RaytraceSceneEditor::drawToolbar(VulkanEngine* engine)

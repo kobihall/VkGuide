@@ -119,19 +119,19 @@ void opticalBenchRasterGeometry(VulkanEngine* engine)
 // The Beam and Detectors windows dock below the viewport when their plans add them
 void buildOpticsLayout(uint32_t dockspace, std::vector<std::string>& open)
 {
-	const DockColumns columns = splitDockColumns(dockspace, 0.26f, 0.22f, 0.62f, 0.3f);
+	const DockColumns columns = splitDockColumns(dockspace, 0.26f, 0.22f, 0.62f, 0.45f);
 	dockWindow("Scene", columns.leftTop);
 	dockWindow("Materials", columns.leftBottom);
 	dockWindow("Scene Capabilities", columns.leftBottom);
 	dockWindow("Bench Settings", columns.leftBottom);
 	dockWindow("Raytraced Output", columns.center);
 	dockWindow("Viewport", columns.center);
-	dockWindow("Raytrace Render", columns.rightTop);
+	dockWindow("Stats", columns.rightTop);
 	dockWindow("Render Settings", columns.rightBottom);
-	for (const char* name : { "Raytracer Shaders", "Import Report", "Stats", "background", "GPU self-tests" }) {
+	for (const char* name : { "Raytracer Shaders", "Import Report", "GPU self-tests" }) {
 		dockWindow(name, columns.rightBottom);
 	}
-	open = { "Scene", "Materials", "Viewport", "Raytrace Render", "Render Settings" };
+	open = { "Scene", "Materials", "Viewport", "Stats", "Render Settings" };
 }
 
 const WorkspaceInfo OPTICS_WORKSPACE { "optics", "Optics", buildOpticsLayout };
@@ -162,8 +162,9 @@ void populateOpticalBench(VulkanEngine* engine)
 	//against it. The raster pass's reverse-Z keeps its depth precision at any near plane
 	engine->m_viewportNav.settings.speed = 0.5f;
 	engine->m_viewportNav.settings.nearClip = BENCH_NEAR_CLIP;
-	//an empty environment: a bench is lit by its lasers, and stray light is what it is there to show
-	engine->m_solidBackground = true;
+	//an empty environment, which the gradient renders: a bench is lit by its lasers, and stray light is what it is there
+	//to show
+	engine->m_backgroundMode = BackgroundMode::Gradient;
 	engine->m_backgroundColor = glm::vec3(0.f);
 }
 

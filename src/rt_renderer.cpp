@@ -6,6 +6,7 @@
 #include <random>
 
 #include <imgui.h>
+#include <implot.h>
 
 #include <file_dialog.h>
 #include <render_export.h>
@@ -54,7 +55,8 @@ RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, c
 	key.accelRevision = m_accelRevision;
 	key.environmentMapPath = engine->m_environmentMapPath;
 	key.environmentIntensity = engine->m_environmentIntensity;
-	key.solidBackground = engine->m_solidBackground;
+	key.environmentRotation = engine->m_environmentRotation;
+	key.background = engine->m_backgroundMode;
 	key.backgroundColor = engine->m_backgroundColor;
 	key.width = m_settings.matchViewport ? engine->m_drawExtent.width : (uint32_t)m_settings.width;
 	key.height = m_settings.matchViewport ? engine->m_drawExtent.height : (uint32_t)m_settings.height;
@@ -85,6 +87,9 @@ void RaytraceRenderer::update(VulkanEngine* engine, const RaytraceSceneEditor& e
 		startRender(engine, editor);
 	}
 	m_wasRunning = m_gpu.isRunning();
+	if (m_gpu.isRunning()) {
+		recordThroughput();
+	}
 
 	//restart on change: while a render is running and the camera moves, the scene or the
 	//environment is edited, a setting changes or the viewport is resized under "Match viewport",
@@ -154,21 +159,130 @@ void RaytraceRenderer::setSettings(const RenderSettings& settings)
 	}
 }
 
-void RaytraceRenderer::drawPanel(VulkanEngine* engine, RaytraceSceneEditor& editor)
+RaytraceRenderer::RenderEstimate RaytraceRenderer::estimate(VulkanEngine* engine, const RaytraceSceneEditor& editor)
 {
-	if (!m_showPanel) {
-		return;
+	//what the next render would cost, from the scene as it stands
+	ensureSceneAccel(engine, editor);
+	RenderSettings prospective = m_settings;
+	if (prospective.matchViewport) {
+		prospective.width = (int)engine->m_drawExtent.width;
+		prospective.height = (int)engine->m_drawExtent.height;
 	}
-
-	if (!ImGui::Begin("Raytrace Render", &m_showPanel)) {
-		ImGui::End();
-		return;
+	RenderEstimate result;
+	result.costPerRay = sceneCostPerRay();
+	result.work = estimatedWorkPerFrame(prospective);
+	result.overBudget = result.work > WORK_PER_FRAME_BUDGET;
+	if (!result.overBudget) {
+		//the acknowledgement is for one cost only; a scene back under the budget withdraws it
+		m_acceptedHeavyRender = false;
 	}
+	result.blocked = result.overBudget && !(m_acceptedHeavyRender && result.work <= m_acceptedWork);
+	return result;
+}
 
+void RaytraceRenderer::drawMenuBarControls(VulkanEngine* engine, RaytraceSceneEditor& editor)
+{
 	const bool running = m_gpu.isRunning();
 	const SceneCamera* camera = resolveCamera(editor);
+	const RenderEstimate cost = estimate(engine, editor);
+	const ImVec4 warning(1.f, 0.5f, 0.3f, 1.f);
 
+	//Render and Stop are one button of one width at the middle of the bar, so it stays put as the progress bar after it
+	//comes and goes; the menus before it push it right only when the window is too narrow for both
+	const ImGuiStyle& style = ImGui::GetStyle();
+	const float buttonWidth = std::max(ImGui::CalcTextSize("Render").x, ImGui::CalcTextSize("Stop").x) + style.FramePadding.x * 2.f;
+	ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), (ImGui::GetWindowWidth() - buttonWidth) * 0.5f));
+
+	if (running) {
+		if (ImGui::Button("Stop", ImVec2(buttonWidth, 0.f))) {
+			cancelRender();
+		}
+	} else {
+		ImGui::BeginDisabled(camera == nullptr);
+		//over the budget the button warns, and asks before it starts: a frame that long does not fail as a slow render,
+		//it trips the GPU watchdog and takes the display driver down with it
+		if (cost.blocked) {
+			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.3f, 0.12f, 1.f));
+			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.38f, 0.15f, 1.f));
+		}
+		if (ImGui::Button("Render", ImVec2(buttonWidth, 0.f))) {
+			if (cost.blocked) {
+				ImGui::OpenPopup("##renderGuard");
+			} else {
+				m_startRequested = true;
+			}
+		}
+		if (cost.blocked) {
+			ImGui::PopStyleColor(2);
+			ImGui::SetItemTooltip("Over the GPU watchdog budget: %.1e steps/frame against %.0e. Click to decide", cost.work, WORK_PER_FRAME_BUDGET);
+		}
+		ImGui::EndDisabled();
+		if (camera == nullptr) {
+			ImGui::SetItemTooltip("Add a camera in the Scene panel to render");
+		}
+	}
+
+	if (ImGui::BeginPopup("##renderGuard")) {
+		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26.f);
+		ImGui::PushStyleColor(ImGuiCol_Text, warning);
+		ImGui::TextWrapped("Too heavy to render safely: ~%.0f steps per ray is %.1e steps per frame, over the %.0e budget.", cost.costPerRay, cost.work, WORK_PER_FRAME_BUDGET);
+		ImGui::PopStyleColor();
+		ImGui::TextWrapped("A frame this long can trip the GPU watchdog and freeze or crash the display. Lower the resolution or the samples per frame, or hide some objects.");
+		ImGui::PopTextWrapPos();
+		if (ImGui::Button("Render anyway")) {
+			//the acknowledgement is for this cost only; making the scene heavier withdraws it
+			m_acceptedHeavyRender = true;
+			m_acceptedWork = cost.work;
+			m_startRequested = true;
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel")) {
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
+	}
+
+	if (running) {
+		ImGui::SameLine();
+		const ImVec2 size(ImGui::GetFontSize() * 14.f, 0.f);
+		if (m_gpu.maxSamples() > 0) {
+			const float fraction = (float)m_gpu.samplesAccumulated() / (float)m_gpu.maxSamples();
+			const std::string overlay = fmt::format("{} / {} samples", m_gpu.samplesAccumulated(), m_gpu.maxSamples());
+			ImGui::ProgressBar(fraction, size, overlay.c_str());
+		} else {
+			//no end to reach: an indeterminate bar with the count
+			const std::string overlay = fmt::format("{} samples", m_gpu.samplesAccumulated());
+			ImGui::ProgressBar(-1.f * (float)ImGui::GetTime(), size, overlay.c_str());
+		}
+		if (ImGui::BeginItemTooltip()) {
+			if (m_gpu.hasTimestamps()) {
+				ImGui::Text("GPU %.2f ms/frame, %u sample(s)/frame", m_gpu.lastFrameGpuMs(), m_gpu.samplesPerFrame());
+			} else {
+				ImGui::Text("%u sample(s)/frame", m_gpu.samplesPerFrame());
+			}
+			ImGui::TextDisabled(m_settings.restartOnChange ? "Restarts when the camera, scene or settings change" : "Rendering a snapshot: changes apply to the next Render");
+			ImGui::EndTooltip();
+		}
+	} else if (!m_blockedReason.empty()) {
+		ImGui::SameLine();
+		ImGui::TextColored(warning, "Refused");
+		ImGui::SetItemTooltip("%s", m_blockedReason.c_str());
+	}
+
+	//kernel 09 leaves a NaN or infinite sample out of the mean rather than poison the pixel, which hides the bug that
+	//made it: a mark here, running or finished, and the count in Stats
+	if (m_gpu.hasImage() && m_gpu.droppedSamples() > 0) {
+		ImGui::SameLine();
+		ImGui::TextColored(warning, "(!)");
+		ImGui::SetItemTooltip("%llu samples dropped as non-finite. Something produced a NaN or an infinity, and the image is biased by the samples it lost. Stats -> Render has the share", (unsigned long long)m_gpu.droppedSamples());
+	}
+}
+
+void RaytraceRenderer::drawCameraCombo(const RaytraceSceneEditor& editor)
+{
 	//which scene camera to render from; a change restarts under restart-on-change like any other
+	const SceneCamera* camera = resolveCamera(editor);
 	if (ImGui::BeginCombo("Camera", camera != nullptr ? camera->name.c_str() : "(no camera in scene)")) {
 		for (const SceneCamera& candidate : editor.cameras()) {
 			ImGui::PushID((int)candidate.id);
@@ -179,147 +293,7 @@ void RaytraceRenderer::drawPanel(VulkanEngine* engine, RaytraceSceneEditor& edit
 		}
 		ImGui::EndCombo();
 	}
-	if (camera == nullptr) {
-		ImGui::TextDisabled("Add a camera in the Scene panel to render");
-	}
-
-	if (m_hasLastRender) {
-		ImGui::Text("Last render: %.0f ms, %d sample(s)/pixel", m_lastRenderMs, m_lastRenderSamples);
-		if (m_gpu.hasTimestamps()) {
-			ImGui::SameLine();
-			ImGui::Text("(GPU %.1f ms)", m_gpu.totalGpuMs());
-		}
-	} else {
-		ImGui::TextDisabled("No render yet");
-	}
-
-	//what the next render would cost, from the scene as it stands. Shown before the button rather
-	//than after the refusal, so the number that decides the outcome is visible first
-	ensureSceneAccel(engine, editor);
-	RenderSettings prospective = m_settings;
-	if (prospective.matchViewport) {
-		prospective.width = (int)engine->m_drawExtent.width;
-		prospective.height = (int)engine->m_drawExtent.height;
-	}
-	const double costPerRay = sceneCostPerRay();
-	const double work = estimatedWorkPerFrame(prospective);
-	const bool overBudget = work > WORK_PER_FRAME_BUDGET;
-
-	if (m_sceneAccel != nullptr && m_sceneAccel->meshInstanceCount > 0) {
-		ImGui::Text("%zu triangle(s) placed, ~%.0f steps/ray, %.1e steps/frame", m_sceneAccel->placedTriangles, costPerRay, work);
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("The BVH's expected cost of one ray (SAH: node visits + primitive tests),\ntimes pixels x samples/frame x the rays the integrator traces per sample.\nWhat the render guard below is judged on.");
-		}
-	}
-
-	if (overBudget) {
-		//a frame this long does not fail as a slow render - it trips the GPU watchdog and takes
-		//the display driver down with it, so the button is closed until it is accepted explicitly
-		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
-		ImGui::TextWrapped("Too heavy to render safely: over the %.0e steps/frame budget. A frame this long can hang the GPU driver. Lower the resolution or samples per frame, or hide some objects.", WORK_PER_FRAME_BUDGET);
-		ImGui::PopStyleColor();
-		if (ImGui::Checkbox("Render anyway (may freeze or crash the display)", &m_acceptedHeavyRender)) {
-			//the acknowledgement is for this cost only; making the scene heavier withdraws it
-			m_acceptedWork = work;
-		}
-	} else {
-		m_acceptedHeavyRender = false;
-	}
-
-	const bool blocked = overBudget && !(m_acceptedHeavyRender && work <= m_acceptedWork);
-
-	ImGui::BeginDisabled(running || camera == nullptr || blocked);
-	if (ImGui::Button("Render")) {
-		m_startRequested = true;
-	}
-	ImGui::EndDisabled();
-
-	if (!m_blockedReason.empty() && !running) {
-		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
-		ImGui::TextWrapped("%s", m_blockedReason.c_str());
-		ImGui::PopStyleColor();
-	}
-
-	if (running) {
-		ImGui::SameLine();
-		if (ImGui::Button("Stop")) {
-			cancelRender();
-		}
-
-		if (m_gpu.maxSamples() > 0) {
-			const float fraction = (float)m_gpu.samplesAccumulated() / (float)m_gpu.maxSamples();
-			const std::string overlay = fmt::format("{} / {} samples", m_gpu.samplesAccumulated(), m_gpu.maxSamples());
-			ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 0), overlay.c_str());
-		} else {
-			//no end to reach: an indeterminate bar with the count
-			const std::string overlay = fmt::format("{} samples", m_gpu.samplesAccumulated());
-			ImGui::ProgressBar(-1.f * (float)ImGui::GetTime(), ImVec2(-FLT_MIN, 0), overlay.c_str());
-		}
-		if (m_gpu.hasTimestamps()) {
-			ImGui::Text("GPU: %.2f ms/frame, %u sample(s)/frame", m_gpu.lastFrameGpuMs(), m_gpu.samplesPerFrame());
-		} else {
-			ImGui::Text("%u sample(s)/frame (no GPU timestamps on this device)", m_gpu.samplesPerFrame());
-		}
-	}
-
-	//kernel 09 leaves a NaN or infinite sample out of the mean rather than poison the pixel, which
-	//hides the bug that made it: say so, running or finished
-	if (m_gpu.hasImage() && m_gpu.droppedSamples() > 0) {
-		const double taken = (double)m_gpu.samplesAccumulated() * (double)m_gpu.width() * (double)m_gpu.height();
-		const double percent = taken > 0.0 ? 100.0 * (double)m_gpu.droppedSamples() / taken : 0.0;
-		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
-		ImGui::TextWrapped("%llu samples dropped as non-finite (%.3g%% of those taken)", (unsigned long long)m_gpu.droppedSamples(), percent);
-		ImGui::PopStyleColor();
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Kernel 09 leaves a sample out of the mean when any channel is NaN or infinite.\nSomething produced such a value, and the image is biased by the samples it lost.");
-		}
-	}
-
-	if (running) {
-		if (m_settings.restartOnChange) {
-			ImGui::TextDisabled("Restarts when the camera, scene or settings change");
-		} else {
-			ImGui::TextDisabled("Rendering a snapshot - changes apply to the next Render");
-		}
-	}
-
-	//what the traversal did for the last frame traced, running or finished
-	const TraversalWork& traversal = m_gpu.traversalWork();
-	if (traversal.rays > 0) {
-		ImGui::Text("BVH work per ray: %.1f nodes + %.1f primitives (camera rays %.1f + %.1f)", traversal.nodesPerRay(), traversal.primitivesPerRay(), traversal.primaryNodesPerRay(), traversal.primaryPrimitivesPerRay());
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Counted by the extend stage over every bounce of the last frame. Unlike a\ntiming it does not move with the GPU's clocks, so it compares builders fairly\neven on a thermally throttling laptop. A wide node tests 8 boxes and a binary\nnode 2, so compare node counts within a layout, and time across layouts.");
-		}
-	}
-	if (traversal.shadowRays > 0) {
-		ImGui::Text("Shadow ray work: %.1f nodes + %.1f primitives each", traversal.shadowNodesPerRay(), traversal.shadowPrimitivesPerRay());
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Kernel 08's any-hit walks, which stop at the first thing in the way:\nusually cheaper than the closest-hit rays above.");
-		}
-	}
-
-	//the schedule's queue readouts, such as the path tracer's compaction: its paths alive per
-	//bounce must fall monotonically
-	for (const ScheduleCounter& counter : m_gpu.counters()) {
-		if (counter.values.empty()) {
-			continue;
-		}
-		std::string line = fmt::format("{}:", counter.label);
-		for (uint32_t count : counter.values) {
-			line += fmt::format(" {}", count);
-		}
-		ImGui::TextWrapped("%s", line.c_str());
-	}
-
-	drawReference(engine);
-
-	if (m_hasDisplayImage) {
-		ImGui::SeparatorText("Output");
-		ImGui::Text("%ux%u, shown in the \"%s\" window", m_displayImage.imageExtent.width, m_displayImage.imageExtent.height, OUTPUT_IMAGE_NAME);
-		ImGui::TextDisabled("Lens and exposure are the camera's, in the Scene panel. The settings are in Render Settings");
-	}
-
-	ImGui::End();
+	ImGui::SetItemTooltip("The scene camera the render looks through. Its lens and exposure are in the Scene panel");
 }
 
 void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEditor& editor)
@@ -333,7 +307,10 @@ void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEdit
 	}
 
 	drawIntegratorCombo();
+	drawCameraCombo(editor);
 	drawSettings(engine);
+	//under the Analysis view, whose error and difference views compare with the same reference
+	drawReference(engine);
 
 	//a section for kernel 06's strategies only while the integrator runs kernel 06
 	if (integratorRunsStage(m_kernels.integrator, KernelSlot::SurfaceScattering)) {
@@ -559,7 +536,7 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	//reach it another way, and acknowledged only for the exact cost that was shown
 	const double work = estimatedWorkPerFrame(settings);
 	if (work > WORK_PER_FRAME_BUDGET && !(m_acceptedHeavyRender && work <= m_acceptedWork)) {
-		m_blockedReason = fmt::format("~{:.0f} steps per ray at {}x{}x{} is {:.1e} per frame, over the {:.0e} budget. Lower the resolution or samples per frame, hide some objects, switch the traversal back to a BVH, or accept it below",
+		m_blockedReason = fmt::format("~{:.0f} steps per ray at {}x{}x{} is {:.1e} per frame, over the {:.0e} budget. Lower the resolution or samples per frame, hide some objects, switch the traversal back to a BVH, or choose Render anyway",
 			costPerRay, settings.width, settings.height, settings.samplesPerFrame, work, WORK_PER_FRAME_BUDGET);
 		fmt::println("RaytraceRenderer: render refused - {}", m_blockedReason);
 		m_gpu.stop();
@@ -594,11 +571,13 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	//the tables go with the light list that names the environment: both only when the map is the
 	//background, which is what environmentLight() decides for both
 	snapshot.environment = m_sceneAccelEnvironment.distribution;
-	snapshot.useEnvironmentMap = engine->m_environmentMap.image != VK_NULL_HANDLE;
+	//what a missed ray sees, as the tracer's three sources: a solid color (the gradient's black too), the map or the sky
+	snapshot.useEnvironmentMap = engine->environmentShown();
 	snapshot.environmentIntensity = engine->m_environmentIntensity;
 	snapshot.environmentMapScale = engine->m_environmentMapScale;
-	snapshot.solidBackground = engine->m_solidBackground;
-	snapshot.backgroundColor = engine->m_backgroundColor;
+	snapshot.environmentRotation = engine->m_environmentRotation;
+	snapshot.solidBackground = engine->m_backgroundMode != BackgroundMode::Sky && !engine->environmentShown();
+	snapshot.backgroundColor = engine->m_backgroundMode == BackgroundMode::Solid ? engine->m_backgroundColor : glm::vec3(0.f);
 	//the light groups the render keeps sums for: every group the scene names, while the setting is on
 	snapshot.lightGroupCount = settings.lightGroups ? (uint32_t)editor.lightGroupNames().size() : 0u;
 	snapshot.environmentGroup = editor.environmentGroup();
@@ -609,6 +588,7 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	m_renderKey = currentKey(engine, editor, *camera);
 	m_hasRender = true;
 	m_renderStart = std::chrono::steady_clock::now();
+	m_throughput.clear();
 	m_gpu.start(engine, std::move(snapshot));
 	m_wasRunning = true;
 }
@@ -726,10 +706,10 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 
 EnvironmentLight RaytraceRenderer::environmentLight(VulkanEngine* engine) const
 {
-	//a missed ray sees the map only when one is loaded and no solid colour replaces it; the sky
-	//gradient is not a light the list can sample, and is left to BSDF samples at full weight
+	//a missed ray sees the map only when it is the background; the sky is not a light the list can sample, and is left
+	//to BSDF samples at full weight
 	EnvironmentLight light;
-	if (engine->m_environmentMap.image != VK_NULL_HANDLE && !engine->m_solidBackground) {
+	if (engine->environmentShown()) {
 		light.distribution = engine->m_environmentDistribution;
 		light.intensity = engine->m_environmentIntensity;
 	}
@@ -1020,70 +1000,47 @@ void RaytraceRenderer::drawReference(VulkanEngine* engine)
 	if (drawn.empty()) {
 		return;
 	}
-	double minSamples = 1e30, maxSamples = 0.0, minError = 1e30, maxError = 0.0;
-	for (const Drawn& d : drawn) {
-		for (const ReferenceError& point : *d.points) {
-			if (point.relativeMse > 0.0) {
+	//the points a log axis can show, as the plot reads them
+	struct Series {
+		std::vector<double> samples;
+		std::vector<double> error;
+	};
+	std::vector<Series> series(drawn.size());
+	double minSamples = 1e30, maxSamples = 0.0;
+	for (size_t k = 0; k < drawn.size(); k++) {
+		for (const ReferenceError& point : *drawn[k].points) {
+			if (point.relativeMse > 0.0 && point.samples > 0) {
+				series[k].samples.push_back((double)point.samples);
+				series[k].error.push_back(point.relativeMse);
 				minSamples = std::min(minSamples, (double)point.samples);
 				maxSamples = std::max(maxSamples, (double)point.samples);
-				minError = std::min(minError, point.relativeMse);
-				maxError = std::max(maxError, point.relativeMse);
 			}
 		}
 	}
-	if (maxSamples <= minSamples || maxError <= 0.0) {
+	if (maxSamples <= minSamples) {
 		return;
 	}
-	const double x0 = std::floor(std::log10(minSamples));
-	const double x1 = std::max(std::ceil(std::log10(maxSamples)), x0 + 1.0);
-	const double y0 = std::floor(std::log10(minError));
-	const double y1 = std::max(std::ceil(std::log10(maxError)), y0 + 1.0);
-	const ImVec2 size(ImGui::GetContentRegionAvail().x, 160.f);
-	const ImVec2 origin = ImGui::GetCursorScreenPos();
-	ImGui::Dummy(size);
-	ImDrawList* list = ImGui::GetWindowDrawList();
-	list->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(20, 20, 24, 255));
-	auto toScreen = [&](double samples, double err) {
-		const double fx = (std::log10(samples) - x0) / (x1 - x0);
-		const double fy = (std::log10(err) - y0) / (y1 - y0);
-		return ImVec2(origin.x + (float)fx * size.x, origin.y + size.y - (float)fy * size.y);
-	};
-	for (double decade = x0; decade <= x1; decade += 1.0) {
-		const ImVec2 p = toScreen(std::pow(10.0, decade), std::pow(10.0, y0));
-		list->AddLine(ImVec2(p.x, origin.y), ImVec2(p.x, origin.y + size.y), IM_COL32(70, 70, 80, 255));
-		const std::string text = fmt::format("{:g}", std::pow(10.0, decade));
-		list->AddText(ImVec2(p.x + 2.f, origin.y + size.y - 14.f), IM_COL32(150, 150, 160, 255), text.c_str());
-	}
-	for (double decade = y0; decade <= y1; decade += 1.0) {
-		const ImVec2 p = toScreen(std::pow(10.0, x0), std::pow(10.0, decade));
-		list->AddLine(ImVec2(origin.x, p.y), ImVec2(origin.x + size.x, p.y), IM_COL32(70, 70, 80, 255));
-		const std::string text = fmt::format("1e{:.0f}", decade);
-		list->AddText(ImVec2(origin.x + 2.f, p.y - 14.f), IM_COL32(150, 150, 160, 255), text.c_str());
-	}
-	//the line of slope -1 an unbiased estimator draws, through the first curve's first point
-	{
-		const ReferenceError& first = drawn.front().points->front();
-		if (first.relativeMse > 0.0) {
-			const ImVec2 a = toScreen(std::pow(10.0, x0), first.relativeMse * (double)first.samples / std::pow(10.0, x0));
-			const ImVec2 b = toScreen(std::pow(10.0, x1), first.relativeMse * (double)first.samples / std::pow(10.0, x1));
-			list->AddLine(a, b, IM_COL32(120, 120, 120, 160), 1.f);
+	if (ImPlot::BeginPlot("##convergence", ImVec2(-1.f, ImGui::GetFontSize() * 13.f))) {
+		ImPlot::SetupAxes("samples per pixel", "relative MSE", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+		ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
+		ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+		ImPlot::SetupLegend(ImPlotLocation_NorthEast);
+		//the line of slope -1 an unbiased estimator draws, through the first curve's first point
+		if (!series.front().samples.empty()) {
+			const double scale = series.front().error.front() * series.front().samples.front();
+			const double xs[2] = { minSamples, maxSamples };
+			const double ys[2] = { scale / minSamples, scale / maxSamples };
+			ImPlotSpec spec;
+			spec.LineColor = ImVec4(0.6f, 0.6f, 0.6f, 0.6f);
+			ImPlot::PlotLine("slope -1", xs, ys, 2, spec);
 		}
-	}
-	for (size_t k = 0; k < drawn.size(); k++) {
-		const ImU32 color = CURVE_COLORS[k % (sizeof(CURVE_COLORS) / sizeof(CURVE_COLORS[0]))];
-		ImVec2 previous;
-		bool havePrevious = false;
-		for (const ReferenceError& point : *drawn[k].points) {
-			if (point.relativeMse <= 0.0) {
-				continue;
-			}
-			const ImVec2 p = toScreen((double)point.samples, point.relativeMse);
-			if (havePrevious) {
-				list->AddLine(previous, p, color, 1.5f);
-			}
-			previous = p;
-			havePrevious = true;
+		for (size_t k = 0; k < drawn.size(); k++) {
+			ImPlotSpec spec;
+			spec.LineColor = ImGui::ColorConvertU32ToFloat4(CURVE_COLORS[k % (sizeof(CURVE_COLORS) / sizeof(CURVE_COLORS[0]))]);
+			spec.LineWeight = 1.5f;
+			ImPlot::PlotLine(drawn[k].label->c_str(), series[k].samples.data(), series[k].error.data(), (int)series[k].samples.size(), spec);
 		}
+		ImPlot::EndPlot();
 	}
 	for (size_t k = 0; k < drawn.size(); k++) {
 		const ImU32 color = CURVE_COLORS[k % (sizeof(CURVE_COLORS) / sizeof(CURVE_COLORS[0]))];
@@ -1310,26 +1267,12 @@ void RaytraceRenderer::drawAccelSettings(VulkanEngine* engine)
 		ImGui::TextDisabled("(not applied)");
 	}
 
-	if (m_blasSet != nullptr && !m_blasSet->blases.empty()) {
-		const RaytraceBlasSet& set = *m_blasSet;
-		ImGui::Text("BLAS: %zu mesh(es), %zu triangles, built in %.0f ms", set.blases.size(), set.triangles, set.buildMs);
-		ImGui::Text("  %zu nodes, depth %u, %.1f MB", set.nodes, set.maxDepth, (double)set.bytes / (1024.0 * 1024.0));
-		ImGui::Text("  %.1f%% spatial-split duplicates, mean SAH cost %.1f", set.triangles > 0 ? 100.0 * ((double)set.triangleRefs / (double)set.triangles - 1.0) : 0.0, set.meanSahCost);
-		for (const std::string& error : set.errors) {
+	//what the build produced is in Stats; a mesh the build could not trace is said here, beside the settings
+	if (m_blasSet != nullptr) {
+		for (const std::string& error : m_blasSet->errors) {
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.5f, 0.3f, 1.f));
 			ImGui::TextWrapped("Not traced: %s", error.c_str());
 			ImGui::PopStyleColor();
-		}
-	}
-	if (m_sceneAccel != nullptr) {
-		const Tlas& tlas = m_sceneAccel->tlas;
-		ImGui::Text("TLAS: %u mesh instance(s) + %u shape(s), %u nodes, %.2f ms", m_sceneAccel->meshInstanceCount, m_sceneAccel->shapeCount - m_sceneAccel->unboundedCount, tlas.bvh.nodeCount, tlas.buildMs);
-		if (m_sceneAccel->unboundedCount > 0) {
-			ImGui::Text("+ %u infinite plane(s), tested by every ray", m_sceneAccel->unboundedCount);
-		}
-		ImGui::Text("  scene SAH cost %.1f per ray", tlas.sceneSahCost);
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Expected node visits + primitive tests for a random ray through the whole scene.\nLower is faster; compare builders and layouts by this and by the GPU time per frame.\nThe \"BVH traversal cost\" debug view shows the real cost per pixel.");
 		}
 	}
 }

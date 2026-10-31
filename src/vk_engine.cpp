@@ -39,6 +39,7 @@
 #include <vk_mem_alloc.h>
 
 #include <imgui.h>
+#include <implot.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 
@@ -112,6 +113,19 @@ void VulkanEngine::draw()
 	getCurrentFrame().deletionQueue.flush();
 	getCurrentFrame().frameDescriptors.clearPools(m_device);
 
+	//the raster pass this slot timed when it last ran, FRAME_OVERLAP frames ago; a gap in the plot when it drew nothing
+	m_stats.rasterGpuTime = NAN;
+	if (getCurrentFrame().rasterTimed) {
+		getCurrentFrame().rasterTimed = false;
+		//value, availability pairs for the two queries
+		uint64_t results[4] = {};
+		const VkResult got = vkGetQueryPoolResults(m_device, getCurrentFrame().rasterTimestamps, 0, 2, sizeof(results), results, sizeof(uint64_t) * 2,
+			VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+		if (got == VK_SUCCESS && results[1] != 0 && results[3] != 0) {
+			m_stats.rasterGpuTime = (float)(double(results[2] - results[0]) * m_timestampPeriodNs / 1.0e6);
+		}
+	}
+
 	// after the fence wait: this may rewrite the frame slot's persistent shape-material buffer
 	drawRaytraceShapes();
 	//what the scene's capabilities draw beside its own objects: the bench's breadboard, posts and mounts
@@ -173,6 +187,12 @@ void VulkanEngine::draw()
 		//the draw image keeps last frame's picture in SHADER_READ_ONLY_OPTIMAL (below), which the Viewport window shows
 		m_stats.meshDrawTime = 0.f;
 	} else {
+		const VkQueryPool timestamps = getCurrentFrame().rasterTimestamps;
+		if (timestamps != VK_NULL_HANDLE) {
+			vkCmdResetQueryPool(cmd, timestamps, 0, 2);
+			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
+		}
+
 		// transition our main draw image into general layout so we can write into it
 		// we will overwrite it all so we don't care about what was the older layout
 		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
@@ -194,6 +214,11 @@ void VulkanEngine::draw()
 		// the Viewport window samples the draw image, so it has to be readable before drawImgui() below. Every image
 		// registered with m_displayRegistry needs this same transition
 		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+		if (timestamps != VK_NULL_HANDLE) {
+			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, 1);
+			getCurrentFrame().rasterTimed = true;
+		}
 	}
 
 	//the ui covers the whole swapchain image and clears it first, so its old contents do not matter
@@ -300,20 +325,86 @@ RasterKey VulkanEngine::rasterKey() const
 	//every edit, cameras included (a camera edit can move the viewport through First-Person Edit), and every model change
 	key.editorRevision = m_raytraceScene.revision();
 	key.sceneRevision = m_sceneRevision;
-	key.backgroundEffect = m_currentBackgroundEffect;
-	key.gradient = m_gradientParams;
-	key.sky = m_skyParams;
+	key.background = m_backgroundMode;
+	key.backgroundColor = m_backgroundColor;
 	key.environmentMaps = m_environmentMapsLoaded;
 	key.environmentExposure = m_environmentIntensity * m_environmentMapScale;
+	key.environmentRotation = m_environmentRotation;
 	key.occlusionCulling = m_occlusionCulling;
 	key.benchAssets = m_benchScene.revision();
 	return key;
 }
 
+namespace {
+
+// the "environment" pass's push constants; must match env_background.comp
+struct EnvironmentBackgroundPushConstants {
+	glm::mat4 inverseViewProj;
+	glm::vec2 drawExtent;
+	float exposure;
+	// 1 for the sky, 0 for the map
+	uint32_t sky;
+	// the map's rotation about +y, its cosine and sine (environmentRotation())
+	glm::vec2 rotation;
+};
+
+// the editor's gradient, top and bottom, as display colors (gradient_color.comp decodes them)
+constexpr glm::vec4 GRADIENT_TOP { 0.325f, 0.471f, 0.584f, 1.f };
+constexpr glm::vec4 GRADIENT_BOTTOM { 0.035f, 0.125f, 0.247f, 1.f };
+
+}
+
 void VulkanEngine::drawBackground(VkCommandBuffer cmd)
 {
-	BackgroundEffect& effect = m_backgroundEffects[m_currentBackgroundEffect];
-	effect.record(cmd, effect.pass);
+	//the scene's background as the raster preview shows it: an environment choice with no map shows the gradient, as
+	//the render then sees black
+	BackgroundMode mode = m_backgroundMode;
+	if (mode == BackgroundMode::Environment && m_environmentMap.image == VK_NULL_HANDLE) {
+		mode = BackgroundMode::Gradient;
+	}
+
+	if (mode == BackgroundMode::Solid) {
+		//the draw image is linear, as the color is
+		VkClearColorValue clear {};
+		clear.float32[0] = m_backgroundColor.r;
+		clear.float32[1] = m_backgroundColor.g;
+		clear.float32[2] = m_backgroundColor.b;
+		clear.float32[3] = 1.f;
+		const VkImageSubresourceRange range = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
+		vkCmdClearColorImage(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
+		return;
+	}
+
+	if (mode == BackgroundMode::Gradient) {
+		ComputePushConstants params {};
+		params.data1 = GRADIENT_TOP;
+		params.data2 = GRADIENT_BOTTOM;
+		recordDrawImageEffect(cmd, m_gradientPass, params);
+		return;
+	}
+
+	//the sky or the map by view direction. The sky reads no map, but the binding is declared: it names the grey image.
+	//Both images sit in SHADER_READ_ONLY_OPTIMAL for good: createImage() leaves uploads there, and a replaced map is
+	//destroyed only after a device-wide wait, so a set written this frame can never outlive the view it names
+	const bool sky = mode == BackgroundMode::Sky;
+	const AllocatedImage& map = sky ? m_greyImage : m_environmentMap;
+
+	const VkDescriptorSet set = getCurrentFrame().frameDescriptors.allocate(m_device, m_environmentPass.setLayout);
+	DescriptorWriter writer;
+	writer.writeImage(0, m_drawImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	writer.writeImage(1, map.imageView, m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	writer.updateSet(m_device, set);
+
+	//m_sceneData is this frame's, set by updateScene() before recording began
+	EnvironmentBackgroundPushConstants pushConstants {};
+	pushConstants.inverseViewProj = glm::inverse(m_sceneData.viewproj);
+	pushConstants.drawExtent = glm::vec2(m_drawExtent.width, m_drawExtent.height);
+	//the map is stored divided by its scale, which comes back in here with the intensity
+	pushConstants.exposure = m_environmentIntensity * m_environmentMapScale;
+	pushConstants.sky = sky ? 1u : 0u;
+	pushConstants.rotation = environmentRotation(m_environmentRotation);
+
+	dispatchComputePassOver(cmd, m_environmentPass, set, &pushConstants, m_drawImage.imageExtent);
 }
 
 void VulkanEngine::recordDrawImageEffect(VkCommandBuffer cmd, const ComputePass& pass, const ComputePushConstants& params)
@@ -705,6 +796,7 @@ void VulkanEngine::run()
 			drawFileMenu();
 			drawEditMenu();
 			drawCameraMenu();
+			drawViewMenu();
 			if (ImGui::BeginMenu("Windows")) {
 				m_workspaces.drawWindowsMenu(m_capabilities, [this]() { m_displayRegistry.drawWindowsMenu(); });
 				ImGui::EndMenu();
@@ -714,6 +806,8 @@ void VulkanEngine::run()
 					capability.menus(this);
 				}
 			});
+			//Render at the bar's middle, the workspaces at its right end
+			m_raytracer.drawMenuBarControls(this, m_raytraceScene);
 			m_workspaces.drawTabs(m_capabilities);
 			ImGui::EndMainMenuBar();
 		}
@@ -742,6 +836,20 @@ void VulkanEngine::run()
 		//convert to microseconds (integer), and then come back to miliseconds
 		auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 		m_stats.frameTime = elapsed.count() / 1000.f;
+
+		//the Stats window's history, whether it is open or not
+		FrameSample sample;
+		sample.time = ImGui::GetTime();
+		sample.frameMs = m_stats.frameTime;
+		sample.updateMs = m_stats.sceneUpdateTime;
+		sample.rasterRecordMs = m_stats.meshDrawTime;
+		sample.rasterGpuMs = m_stats.rasterGpuTime;
+		//a render's first frames have no timestamps back yet, and read 0
+		const float raytraceMs = m_raytracer.gpu().lastFrameGpuMs();
+		sample.raytraceGpuMs = m_raytracer.renderRunning() && m_raytracer.gpu().hasTimestamps() && raytraceMs > 0.f ? raytraceMs : NAN;
+		sample.drawCalls = m_stats.drawcallCount;
+		sample.triangles = m_stats.triangleCount;
+		m_frameHistory.record(sample);
 	}
 
 	//imgui writes its file only every few seconds while something changed, so the last layout and workspace would be
@@ -757,51 +865,12 @@ void VulkanEngine::registerWindows()
 	m_workspaces.addWindow({ "Viewport", &m_showViewport, [this]() { drawViewportWindow(); }, {}, WindowGroup::Main, true });
 	m_workspaces.addWindow({ "Scene", m_raytraceScene.visibilityFlag(), [this]() { m_raytraceScene.drawPanel(this); } });
 	m_workspaces.addWindow({ "Materials", m_raytraceScene.materialsVisibilityFlag(), [this]() { m_raytraceScene.drawMaterialsWindow(this); } });
-	m_workspaces.addWindow({ "Raytrace Render", m_raytracer.visibilityFlag(), [this]() { m_raytracer.drawPanel(this, m_raytraceScene); } });
 	m_workspaces.addWindow({ "Render Settings", m_raytracer.settingsVisibilityFlag(), [this]() { m_raytracer.drawSettingsPanel(this, m_raytraceScene); } });
 	m_workspaces.addWindow({ "Raytracer Shaders", m_raytracer.kernelPanelVisibilityFlag(), [this]() { m_raytracer.drawKernelPanel(this); } });
 	m_workspaces.addWindow({ "Import Report", &m_showImportReport, [this]() { drawImportReport(); } });
 	m_workspaces.addWindow({ "Scene Capabilities", &m_showCapabilities, [this]() { drawCapabilitiesWindow(this, &m_showCapabilities); } });
 
-	m_workspaces.addWindow({ "Stats", &m_showStatsWindow, [this]() {
-		if (!m_showStatsWindow) {
-			return;
-		}
-		if (ImGui::Begin("Stats", &m_showStatsWindow)) {
-			ImGui::Text("frametime %f ms", m_stats.frameTime);
-			ImGui::Text("draw time %f ms", m_stats.meshDrawTime);
-			ImGui::Text("update time %f ms", m_stats.sceneUpdateTime);
-			ImGui::Text("triangles %i", m_stats.triangleCount);
-			ImGui::Text("draws %i", m_stats.drawcallCount);
-			const char* pauseModes[] = { "Always", "While rendering", "Never" };
-			int pauseMode = (int)m_rasterPauseMode;
-			if (ImGui::Combo("Pause raster preview", &pauseMode, pauseModes, IM_ARRAYSIZE(pauseModes))) {
-				m_rasterPauseMode = (RasterPauseMode)pauseMode;
-			}
-			ImGui::SetItemTooltip("Keep the last picture instead of drawing an identical one, once the camera, the scene and the background have been still for %u frames. Always, only while the raytracer renders, or never", FRAME_OVERLAP + 1);
-			if (m_rasterPaused) {
-				ImGui::SameLine();
-				ImGui::TextDisabled("(paused)");
-			}
-			ImGui::Checkbox("Occlusion culling", &m_occlusionCulling);
-			ImGui::SetItemTooltip("Skip a surface of %u or more triangles whose box was hidden two frames ago. A surface that comes out from behind another appears two frames late", MeshDrawList::OCCLUSION_MIN_TRIANGLES);
-			ImGui::Text("occluded %i (%llu triangles)", m_stats.occludedCount, (unsigned long long)m_stats.occludedTriangles);
-		}
-		ImGui::End();
-	}, {}, WindowGroup::Debug });
-	m_workspaces.addWindow({ "background", &m_showBackgroundWindow, [this]() {
-		if (!m_showBackgroundWindow) {
-			return;
-		}
-		if (ImGui::Begin("background", &m_showBackgroundWindow)) {
-			ImGui::SliderFloat("Render Scale", &m_renderScale, 0.3f, 1.f);
-			BackgroundEffect& selected = m_backgroundEffects[m_currentBackgroundEffect];
-			ImGui::Text("Selected effect: %s", selected.name);
-			ImGui::SliderInt("Effect Index", &m_currentBackgroundEffect, 0, m_backgroundEffects.size() - 1);
-			selected.drawSettings();
-		}
-		ImGui::End();
-	}, {}, WindowGroup::Debug });
+	m_workspaces.addWindow({ "Stats", &m_showStatsWindow, [this]() { drawStatsWindow(this, &m_showStatsWindow); } });
 	m_workspaces.addWindow({ "GPU self-tests", m_selfTests.visibilityFlag(), [this]() { m_selfTests.drawWindow(this); }, {}, WindowGroup::Debug });
 	//the bench's settings, under Optical bench (Optics -> Bench Settings...)
 	m_workspaces.addWindow({ "Bench Settings", m_raytraceScene.benchSettingsVisibilityFlag(), [this]() {
@@ -817,6 +886,11 @@ void VulkanEngine::registerWindows()
 	m_workspaces.addWindow({ "Dear ImGui Demo", &m_showDemoWindow, [this]() {
 		if (m_showDemoWindow) {
 			ImGui::ShowDemoWindow(&m_showDemoWindow);
+		}
+	}, {}, WindowGroup::Debug });
+	m_workspaces.addWindow({ "ImPlot Demo", &m_showPlotDemoWindow, [this]() {
+		if (m_showPlotDemoWindow) {
+			ImPlot::ShowDemoWindow(&m_showPlotDemoWindow);
 		}
 	}, {}, WindowGroup::Debug });
 }
@@ -1558,12 +1632,12 @@ IoResult VulkanEngine::importPbrt(const std::filesystem::path& path)
 		if (environment.ok) {
 			m_environmentModelKey = key;
 			m_environmentIntensity = model.environment->intensity;
-			m_solidBackground = false;
+			//the import turned the map into the renderer's frame already
+			m_environmentRotation = 0.f;
 		}
 	} else if (m_environmentMap.image == VK_NULL_HANDLE) {
-		//pbrt's world without an infinite light is black past its geometry, where the renderer would show its sky
-		m_solidBackground = true;
-		m_backgroundColor = glm::vec3(0.f);
+		//pbrt's world without an infinite light is black past its geometry, which the gradient renders
+		m_backgroundMode = BackgroundMode::Gradient;
 	}
 	m_showImportReport = true;
 	m_importReportModel = key;
@@ -1694,7 +1768,8 @@ void VulkanEngine::newScene()
 	m_raytracer.setKernels(defaultKernelSelection());
 	m_raytracer.setAccelSettings(this, defaultAccelSettings());
 	m_environmentIntensity = 1.f;
-	m_solidBackground = false;
+	m_environmentRotation = 0.f;
+	m_backgroundMode = BackgroundMode::Gradient;
 	m_backgroundColor = glm::vec3(0.f);
 	m_scenePath.clear();
 	//the Render scene template, which turns on no capability
@@ -1843,9 +1918,9 @@ SceneDescription VulkanEngine::describeScene()
 	scene.kernels = m_raytracer.kernels();
 	scene.accel = m_raytracer.accelSettings();
 	scene.environmentIntensity = m_environmentIntensity;
-	if (m_solidBackground) {
-		scene.backgroundColor = m_backgroundColor;
-	}
+	scene.environmentRotation = m_environmentRotation;
+	scene.backgroundMode = m_backgroundMode;
+	scene.backgroundColor = m_backgroundColor;
 	scene.capabilities = capabilityKeys(m_capabilities);
 	scene.templateKey = m_sceneTemplate;
 	//the optical elements, with only the slots that differ from the kind's defaults; the library's scene-owned part
@@ -2092,8 +2167,10 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 		m_raytracer.setRenderCamera(m_raytraceScene.cameras()[scene.renderCamera].id);
 	}
 	m_environmentIntensity = scene.environmentIntensity;
-	m_solidBackground = scene.backgroundColor.has_value();
-	m_backgroundColor = scene.backgroundColor.value_or(glm::vec3(0.f));
+	m_environmentRotation = scene.environmentRotation;
+	//after the map loaded, which chose it: the file's choice stands, an environment whose map failed to load included
+	m_backgroundMode = scene.backgroundMode;
+	m_backgroundColor = scene.backgroundColor;
 	m_scenePath = absoluteNormalized(path);
 
 	//the capabilities the file names, an unknown one kept for the save, and the template it started from. Its objects
@@ -2189,7 +2266,9 @@ IoResult VulkanEngine::installEnvironmentMap(const float* pixels, uint32_t width
 	const float storageScale = environmentStorageScale(peak);
 	std::vector<uint32_t> halves = packEnvironmentTexels(pixels, pixelCount, storageScale);
 
-	//only now that the new data is known good does the old resource go
+	//only now that the new data is known good does the old resource go. Its preview window stays as it was: loading a
+	//map opens none (Scene -> Background -> Preview does)
+	const bool previewShown = m_displayRegistry.isVisible(ENVIRONMENT_MAP_DISPLAY_NAME);
 	destroyEnvironmentMap();
 
 	const VkExtent3D extent { width, height, 1 };
@@ -2202,9 +2281,11 @@ IoResult VulkanEngine::installEnvironmentMap(const float* pixels, uint32_t width
 	m_environmentModelKey.clear();
 	m_environmentDistribution = std::move(distribution);
 
-	//a preview window, so a loaded map can be seen even though nothing renders with it yet.
-	//Values above 1 show clipped
+	//the map as an image, values above 1 clipped, in a window that opens on request
 	m_displayRegistry.registerImage(ENVIRONMENT_MAP_DISPLAY_NAME, m_environmentMap.imageView, m_environmentMapExtent);
+	m_displayRegistry.setVisible(ENVIRONMENT_MAP_DISPLAY_NAME, previewShown);
+	//a map just loaded is what the user wants to see: the viewport and the render switch to it
+	m_backgroundMode = BackgroundMode::Environment;
 
 	std::string message = fmt::format("Loaded '{}': {} x {}, rgba16f", label, width, height);
 	if (storageScale > 1.f) {
@@ -2218,6 +2299,17 @@ void VulkanEngine::clearEnvironmentMap()
 	destroyEnvironmentMap();
 	m_environmentMapPath.clear();
 	m_environmentModelKey.clear();
+	if (m_backgroundMode == BackgroundMode::Environment) {
+		m_backgroundMode = BackgroundMode::Gradient;
+	}
+}
+
+void VulkanEngine::showEnvironmentPreview()
+{
+	if (m_displayRegistry.isRegistered(ENVIRONMENT_MAP_DISPLAY_NAME)) {
+		m_displayRegistry.setVisible(ENVIRONMENT_MAP_DISPLAY_NAME, true);
+		ImGui::SetWindowFocus(ENVIRONMENT_MAP_DISPLAY_NAME);
+	}
 }
 
 void VulkanEngine::destroyEnvironmentMap()
@@ -2392,6 +2484,28 @@ void VulkanEngine::drawCameraMenu()
 		}
 		ImGui::Separator();
 		m_viewportNav.drawMenuSettings(m_firstPersonCameraId != 0);
+		ImGui::EndMenu();
+	}
+}
+
+void VulkanEngine::drawViewMenu()
+{
+	if (ImGui::BeginMenu("View")) {
+		ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.f);
+		ImGui::SliderFloat("Render Scale", &m_renderScale, 0.3f, 1.f, "%.2f");
+		ImGui::SetItemTooltip("The raster preview's resolution as a share of the Viewport window's. Lower is faster and blurrier");
+		if (ImGui::BeginMenu("Pause Raster Preview")) {
+			const char* modes[] = { "Always", "While Rendering", "Never" };
+			for (int i = 0; i < IM_ARRAYSIZE(modes); i++) {
+				if (ImGui::MenuItem(modes[i], nullptr, (int)m_rasterPauseMode == i)) {
+					m_rasterPauseMode = (RasterPauseMode)i;
+				}
+			}
+			ImGui::EndMenu();
+		}
+		ImGui::SetItemTooltip("Keep the last picture instead of drawing an identical one, once the camera, the scene and the background have been still for %u frames", FRAME_OVERLAP + 1);
+		ImGui::MenuItem("Occlusion Culling", nullptr, &m_occlusionCulling);
+		ImGui::SetItemTooltip("Skip a surface of %u or more triangles whose box was hidden two frames ago. A surface that comes out from behind another appears two frames late", MeshDrawList::OCCLUSION_MIN_TRIANGLES);
 		ImGui::EndMenu();
 	}
 }
@@ -3209,6 +3323,17 @@ void VulkanEngine::initSyncStructures()
 		checkVkResult(vkCreateSemaphore(m_device, &semaphoreCreateInfo, nullptr, &m_frames[i].renderSemaphore));
 	}
 
+	//two timestamps per frame slot around the raster pass, when the device can time graphics and compute work
+	if (m_gpuProperties.limits.timestampComputeAndGraphics == VK_TRUE && m_gpuProperties.limits.timestampPeriod > 0.f) {
+		m_timestampPeriodNs = m_gpuProperties.limits.timestampPeriod;
+		VkQueryPoolCreateInfo queryInfo { .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+		queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+		queryInfo.queryCount = 2;
+		for (int i = 0; i < FRAME_OVERLAP; i++) {
+			checkVkResult(vkCreateQueryPool(m_device, &queryInfo, nullptr, &m_frames[i].rasterTimestamps));
+		}
+	}
+
 	//[IMGUI] create fence for immediate mode commands
 	checkVkResult(vkCreateFence(m_device, &fenceCreateInfo, nullptr, &m_immFence));
 	m_mainDeletionQueue.push_function([this]() { vkDestroyFence(m_device, m_immFence, nullptr); });
@@ -3293,23 +3418,11 @@ void VulkanEngine::initPipeline()
 	});
 }
 
-namespace {
-
-// the "environment" background effect's push constants; must match env_background.comp
-struct EnvironmentBackgroundPushConstants {
-	glm::mat4 inverseViewProj;
-	glm::vec2 drawExtent;
-	float exposure;
-	float pad;
-};
-
-}
-
 void VulkanEngine::initComputePipelines()
 {
 	const std::string shaderDir = m_rootPath + "shaders/";
 
-	//gradient and sky share one shape: the draw image at binding 0 plus ComputePushConstants
+	//the gradient and the encode share one shape: the draw image at binding 0 plus ComputePushConstants
 	auto buildDrawImageEffect = [&](const char* shaderFile) {
 		return ComputePassBuilder(shaderDir + shaderFile)
 			.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
@@ -3317,103 +3430,20 @@ void VulkanEngine::initComputePipelines()
 			.build(m_device);
 	};
 
-	//a raw vec4 editor per push-constant slot, as the two ported effects have always had
-	auto drawRawPushConstantEditors = [](ComputePushConstants& params) {
-		ImGui::InputFloat4("data1", (float*)&params.data1);
-		ImGui::InputFloat4("data2", (float*)&params.data2);
-		ImGui::InputFloat4("data3", (float*)&params.data3);
-		ImGui::InputFloat4("data4", (float*)&params.data4);
-	};
-
-	{
-		//default colors
-		m_gradientParams = {};
-		m_gradientParams.data1 = glm::vec4(0.325, 0.471, 0.584, 1);
-		m_gradientParams.data2 = glm::vec4(0.035, 0.125, 0.247, 1);
-
-		BackgroundEffect gradient;
-		gradient.name = "gradient";
-		gradient.pass = buildDrawImageEffect("gradient_color.comp.spv");
-		gradient.record = [this](VkCommandBuffer cmd, const ComputePass& pass) {
-			recordDrawImageEffect(cmd, pass, m_gradientParams);
-		};
-		gradient.drawSettings = [this, drawRawPushConstantEditors]() {
-			drawRawPushConstantEditors(m_gradientParams);
-		};
-		m_backgroundEffects.push_back(std::move(gradient));
-	}
-
-	{
-		//default sky parameters: tint in xyz, star threshold in w
-		m_skyParams = {};
-		m_skyParams.data1 = glm::vec4(0.1, 0.2, 0.4, 0.97);
-
-		BackgroundEffect sky;
-		sky.name = "sky";
-		sky.pass = buildDrawImageEffect("sky.comp.spv");
-		sky.record = [this](VkCommandBuffer cmd, const ComputePass& pass) {
-			recordDrawImageEffect(cmd, pass, m_skyParams);
-		};
-		sky.drawSettings = [this, drawRawPushConstantEditors]() {
-			drawRawPushConstantEditors(m_skyParams);
-		};
-		m_backgroundEffects.push_back(std::move(sky));
-	}
-
-	{
-		//the environment map seen through the raster camera. Two bindings of different types and
-		//a push-constant block shaped nothing like the other two effects' - the first pass the old
-		//one-storage-image layout could not have expressed
-		BackgroundEffect environment;
-		environment.name = "environment";
-		environment.pass = ComputePassBuilder(shaderDir + "env_background.comp.spv")
-			.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-			.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-			.setPushConstants<EnvironmentBackgroundPushConstants>()
-			.build(m_device);
-		environment.record = [this](VkCommandBuffer cmd, const ComputePass& pass) {
-			//with no map loaded the effect shows flat grey, which reads as "nothing to show"
-			//rather than as a broken effect. Both images sit in SHADER_READ_ONLY_OPTIMAL for good:
-			//createImage() leaves uploads there, and a replaced map is destroyed only after a
-			//device-wide wait, so a set written this frame can never outlive the view it names
-			const bool hasMap = m_environmentMap.image != VK_NULL_HANDLE;
-			const AllocatedImage& map = hasMap ? m_environmentMap : m_greyImage;
-
-			const VkDescriptorSet set = getCurrentFrame().frameDescriptors.allocate(m_device, pass.setLayout);
-
-			DescriptorWriter writer;
-			writer.writeImage(0, m_drawImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-			writer.writeImage(1, map.imageView, m_defaultSamplerLinear, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-			writer.updateSet(m_device, set);
-
-			//m_sceneData is this frame's, set by updateScene() before recording began
-			EnvironmentBackgroundPushConstants pushConstants {};
-			pushConstants.inverseViewProj = glm::inverse(m_sceneData.viewproj);
-			pushConstants.drawExtent = glm::vec2(m_drawExtent.width, m_drawExtent.height);
-			//the map is stored divided by its scale, which comes back in here with the intensity
-			pushConstants.exposure = m_environmentIntensity * m_environmentMapScale;
-
-			dispatchComputePassOver(cmd, pass, set, &pushConstants, m_drawImage.imageExtent);
-		};
-		environment.drawSettings = [this]() {
-			if (m_environmentMap.image == VK_NULL_HANDLE) {
-				ImGui::TextDisabled("No environment map loaded (File > Set Environment Map)");
-			} else {
-				ImGui::Text("%s", m_environmentMapPath.filename().string().c_str());
-			}
-			//a scene property (saved with the scene), shared with the path tracer's miss lighting.
-			//The draw image goes to the swapchain unmapped, so values above 1 clip here
-			ImGui::SliderFloat("Environment intensity", &m_environmentIntensity, 0.f, 4.f);
-		};
-		m_backgroundEffects.push_back(std::move(environment));
-	}
+	m_gradientPass = buildDrawImageEffect("gradient_color.comp.spv");
+	//the sky or the environment map seen through the raster camera: the draw image as a storage image and the map
+	//through a sampler
+	m_environmentPass = ComputePassBuilder(shaderDir + "env_background.comp.spv")
+		.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+		.setPushConstants<EnvironmentBackgroundPushConstants>()
+		.build(m_device);
 	//the raster preview's last pass: its linear draw image sRGB-encoded for the UNORM swapchain the Viewport is shown on
 	m_viewportEncodePass = buildDrawImageEffect("viewport_encode.comp.spv");
 
 	m_mainDeletionQueue.push_function([this]() {
-		for (BackgroundEffect& effect : m_backgroundEffects) {
-			effect.pass.destroy(m_device);
-		}
+		m_gradientPass.destroy(m_device);
+		m_environmentPass.destroy(m_device);
 		m_viewportEncodePass.destroy(m_device);
 	});
 }
@@ -3561,8 +3591,10 @@ void VulkanEngine::initIMGUI()
 
 	// 2: initialize imgui library
 
-	// this initializes the core structures of imgui
+	// this initializes the core structures of imgui, and ImPlot's beside them (the Stats window's plots)
 	ImGui::CreateContext();
+	ImPlot::CreateContext();
+	m_mainDeletionQueue.push_function([]() { ImPlot::DestroyContext(); });
 
 	//every window docks into the main viewport's dock space (workspace.h), and moves only by its title bar or tab, so
 	//a drag in the Viewport window is the gizmo's or the camera's, never the window's
@@ -3967,6 +3999,9 @@ void VulkanEngine::cleanup()
 			}
 			if (m_frames[i].occlusionQueries != VK_NULL_HANDLE) {
 				vkDestroyQueryPool(m_device, m_frames[i].occlusionQueries, nullptr);
+			}
+			if (m_frames[i].rasterTimestamps != VK_NULL_HANDLE) {
+				vkDestroyQueryPool(m_device, m_frames[i].rasterTimestamps, nullptr);
 			}
 		}
 

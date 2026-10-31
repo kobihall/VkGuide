@@ -74,6 +74,9 @@ public:
 	uint32_t samplesPerFrame() const { return m_samplesPerFrame; }
 	uint32_t size() const { return m_size; }
 
+	// the device memory the pool's buffers hold
+	VkDeviceSize deviceBytes(VmaAllocator allocator) const;
+
 	const AllocatedBuffer& headers() const { return m_headers; }
 	const AllocatedBuffer& sampleBudget() const { return m_sampleBudget; }
 
