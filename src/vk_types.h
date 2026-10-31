@@ -39,6 +39,10 @@ struct AllocatedImage {
 	VmaAllocation allocation;
 	VkExtent3D imageExtent;
 	VkFormat imageFormat;
+	// an 8-bit color texture's sRGB view, which decodes as the raster pass samples it, so a base color texture and a
+	// linear color factor agree; VK_NULL_HANDLE for anything else. The image itself stays UNORM, so the path tracer's
+	// texture array copies its sRGB bytes unchanged and decodes them in its shaders
+	VkImageView colorView { VK_NULL_HANDLE };
 };
 
 struct AllocatedBuffer {

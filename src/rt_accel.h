@@ -152,6 +152,45 @@ struct RaytraceGeometry {
 
 RaytraceGeometry packGeometry(const RaytraceBlasSet& blases);
 
+// THE BENCH (docs/plans/completed/physoptics-bench-and-mounts.md): what the breadboard and the optics' stacks add to the traced
+// scene, gathered by the engine from each optic's stack (optic_bench.h). Every instance carries the tag of the optic and
+// part it belongs to, so a hit on metal can be named ("the plate of M3's KM100") and a light path that strikes a mount
+// counted as stray light (physoptics-detectors.md)
+struct BenchTag {
+	// the optic's id, 0 for the breadboard
+	uint64_t optic { 0 };
+	// "KM100 plate", "PH50E/M holder", "post", "breadboard"
+	std::string part;
+	bool operator==(const BenchTag&) const = default;
+};
+struct BenchMeshInstance {
+	// into RaytraceMeshData::meshes
+	size_t meshIndex { 0 };
+	glm::mat4 objectToWorld { 1.f };
+	// one material id per GeoSurface of the mesh, from BenchTrace::materials
+	std::vector<uint64_t> surfaceMaterials;
+	// into BenchTrace::tags
+	uint32_t tag { 0 };
+	bool operator==(const BenchMeshInstance&) const = default;
+};
+// a post: the unit capped cylinder (shape.h) under its transform
+struct BenchPostInstance {
+	glm::mat4 objectToWorld { 1.f };
+	uint64_t material { 0 };
+	uint32_t tag { 0 };
+	bool operator==(const BenchPostInstance&) const = default;
+};
+struct BenchTrace {
+	std::vector<BenchMeshInstance> meshes;
+	std::vector<BenchPostInstance> posts;
+	// the finishes the instances name, by ids from BENCH_MATERIAL_ID up: never in the library, never saved
+	std::vector<MaterialDef> materials;
+	std::vector<BenchTag> tags;
+	bool empty() const { return meshes.empty() && posts.empty(); }
+	bool operator==(const BenchTrace&) const = default;
+};
+inline constexpr uint64_t BENCH_MATERIAL_ID = 1ull << 62;
+
 // The scene as traced: the BLAS set it was built over, the TLAS, and the instances, materials and
 // per-surface material table the extend and shade stages read
 struct RaytraceSceneAccel {
@@ -183,6 +222,9 @@ struct RaytraceSceneAccel {
 	std::vector<glm::vec4> opticData;
 	std::vector<glm::vec4> coatingData;
 	uint32_t opticCount { 0 };
+	// THE BENCH: per entry of `instances`, its index in benchTags, or -1 for an instance that is not the bench's
+	std::vector<BenchTag> benchTags;
+	std::vector<int32_t> instanceBenchTag;
 };
 
 // what the scene's records are read in: the working space RGB values are in, and the wavelength exact RGB reads a
@@ -237,11 +279,11 @@ void refreshModelMaterialDef(MaterialDef& entry, const GLTFMaterial& material, c
 // objects shaded with their glTF materials
 using ModelMaterialIds = std::unordered_map<const GLTFMaterial*, uint64_t>;
 
-// Builds the top level over the visible mesh objects and the shapes, and the light list over them,
+// Builds the top level over the visible mesh objects, the shapes, the optics and the bench, and the light list over them,
 // the punctual lights and the environment, with every material they reference packed from the
 // library. `geometry` must be packGeometry(*blases); it is passed in so it is packed once per BLAS
 // set, not per edit
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
 	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures,
-	const SpectralSceneContext& spectral = {}, const std::vector<SceneOptic>& optics = {}, const OpticalLibrary* library = nullptr);
+	const SpectralSceneContext& spectral = {}, const std::vector<SceneOptic>& optics = {}, const OpticalLibrary* library = nullptr, const BenchTrace* bench = nullptr);

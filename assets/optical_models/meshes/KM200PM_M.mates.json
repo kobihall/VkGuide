@@ -128,7 +128,9 @@
    "comment": "the ball on the screw's tip; z is the way the screw advances",
    "part": "adjuster_x",
    "pitch": 0.0003175,
-   "pitch_source": "1/4-80 (to confirm)"
+   "pitch_source": "1/4-80",
+   "angle_per_rev": 0.005,
+   "angle_source": "Thorlabs: 5 mrad per revolution, as KM200 (1/4-80 adjusters)"
   },
   "adjuster_y_tip": {
    "origin": [
@@ -153,7 +155,9 @@
    ],
    "part": "adjuster_y",
    "pitch": 0.0003175,
-   "pitch_source": "1/4-80 (to confirm)"
+   "pitch_source": "1/4-80",
+   "angle_per_rev": 0.005,
+   "angle_source": "Thorlabs: 5 mrad per revolution, as KM200 (1/4-80 adjusters)"
   }
  },
  "motions": {

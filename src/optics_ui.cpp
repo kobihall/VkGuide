@@ -381,6 +381,13 @@ void drawOpticsMenu(VulkanEngine* engine)
 	if (!ImGui::BeginMenu("Optics")) {
 		return;
 	}
+	if (ImGui::MenuItem("Bench Settings...")) {
+		*engine->m_raytraceScene.benchSettingsVisibilityFlag() = true;
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("The breadboard, its size, the beam height new mounts are set to, and snapping to holes");
+	}
+	ImGui::Separator();
 	if (ImGui::MenuItem("Load Glass Catalog...")) {
 		engine->m_pendingFileAction = VulkanEngine::FileAction::LoadGlassCatalog;
 	}

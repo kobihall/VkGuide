@@ -2,12 +2,12 @@
 
 Rebuilding a setup by hand after one change is most of the work of a lab. Turn a 90° turning mirror to 60° and every lens, filter and detector after it is now in the wrong place. Move the second of two steering mirrors and both mirrors need re-aiming before the beam reaches the next optic again. A locked transform does that rework in one gesture: you choose one degree of freedom of one optic to drive, each other optic on the beam axis responds by a rule, and a deterministic solver moves them so that the beam path stays as it was wherever the rules say it should. This plan defines the rules, the order they are solved in, the presets for the request's two examples and for the classic two-iris beam walk, and how it all sits behind the existing gizmo.
 
-*Not implemented. Depends on [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) (the chief rays) and [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) (the poses an optic can take). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) (the chief rays) and [physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md) (the poses an optic can take). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
 - The request asks for a deterministic result for a given set of options, and leaves the method and the options to this plan.
-- Placement is breadboard-physical ([physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)): a response may move a post, turn it, raise it, or turn an adjuster, and nothing else, unless the optic is free.
+- Placement is breadboard-physical ([physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md)): a response may move a post, turn it, raise it, or turn an adjuster, and nothing else, unless the optic is free.
 
 ## What the renderer does today
 

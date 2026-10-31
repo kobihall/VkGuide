@@ -93,6 +93,15 @@ std::shared_ptr<const RaytraceMeshData> buildRaytraceMeshData(VulkanEngine* engi
 		data->nodes.push_back(std::move(entry));
 	});
 
+	//the bench's meshes, which no model node places
+	for (const std::shared_ptr<const MeshAsset>& mesh : engine->m_benchScene.tracedMeshes()) {
+		if (mesh != nullptr && meshIndices.count(mesh.get()) == 0) {
+			meshIndices[mesh.get()] = data->meshes.size();
+			data->benchMeshes[mesh.get()] = data->meshes.size();
+			data->meshes.push_back(mesh);
+		}
+	}
+
 	fmt::println("buildRaytraceMeshData: {} unique mesh(es), {} mesh node(s), {} triangles", data->meshes.size(), data->nodes.size(), data->triangleCount);
 
 	return data;

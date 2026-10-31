@@ -45,8 +45,8 @@
      "part": "base"
     },
     "pivot": {"origin": { "sphere": 13 }, "z": [0, 0, 1], "part": "base"},
-    "adjuster_x_tip": {"origin": { "sphere": 12 }, "z": [0, 0, 1], "part": "adjuster_x", "pitch": null, "pitch_source": "unknown (to confirm)"},
-    "adjuster_y_tip": {"origin": { "sphere": 14 }, "z": [0, 0, 1], "part": "adjuster_y", "pitch": null, "pitch_source": "unknown (to confirm)"}
+    "adjuster_x_tip": {"origin": { "sphere": 12 }, "z": [0, 0, 1], "part": "adjuster_x", "pitch": 0.000254, "pitch_source": "3/16-100", "angle_per_rev": 0.013, "angle_source": "Thorlabs: 13 mrad per revolution (3/16-100 adjusters)"},
+    "adjuster_y_tip": {"origin": { "sphere": 14 }, "z": [0, 0, 1], "part": "adjuster_y", "pitch": 0.000254, "pitch_source": "3/16-100", "angle_per_rev": 0.013, "angle_source": "Thorlabs: 13 mrad per revolution (3/16-100 adjusters)"}
    },
    "motions": {
     "plate": {
@@ -114,8 +114,8 @@
      "part": "base"
     },
     "pivot": {"origin": { "sphere": 13 }, "z": [0, -1, 0], "part": "base"},
-    "adjuster_x_tip": {"comment": "the ball on the screw's tip; z is the way the screw advances", "origin": { "sphere": 12 }, "z": [0, -1, 0], "part": "adjuster_x", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"},
-    "adjuster_y_tip": {"origin": { "sphere": 11 }, "z": [0, -1, 0], "part": "adjuster_y", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"}
+    "adjuster_x_tip": {"comment": "the ball on the screw's tip; z is the way the screw advances", "origin": { "sphere": 12 }, "z": [0, -1, 0], "part": "adjuster_x", "pitch": 0.0003175, "pitch_source": "1/4-80", "angle_per_rev": 0.008, "angle_source": "Thorlabs: 8 mrad per revolution (1/4-80 adjusters)"},
+    "adjuster_y_tip": {"origin": { "sphere": 11 }, "z": [0, -1, 0], "part": "adjuster_y", "pitch": 0.0003175, "pitch_source": "1/4-80", "angle_per_rev": 0.008, "angle_source": "Thorlabs: 8 mrad per revolution (1/4-80 adjusters)"}
    },
    "motions": {
     "plate": {
@@ -172,8 +172,8 @@
      "part": "base"
     },
     "pivot": {"origin": { "sphere": 16 }, "z": [0, 0, 1], "part": "base"},
-    "adjuster_x_tip": {"comment": "the ball on the screw's tip; z is the way the screw advances", "origin": { "sphere": 17 }, "z": [0, 0, 1], "part": "adjuster_x", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"},
-    "adjuster_y_tip": {"origin": { "sphere": 18 }, "z": [0, 0, 1], "part": "adjuster_y", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"}
+    "adjuster_x_tip": {"comment": "the ball on the screw's tip; z is the way the screw advances", "origin": { "sphere": 17 }, "z": [0, 0, 1], "part": "adjuster_x", "pitch": 0.0003175, "pitch_source": "1/4-80", "angle_per_rev": 0.005, "angle_source": "Thorlabs: 5 mrad per revolution (1/4-80 adjusters)"},
+    "adjuster_y_tip": {"origin": { "sphere": 18 }, "z": [0, 0, 1], "part": "adjuster_y", "pitch": 0.0003175, "pitch_source": "1/4-80", "angle_per_rev": 0.005, "angle_source": "Thorlabs: 5 mrad per revolution (1/4-80 adjusters)"}
    },
    "motions": {
     "plate": {
@@ -229,8 +229,8 @@
      "part": "base"
     },
     "pivot": {"origin": { "sphere": 11 }, "z": [0, 0, 1], "part": "base"},
-    "adjuster_x_tip": {"comment": "the ball on the screw's tip; z is the way the screw advances", "origin": { "sphere": 12 }, "z": [0, 0, 1], "part": "adjuster_x", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"},
-    "adjuster_y_tip": {"origin": { "sphere": 13 }, "z": [0, 0, 1], "part": "adjuster_y", "pitch": 0.0003175, "pitch_source": "1/4-80 (to confirm)"}
+    "adjuster_x_tip": {"comment": "the ball on the screw's tip; z is the way the screw advances", "origin": { "sphere": 12 }, "z": [0, 0, 1], "part": "adjuster_x", "pitch": 0.0003175, "pitch_source": "1/4-80", "angle_per_rev": 0.005, "angle_source": "Thorlabs: 5 mrad per revolution, as KM200 (1/4-80 adjusters)"},
+    "adjuster_y_tip": {"origin": { "sphere": 13 }, "z": [0, 0, 1], "part": "adjuster_y", "pitch": 0.0003175, "pitch_source": "1/4-80", "angle_per_rev": 0.005, "angle_source": "Thorlabs: 5 mrad per revolution, as KM200 (1/4-80 adjusters)"}
    },
    "motions": {
     "plate": {

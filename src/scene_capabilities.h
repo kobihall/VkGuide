@@ -83,6 +83,9 @@ struct CapabilityInfo {
 	bool (*materialDetails)(VulkanEngine*);
 	// drawn over the Viewport after the camera and light markers
 	void (*viewportOverlays)(VulkanEngine*, const ViewportView&);
+	// geometry the raster preview draws beside the scene's own objects, into the main draw context: called each frame the
+	// preview is built. What it draws must move RasterKey when it changes, or a paused preview keeps the old picture
+	void (*rasterGeometry)(VulkanEngine*);
 	// a workspace offered beside Render while the capability is on; null for none
 	const WorkspaceInfo* workspace;
 };

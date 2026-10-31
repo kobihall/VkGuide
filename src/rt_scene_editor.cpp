@@ -801,6 +801,16 @@ Aabb meshObjectBox(const VulkanEngine* engine, const SceneMeshObject& object)
 	return box;
 }
 
+// the breadboard's plate
+Aabb benchBox(const BenchSettings& bench)
+{
+	const BenchGrid grid = benchGrid(bench);
+	Aabb box;
+	box.grow(glm::vec3((float)grid.min.x, (float)-BREADBOARD_THICKNESS, (float)grid.min.y));
+	box.grow(glm::vec3((float)grid.max.x, 0.f, (float)grid.max.y));
+	return box;
+}
+
 // empty for a body with no surfaces
 Aabb opticBox(const VulkanEngine* engine, const SceneOptic& optic)
 {
@@ -844,8 +854,13 @@ std::optional<Aabb> RaytraceSceneEditor::selectionBounds(const VulkanEngine* eng
 		if (const SceneOptic* optic = findOptic(m_selectionId)) {
 			box = opticBox(engine, *optic);
 			if (boxEmpty(box)) {
-				box = boxAround(glm::vec3(optic->position), OVERLAY_HALF_SIZE);
+				box = boxAround(glm::vec3(optic->world[3]), OVERLAY_HALF_SIZE);
 			}
+		}
+		break;
+	case SelectionKind::Bench:
+		if (m_bench.table) {
+			box = benchBox(m_bench);
 		}
 		break;
 	}
@@ -873,6 +888,9 @@ std::optional<Aabb> RaytraceSceneEditor::sceneBounds(const VulkanEngine* engine)
 		if (!boxEmpty(body)) {
 			box.grow(body);
 		}
+	}
+	if (m_bench.table) {
+		box.grow(benchBox(m_bench));
 	}
 	if (boxEmpty(box)) {
 		for (const SceneCamera& camera : m_cameras) {
@@ -973,6 +991,12 @@ void RaytraceSceneEditor::duplicateSelection()
 		//the copy owns copies of the slots' materials, so editing one element's coating never changes the other's
 		SceneOptic copy = *source;
 		copy.name = fmt::format("{}_copy", source->name);
+		//beside the original rather than in its hole: two holes along x on the bench, as far along x when free
+		if (copy.mount.isFree()) {
+			copy.mount.freePosition.x += 2.0 * BREADBOARD_PITCH;
+		} else {
+			copy.mount.origin.x += 2.0 * BREADBOARD_PITCH;
+		}
 		std::array<std::optional<MaterialDef>, MAX_OPTIC_MATERIAL_SLOTS> slots;
 		for (size_t slot = 0; slot < MAX_OPTIC_MATERIAL_SLOTS; slot++) {
 			if (const MaterialDef* material = findMaterial(source->materials[slot])) {
@@ -1002,6 +1026,7 @@ void RaytraceSceneEditor::duplicateSelection()
 		select(SelectionKind::Light, m_lights.back().id);
 		break;
 	}
+	case SelectionKind::Bench:
 	case SelectionKind::None:
 		break;
 	}
@@ -1027,6 +1052,9 @@ void RaytraceSceneEditor::deleteSelection()
 		break;
 	case SelectionKind::Optic:
 		removeOptic(m_selectionId);
+		break;
+	case SelectionKind::Bench:
+		m_bench.table = false;
 		break;
 	case SelectionKind::None:
 		return;
@@ -1230,6 +1258,7 @@ bool RaytraceSceneEditor::drawObjectRow(SelectionKind kind, uint64_t id, const s
 					target = &optic->name;
 				}
 				break;
+			case SelectionKind::Bench:
 			case SelectionKind::None:
 				break;
 			}
@@ -1466,6 +1495,11 @@ void RaytraceSceneEditor::drawSelection(VulkanEngine* engine)
 	case SelectionKind::Optic:
 		if (SceneOptic* optic = findOptic(m_selectionId)) {
 			drawSelectedOptic(engine, *optic);
+		}
+		break;
+	case SelectionKind::Bench:
+		if (m_bench.table) {
+			drawSelectedBench(engine);
 		}
 		break;
 	case SelectionKind::None:

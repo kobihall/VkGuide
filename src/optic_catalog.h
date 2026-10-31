@@ -24,6 +24,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include <optic_mount.h>
 #include <optic_surface.h>
 #include <rt_material.h>
 
@@ -124,16 +125,6 @@ struct OpticPort {
 	std::span<const PortEvent> events;
 };
 
-// placeholders for physoptics-bench-and-mounts.md: the mounts a kind may sit in, the first its default
-enum class MountKind : uint8_t {
-	Kinematic,
-	Fixed,
-	PlateHolder,
-	Rotation,
-	PrismMount,
-	IrisAssembly
-};
-
 struct SceneOptic {
 	// shares the editor's id space with shapes, cameras, lights, mesh objects and materials; never saved
 	uint64_t id { 0 };
@@ -142,14 +133,15 @@ struct SceneOptic {
 	// into the kind's sizes, or -1 for a custom size
 	int sizePreset { 0 };
 	OpticParams params;
-	// free placement: physoptics-bench-and-mounts.md derives it from the mount
-	glm::dvec3 position { 0.0, 0.1, 0.0 };
-	glm::dquat orientation { 1.0, 0.0, 0.0, 0.0 };
+	// what it stands in and where (src/optic_mount.h): the saved placement
+	MountPose mount;
+	// the body frame -> world, derived from the mount by opticWorldTransform() (src/optic_bench.h) each time the editor
+	// resolves the bench; never saved. Rounded to float for the GPU
+	glm::dmat4 world { 1.0 };
 	// the library entries the element owns, by slot; 0 for a slot the kind does not have
 	std::array<uint64_t, MAX_OPTIC_MATERIAL_SLOTS> materials {};
 
-	// the body frame -> world, rounded to float for the GPU
-	glm::dmat4 bodyToWorld() const;
+	glm::dmat4 bodyToWorld() const { return world; }
 	bool operator==(const SceneOptic&) const = default;
 };
 
@@ -184,6 +176,7 @@ struct OpticTraits {
 	std::span<const OpticSize> sizes;
 	std::span<const OpticParam> params;
 	std::span<const MaterialSlot> slots;
+	// the mounts the kind may sit in, the first its default (MountKind::None is always allowed besides)
 	std::span<const MountKind> mounts;
 	std::span<const OpticPort> ports;
 	// true for the kinds whose preview is a mount library model (planar mirrors: the PF blanks)

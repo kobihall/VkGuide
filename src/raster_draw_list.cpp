@@ -114,8 +114,9 @@ void MeshDrawList::rebuild(const std::vector<SceneMeshObject>& objects, const st
 
 MeshDrawList::CullResult MeshDrawList::cull(const glm::mat4& viewproj, const glm::vec3& eye, bool skipOccluded, std::vector<const RenderObject*>& out, std::vector<uint32_t>& queries) const
 {
-	//the frustum's six planes from the rows of the view-projection (Gribb and Hartmann): left, right, bottom, top,
-	//near and far. Vulkan keeps clip z from 0 to w, so the near plane is the third row alone
+	//the frustum's six planes from the rows of the view-projection (Gribb and Hartmann): left, right, bottom, top, and
+	//the two depth planes. Vulkan keeps clip z from 0 to w, so one of them is the third row alone: under the raster's
+	//reverse-Z that is the far plane, and w - z the near one
 	const glm::mat4& m = viewproj;
 	float rows[4][4];
 	for (int r = 0; r < 4; r++) {

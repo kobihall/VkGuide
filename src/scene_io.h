@@ -21,7 +21,8 @@
 // that a file without them reads as the defaults a scene of its time had), 15 (no auxiliary outputs,
 // light groups or export settings), 16 (no shape or environment brought by a model) and 17 to 19 (material types and
 // spectral settings that a file without them never uses). Version 20 adds the scene's capabilities and its template, and
-// 21 the optical elements, the optical library's catalogs, glasses and coatings, the optics settings and the length unit.
+// 21 the optical elements, the optical library's catalogs, glasses and coatings, the optics settings and the length unit,
+// 22 the viewport's camera, and 23 the bench and each optic's mount, which an older file's optics open without.
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -31,6 +32,7 @@
 #include <vector>
 
 #include <length_unit.h>
+#include <optic_bench.h>
 #include <optic_catalog.h>
 #include <optic_coating.h>
 #include <optic_glass.h>
@@ -174,6 +176,8 @@ struct SceneDescription {
 	LengthUnit lengthUnit { LengthUnit::Meters };
 	// version 22: absent in an older file, which opens with a new scene's viewport settings and the view where it was
 	std::optional<SceneViewportRecord> viewport;
+	// version 23: the bench and its breadboard (docs/plans/completed/physoptics-bench-and-mounts.md); a new scene's in an older file
+	BenchSettings bench;
 };
 
 IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);

@@ -21,6 +21,9 @@ namespace {
 // the capability here as it lands: its folders, Add entries, menus, windows, settings sections, recommended settings
 // and dependent objects. docs/physical-optics-overview.md lists what is registered so far
 
+// the Viewport's near clip plane for a bench: 1 mm
+constexpr float BENCH_NEAR_CLIP = 0.001f;
+
 void opticalBenchRecommendedSettings(const VulkanEngine* engine, std::vector<SettingChange>& out)
 {
 	//renders compared against references and against each other need the same noise every time
@@ -36,6 +39,15 @@ void opticalBenchRecommendedSettings(const VulkanEngine* engine, std::vector<Set
 			},
 		});
 	}
+	//the viewport right up against an optic, which a 100 mm near plane cuts away
+	if (engine->m_viewportNav.settings.nearClip > BENCH_NEAR_CLIP) {
+		out.push_back(SettingChange {
+			.label = "Viewport near clip",
+			.current = formatLength(engine->m_viewportNav.settings.nearClip),
+			.recommended = formatLength(BENCH_NEAR_CLIP),
+			.apply = [](VulkanEngine* e) { e->m_viewportNav.settings.nearClip = BENCH_NEAR_CLIP; },
+		});
+	}
 	//a bench is millimeters: optics are sold and drawn in them (docs/plans/completed/physoptics-optical-elements.md)
 	if (engine->m_lengthUnit != LengthUnit::Millimeters) {
 		out.push_back(SettingChange {
@@ -49,6 +61,15 @@ void opticalBenchRecommendedSettings(const VulkanEngine* engine, std::vector<Set
 
 void opticalBenchDependentObjects(const VulkanEngine* engine, std::vector<ObjectRef>& out)
 {
+	//the breadboard (physoptics-bench-and-mounts.md), and with it the bench's settings, so that the scene saves as one
+	//that never had a bench
+	if (engine->m_raytraceScene.bench().table) {
+		out.push_back(ObjectRef {
+			.kind = "Breadboard",
+			.name = "breadboard",
+			.erase = [](VulkanEngine* e) { e->m_raytraceScene.setBench(BenchSettings {}); },
+		});
+	}
 	//the optical elements (physoptics-optical-elements.md); the lasers, beam axes and detectors follow as their plans land
 	for (const SceneOptic& optic : engine->m_raytraceScene.optics()) {
 		const uint64_t id = optic.id;
@@ -88,6 +109,12 @@ void opticalBenchSceneStatus(VulkanEngine* engine)
 	}
 }
 
+// the breadboard, the posts and the mounts in the raster preview (bench_scene.h)
+void opticalBenchRasterGeometry(VulkanEngine* engine)
+{
+	engine->m_benchScene.draw(engine);
+}
+
 // Optics: a wider Scene panel for the bench's object tree, the viewport in the middle and the render on the right.
 // The Beam and Detectors windows dock below the viewport when their plans add them
 void buildOpticsLayout(uint32_t dockspace, std::vector<std::string>& open)
@@ -96,6 +123,7 @@ void buildOpticsLayout(uint32_t dockspace, std::vector<std::string>& open)
 	dockWindow("Scene", columns.leftTop);
 	dockWindow("Materials", columns.leftBottom);
 	dockWindow("Scene Capabilities", columns.leftBottom);
+	dockWindow("Bench Settings", columns.leftBottom);
 	dockWindow("Raytraced Output", columns.center);
 	dockWindow("Viewport", columns.center);
 	dockWindow("Raytrace Render", columns.rightTop);
@@ -108,11 +136,14 @@ void buildOpticsLayout(uint32_t dockspace, std::vector<std::string>& open)
 
 const WorkspaceInfo OPTICS_WORKSPACE { "optics", "Optics", buildOpticsLayout };
 
-// the bench seen from above and in front, as a camera at a table would see it: the 300 x 300 mm breadboard the plans
-// put at the origin, with its surface at y = 0 and the beam 100 mm above it
+// the bench seen from above and in front, as a camera at a table would see it: the 300 x 300 mm breadboard at the
+// origin, with its surface at y = 0 and the beam 100 mm above it
 void populateOpticalBench(VulkanEngine* engine)
 {
 	engine->enableCapability(CapabilityId::OpticalBench, false);
+	BenchSettings bench;
+	bench.table = true;
+	engine->m_raytraceScene.setBench(bench);
 	std::vector<SettingChange> changes;
 	opticalBenchRecommendedSettings(engine, changes);
 	for (const SettingChange& change : changes) {
@@ -127,9 +158,10 @@ void populateOpticalBench(VulkanEngine* engine)
 	engine->m_raytraceScene.replaceCameras({ camera });
 	engine->m_raytracer.setRenderCamera(engine->m_raytraceScene.cameras().front().id);
 	engine->setViewportPose(position, target);
-	//a bench is a third of a meter across, its optics a few millimeters thick
+	//a bench is a third of a meter across, its optics a few millimeters thick, and editing one puts the viewport right up
+	//against it. The raster pass's reverse-Z keeps its depth precision at any near plane
 	engine->m_viewportNav.settings.speed = 0.5f;
-	engine->m_viewportNav.settings.nearClip = 0.005f;
+	engine->m_viewportNav.settings.nearClip = BENCH_NEAR_CLIP;
 	//an empty environment: a bench is lit by its lasers, and stray light is what it is there to show
 	engine->m_solidBackground = true;
 	engine->m_backgroundColor = glm::vec3(0.f);
@@ -155,6 +187,7 @@ const CapabilityInfo CAPABILITIES[] = {
 		.materialFolders = drawOpticalLibraryFolders,
 		.materialDetails = drawOpticalLibraryDetails,
 		.viewportOverlays = nullptr,
+		.rasterGeometry = opticalBenchRasterGeometry,
 		.workspace = &OPTICS_WORKSPACE,
 	},
 };
@@ -163,7 +196,7 @@ static_assert(std::size(CAPABILITIES) == (size_t)CapabilityId::Count, "one CAPAB
 const SceneTemplate BUILTIN_TEMPLATES[] = {
 	SceneTemplate { .key = DEFAULT_TEMPLATE_KEY, .name = "Render scene", .description = "One camera and the default settings: what New Scene makes", .path = {}, .populate = nullptr },
 	SceneTemplate { .key = "optical_bench", .name = "Optical bench",
-		.description = "The Optical bench capability on, a camera looking down at the table, a fixed seed and an empty environment", .path = {}, .populate = populateOpticalBench },
+		.description = "The Optical bench capability on, the breadboard, a camera looking down at it, a fixed seed and an empty environment", .path = {}, .populate = populateOpticalBench },
 };
 
 // a template's file name from its name: lowercase letters, digits and underscores

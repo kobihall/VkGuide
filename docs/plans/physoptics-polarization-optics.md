@@ -2,7 +2,7 @@
 
 Polarization is how a laser lab controls power. A half-wave plate in a rotation mount ahead of a polarizing beamsplitter divides a beam between two arms in any ratio; a quarter-wave plate makes it circular; a window at Brewster's angle passes one polarization without loss; a calcite displacer splits it into two parallel beams. The request lists these as its polarization goals, with birefringent crystals. [pbrt-polarization.md](pbrt-polarization.md) carries Stokes vectors and Mueller matrices through the path tracer and adds polarizer and retarder materials. This plan builds the optical elements on top: wave plates, polarizers and Brewster windows as catalog kinds, polarizing coatings put to work, the rotation mount driving each element's axis, uniaxial crystals that split rays into ordinary and extraordinary with walk-off, and the same physics in the beam solver.
 
-*Not implemented. Depends on [pbrt-polarization.md](pbrt-polarization.md), [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) (complex coating amplitudes), [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) (rotation mounts) and [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) (the chief ray's Jones vector). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [pbrt-polarization.md](pbrt-polarization.md), [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) (complex coating amplitudes), [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md) (rotation mounts) and [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) (the chief ray's Jones vector). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer will have
 
@@ -31,7 +31,7 @@ New `OPTIC_TRAITS` rows, all round optics in rotation mounts by default, each wi
 
 For a wave plate the retardance at off-normal incidence uses the extraordinary index along the refracted wave vector, so tilting a plate detunes it, which is how labs fine-tune a multi-order plate. A multi-order plate under a broadband source becomes depolarizing in the image of a spectral render without any coherence model, because every lane has its own retardance and the lanes average.
 
-The rotation mount's rotor angle ([physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)) is the element's rotation about its optical axis, so turning the RSP's knob turns the plate's fast axis, and **Rotate and carry** or a typed angle sets it exactly ([physoptics-locked-transforms.md](physoptics-locked-transforms.md)).
+The rotation mount's rotor angle ([physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md)) is the element's rotation about its optical axis, so turning the RSP's knob turns the plate's fast axis, and **Rotate and carry** or a typed angle sets it exactly ([physoptics-locked-transforms.md](physoptics-locked-transforms.md)).
 
 ### Uniaxial media
 

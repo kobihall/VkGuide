@@ -685,14 +685,16 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	}
 	//an edit happened, but one that leaves the scene as it was (a slider let go where it started) still rebuilds
 	//nothing. Compared by value only here, since a scene of tens of thousands of objects takes milliseconds to compare
+	static const RaytraceMeshData noMeshes;
+	const RaytraceMeshData& meshData = engine->m_raytraceMeshData != nullptr ? *engine->m_raytraceMeshData : noMeshes;
+	//the bench's breadboard, posts and mounts (docs/plans/completed/physoptics-bench-and-mounts.md), from each optic's stack
+	BenchTrace bench = engine->m_benchScene.traceInput(editor, meshData);
 	if (sameBuild && m_sceneAccelObjects == editor.meshObjects() && m_sceneAccelShapes == editor.shapes() && m_sceneAccelLights == editor.lights()
-		&& m_sceneAccelMaterials == editor.materials() && m_sceneAccelOptics == editor.optics()) {
+		&& m_sceneAccelMaterials == editor.materials() && m_sceneAccelOptics == editor.optics() && m_sceneAccelBench == bench) {
 		m_sceneAccelContentRevision = editor.contentRevision();
 		return;
 	}
 
-	static const RaytraceMeshData noMeshes;
-	const RaytraceMeshData& meshData = engine->m_raytraceMeshData != nullptr ? *engine->m_raytraceMeshData : noMeshes;
 	//which library entry each loaded glTF material became, for the surfaces shaded with their own
 	ModelMaterialIds modelMaterialIds;
 	for (const auto& [key, model] : engine->m_models) {
@@ -706,9 +708,10 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 		}
 	}
 	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), editor.lights(), editor.materials(), modelMaterialIds,
-		environment, engine->m_raytraceTextures, spectral, editor.optics(), &engine->m_opticalLibrary);
+		environment, engine->m_raytraceTextures, spectral, editor.optics(), &engine->m_opticalLibrary, bench.empty() ? nullptr : &bench);
 	m_sceneAccelSpectral = spectral;
 	m_sceneAccelOptics = editor.optics();
+	m_sceneAccelBench = std::move(bench);
 
 	m_sceneAccelObjects = editor.meshObjects();
 	m_sceneAccelShapes = editor.shapes();

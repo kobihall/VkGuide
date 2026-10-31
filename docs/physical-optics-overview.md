@@ -1,6 +1,6 @@
 # Physical optics, end to end
 
-*A readable account of the laser optics simulator as it is built so far: what exists, how the parts fit, and the rules that keep them consistent. What is still to come, and in what order, is in the [laser optics plan](plans/physoptics-laser-optics.md); the file-by-file detail is in `docs/codebase-map.md` §8.27 and §8.28. Every physoptics plan updates this file when it lands: its row in the status table, its section, and the cross-plan list at the end.*
+*A readable account of the laser optics simulator as it is built so far: what exists, how the parts fit, and the rules that keep them consistent. What is still to come, and in what order, is in the [laser optics plan](plans/physoptics-laser-optics.md); the file-by-file detail is in `docs/codebase-map.md` §8.27, §8.28 and §8.30. Every physoptics plan updates this file when it lands: its row in the status table, its section, and the cross-plan list at the end.*
 
 ---
 
@@ -13,7 +13,7 @@ The optics have two consumers, which read the same data:
 - A CPU solver traces one chief ray per beam segment, in double precision, fast enough to run on every gizmo drag. It gives the beam's path and its Gaussian size everywhere.
 - The GPU path tracer traces millions of light paths from the lasers. It gives what detectors and cameras record, and the stray light, ghosts and clipping a single beam misses.
 
-Neither exists yet. Today the bench has its place in the scene, its workspace and its template, the Thorlabs mount models it will place, and the optics themselves: thirteen kinds of element, each an exact surface prescription the path tracer traces, made of catalog glasses and coated with thin-film stacks or metals.
+Neither exists yet. Today the bench has its place in the scene, its workspace and its template, and the optics themselves: thirteen kinds of element, each an exact surface prescription the path tracer traces, made of catalog glasses and coated with thin-film stacks or metals. Each optic stands in its Thorlabs mount on a post, a post holder and a clamping fork, on a breadboard with holes on a 25 mm grid, and every part of that stack is geometry the preview draws and the tracer hits.
 
 ```text
 scene file ──► capabilities ──► which folders, menus, windows, settings and workspace appear
@@ -30,8 +30,9 @@ scene file ──► capabilities ──► which folders, menus, windows, setti
 | [physoptics-optical-surfaces](plans/completed/physoptics-optical-surfaces.md) | 2026-10-29 | Optical bodies as lists of exact surfaces with apertures and media, traced on the CPU in double and on the GPU in float |
 | [physoptics-optical-materials](plans/completed/physoptics-optical-materials.md) | 2026-10-29 | Glass catalogs, air, coatings from ideal splitters to thin-film stacks and metals, the `optical_interface` material, surface scatter |
 | [physoptics-optical-elements](plans/completed/physoptics-optical-elements.md) | 2026-10-29 | Thirteen kinds of element in Thorlabs sizes, the **Optics** folder, their panel and preview, and the scene's length unit |
+| [physoptics-bench-and-mounts](plans/completed/physoptics-bench-and-mounts.md) | 2026-10-30 | The breadboard, the stack of fork, holder, post and mount under every optic, placement on the table, the fork's hole, the adjusters' kinematics, and the bench in the preview and the tracer |
 
-Every other physoptics plan is unbuilt. The laser optics plan's roadmap gives their order: bench and mounts come next, then light types, laser sources and the beam axis.
+Every other physoptics plan is unbuilt. The laser optics plan's roadmap gives their order: light types, laser sources and the beam axis come next.
 
 ## 3. Scene capabilities
 
@@ -60,10 +61,11 @@ Each hook is called only while the scene has the capability on, in registry orde
 - `renderSettings`: sections at the end of the **Render Settings** window.
 - `materialFolders` and `materialDetails`: folders after the models' in the **Materials** window, and the details pane for an entry one of those folders selected.
 - `viewportOverlays`: drawing over the **Viewport**, from a `ViewportView` that projects world points into the window and clips to it.
+- `rasterGeometry`: geometry the raster preview draws beside the scene's own objects. What it draws must move `RasterKey` when it changes, or a paused preview keeps the old picture.
 - `workspace`: a workspace offered beside **Render**.
 - Windows: an entry of the window registry whose `capability` is this one. It is drawn, listed and saved in workspaces only while the scene has the capability.
 
-**Optical bench** fills most of these. Its `sceneFolders` and `addMenu` are the **Optics** folder and **+ Add** → **Optic**, its `menus` the **Optics** menu (**Load Glass Catalog...** and **Import Coating Curve**), its `renderSettings` the **Optics** section, and its `materialFolders` and `materialDetails` the **Glasses** and **Coatings** folders. Its `sceneStatus` warns when optical models are placeholder boxes, which used to show in every scene, and its `workspace` is **Optics**. Code outside `scene_capabilities.cpp` asks `capabilityEnabled()` or walks the hooks, and never names a capability, except the plan that owns the part.
+**Optical bench** fills most of these. Its `sceneFolders` and `addMenu` are the **Optics** folder, with the breadboard's row, and **+ Add** → **Breadboard** and **Optic**. Its `menus` is the **Optics** menu (**Bench Settings...**, **Load Glass Catalog...** and **Import Coating Curve**), its `renderSettings` the **Optics** section, and its `materialFolders` and `materialDetails` the **Glasses** and **Coatings** folders. Its `rasterGeometry` draws the breadboard, posts and mounts, and its window is **Bench Settings**. Its `sceneStatus` warns when optical models are placeholder boxes, which used to show in every scene, and its `workspace` is **Optics**. Code outside `scene_capabilities.cpp` asks `capabilityEnabled()` or walks the hooks, and never names a capability, except the plan that owns the part.
 
 ### Recommended settings
 
@@ -79,11 +81,11 @@ each frame, for c in pending:
     else show changes; Apply runs each change; Apply or Dismiss drops c
 ```
 
-Nothing changes until **Apply**. Opening a file that already has the capability shows no note, since its settings are the file's to keep. **Optical bench** recommends a fixed seed and millimeters as the scene's length unit. Later plans add the light integrator when the scene has lasers and the breadboard at its default size.
+Nothing changes until **Apply**. Opening a file that already has the capability shows no note, since its settings are the file's to keep. **Optical bench** recommends a fixed seed, millimeters as the scene's length unit, and a 1 mm near clip plane for the **Viewport**. Later plans add the light integrator when the scene has lasers. The breadboard is an object, not a setting, so the template adds it and no recommendation does.
 
 ### Templates
 
-**File** → **New Scene** makes the Render scene template: one camera and the default settings, as it always has. **File** → **New from Template** lists the others. The built-in templates are code, `BUILTIN_TEMPLATES`, so they always match the current defaults and payload. Each is `newScene()` followed by its `populate` function. The Optical bench template turns the capability on, applies its recommended settings, puts a camera 0.55 m above the table looking at the beam height, and sets an empty, black environment.
+**File** → **New Scene** makes the Render scene template: one camera and the default settings, as it always has. **File** → **New from Template** lists the others. The built-in templates are code, `BUILTIN_TEMPLATES`, so they always match the current defaults and payload. Each is `newScene()` followed by its `populate` function. The Optical bench template turns the capability on, applies its recommended settings (a 1 mm near plane for the **Viewport** among them), adds the 300 × 300 mm breadboard, puts a camera 0.55 m above it looking at the beam height, and sets an empty, black environment.
 
 **File** → **Save as Template...** writes the scene to `assets/templates/<name>.gltf`, with a name and description in its payload. That folder's templates follow the built-ins in the menu. A template opens untitled, so **Save** asks for a path instead of overwriting it. The template a scene started from is a label in the window title, `<file> - <template> - VkGuide`, and gates nothing.
 
@@ -120,7 +122,7 @@ The Thorlabs mounts, holders, irises and mirror blanks are converted offline fro
 
 $$\theta_{\text{part}}(a) = \operatorname{lerp}\big(\text{table}_{\text{part}},\; a\big), \qquad a \in [a_{\min}, a_{\max}]$$
 
-`MountLibrary` reads and uploads a model the first time something asks for it, outside the scene's models, so a mount is never saved with a scene or listed under **Models**. Nothing places one yet: [physoptics-bench-and-mounts.md](plans/physoptics-bench-and-mounts.md) does.
+`MountLibrary` reads and uploads a model the first time something asks for it, outside the scene's models, so a mount is never saved with a scene or listed under **Models**. A model is read when an optic first stands in it, and the bench (§7) places its parts.
 
 ## 6. Optical bodies, glasses, coatings and elements
 
@@ -202,11 +204,57 @@ An element is a `SceneOptic`: a kind, a size, parameters by name in SI units, a 
 
 A slot's material is a library entry the element owns (`OpticSlotOrigin`): it is made with the element, deleted with it, hidden from every material combo, and saved in the element's record only when you change it. **Reset to default** in the slot's details remakes it. A port names the sequence of reflections and refractions that produces an output beam, such as a right-angle prism's **Turned** and **Retro**, and `traceEvents()` follows it in double, which is what the beam axis will read.
 
-The panel shows the parameters in the scene's length unit, the readout, the slots' coatings, the ports' directions and the mounts a kind may sit in, which [physoptics-bench-and-mounts.md](plans/physoptics-bench-and-mounts.md) makes real. In the raster preview a planar mirror at a preset size draws its PF blank model, and every other element its tessellated prescription.
+The panel shows the parameters in the scene's length unit, the readout, the slots' coatings, the ports' directions, and the mount (§7). In the raster preview a planar mirror at a preset size draws its PF blank model, and every other element its tessellated prescription.
 
 `tools/verify/optics_scenes.py` writes the scenes the checks render to `assets/scenes/`: `optics_furnace` (a lens in a white furnace), `optics_nd_filter`, `optics_cube_split`, `optics_lens_focus`, `optics_prism` (a camera looking through an F2 prism at a slit), and `optics_bench`, one element of each kind on a bench. `tools/verify/optics_check.py` renders the first five.
 
-## 7. Where things live
+## 7. The bench and the mounts
+
+### The breadboard
+
+The breadboard is a scene object, saved in the file's `"bench"` with its size and the bench's settings, the beam height and snapping. It is Thorlabs' metric board as `Breadboard-B3030A.step` models it: Ø5 mm M6 holes 5 mm deep on a 25 mm pitch with a 12.5 mm border, a top skin and a bottom skin 60 mm apart, in brushed stainless steel, and black side walls between them. `buildBreadboardMesh()` makes it at any size in 25 mm steps, about 62 triangles a hole. A side of $n$ holes has its hole $\lfloor (n - 1)/2 \rfloor$ at the origin, so the default 300 mm plate spans $-137.5$ to $162.5$ mm, with the holes at
+
+$$\mathbf{h}_{ij} = (25\,i,\; 0,\; 25\,j)\ \text{mm}, \qquad i, j \in \{-5, \dots, 6\}$$
+
+### The stack
+
+Every mounted optic stands on the same stack, each layer placed by the mates of [§5](#5-the-optomechanical-models)'s models: a CF125C/M clamping fork on the table, a PH50E/M post holder in it, a Ø12.7 mm post, the mount on the post, and the optic in the mount. An optic is placed by its origin (`opticOrigin()`), the point its optics are defined by: the center of a mirror's front face, and the center of anything light goes through, on its axis (an equilateral prism's centroid). The optic's `MountPose` (`src/optic_mount.h`) holds the four degrees of freedom the stack allows, at that origin: its place $\mathbf{o} = (o_x, o_z)$ on the table, the yaw $\psi$ about a vertical through it, its height $h$, and the fork's angle and reach. Write $T(\mathbf{v})$ for a translation and $R_y(\psi)$ for a turn about $+y$. With the origin $\mathbf{c}$ and the mount's post tap $\mathbf{t}$ in the mount's frame, the post stands at $\mathbf{p}$ with its top at $y_{\text{top}}$:
+
+$$\mathbf{p} = \mathbf{o} - \big[R_y(\psi)\,(\mathbf{c} - \mathbf{t})\big]_{xz}, \qquad y_{\text{top}} = h - (c_y - t_y), \qquad M_{\text{mount}} = T(p_x, y_{\text{top}}, p_z)\; R_y(\psi)\; T(-\mathbf{t})$$
+
+The post therefore moves when the mount or the optic changes, and the optical surface does not: a thicker mirror keeps its face. The optic's body frame is $M_{\text{mount}}\, P\, S$, where $S$ seats the body in the mount and $P$ is the motion of the part the seat rides on (a kinematic plate, a rotor). `opticWorldTransform()` (`src/optic_bench.h`) is the one function that composes it. The preview, the tracer and, later, the beam solver read the transform it gives, so they cannot disagree about where an optic is. The post always runs from the holder's mid-depth up to the mount, so its length follows the height, and the height is at least the post's top at the holder's top face: 80.1 mm for a KM100.
+
+How a body sits in its mount follows the body frames of §6. A mirror faces the mount's front, its back on the seat. A round transmissive optic, a plate and an iris are turned half a turn about $y$, since their light travels along their own $+z$, through the mount from its front. A prism stands on its cap with its body $x$ up, so that it turns and disperses in the table's plane.
+
+**Free placement**, and an optic whose mount is **None**, have all six degrees of freedom, a position and an orientation. A free optic keeps its mount around it but has no post, holder or fork. Turning free placement off keeps the origin where it is, turned by the optic's axis's horizontal part, and stands a post behind it.
+
+### Placing and the fork
+
+On the bench the gizmo translates in $x$, $y$ and $z$ and turns about $y$, at the optic's origin. A drag snaps the origin to the nearest hole when **Snap to holes** is on, and the post lands wherever that puts it; holding Alt inverts it for the drag. The fork bolts into a hole within its slot's reach, $26.797 \le |\mathbf{h} - \mathbf{p}| \le 58.293$ mm:
+
+```text
+choose fork(post p, previous angle a0, other stacks):
+    C <- every hole h of the table with |h - p| in the slot's reach
+    sort C by: (h - p) along an axis first, then |h - p|, then the angle from the nearest axis, then the angle from a0
+    for h in C: if the fork's outline toward h clears every other fork and post holder: return h
+    return C[0], blocked              // drawn red, and the panel says why
+```
+
+The hole 25 mm from a post is inside the slot's near end, so a post on a hole bolts to the one 50 mm along an axis. The editor refits every fork each frame whose bolt has left its hole, as it does when a post moves under a fixed origin, and every fork another stack has been put on, in order, so two forks never trade places.
+
+### The adjusters
+
+A kinematic mount's plate rests on its pivot ball $\mathbf{c}_0$ and two adjuster tips. Turning adjuster $i$ by $n_i$ revolutions advances its tip along the screw's axis $\mathbf{s}_i$ by $n_i\,\ell_i$, where the effective pitch $\ell_i$ is Thorlabs' angle per revolution times the modeled lever. With $\mathbf{a}_X$ the unit vector from the pivot to Y's contact and $\mathbf{a}_Y$ to X's, the plate turns about the pivot by
+
+$$R(\alpha, \beta) = \mathrm{Rot}(\mathbf{a}_X, \alpha)\; \mathrm{Rot}(\mathbf{a}_Y, \beta), \qquad \mathbf{s}_i \cdot \big(R\,\mathbf{r}_i - \mathbf{r}_i\big) = n_i\,\ell_i, \quad \mathbf{r}_i = \mathbf{c}_i - \mathbf{c}_0$$
+
+which Newton's method solves in double. One adjuster alone turns the plate about the axis through the pivot and the other contact. The optic rides on the plate, so its datum moves on an arc as it tilts, which is how a real mount walks a beam while steering it. A rotation mount's rotor turns about its axis, and an iris's lever and blades follow its opening through the model's `aperture` drive.
+
+### In the preview and the tracer
+
+`BenchScene` (`src/bench_scene.h`) uploads the breadboard, the post and each mount model a stack uses, and draws them through the capability's `rasterGeometry` hook. In the tracer every part is a mesh instance of the part's one BLAS, in its finish without decals, and every post is an exact capped cylinder. An optic's faces lie exactly in the mount faces they rest on, so the preview draws optics with a small depth bias toward the camera (1 step and a slope factor of 0.25), and they win the tie instead of flickering with their mount. A larger bias let glass seen nearly edge on show through its mount's lip from a meter away. The raster pass is reverse-Z, so the 1 mm near plane a bench uses keeps a depth step of about 1e-7 of the distance. Each carries a `BenchTag`, the optic's id and the part, so that a later plan can name what a beam clipped.
+
+## 8. Where things live
 
 ```text
 src/scene_capabilities.{h,cpp}   the capability registry, the Optical bench entry, templates, the capability windows
@@ -226,6 +274,9 @@ src/optic_mesh.{h,cpp}           rt_optics: the raster preview's tessellation
 src/optics_ui.{h,cpp}            the glass and coating combos, folders and details, the Optics menu and settings
 src/rt_scene_editor_optics.cpp   the Optics folder, the element panel, its gizmo and slot materials
 src/length_unit.{h,cpp}          the scene's length unit and the widgets that show lengths in it
+src/optic_mount.h                MountPose, FineAdjust and MountKind: how an optic stands, saved with it
+src/optic_bench.{h,cpp}          rt_optics: the breadboard, the stack, the fork rule, placement and the adjusters
+src/bench_scene.{h,cpp}          the breadboard, posts and mounts on the GPU, in the preview and in the tracer
 shaders/rt/include/crt_optic.glsl           the intersector and the surface records, mirroring optic_surface.cpp
 shaders/rt/include/crt_coating.glsl         the coating tables and the transfer matrix, mirroring optic_coating.cpp
 shaders/rt/include/crt_optic_material.glsl  the optical interface, absorption and the ABg lobe
@@ -235,7 +286,7 @@ tools/verify/optics_scenes.py    writes assets/scenes/optics_*.gltf
 tools/verify/optics_check.py     renders them and checks what each must show
 ```
 
-## 8. Across plans
+## 9. Across plans
 
 ### Checks every physoptics plan runs before it is done
 
@@ -249,6 +300,7 @@ Each plan that adds bench UI or objects keeps the bench consistent with the rest
 1. What the plan adds to a new bench joins `populateOpticalBench()`. The plan's table lists the target contents: the breadboard, a HeNe laser at beam height, a power meter, a beam axis from the laser, and the light integrator.
 1. A new window docks in `buildOpticsLayout()`, and in `buildRenderLayout()` if a render scene wants it too. A user's saved layout has no place for a new window, so it opens as a tab in the center the first time. Check both a fresh `imgui.ini` and one saved before the plan.
 1. Panels show lengths through `src/length_unit.h`, in the scene's unit, and angles in degrees or microradians. The file stores SI units.
+1. Anything that stands on the bench is placed through `opticWorldTransform()` or a stack of its own built the same way, never by a free transform the panel edits directly.
 1. The scene file version goes up by one, and a key is written only when it has something to say.
 1. This file gets the plan's status row, its section, and any new conventions.
 
@@ -256,7 +308,9 @@ Each plan that adds bench UI or objects keeps the bench consistent with the rest
 
 - The raster viewport ignores the scene's solid background, so the Optical bench template's black environment shows the viewport's sky gradient. The path tracer renders it black.
 - The Optics workspace in the laser optics plan has a top-down viewport beside the main one. That needs a second raster view: its own camera, draw image and `ViewportView`.
-- The raster preview has no hook for a capability's geometry. [physoptics-bench-and-mounts.md](plans/physoptics-bench-and-mounts.md) adds one for the breadboard and mounts, and must add what it draws to `RasterKey`, or the paused preview keeps showing the old picture.
+- Nothing reads the bench's tags yet. The beam solver and the detectors are to name a clipping part and count a path that strikes a mount as stray light.
+- Stacks other than forks do not collide: two post holders in neighboring holes overlap.
+- Mounts trace in their plain finishes: the decals are the preview's alone, since the path tracer's texture array holds 512 × 512 layers.
 - No detector exists, so the checks of the optics plans that need one (a 50:50 split measured as power on two detectors, a dichroic's split by wavelength) render images instead. [physoptics-detectors.md](plans/physoptics-detectors.md) runs them.
 - The design wavelength is one scene setting. When lasers exist, a monochromatic scene may want it to follow the laser's line.
 - The coating tables keep power, not phase. [pbrt-polarization.md](plans/pbrt-polarization.md) adds the phases, and the polarizing cube's s and p split, which the renderer averages today.
@@ -264,6 +318,6 @@ Each plan that adds bench UI or objects keeps the bench consistent with the rest
 - An off-axis parabola's thin edge is 0.75 of its diameter. At 1 in and 90 degrees that gives 30.95 mm, where MPD149's drawing gives 31.75 mm. A per-part table would match each drawing.
 - Whether a capability may hide UI its scenes do not need, such as the environment map controls in a bench scene, is open. So far capabilities only add, and hiding is a workspace's job.
 
-## 9. Sources
+## 10. Sources
 
-The [laser optics plan](plans/physoptics-laser-optics.md) and its sources; the [scene capabilities plan](plans/completed/physoptics-scene-capabilities.md) and its survey of OpticStudio, COMSOL, Unreal, Blender and FreeCAD; the Mitsuba 3 documentation, "Variants" and "Scene format"; the Dear ImGui docking branch, `DockBuilder` and the `.ini` settings handlers. For the optics: the sources of the [optical surfaces](plans/completed/physoptics-optical-surfaces.md), [optical materials](plans/completed/physoptics-optical-materials.md) and [optical elements](plans/completed/physoptics-optical-elements.md) plans, chiefly Macleod 2010, *Thin-film optical filters*; Ciddor 1996, *Refractive index of air*; the Zemax OpticStudio manual's "Glass catalogs"; Stover 2012, *Optical scattering*; and the Thorlabs product pages and drawings.
+The [laser optics plan](plans/physoptics-laser-optics.md) and its sources; the [bench and mounts plan](plans/completed/physoptics-bench-and-mounts.md); the [scene capabilities plan](plans/completed/physoptics-scene-capabilities.md) and its survey of OpticStudio, COMSOL, Unreal, Blender and FreeCAD; the Mitsuba 3 documentation, "Variants" and "Scene format"; the Dear ImGui docking branch, `DockBuilder` and the `.ini` settings handlers. For the optics: the sources of the [optical surfaces](plans/completed/physoptics-optical-surfaces.md), [optical materials](plans/completed/physoptics-optical-materials.md) and [optical elements](plans/completed/physoptics-optical-elements.md) plans, chiefly Macleod 2010, *Thin-film optical filters*; Ciddor 1996, *Refractive index of air*; the Zemax OpticStudio manual's "Glass catalogs"; Stover 2012, *Optical scattering*; and the Thorlabs product pages and drawings.

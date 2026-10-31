@@ -101,6 +101,17 @@ ImportedModel toImported(const MountModel& model)
 
 }
 
+MaterialDef mountFinishMaterial(MountFinish finish)
+{
+	return finishMaterial(finish, -1).definition;
+}
+
+std::optional<MountFinish> mountFinishOfMaterial(std::string_view name)
+{
+	const size_t space = name.find(' ');
+	return mountFinishByName(space == std::string_view::npos ? name : name.substr(0, space));
+}
+
 void MountLibrary::open(VulkanEngine* engine, const std::filesystem::path& directory)
 {
 	clear();

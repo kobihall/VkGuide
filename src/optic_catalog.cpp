@@ -738,13 +738,6 @@ double OpticBuildContext::relativeIndex(const std::string& glass) const
 	return n / ns;
 }
 
-glm::dmat4 SceneOptic::bodyToWorld() const
-{
-	glm::dmat4 m = glm::mat4_cast(orientation);
-	m[3] = glm::dvec4(position, 1.0);
-	return m;
-}
-
 std::span<const OpticTraits> opticTraitsTable()
 {
 	return OPTIC_TRAITS;
@@ -876,6 +869,10 @@ SceneOptic makeOptic(OpticKind kind)
 	if (kind == OpticKind::Iris) {
 		optic.sizePreset = 4;
 	}
+	// in the kind's default mount, until the editor stands it on the bench; free at the old default place before that
+	const std::span<const MountKind> mounts = opticTraits(kind).mounts;
+	optic.mount.kind = mounts.empty() ? MountKind::None : mounts[0];
+	optic.world = optic.mount.freeTransform();
 	return optic;
 }
 

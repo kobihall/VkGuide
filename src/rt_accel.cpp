@@ -412,9 +412,21 @@ void refreshModelMaterialDef(MaterialDef& entry, const GLTFMaterial& material, c
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
 	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures,
-	const SpectralSceneContext& spectral, const std::vector<SceneOptic>& optics, const OpticalLibrary* library)
+	const SpectralSceneContext& spectral, const std::vector<SceneOptic>& optics, const OpticalLibrary* library, const BenchTrace* bench)
 {
 	auto accel = std::make_shared<RaytraceSceneAccel>();
+	//the bench's finishes are not library entries: an id from BENCH_MATERIAL_ID up is one of them
+	auto findMaterialDef = [&](uint64_t id) -> const MaterialDef* {
+		const auto found = std::find_if(materials.begin(), materials.end(), [id](const MaterialDef& m) { return m.id == id; });
+		if (found != materials.end()) {
+			return &*found;
+		}
+		if (bench != nullptr && id >= BENCH_MATERIAL_ID) {
+			const auto finish = std::find_if(bench->materials.begin(), bench->materials.end(), [id](const MaterialDef& m) { return m.id == id; });
+			return finish != bench->materials.end() ? &*finish : nullptr;
+		}
+		return nullptr;
+	};
 
 	//every library entry an instance references, packed once per way it is packed: with textures for
 	//a mesh, without them for a shape. Id 0 is a glTF surface with no material at all, white
@@ -431,14 +443,14 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 			accel->materials.emplace_back();
 			accel->materialSpectra.push_back(emptyMaterialSpectralRecord());
 			materialGroups.push_back(0u);
-			const auto found = std::find_if(materials.begin(), materials.end(), [id](const MaterialDef& m) { return m.id == id; });
+			const MaterialDef* found = findMaterialDef(id);
 			const MaterialDef fallback = makeMaterial(MaterialType::Lambertian, id == 0 ? glm::vec3(1.f) : glm::vec3(0.7f));
-			PackedMaterial packed = packMaterial(found != materials.end() ? *found : fallback,
+			PackedMaterial packed = packMaterial(found != nullptr ? *found : fallback,
 				PackContext { .textures = textures,
 					.spectra = spectral.spectra,
 					.designWavelength = spectral.designWavelength,
 					.materialIndex = [&materialIndex, textures](uint64_t child) { return materialIndex(child, textures); } });
-			materialGroups[index] = found != materials.end() ? std::min(found->lightGroup, MAX_LIGHT_GROUPS - 1u) : 0u;
+			materialGroups[index] = found != nullptr ? std::min(found->lightGroup, MAX_LIGHT_GROUPS - 1u) : 0u;
 			//its spectra, by slot, as indices into the scene's list
 			MaterialSpectralRecord record = emptyMaterialSpectralRecord();
 			for (size_t slot = 0; slot < MATERIAL_SPECTRUM_SLOTS; slot++) {
@@ -460,6 +472,8 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	//or a shape's material, and where its lights are
 	std::vector<uint32_t> materialBase;
 	std::vector<uint32_t> lightBase;
+	//per instance, its bench tag or -1
+	std::vector<int32_t> benchTag;
 
 	//the punctual lights first: the delta lights are the front of the list
 	LightListBuilder lightList(&accel->spectra, spectral.spectra);
@@ -480,6 +494,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		instances.push_back(instance);
 		materialBase.push_back(material);
 		lightBase.push_back(lightList.addShape(shapes[i].kind, instance.objectToWorld, accel->materials[material].emission, materialGroups[material], emitterSpectrum(material)));
+		benchTag.push_back(-1);
 	}
 	accel->shapeCount = (uint32_t)shapes.size();
 
@@ -544,7 +559,23 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 			instances.push_back(instance);
 			materialBase.push_back(tableBase);
 			lightBase.push_back(GPU_NO_LIGHT);
+			benchTag.push_back(-1);
 			accel->opticCount++;
+		}
+	}
+
+	//THE BENCH's posts: exact capped cylinders, which emit nothing
+	if (bench != nullptr) {
+		accel->benchTags = bench->tags;
+		for (const BenchPostInstance& post : bench->posts) {
+			SceneInstance instance;
+			instance.kind = SceneInstanceKind::Shape;
+			instance.shape = ShapeKind::Cylinder;
+			instance.objectToWorld = post.objectToWorld;
+			instances.push_back(instance);
+			materialBase.push_back(materialIndex(post.material, false));
+			lightBase.push_back(GPU_NO_LIGHT);
+			benchTag.push_back((int32_t)post.tag);
 		}
 	}
 
@@ -605,6 +636,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 			});
 		}
 		lightBase.push_back(meshLightBase);
+		benchTag.push_back(-1);
 
 		SceneInstance instance;
 		instance.kind = SceneInstanceKind::Mesh;
@@ -613,6 +645,28 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		instances.push_back(instance);
 		accel->meshInstanceCount++;
 		accel->placedTriangles += blases->blases[meshIndex]->blas.triangleCount;
+	}
+
+	//THE BENCH's meshes: the breadboard and every part of every stack, each surface in its finish, none emitting
+	if (bench != nullptr && blases != nullptr) {
+		for (const BenchMeshInstance& part : bench->meshes) {
+			if (part.meshIndex >= blases->blases.size() || blases->blases[part.meshIndex] == nullptr || !blases->blases[part.meshIndex]->blas.usable()) {
+				continue;
+			}
+			materialBase.push_back((uint32_t)accel->instanceMaterials.size());
+			for (const uint64_t material : part.surfaceMaterials) {
+				accel->instanceMaterials.push_back(materialIndex(material, true));
+			}
+			lightBase.push_back(GPU_NO_LIGHT);
+			benchTag.push_back((int32_t)part.tag);
+			SceneInstance instance;
+			instance.kind = SceneInstanceKind::Mesh;
+			instance.blas = (uint32_t)part.meshIndex;
+			instance.objectToWorld = part.objectToWorld;
+			instances.push_back(instance);
+			accel->meshInstanceCount++;
+			accel->placedTriangles += blases->blases[part.meshIndex]->blas.triangleCount;
+		}
 	}
 
 	std::vector<const Blas*> blasPointers;
@@ -658,10 +712,12 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	};
 	for (const uint32_t index : accel->tlas.unbounded) {
 		accel->instances.push_back(gpuInstance(index));
+		accel->instanceBenchTag.push_back(benchTag[index]);
 	}
 	accel->unboundedCount = (uint32_t)accel->tlas.unbounded.size();
 	for (const uint32_t index : accel->tlas.bvh.primOrder) {
 		accel->instances.push_back(gpuInstance(index));
+		accel->instanceBenchTag.push_back(benchTag[index]);
 	}
 
 	if (!accel->tlas.bvh.error.empty()) {

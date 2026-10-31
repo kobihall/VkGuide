@@ -1,5 +1,8 @@
 #version 460
 
+#extension GL_GOOGLE_include_directive : require
+#include "srgb.glsl"
+
 layout (local_size_x = 16, local_size_y = 16) in;
 
 layout(rgba16f,set = 0, binding = 0) uniform image2D image;
@@ -26,6 +29,8 @@ void main()
     {
         float blend = float(texelCoord.y)/(size.y); 
     
-        imageStore(image, texelCoord, mix(topColor,bottomColor, blend));
+        //display colors: linear here, so that viewport_encode.comp gives back exactly these
+        const vec4 color = mix(topColor,bottomColor, blend);
+        imageStore(image, texelCoord, vec4(srgbDecode(color.rgb), color.a));
     }
 }

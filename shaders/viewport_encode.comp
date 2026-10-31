@@ -1,0 +1,20 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : require
+#include "srgb.glsl"
+
+// The raster preview's last pass: its linear draw image sRGB-encoded in place, for the Viewport window, which shows it on
+// a UNORM swapchain as it is. It runs only after a raster pass has drawn, so a paused preview is never encoded twice
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout(rgba16f, set = 0, binding = 0) uniform image2D image;
+
+void main()
+{
+	const ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(texel, imageSize(image)))) {
+		return;
+	}
+	const vec4 color = imageLoad(image, texel);
+	imageStore(image, texel, vec4(srgbEncode(color.rgb), color.a));
+}

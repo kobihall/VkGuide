@@ -33,6 +33,9 @@ public:
 	void setInputTopology(VkPrimitiveTopology topology);
 	void setPolygonMode(VkPolygonMode mode);
 	void setCullMode(VkCullModeFlags cullMode, VkFrontFace frontFace);
+	// a constant and a slope-scaled offset added to every fragment's depth; negative brings it toward the camera under
+	// this project's forward Z. Both 0 turns it off
+	void setDepthBias(float constantFactor, float slopeFactor);
 	void setMultisamplingNone();
 	void disableBlending();
 	void enableBlendingAdditive();

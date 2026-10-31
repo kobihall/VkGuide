@@ -11,9 +11,13 @@
 //    quarter-wave stacks, energy and reciprocity of lossless stacks, bare silver, and the GPU table's interpolation
 //  - elements: every kind at every size builds and closes, its bounds hold it, the off-axis parabola focuses, the wedges
 //    deviate, the lens readout matches a real ray, the right-angle prism turns and retro-reflects
+//  - the bench: every kind in every mount stands at the beam height on its post, holder and fork; the stack reproduces
+//    example mirror.FCStd; snapping, the fork's hole and its clashes; the kinematic mounts' adjusters against Thorlabs'
+//    angle per revolution, about the right axis and reversibly; free placement and back; the breadboard's mesh
 //
 // Run from the repository root:  ./bin/optics_test [--rays N] [--root dir] [--selfcheck]
 
+#include <optic_bench.h>
 #include <optic_catalog.h>
 #include <optic_coating.h>
 #include <optic_glass.h>
@@ -27,6 +31,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <random>
 
 #include <fmt/format.h>
@@ -827,6 +832,279 @@ void testElements()
 	}
 }
 
+//---------------------------------------------------------------- the bench
+
+// the mount library, read once from the converter's files
+std::map<std::string, MountModel, std::less<>> g_models;
+
+BenchContext benchContext()
+{
+	BenchContext c;
+	c.settings.table = true;
+	c.models = [](std::string_view id) -> const MountModel* {
+		const auto found = g_models.find(id);
+		return found == g_models.end() ? nullptr : &found->second;
+	};
+	c.build = context();
+	return c;
+}
+
+glm::dvec3 origin(const glm::dmat4& m)
+{
+	return glm::dvec3(m[3]);
+}
+
+glm::dvec3 axisZ(const glm::dmat4& m)
+{
+	return glm::normalize(glm::dvec3(m[2]));
+}
+
+// a mate of a placed part, in world space
+glm::dmat4 mateInWorld(const OpticStack& stack, const char* model, const char* mate)
+{
+	for (const StackPart& part : stack.parts) {
+		const MountModel& m = g_models.at(part.model->id);
+		const MountMate* found = m.findMate(mate);
+		if (std::string_view(part.model->id) == model && found != nullptr && found->part == part.part) {
+			return part.toWorld * mateTransform(*found);
+		}
+	}
+	return glm::dmat4(0.0);
+}
+
+// the rotation of a 3x3 matrix as an axis
+glm::dvec3 rotationAxis(const glm::dmat3& r)
+{
+	const glm::dvec3 v(r[1][2] - r[2][1], r[2][0] - r[0][2], r[0][1] - r[1][0]);
+	return glm::length(v) > 0.0 ? glm::normalize(v) : glm::dvec3(0.0);
+}
+
+void testBench(const std::string& root)
+{
+	fmt::println("bench: stacks at the beam height, the example assembly, snapping, forks and adjusters");
+	for (const MountModelInfo& info : mountModels()) {
+		g_models.emplace(info.id, loadMountModel(root + "/assets/optical_models/meshes", info));
+	}
+	const BenchContext ctx = benchContext();
+	const double plant = g_plant ? 1e-6 : 0.0;
+
+	// every kind at every size in every mount it allows, at the default pose: the axis at the beam height, the post's
+	// top on the mount's tap, the holder on the post's axis, the fork's seat at the holder's base
+	int stacks = 0;
+	double lowest = 0.0;
+	for (size_t k = 0; k < OPTIC_KIND_COUNT; k++) {
+		const OpticKind kind = (OpticKind)k;
+		for (int size = 0; size < (int)opticTraits(kind).sizes.size(); size++) {
+			for (const MountKind mount : opticTraits(kind).mounts) {
+				SceneOptic optic = makeOptic(kind);
+				setOpticSize(optic, size);
+				optic.mount.kind = mount;
+				if (opticMountModel(optic) == nullptr) {
+					continue;
+				}
+				placeOnBench(optic, glm::dvec2(0.0), ctx.settings.beamHeight, 0.3, true, ctx, {});
+				const OpticStack stack = assembleStack(optic, ctx);
+				stacks++;
+				const std::string what = fmt::format("{} {} in {}", opticTraits(kind).name, opticTraits(kind).sizes[(size_t)size].key, stack.mount->id);
+				// a stack whose lowest reach is above the beam (a 50 mm prism on its platform) stands at that
+				const double height = std::max(ctx.settings.beamHeight, stack.minimumHeight);
+				check(stack.post && std::abs(origin(stack.opticToWorld).y - height) + plant < 1e-9,
+					fmt::format("{}: the axis is at {:.12f} m, not {:.12f}", what, origin(stack.opticToWorld).y, height));
+				lowest = std::max(lowest, stack.minimumHeight);
+				const glm::dvec3 tap = origin(mateInWorld(stack, stack.mount->id, "post_tap"));
+				check(glm::length(tap - stack.postTop) + plant < 1e-9, fmt::format("{}: the post's top is {:.3e} m from the tap", what, glm::length(tap - stack.postTop)));
+				const glm::dmat4 entry = mateInWorld(stack, POST_HOLDER_MODEL, "post_entry");
+				const glm::dvec3 e = origin(entry);
+				check(std::hypot(e.x - stack.postTop.x, e.z - stack.postTop.z) < 1e-9 && std::abs(axisZ(entry).y - 1.0) < 1e-12,
+					fmt::format("{}: the holder's bore is on the post's axis", what));
+				check(stack.postBottom.y < e.y && stack.postTop.y >= e.y - 1e-12, fmt::format("{}: the post rises out of its holder", what));
+				const glm::dvec3 seat = origin(mateInWorld(stack, CLAMPING_FORK_MODEL, "holder_seat"));
+				const glm::dvec3 base = origin(mateInWorld(stack, POST_HOLDER_MODEL, "base_contact"));
+				check(glm::length(seat - base) < 1e-9 && std::abs(base.y) < 1e-12, fmt::format("{}: the holder sits in the fork on the table", what));
+				check(isHole(ctx.settings, stack.bolt) && !stack.forkBlocked, fmt::format("{}: the fork's bolt is in a hole", what));
+				// the origin is where it was placed: on the hole at the origin, at the beam height, and the optic's own point
+				const glm::dvec3 placed = glm::dvec3(stack.opticToWorld * glm::dvec4(opticOrigin(optic, ctx), 1.0));
+				check(glm::length(stack.origin - glm::dvec3(0.0, height, 0.0)) + plant < 1e-9 && glm::length(placed - stack.origin) < 1e-12,
+					fmt::format("{}: the origin is {:.3e} m from where it was placed", what, glm::length(stack.origin - glm::dvec3(0.0, height, 0.0))));
+			}
+		}
+	}
+	check(stacks >= 40, fmt::format("only {} stacks were built", stacks));
+	fmt::println("  {} stacks; the highest lowest axis is {:.3f} mm", stacks, lowest * 1e3);
+
+	// PF05-03 in KM05T/M on a post in PH50E/M in CF125C/M, as example mirror.FCStd places them: each model's canonical
+	// frame in the fork's, from the example (tools/optical_models/convert.py --check-example's parts)
+	{
+		struct Reference {
+			const char* model;
+			glm::dvec3 origin;
+			glm::dvec3 z;
+		};
+		const Reference references[] = {
+			{ "KM05T/M", { 0.0, 0.093415, -0.0071628 }, { 0.0, 0.0, -1.0 } },
+			{ "PH50E/M", { 0.0, 0.0, 0.0 }, { 0.0, 0.0, -1.0 } },
+			{ "CF125C/M", { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 1.0 } },
+		};
+		SceneOptic mirror = makeOptic(OpticKind::PlanarMirror);
+		setOpticSize(mirror, 0);
+		mirror.mount.kind = MountKind::Kinematic;
+		mirror.mount.origin = glm::dvec2(0.0);
+		mirror.mount.yaw = PI;
+		mirror.mount.height = 0.093415;
+		mirror.mount.forkAngle = 0.0;
+		mirror.mount.forkReach = 0.05;
+		// the post on the fork's seat at the example's origin: the mirror's face is where that puts it
+		mirror.mount.origin -= assembleStack(mirror, ctx).postAxis;
+		const OpticStack stack = assembleStack(mirror, ctx);
+		for (const Reference& reference : references) {
+			const StackPart* part = nullptr;
+			for (const StackPart& p : stack.parts) {
+				if (std::string_view(p.model->id) == reference.model && (p.part == "base" || p.part == "holder" || p.part == "fork")) {
+					part = &p;
+				}
+			}
+			const double offset = part != nullptr ? glm::length(origin(part->toWorld) - reference.origin) : 1.0;
+			const double angle = part != nullptr ? std::acos(std::clamp(glm::dot(axisZ(part->toWorld), reference.z), -1.0, 1.0)) : 1.0;
+			check(offset + (g_plant ? 1e-3 : 0.0) < 0.05e-3 && angle < 1e-4, fmt::format("example: {} is {:.4f} mm and {:.4f} mrad from the example's", reference.model, offset * 1e3, angle * 1e3));
+			if (!g_plant) {
+				fmt::println("  example: {} {:.6f} mm, {:.6f} mrad from the example's", reference.model, offset * 1e3, angle * 1e3);
+			}
+		}
+		// the blank: coaxial with the example's, 0.095 mm further out, since the example sinks it into the rear ring
+		const glm::dvec3 blank(0.0, 0.093415, -0.0130678);
+		const glm::dvec3 d = origin(stack.opticToWorld) - blank;
+		const double axial = glm::dot(d, glm::dvec3(0.0, 0.0, -1.0));
+		const double lateral = glm::length(d - axial * glm::dvec3(0.0, 0.0, -1.0));
+		check(lateral < 0.05e-3 && std::abs(axisZ(stack.opticToWorld).z + 1.0) < 1e-12 && std::abs(axial - 0.095e-3) < 0.01e-3,
+			fmt::format("example: the blank is {:.4f} mm off axis and {:.4f} mm along it from the example's", lateral * 1e3, axial * 1e3));
+		if (!g_plant) {
+			fmt::println("  example: the blank {:.6f} mm off axis, {:.6f} mm further out", lateral * 1e3, axial * 1e3);
+		}
+		// the post shows 23.984 mm between the holder and the mount, as in the example
+		const double shown = stack.postTop.y - origin(mateInWorld(stack, POST_HOLDER_MODEL, "post_entry")).y;
+		check(std::abs(shown - 23.984e-3) < 0.01e-3, fmt::format("example: {:.3f} mm of post shows above the holder", shown * 1e3));
+	}
+
+	// a snapped post is on a hole center, its fork's bolt on another along an axis; a continuous one keeps its place and
+	// still bolts into a hole; a second post beside the first turns its fork away from the first's
+	{
+		SceneOptic a = makeOptic(OpticKind::PlanarMirror);
+		placeOnBench(a, glm::dvec2(0.0113, -0.0371), 0.1, 0.0, true, ctx, {});
+		const OpticStack sa = assembleStack(a, ctx);
+		check(isHole(ctx.settings, a.mount.origin) && glm::length(a.mount.origin - glm::dvec2(0.0, -0.025)) + plant < 1e-9, "a snapped origin is on the nearest hole");
+		check(isHole(ctx.settings, sa.bolt) && a.mount.forkReach >= 0.026797 - 1e-9 && a.mount.forkReach <= 0.058293 + 1e-9,
+			fmt::format("a snapped optic's fork bolts into a hole in reach (reach {:.4f} mm)", a.mount.forkReach * 1e3));
+		SceneOptic c = makeOptic(OpticKind::PlanarMirror);
+		placeOnBench(c, glm::dvec2(0.0113, 0.0071), 0.1, 0.0, false, ctx, {});
+		const OpticStack sc = assembleStack(c, ctx);
+		check(glm::length(c.mount.origin - glm::dvec2(0.0113, 0.0071)) < 1e-15 && isHole(ctx.settings, sc.bolt) && c.mount.forkReach >= 0.026797 - 1e-9 && c.mount.forkReach <= 0.058293 + 1e-9,
+			"a continuous post keeps its place and bolts into a hole in reach");
+		const std::vector<OpticStack> first { sa };
+		SceneOptic b = makeOptic(OpticKind::PlanarMirror);
+		placeOnBench(b, a.mount.origin + glm::dvec2(0.05, 0.0), 0.1, 0.0, true, ctx, first);
+		// the first's fork moves out of the way when the second's holder lands on it, as the editor's resolve does
+		const std::vector<OpticStack> second { assembleStack(b, ctx) };
+		refitFork(a, ctx, second);
+		std::vector<OpticStack> both { assembleStack(a, ctx), assembleStack(b, ctx) };
+		markForkClashes(both, ctx.settings);
+		check(!both[0].forkBlocked && !both[1].forkBlocked, "two optics 50 mm apart get forks that clear each other");
+		// a fork laid over another stack's holder is marked
+		SceneOptic d = b;
+		const glm::dvec2 toA = sa.postAxis - assembleStack(d, ctx).postAxis;
+		d.mount.forkAngle = std::atan2(toA.x, toA.y);
+		std::vector<OpticStack> clash { sa, assembleStack(d, ctx) };
+		markForkClashes(clash, ctx.settings);
+		check(clash[1].forkBlocked, "a fork over another post holder is marked blocked");
+	}
+
+	// one revolution of each kinematic mount's adjuster tilts the plate by Thorlabs' angle per revolution within 2 %, about
+	// the axis through the pivot and the other contact to 1e-6 rad; and back again restores the pose exactly
+	for (const char* id : { "KM05T/M", "KM100", "KM200", "KM200PM/M" }) {
+		const std::optional<KinematicGeometry> g = kinematicGeometry(g_models.at(id));
+		if (!g) {
+			check(false, fmt::format("{} has no kinematic geometry", id));
+			continue;
+		}
+		const double thorlabs = g_models.at(id).findMate("adjuster_x_tip")->params.at("angle_per_rev");
+		for (int adjuster = 0; adjuster < 2; adjuster++) {
+			const KinematicPose pose = solveKinematic(*g, adjuster == 0 ? 1.0 : 0.0, adjuster == 1 ? 1.0 : 0.0);
+			const glm::dmat3 r(pose.plate);
+			const double angle = std::acos(std::clamp(0.5 * (r[0][0] + r[1][1] + r[2][2] - 1.0), -1.0, 1.0));
+			const glm::dvec3 expected = glm::normalize((adjuster == 0 ? g->contactY : g->contactX) - g->pivot);
+			const double axisError = std::acos(std::clamp(std::abs(glm::dot(rotationAxis(r), expected)), -1.0, 1.0));
+			check(pose.converged && std::abs(angle / thorlabs - 1.0) + (g_plant ? 0.03 : 0.0) < 0.02,
+				fmt::format("{} adjuster {}: one revolution tilts the plate {:.4f} mrad, Thorlabs gives {:.1f}", id, adjuster == 0 ? 'X' : 'Y', angle * 1e3, thorlabs * 1e3));
+			check(axisError + plant < 1e-6, fmt::format("{} adjuster {}: the plate turns {:.3e} rad off the axis through the pivot and the other contact", id, adjuster == 0 ? 'X' : 'Y', axisError));
+			if (!g_plant) {
+				fmt::println("  {} adjuster {}: {:.6f} mrad per revolution ({:.4f} mm effective pitch), {:.1e} rad off its axis, stops at {:.2f} revolutions", id, adjuster == 0 ? 'X' : 'Y', angle * 1e3,
+					(adjuster == 0 ? g->pitchX : g->pitchY) * 1e3, axisError, adjuster == 0 ? adjusterTurnLimits(*g).x : adjusterTurnLimits(*g).y);
+			}
+		}
+		// the full stack, both adjusters turned and turned back
+		SceneOptic optic = makeOptic(id == std::string_view("KM200PM/M") ? OpticKind::CubeBeamsplitter : OpticKind::PlanarMirror);
+		if (optic.kind == OpticKind::PlanarMirror) {
+			setOpticSize(optic, id == std::string_view("KM05T/M") ? 0 : id == std::string_view("KM100") ? 1 : 2);
+		}
+		placeOnBench(optic, glm::dvec2(0.0), 0.12, 0.4, true, ctx, {});
+		const glm::dmat4 rest = assembleStack(optic, ctx).opticToWorld;
+		optic.mount.fine.adjusterX = 0.25;
+		optic.mount.fine.adjusterY = -0.5;
+		const OpticStack turned = assembleStack(optic, ctx);
+		optic.mount.fine = FineAdjust {};
+		const glm::dmat4 back = assembleStack(optic, ctx).opticToWorld;
+		check(back == rest && !(turned.opticToWorld == rest) && turned.kinematic && turned.kinematic->converged, fmt::format("{}: turning the adjusters and back restores the pose exactly", id));
+		check(turned.kinematic && glm::length(turned.kinematic->datumShift) > 0.0 && glm::length(turned.kinematic->datumShift) < 1e-3,
+			fmt::format("{}: a tilt walks the optic's datum by {:.3f} um", id, turned.kinematic ? glm::length(turned.kinematic->datumShift) * 1e6 : 0.0));
+	}
+
+	// a thicker mirror keeps its face where it was: the post moves behind it, and the fork goes back to a hole
+	{
+		SceneOptic mirror = makeOptic(OpticKind::PlanarMirror);
+		placeOnBench(mirror, glm::dvec2(0.025, 0.05), 0.1, 0.5, true, ctx, {});
+		const OpticStack before = assembleStack(mirror, ctx);
+		setOpticValue(mirror, "thickness", 0.012);
+		const bool refit = refitFork(mirror, ctx, {});
+		const OpticStack after = assembleStack(mirror, ctx);
+		check(glm::length(after.origin - before.origin) + plant < 1e-12 && glm::length(after.postAxis - before.postAxis) > 1e-3 && refit && isHole(ctx.settings, after.bolt),
+			fmt::format("a thicker mirror keeps its face ({:.3e} m), its post moves {:.3f} mm and its fork is refit", glm::length(after.origin - before.origin),
+				glm::length(after.postAxis - before.postAxis) * 1e3));
+	}
+
+	// free placement and back: the optic drops to a stack under its datum, at its height
+	{
+		SceneOptic optic = makeOptic(OpticKind::SphericalLens);
+		placeOnBench(optic, glm::dvec2(0.05, 0.025), 0.1, 0.7, true, ctx, {});
+		const glm::dmat4 placed = assembleStack(optic, ctx).opticToWorld;
+		optic.mount.freePlacement = true;
+		optic.mount.setFreeTransform(placed);
+		dropOntoBench(optic, ctx, {});
+		const glm::dmat4 dropped = assembleStack(optic, ctx).opticToWorld;
+		check(glm::length(origin(dropped) - origin(placed)) + plant < 1e-9 && glm::length(axisZ(dropped) - axisZ(placed)) < 1e-9,
+			"turning Free placement off keeps an upright optic where it was");
+	}
+
+	// the breadboard: the default plate's holes, extent and triangle budget, and the largest table's count
+	{
+		BenchSettings bench;
+		const BenchGrid grid = benchGrid(bench);
+		check(grid.count == glm::ivec2(12) && std::abs(grid.min.x + 0.1375) < 1e-12 && std::abs(grid.max.x - 0.1625) < 1e-12, "the 300 mm table spans -137.5 to 162.5 mm with 12 holes");
+		const BenchMesh mesh = buildBreadboardMesh(bench);
+		glm::vec3 lo(1e9f), hi(-1e9f);
+		for (const glm::vec3& p : mesh.positions) {
+			lo = glm::min(lo, p);
+			hi = glm::max(hi, p);
+		}
+		const size_t floors = (mesh.indices.size() - mesh.skinIndexCount - mesh.wallIndexCount) / 3;
+		check(mesh.uvs.size() == mesh.positions.size() && mesh.skinIndexCount > 0 && mesh.wallIndexCount > 0, "the breadboard has uvs and three surfaces");
+		check(std::abs(hi.y) < 1e-7f && std::abs(lo.y + 0.06f) < 1e-7f && std::abs(lo.x + 0.1375f) < 1e-6f && std::abs(hi.z - 0.1625f) < 1e-6f, "the breadboard mesh fills the plate");
+		check(floors == 144 * 10, fmt::format("the breadboard has {} floor triangles for 144 holes", floors));
+		bench.size = glm::dvec2(1.2, 2.4);
+		const size_t large = buildBreadboardMesh(bench).indices.size() / 3;
+		fmt::println("  300 x 300 mm: {} triangles; 1.2 x 2.4 m: {} triangles", mesh.indices.size() / 3, large);
+		check(large < 300000, fmt::format("a 1.2 x 2.4 m table is {} triangles", large));
+	}
+}
+
 }
 
 int main(int argc, char** argv)
@@ -860,6 +1138,7 @@ int main(int argc, char** argv)
 		testGlasses();
 		testCoatings();
 		testElements();
+		testBench(root);
 	};
 	runAll();
 	const int failures = g_failures;

@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-10-30
+
+### New
+
+- Optics stand on a bench. A new optic sits in its Thorlabs mount on a Ø12.7 mm post, in a PH50E/M post holder clamped by a CF125C/M fork, at the bench's beam height under the middle of the view. The raster preview draws the stack, and the path tracer traces every part of it.
+- The breadboard: **+ Add** → **Breadboard** puts Thorlabs' metric board under the bench, with M6 holes on a 25 mm grid, a hole at the origin and its top face at y = 0. It is 300 × 300 mm by default and resizes in 25 mm steps. It is 60 mm thick, with the skins and side walls of `Breadboard-B3030A.step`: brushed stainless steel skins, brushed along x, and black side walls between them.
+- **Optics** → **Bench Settings...** sets the breadboard's size, the beam height new mounts are set to (100 mm by default) and whether a dragged post snaps to the nearest hole.
+- An optic's panel has a **Mount** section: the mount kind and the model it gives at the optic's size, the optic's origin, yaw and height, where the post stands and how long it is, and the fork's hole. An optic is placed by its origin: the center of a mirror's front face, and the center of anything light goes through. On the bench, **Edit Transform** moves the origin across the table, turns the optic about a vertical through it and raises or lowers it, and nothing else. Snapping puts the origin on a hole, and the post stands wherever that puts it. Holding Alt during a drag inverts snapping.
+- A mirror made thicker, or an optic put in another mount, keeps its optical surface where it was, and its post moves behind it. A fork whose bolt leaves its hole, or that another stack is put on, moves to another hole.
+- The fork turns to a hole its slot reaches, along a table axis first and then the nearest, clear of every other stack's fork and post holder. A fork with no free hole is drawn in red, and the panel says why.
+- **Free placement** frees a mounted optic in six degrees of freedom, for a periscope or a part off the table, without a post, holder or fork. Turning it off stands the optic back on a post under where it is. **None (unmounted)** places an optic alone.
+- Fine adjustment: a kinematic mount's two adjusters, in revolutions, tilt its plate by Thorlabs' angle per revolution about the pivot ball, and the panel shows the tilt in microradians and how far the optic's vertex moves. A rotation mount's rotor turns continuously, or on its 2° graduations while Ctrl is held. An iris's lever and blades follow its opening. The preview moves the plates, screws, rotors and blades.
+- A prism stands on KM200PM/M with its cap down, so a right-angle prism turns light and an equilateral prism disperses it in the table's plane, and a cube reflects sideways. A prism wider than the platform overhangs it, and the panel says so.
+- A stack that cannot come down to the beam height stands at its lowest, with the post's top at its holder's top face: 103.1 mm for a 50.8 mm cube on KM200PM/M.
+- The **Optical bench** template starts with the breadboard.
+- The **Viewport** draws an optic over the mount faces it rests on, such as a cube's bottom on KM200PM/M's platform, with a small depth bias toward the camera, so the two do not flicker. The bias is small enough that glass does not show through its mount from across the table. The path tracer keeps them exactly in contact.
+
+### Changed
+
+- The **Viewport** draws with reverse-Z depth, which keeps its depth precision at any near clip plane. **Optical bench** recommends a 1 mm near plane, its template sets it, and the `optics_*` scenes open with it, so the view can come right up to an optic.
+- The **Viewport** is color-correct: it decodes color textures from sRGB and sRGB-encodes what it shows. Untextured colors look brighter than before, as they do in the path tracer, and textures and colors agree, so a mount's lettering sits on black instead of a grey box. The gradient and sky backgrounds look as they did. What the path tracer renders is unchanged.
+- Scene files are payload version 23, which adds `"bench"` and each optic's `"mount"` in place of its `"position"` and `"orientation"`. An optic in an older file opens unmounted where the file put it, so the file renders as it did.
+- `optics_bench.gltf` stands every kind in its default mount on a 700 × 300 mm breadboard. The other `optics_*` scenes keep their optics unmounted and render as before.
+
+### Internal
+
+- `SceneOptic` holds a `MountPose` (`src/optic_mount.h`) and a derived `world` transform. `opticWorldTransform()` (`src/optic_bench.h`, in `rt_optics`, which now links `rt_optic_models`) composes the stack, and `RaytraceSceneEditor::resolveBench()` stores the result each frame.
+- `CapabilityInfo` gains `rasterGeometry`, the raster preview's hook for a capability's geometry. `RasterKey` gains `benchAssets`.
+- `RaytraceMeshData::benchMeshes` holds the breadboard's and the mount models' meshes, so each part has one BLAS. Every bench instance in the TLAS carries a `BenchTag` (`RaytraceSceneAccel::instanceBenchTag`) naming its optic and part.
+- The adjuster tips in the mates files of KM05T/M, KM100, KM200 and KM200PM/M carry `angle_per_rev`, Thorlabs' angle per revolution. KM05T/M's `pitch` is 3/16-100.
+- `bin/optics_test` checks the bench: every stack, the stack of `example mirror.FCStd`, snapping, the fork's hole, the adjusters, free placement and the breadboard's mesh.
+
 ## 2026-10-29
 
 ### New

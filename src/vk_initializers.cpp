@@ -178,7 +178,8 @@ VkRenderingAttachmentInfo vkinit::depth_attachment_info(VkImageView view,VkImage
 	depthAttachment.imageLayout = layout;
 	depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	depthAttachment.clearValue.depthStencil.depth = 1.f;
+	//reverse-Z: the far plane is depth 0 (VulkanEngine::rasterDepthProjection())
+	depthAttachment.clearValue.depthStencil.depth = 0.f;
 
 	return depthAttachment;
 }

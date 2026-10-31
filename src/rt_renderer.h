@@ -251,6 +251,7 @@ private:
 	std::vector<SceneMeshObject> m_sceneAccelObjects;
 	std::vector<SceneShape> m_sceneAccelShapes;
 	std::vector<SceneOptic> m_sceneAccelOptics;
+	BenchTrace m_sceneAccelBench;
 	std::vector<SceneLight> m_sceneAccelLights;
 	std::vector<MaterialDef> m_sceneAccelMaterials;
 	EnvironmentLight m_sceneAccelEnvironment;

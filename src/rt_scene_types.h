@@ -16,6 +16,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -356,6 +357,9 @@ struct RaytraceMeshData {
 	std::vector<std::shared_ptr<const MeshAsset>> meshes;
 	std::vector<RTMeshNode> nodes;
 	size_t triangleCount { 0 };
+	// THE BENCH's meshes (docs/plans/completed/physoptics-bench-and-mounts.md): the breadboard and the mount library's parts, after
+	// the models' in `meshes`, by their index there. They have no node: the bench places them (BenchTrace)
+	std::unordered_map<const MeshAsset*, size_t> benchMeshes;
 
 	// the node a SceneMeshObject names, or null once its model has been removed. A binary search: buildRaytraceMeshData()
 	// leaves the nodes sorted by model key (VulkanEngine::m_models is a std::map) and then by node index, and a scan

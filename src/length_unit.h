@@ -32,6 +32,9 @@ std::string formatLength(double meters);
 
 // the widgets: values in meters, shown in the unit. `min` and `max` are meters; both 0 for unbounded
 bool dragLength(const char* label, float& meters, float speedMeters = 0.01f, float min = 0.f, float max = 0.f);
+// in double, for the bench's positions: bounded when either of `min` and `max` is not 0
+bool dragLength(const char* label, double& meters, double speedMeters, double min = 0.0, double max = 0.0);
+bool dragLength2(const char* label, glm::dvec2& meters, double speedMeters = 0.01);
 bool dragLength3(const char* label, glm::vec3& meters, float speedMeters = 0.01f);
 bool dragLength3(const char* label, glm::dvec3& meters, double speedMeters = 0.01);
 bool sliderLength(const char* label, float& meters, float min, float max, bool logarithmic = false);

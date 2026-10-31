@@ -17,6 +17,7 @@
 #include <string_view>
 
 #include <bvh.h>
+#include <optic_bench.h>
 #include <optic_catalog.h>
 #include <rt_scene_types.h>
 #include <vk_types.h>
@@ -96,6 +97,18 @@ public:
 	// the Materials window's Optics folder: each element's slot materials
 	void drawOpticMaterialRows();
 
+	// THE BENCH (docs/plans/completed/physoptics-bench-and-mounts.md): the breadboard and the settings every stack is placed by, and
+	// each optic's stack as the last resolveBench() assembled it, in the order of optics()
+	const BenchSettings& bench() const { return m_bench; }
+	void setBench(const BenchSettings& bench);
+	const std::vector<OpticStack>& benchStacks() const { return m_stacks; }
+	// re-derives every optic's transform and stack from its mount (opticWorldTransform()), and marks the scene changed when
+	// one moved. The engine calls it after the panels each frame and when a file has loaded
+	void resolveBench(VulkanEngine* engine);
+	// the bench's settings: the breadboard, its size, the beam height and snapping (Optics -> Bench Settings...)
+	void drawBenchSettings(VulkanEngine* engine);
+	bool* benchSettingsVisibilityFlag() { return &m_showBenchSettings; }
+
 	// THE LIGHT GROUPS (docs/plans/completed/pbrt-aovs-and-image-output.md): up to MAX_LIGHT_GROUPS named groups.
 	// A light, an emissive material and the background each carry the index of one, so a render that keeps the
 	// groups' sums can export and relight them apart. Group 0 is the default, so a scene that touches none has one
@@ -172,7 +185,9 @@ private:
 		Shape,
 		Light,
 		MeshObject,
-		Optic
+		Optic,
+		// the breadboard, which has no id of its own
+		Bench
 	};
 
 	void drawToolbar(VulkanEngine* engine);
@@ -192,7 +207,16 @@ private:
 	void drawSelectedLight(VulkanEngine* engine, SceneLight& light);
 	void drawSelectedMeshObject(VulkanEngine* engine, SceneMeshObject& object);
 	void drawSelectedOptic(VulkanEngine* engine, SceneOptic& optic);
-	void beginOpticGizmo(TransformGizmo& gizmo, uint64_t id);
+	// the breadboard's panel: the bench's settings
+	void drawSelectedBench(VulkanEngine* engine);
+	// the mount section of an optic's panel: its kind, free placement, the stack's pose and readouts, the fine adjustment
+	bool drawOpticMount(VulkanEngine* engine, SceneOptic& optic);
+	// the gizmo: the stack's four degrees of freedom on the bench, or all six for a free or unmounted optic
+	void beginOpticGizmo(VulkanEngine* engine, TransformGizmo& gizmo, uint64_t id);
+	// every stack but the optic's own, for the fork rule
+	std::vector<OpticStack> otherStacks(uint64_t opticId) const;
+	// where a new optic stands: under the middle of the view, facing the viewer, at the beam height
+	void standOnBench(VulkanEngine* engine, SceneOptic& optic, const SceneCamera& view);
 	void createOptic(VulkanEngine* engine, OpticKind kind);
 	// the next name for an optic of a kind
 	std::string nextOpticName(OpticKind kind);
@@ -237,6 +261,9 @@ private:
 	std::vector<SceneLight> m_lights;
 	std::vector<SceneMeshObject> m_meshObjects;
 	std::vector<SceneOptic> m_optics;
+	BenchSettings m_bench;
+	std::vector<OpticStack> m_stacks;
+	bool m_showBenchSettings { false };
 	std::vector<MaterialDef> m_materials;
 	std::vector<std::string> m_lightGroupNames { "Default" };
 	uint32_t m_environmentGroup { 0 };

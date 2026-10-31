@@ -114,6 +114,12 @@ void VulkanEngine::draw()
 
 	// after the fence wait: this may rewrite the frame slot's persistent shape-material buffer
 	drawRaytraceShapes();
+	//what the scene's capabilities draw beside its own objects: the bench's breadboard, posts and mounts
+	forEachEnabledCapability(m_capabilities, [this](const CapabilityInfo& capability) {
+		if (capability.rasterGeometry != nullptr) {
+			capability.rasterGeometry(this);
+		}
+	});
 
 	checkVkResult(vkResetFences(m_device, 1, &getCurrentFrame().renderFence));
 
@@ -180,9 +186,14 @@ void VulkanEngine::draw()
 
 		drawGeometry(cmd);
 
+		//the draw image is linear; the Viewport shows it sRGB-encoded, as the swapchain is UNORM. Only here, after a raster
+		//pass drew it: a paused or skipped frame keeps last frame's encoded picture
+		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+		recordDrawImageEffect(cmd, m_viewportEncodePass, ComputePushConstants {});
+
 		// the Viewport window samples the draw image, so it has to be readable before drawImgui() below. Every image
 		// registered with m_displayRegistry needs this same transition
-		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	}
 
 	//the ui covers the whole swapchain image and clears it first, so its old contents do not matter
@@ -258,8 +269,8 @@ void VulkanEngine::updateScene()
 	}
 
 	glm::mat4 view = m_viewportNav.camera.getViewMatrix();
-	//vulkan's clip space has y down, so the raster path flips what rasterProjection() returns
-	glm::mat4 projection = rasterProjection();
+	//reverse-Z (rasterDepthProjection()); vulkan's clip space has y down, so the raster path flips it
+	glm::mat4 projection = rasterDepthProjection();
 	projection[1][1] *= -1;
 
 	m_sceneData.view = view;
@@ -295,6 +306,7 @@ RasterKey VulkanEngine::rasterKey() const
 	key.environmentMaps = m_environmentMapsLoaded;
 	key.environmentExposure = m_environmentIntensity * m_environmentMapScale;
 	key.occlusionCulling = m_occlusionCulling;
+	key.benchAssets = m_benchScene.revision();
 	return key;
 }
 
@@ -718,6 +730,9 @@ void VulkanEngine::run()
 		//between the imgui frame and the draw, since a native file dialog blocks in a modal loop
 		runPendingFileAction();
 		updateWindowTitle();
+		//every edit of this frame's panels is in: each optic's stack follows its mount, and the bench's meshes are uploaded
+		//before the draw records anything
+		updateBench();
 
 		draw();
 
@@ -788,6 +803,17 @@ void VulkanEngine::registerWindows()
 		ImGui::End();
 	}, {}, WindowGroup::Debug });
 	m_workspaces.addWindow({ "GPU self-tests", m_selfTests.visibilityFlag(), [this]() { m_selfTests.drawWindow(this); }, {}, WindowGroup::Debug });
+	//the bench's settings, under Optical bench (Optics -> Bench Settings...)
+	m_workspaces.addWindow({ "Bench Settings", m_raytraceScene.benchSettingsVisibilityFlag(), [this]() {
+		bool* open = m_raytraceScene.benchSettingsVisibilityFlag();
+		if (!*open) {
+			return;
+		}
+		if (ImGui::Begin("Bench Settings", open)) {
+			m_raytraceScene.drawBenchSettings(this);
+		}
+		ImGui::End();
+	}, CapabilityId::OpticalBench });
 	m_workspaces.addWindow({ "Dear ImGui Demo", &m_showDemoWindow, [this]() {
 		if (m_showDemoWindow) {
 			ImGui::ShowDemoWindow(&m_showDemoWindow);
@@ -1145,10 +1171,33 @@ std::optional<glm::vec2> VulkanEngine::flownCameraFrame() const
 
 glm::mat4 VulkanEngine::rasterProjection() const
 {
-	//forward-z, not vkguide's reversed near/far - see CLAUDE.md's MoltenVK notes
+	//OpenGL's convention, depth -1 to 1, which ImGuizmo and the overlays (ViewportView) take. The raster pass draws with
+	//rasterDepthProjection() instead
 	//the Viewport window's aspect, which m_drawExtent keeps at every render scale
 	const ViewportCameraSettings& settings = m_viewportNav.settings;
 	return glm::perspective(glm::radians(rasterVerticalFov()), (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u), settings.nearClip, settings.farClip);
+}
+
+glm::mat4 VulkanEngine::rasterDepthProjection() const
+{
+	//reverse-Z for Vulkan's 0 to 1 depth: the near plane at depth 1, the far plane at 0, depth n (f - d) / (d (f - n))
+	//for a point d ahead of the eye. A float depth then keeps about 1e-7 of the distance at any distance, whatever the
+	//near plane, where forward-Z lost precision with the distance squared over the near plane. glm::perspective() cannot
+	//build it: without GLM_FORCE_DEPTH_ZERO_TO_ONE it maps to OpenGL's -1 to 1, and with its near and far swapped
+	//Vulkan clips everything beyond twice the near plane, which is how vkguide's reversed projection drew nothing here.
+	//y is not flipped; updateScene() flips it for Vulkan's clip space
+	const ViewportCameraSettings& settings = m_viewportNav.settings;
+	const float aspect = (float)std::max(m_drawExtent.width, 1u) / (float)std::max(m_drawExtent.height, 1u);
+	const float f = 1.f / std::tan(0.5f * glm::radians(rasterVerticalFov()));
+	const float n = settings.nearClip;
+	const float far = settings.farClip;
+	glm::mat4 m(0.f);
+	m[0][0] = f / aspect;
+	m[1][1] = f;
+	m[2][2] = n / (far - n);
+	m[2][3] = -1.f;
+	m[3][2] = far * n / (far - n);
+	return m;
 }
 
 SceneCamera VulkanEngine::cameraFromViewport() const
@@ -1630,6 +1679,7 @@ void VulkanEngine::newScene()
 	//the optics before the materials: an optic removes the slot materials it owns
 	m_raytraceScene.replaceOptics({});
 	m_raytraceScene.replaceMaterials({});
+	m_raytraceScene.setBench(BenchSettings {});
 	m_opticalLibrary.clearScene();
 	setLengthUnit(LengthUnit::Meters);
 	//the view stays where it is
@@ -1651,6 +1701,7 @@ void VulkanEngine::newScene()
 	m_capabilities = {};
 	m_sceneTemplate = DEFAULT_TEMPLATE_KEY;
 	m_pendingRecommendations.clear();
+	updateBench();
 	m_lastFileResult = IoResult::success("New empty scene");
 }
 
@@ -1815,6 +1866,7 @@ SceneDescription VulkanEngine::describeScene()
 	scene.userGlasses = m_opticalLibrary.userGlasses();
 	scene.userCoatings = m_opticalLibrary.userCoatings();
 	scene.lengthUnit = m_lengthUnit;
+	scene.bench = m_raytraceScene.bench();
 	const Camera& view = m_viewportNav.camera;
 	scene.viewport = SceneViewportRecord { m_viewportNav.settings, view.position, glm::normalize(glm::quat_cast(glm::mat3(view.getRotationMatrix()))), view.pivot };
 	return scene;
@@ -1998,7 +2050,8 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 		shapes.push_back(std::move(record.shape));
 	}
 	m_raytraceScene.replaceShapes(std::move(shapes));
-	//the optics, each with its default slots, then the slots the file changed
+	//the bench, then the optics, each with its default slots, then the slots the file changed
+	m_raytraceScene.setBench(scene.bench);
 	{
 		std::vector<SceneOptic> optics;
 		for (const SceneOpticRecord& record : scene.optics) {
@@ -2049,6 +2102,8 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	m_capabilities = capabilitiesFromKeys(scene.capabilities, problems);
 	m_sceneTemplate = scene.templateKey;
 	m_pendingRecommendations.clear();
+	//the optics on their posts before anything renders: a batch render starts on the next frame
+	updateBench();
 	std::string enabled;
 	for (const CapabilityInfo& capability : capabilities()) {
 		std::vector<ObjectRef> objects;
@@ -2345,6 +2400,26 @@ void VulkanEngine::setLengthUnit(LengthUnit unit)
 {
 	m_lengthUnit = unit;
 	setCurrentLengthUnit(unit);
+}
+
+BenchContext VulkanEngine::benchContext()
+{
+	BenchContext context;
+	context.settings = m_raytraceScene.bench();
+	context.models = [this](std::string_view id) { return m_mountLibrary.model(id); };
+	context.build = opticBuildContext();
+	return context;
+}
+
+void VulkanEngine::updateBench()
+{
+	m_raytraceScene.resolveBench(this);
+	if (m_benchScene.update(this)) {
+		//the breadboard or a mount model is new to the tracer: its BLAS is built now, the scene's are kept
+		m_raytraceMeshData = buildRaytraceMeshData(this);
+		m_raytracer.prepareGeometry(this);
+		m_sceneRevision++;
+	}
 }
 
 OpticBuildContext VulkanEngine::opticBuildContext() const
@@ -2839,13 +2914,17 @@ void VulkanEngine::destroyBuffer(const AllocatedBuffer& buffer)
 	vmaDestroyBuffer(m_memAllocator, buffer.buffer, buffer.allocation);
 }
 
-AllocatedImage VulkanEngine::createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped/* = false*/)
+AllocatedImage VulkanEngine::createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped/* = false*/, bool colorView/* = false*/)
 {
 	AllocatedImage newImage;
 	newImage.imageFormat = format;
 	newImage.imageExtent = size;
+	colorView = colorView && format == VK_FORMAT_R8G8B8A8_UNORM;
 
 	VkImageCreateInfo img_info = vkinit::image_create_info(format, usage, size);
+	if (colorView) {
+		img_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+	}
 	if (mipmapped) {
 		img_info.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(size.width, size.height)))) + 1;
 	}
@@ -2871,6 +2950,10 @@ AllocatedImage VulkanEngine::createImage(VkExtent3D size, VkFormat format, VkIma
 	view_info.subresourceRange.levelCount = img_info.mipLevels;
 
 	checkVkResult(vkCreateImageView(m_device, &view_info, nullptr, &newImage.imageView));
+	if (colorView) {
+		view_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+		checkVkResult(vkCreateImageView(m_device, &view_info, nullptr, &newImage.colorView));
+	}
 
 	return newImage;
 }
@@ -2916,7 +2999,7 @@ static size_t bytes_per_pixel(VkFormat format)
 	}
 }
 
-AllocatedImage VulkanEngine::createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped/* = false*/)
+AllocatedImage VulkanEngine::createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped/* = false*/, bool colorView/* = false*/)
 {
 	size_t data_size = (size_t)size.depth * size.width * size.height * bytes_per_pixel(format);
 	AllocatedBuffer uploadbuffer = createBuffer(data_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
@@ -2925,7 +3008,7 @@ AllocatedImage VulkanEngine::createImage(void* data, VkExtent3D size, VkFormat f
 
 	vmaFlushAllocation(m_memAllocator, uploadbuffer.allocation, 0, data_size);//flush vma on MoltenVK
 
-	AllocatedImage new_image = createImage(size, format, usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, mipmapped);
+	AllocatedImage new_image = createImage(size, format, usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, mipmapped, colorView);
 
 	immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, new_image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -2955,6 +3038,9 @@ AllocatedImage VulkanEngine::createImage(void* data, VkExtent3D size, VkFormat f
 void VulkanEngine::destroyImage(const AllocatedImage& img)
 {
 	vkDestroyImageView(m_device, img.imageView, nullptr);
+	if (img.colorView != VK_NULL_HANDLE) {
+		vkDestroyImageView(m_device, img.colorView, nullptr);
+	}
 	vmaDestroyImage(m_memAllocator, img.image, img.allocation);
 }
 
@@ -3321,11 +3407,14 @@ void VulkanEngine::initComputePipelines()
 		};
 		m_backgroundEffects.push_back(std::move(environment));
 	}
+	//the raster preview's last pass: its linear draw image sRGB-encoded for the UNORM swapchain the Viewport is shown on
+	m_viewportEncodePass = buildDrawImageEffect("viewport_encode.comp.spv");
 
 	m_mainDeletionQueue.push_function([this]() {
 		for (BackgroundEffect& effect : m_backgroundEffects) {
 			effect.pass.destroy(m_device);
 		}
+		m_viewportEncodePass.destroy(m_device);
 	});
 }
 
@@ -3380,7 +3469,7 @@ void VulkanEngine::initMeshPipeline()
 	//no blending
 	pipelineBuilder.disableBlending();
 
-	pipelineBuilder.enableDepthtest(true, VK_COMPARE_OP_LESS_OR_EQUAL);
+	pipelineBuilder.enableDepthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
 
 	//connect the image format we will draw into, from draw image
 	pipelineBuilder.setColorAttachmentFormat(m_drawImage.imageFormat);
@@ -3429,7 +3518,7 @@ void VulkanEngine::initOcclusionPipeline()
 	pipelineBuilder.setMultisamplingNone();
 	pipelineBuilder.disableBlending();
 	pipelineBuilder.m_colorBlendAttachment.colorWriteMask = 0;
-	pipelineBuilder.enableDepthtest(false, VK_COMPARE_OP_LESS_OR_EQUAL);
+	pipelineBuilder.enableDepthtest(false, VK_COMPARE_OP_GREATER_OR_EQUAL);
 	pipelineBuilder.setColorAttachmentFormat(m_drawImage.imageFormat);
 	pipelineBuilder.setDepthFormat(m_depthImage.imageFormat);
 	m_occlusionBoxPipeline.pipeline = pipelineBuilder.buildPipeline(m_device);
@@ -3630,6 +3719,8 @@ void VulkanEngine::drawRaytraceShapes()
 			resources.dataBuffer = slot.materialBuffer.buffer;
 			resources.dataBufferOffset = (uint32_t)(entry * stride);
 			slot.materials[entry] = m_metalRoughMaterial.writeMaterial(m_device, mirror || blades ? MaterialPass::MainColor : MaterialPass::Transparent, resources, slot.descriptors);
+			//toward the camera by a few depth steps: an optic's faces lie in its mount's where they touch
+			slot.materials[entry].pipeline = mirror || blades ? &m_metalRoughMaterial.opaqueBiasedPipeline : &m_metalRoughMaterial.transparentBiasedPipeline;
 		}
 
 		vmaFlushAllocation(m_memAllocator, slot.materialBuffer.allocation, 0, stride * entries);//flush vma on MoltenVK
@@ -3660,14 +3751,35 @@ void VulkanEngine::drawOpticPreviews(PreviewShapeSlot& slot, size_t firstMateria
 	const std::vector<SceneOptic>& optics = m_raytraceScene.optics();
 	const OpticBuildContext context = opticBuildContext();
 	static const char* const BLANKS[] = { "PF05-03", "PF10-03", "PF20-03" };
+	const std::vector<OpticStack>& stacks = m_raytraceScene.benchStacks();
+	//the blanks' surfaces drawn with the biased pipelines, as the tessellated optics are: copies of their materials, kept
+	//until this frame's draw has recorded them
+	m_opticBiasedMaterials.clear();
 	for (size_t i = 0; i < optics.size(); i++) {
 		const SceneOptic& optic = optics[i];
 		const glm::mat4 transform(optic.bodyToWorld());
+		//a mounted iris's blades are its housing model's, which the bench draws turned to the opening
+		if (optic.kind == OpticKind::Iris && i < stacks.size() && !stacks[i].parts.empty()) {
+			continue;
+		}
 		//a planar mirror at one of Thorlabs' sizes is its blank's model, which shares its frame (the front's center)
 		if (opticTraits(optic.kind).previewFromModel && optic.sizePreset >= 0 && optic.sizePreset < 3) {
 			if (const std::shared_ptr<LoadedModel> model = m_mountLibrary.meshes(BLANKS[optic.sizePreset])) {
+				const size_t firstOpaque = m_mainDrawContext.opaqueSurfaces.size();
+				const size_t firstTransparent = m_mainDrawContext.transparentSurfaces.size();
 				for (const auto& node : model->topNodes) {
 					node->Draw(transform, m_mainDrawContext);
+				}
+				auto bias = [this](RenderObject& object) {
+					MaterialInstance& biased = m_opticBiasedMaterials.emplace_back(*object.material);
+					biased.pipeline = biased.passType == MaterialPass::Transparent ? &m_metalRoughMaterial.transparentBiasedPipeline : &m_metalRoughMaterial.opaqueBiasedPipeline;
+					object.material = &biased;
+				};
+				for (size_t s = firstOpaque; s < m_mainDrawContext.opaqueSurfaces.size(); s++) {
+					bias(m_mainDrawContext.opaqueSurfaces[s]);
+				}
+				for (size_t s = firstTransparent; s < m_mainDrawContext.transparentSurfaces.size(); s++) {
+					bias(m_mainDrawContext.transparentSurfaces[s]);
 				}
 				continue;
 			}
@@ -3826,6 +3938,7 @@ void VulkanEngine::cleanup()
 		m_raytracer.shutdown(this);
 
 		m_models.clear();
+		m_benchScene.clear();
 		m_mountLibrary.clear();
 		for (const auto& [key, preview] : m_opticPreviewMeshes) {
 			destroyBuffer(preview.mesh->meshBuffers.indexBuffer);
@@ -3969,7 +4082,7 @@ void GLTFMetallic_Roughness::buildPipelines(VulkanEngine* engine)
 	pipelineBuilder.setCullMode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
 	pipelineBuilder.setMultisamplingNone();
 	pipelineBuilder.disableBlending();
-	pipelineBuilder.enableDepthtest(true, VK_COMPARE_OP_LESS_OR_EQUAL);
+	pipelineBuilder.enableDepthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
 
 	//render format
 	pipelineBuilder.setColorAttachmentFormat(engine->m_drawImage.imageFormat);
@@ -3984,9 +4097,21 @@ void GLTFMetallic_Roughness::buildPipelines(VulkanEngine* engine)
 	// create the transparent variant
 	pipelineBuilder.enableBlendingAdditive();
 
-	pipelineBuilder.enableDepthtest(false, VK_COMPARE_OP_LESS_OR_EQUAL);
+	pipelineBuilder.enableDepthtest(false, VK_COMPARE_OP_GREATER_OR_EQUAL);
 
 	transparentPipeline.pipeline = pipelineBuilder.buildPipeline(engine->m_device);
+
+	//the biased pair: just enough to win a tie with a coplanar face, toward the camera, which under reverse-Z is a larger
+	//depth. A float depth steps by about 1.2e-7 of itself, so the constant term is about 1e-7 of the distance, and the
+	//slope term grows with how steeply a face recedes: too large a slope term let glass seen nearly edge on draw over
+	//the lip of its mount from across the table
+	opaqueBiasedPipeline.layout = newLayout;
+	transparentBiasedPipeline.layout = newLayout;
+	pipelineBuilder.setDepthBias(1.f, 0.25f);
+	transparentBiasedPipeline.pipeline = pipelineBuilder.buildPipeline(engine->m_device);
+	pipelineBuilder.disableBlending();
+	pipelineBuilder.enableDepthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
+	opaqueBiasedPipeline.pipeline = pipelineBuilder.buildPipeline(engine->m_device);
 	
 	vkDestroyShaderModule(engine->m_device, meshFragShader, nullptr);
 	vkDestroyShaderModule(engine->m_device, meshVertexShader, nullptr);
@@ -3999,6 +4124,8 @@ void GLTFMetallic_Roughness::clearResources(VkDevice device)
 
 	vkDestroyPipeline(device, transparentPipeline.pipeline, nullptr);
 	vkDestroyPipeline(device, opaquePipeline.pipeline, nullptr);
+	vkDestroyPipeline(device, transparentBiasedPipeline.pipeline, nullptr);
+	vkDestroyPipeline(device, opaqueBiasedPipeline.pipeline, nullptr);
 }
 
 MaterialInstance GLTFMetallic_Roughness::writeMaterial(VkDevice device, MaterialPass pass, const MaterialResources& resources, DescriptorAllocatorGrowable& descriptorAllocator)
@@ -4017,7 +4144,9 @@ MaterialInstance GLTFMetallic_Roughness::writeMaterial(VkDevice device, Material
 
 	writer.clear();
 	writer.writeBuffer(0, resources.dataBuffer, sizeof(MaterialConstants), resources.dataBufferOffset, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-	writer.writeImage(1, resources.colorImage.imageView, resources.colorSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	//a color texture through its sRGB view, decoded to the linear values the factors are in
+	const VkImageView color = resources.colorImage.colorView != VK_NULL_HANDLE ? resources.colorImage.colorView : resources.colorImage.imageView;
+	writer.writeImage(1, color, resources.colorSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 	writer.writeImage(2, resources.metalRoughImage.imageView, resources.metalRoughSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 
 	writer.updateSet(device, matData.materialSet);

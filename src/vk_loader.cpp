@@ -672,7 +672,7 @@ std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& 
 					imagesize.height = height;
 					imagesize.depth = 1;
 
-					newImage = engine->createImage(data, imagesize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT,false);
+					newImage = engine->createImage(data, imagesize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, false, true);
 
 					stbi_image_free(data);
 				}
@@ -686,7 +686,7 @@ std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& 
 					imagesize.height = height;
 					imagesize.depth = 1;
 
-					newImage = engine->createImage(data, imagesize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, false);
+					newImage = engine->createImage(data, imagesize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, false, true);
 
 					stbi_image_free(data);
 				}
@@ -710,7 +710,7 @@ std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& 
 									   imagesize.depth = 1;
 
 									   newImage = engine->createImage(data, imagesize, VK_FORMAT_R8G8B8A8_UNORM,
-										   VK_IMAGE_USAGE_SAMPLED_BIT,false);
+										   VK_IMAGE_USAGE_SAMPLED_BIT, false, true);
 
 									   stbi_image_free(data);
 								   }
@@ -848,7 +848,9 @@ std::optional<AllocatedImage> loadImportedImage(VulkanEngine* engine, const Impo
 			bytes[i] = (uint8_t)std::lround(encoded * 255.f);
 		}
 	}
-	return engine->createImage(bytes.data(), VkExtent3D { (uint32_t)width, (uint32_t)height, 1 }, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, false);
+	//a color's sRGB bytes get the raster's sRGB view; a data image is read as it is
+	return engine->createImage(bytes.data(), VkExtent3D { (uint32_t)width, (uint32_t)height, 1 }, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, false,
+		!source.data);
 }
 
 }

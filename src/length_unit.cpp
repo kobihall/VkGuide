@@ -86,6 +86,32 @@ bool dragLength3(const char* label, glm::vec3& meters, float speedMeters)
 	return false;
 }
 
+bool dragLength(const char* label, double& meters, double speedMeters, double min, double max)
+{
+	const double scale = lengthScale();
+	double shown = meters * scale;
+	const double lo = min * scale;
+	const double hi = max * scale;
+	const bool bounded = min != 0.0 || max != 0.0;
+	if (ImGui::DragScalar(label, ImGuiDataType_Double, &shown, (float)(speedMeters * scale), bounded ? &lo : nullptr, bounded ? &hi : nullptr,
+			s_unit == LengthUnit::Millimeters ? "%.4f mm" : "%.6f m", bounded ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None)) {
+		meters = shown / scale;
+		return true;
+	}
+	return false;
+}
+
+bool dragLength2(const char* label, glm::dvec2& meters, double speedMeters)
+{
+	const double scale = lengthScale();
+	glm::dvec2 shown = meters * scale;
+	if (ImGui::DragScalarN(label, ImGuiDataType_Double, &shown.x, 2, (float)(speedMeters * scale), nullptr, nullptr, s_unit == LengthUnit::Millimeters ? "%.4f mm" : "%.6f m")) {
+		meters = shown / scale;
+		return true;
+	}
+	return false;
+}
+
 bool dragLength3(const char* label, glm::dvec3& meters, double speedMeters)
 {
 	const double scale = lengthScale();

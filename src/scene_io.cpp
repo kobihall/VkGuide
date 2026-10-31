@@ -84,7 +84,13 @@ namespace {
 //22: adds "viewport", the raster viewport's free camera: its "position", "orientation" and "pivot", and its "speed" in
 //   meters per second, vertical "fov" in degrees, and "near" and "far" clip planes in meters. Absent in an older file,
 //   which opens with a new scene's speed, fov and clip planes, and leaves the view where it was
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 22;
+//23: adds "bench" (docs/plans/completed/physoptics-bench-and-mounts.md): whether the breadboard exists ("table"), its "size" in x
+//   and z, the "beamHeight" and "snap", written when any differs from a new scene's. An optic's "position" and
+//   "orientation" move into its "mount": the mount's "kind" (a mountKindKey()), and either the stack, its "origin" (x
+//   and z of the optic's origin, opticOrigin()), "yaw", "height", "fork" ("angle", "reach") and the "fine" adjustment
+//   that is not zero ("x" and "y" adjuster turns, a "rotor" angle); an unmounted or "free" optic has its "position" and
+//   "orientation", and a free one its stack besides, where it stood. An optic in an older file is unmounted where the file put it, so it renders as it did
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 23;
 
 //---------------------------------------------------------------- writing
 
@@ -320,6 +326,45 @@ std::string opticValueJson(const OpticParam& param, const OpticValue& value)
 	return jsonString(std::get<std::string>(value));
 }
 
+// an optic's mount: the stack it stands on, or where it is when it is free or unmounted
+std::string mountJson(const MountPose& mount)
+{
+	std::string json = fmt::format(R"({{"kind":"{}")", mountKindKey(mount.kind));
+	if (mount.isFree()) {
+		const glm::dvec3& p = mount.freePosition;
+		const glm::dquat& q = mount.freeOrientation;
+		json += fmt::format(R"({},"position":[{},{},{}],"orientation":[{},{},{},{}])", mount.kind != MountKind::None ? R"(,"free":true)" : "", jsonDouble(p.x),
+			jsonDouble(p.y), jsonDouble(p.z), jsonDouble(q.x), jsonDouble(q.y), jsonDouble(q.z), jsonDouble(q.w));
+		//an unmounted optic has no stack; a free one keeps where its stack stood
+		if (mount.kind == MountKind::None) {
+			return json + "}";
+		}
+	}
+	json += fmt::format(R"(,"origin":[{},{}],"yaw":{},"height":{},"fork":{{"angle":{},"reach":{}}})", jsonDouble(mount.origin.x), jsonDouble(mount.origin.y), jsonDouble(mount.yaw),
+		jsonDouble(mount.height), jsonDouble(mount.forkAngle), jsonDouble(mount.forkReach));
+	std::string fine;
+	if (mount.fine.adjusterX != 0.0 || mount.fine.adjusterY != 0.0) {
+		fine = fmt::format(R"("x":{},"y":{})", jsonDouble(mount.fine.adjusterX), jsonDouble(mount.fine.adjusterY));
+	}
+	if (mount.fine.rotor != 0.0) {
+		fine += fmt::format(R"({}"rotor":{})", fine.empty() ? "" : ",", jsonDouble(mount.fine.rotor));
+	}
+	if (!fine.empty()) {
+		json += fmt::format(R"(,"fine":{{{}}})", fine);
+	}
+	return json + "}";
+}
+
+std::string benchJson(const SceneDescription& scene)
+{
+	const BenchSettings& bench = scene.bench;
+	if (bench == BenchSettings {}) {
+		return {};
+	}
+	return fmt::format(R"(,"bench":{{"table":{},"size":[{},{}],"beamHeight":{},"snap":{}}})", bench.table, jsonDouble(bench.size.x), jsonDouble(bench.size.y),
+		jsonDouble(bench.beamHeight), bench.snap);
+}
+
 std::string opticsJson(const SceneDescription& scene)
 {
 	if (scene.optics.empty()) {
@@ -346,10 +391,8 @@ std::string opticsJson(const SceneDescription& scene)
 			}
 			materials += fmt::format(R"({}"{}":{{"type":"{}"{}}})", materials.empty() ? "" : ",", traits.slots[slot].name, materialTypeName(material->type), materialParamsJson(*material, nullptr));
 		}
-		const glm::dquat& q = optic.orientation;
-		json += fmt::format(R"({}{{"type":"{}","name":{},"size":"{}","params":{{{}}},"position":[{},{},{}],"orientation":[{},{},{},{}],"materials":{{{}}}}})", i > 0 ? "," : "", traits.name,
-			jsonString(optic.name), size, params, jsonDouble(optic.position.x), jsonDouble(optic.position.y), jsonDouble(optic.position.z), jsonDouble(q.x), jsonDouble(q.y), jsonDouble(q.z),
-			jsonDouble(q.w), materials);
+		json += fmt::format(R"({}{{"type":"{}","name":{},"size":"{}","params":{{{}}},"mount":{},"materials":{{{}}}}})", i > 0 ? "," : "", traits.name,
+			jsonString(optic.name), size, params, mountJson(optic.mount), materials);
 	}
 	return json + "]";
 }
@@ -559,6 +602,8 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	}
 	json += opticalLibraryJson(scene, sceneDirectory);
 	json += opticsJson(scene);
+	//version 23: the bench
+	json += benchJson(scene);
 
 	//every kind through its traits: the sizes go out under the names the editor shows, so a
 	//cylinder reads {"radius":0.5,"height":2} rather than as a raw scale vector
@@ -1513,6 +1558,60 @@ bool readCoating(simdjson::dom::object object, OpticCoating& out)
 
 bool readMaterialDef(simdjson::dom::object object, size_t index, MaterialDef& out, std::string& error);
 
+//a free optic's "position" and "orientation", each the default's where absent
+void readFreePlacement(simdjson::dom::object object, MountPose& mount)
+{
+	std::vector<double> values;
+	if (readDoubles(object["position"], values) && values.size() == 3) {
+		mount.freePosition = glm::dvec3(values[0], values[1], values[2]);
+	}
+	values.clear();
+	if (readDoubles(object["orientation"], values) && values.size() == 4) {
+		const glm::dquat q(values[3], values[0], values[1], values[2]);
+		const double length = glm::length(q);
+		mount.freeOrientation = length > 0.0 ? (std::abs(length - 1.0) > 1e-12 ? q / length : q) : glm::dquat(1.0, 0.0, 0.0, 0.0);
+	}
+}
+
+//an optic's "mount" (version 23): a kind this build does not know is unmounted, with a warning
+void readMount(simdjson::dom::object object, SceneOptic& optic, std::vector<std::string>& warnings)
+{
+	MountPose& mount = optic.mount;
+	mount = MountPose {};
+	const std::string key = readOptionalString(object["kind"]);
+	const std::optional<MountKind> kind = findMountKind(key);
+	if (!kind) {
+		warnings.push_back(fmt::format("optic \"{}\" has mount kind '{}', which this build does not know; it is unmounted", optic.name, key));
+	}
+	mount.kind = kind.value_or(MountKind::None);
+	bool free = false;
+	if (object["free"].get_bool().get(free) != simdjson::SUCCESS) {
+		free = false;
+	}
+	mount.freePlacement = free && mount.kind != MountKind::None;
+	readFreePlacement(object, mount);
+	if (mount.kind == MountKind::None) {
+		return;
+	}
+	std::vector<double> origin;
+	if (readDoubles(object["origin"], origin) && origin.size() == 2) {
+		mount.origin = glm::dvec2(origin[0], origin[1]);
+	}
+	readDouble(object["yaw"], mount.yaw);
+	readDouble(object["height"], mount.height);
+	simdjson::dom::object fork;
+	if (object["fork"].get_object().get(fork) == simdjson::SUCCESS) {
+		readDouble(fork["angle"], mount.forkAngle);
+		readDouble(fork["reach"], mount.forkReach);
+	}
+	simdjson::dom::object fine;
+	if (object["fine"].get_object().get(fine) == simdjson::SUCCESS) {
+		readDouble(fine["x"], mount.fine.adjusterX);
+		readDouble(fine["y"], mount.fine.adjusterY);
+		readDouble(fine["rotor"], mount.fine.rotor);
+	}
+}
+
 //one "optics" record. An unknown type is skipped with a warning, as an unknown kernel id is
 bool readOptic(simdjson::dom::object object, size_t index, SceneOpticRecord& out, std::vector<std::string>& warnings)
 {
@@ -1578,16 +1677,15 @@ bool readOptic(simdjson::dom::object object, size_t index, SceneOpticRecord& out
 			}
 		}
 	}
-	std::vector<double> position;
-	if (readDoubles(object["position"], position) && position.size() == 3) {
-		optic.position = glm::dvec3(position[0], position[1], position[2]);
+	//version 23: the mount; an older file's optic is unmounted where the file put it
+	simdjson::dom::object mount;
+	if (object["mount"].get_object().get(mount) == simdjson::SUCCESS) {
+		readMount(mount, optic, warnings);
+	} else {
+		optic.mount = MountPose {};
+		readFreePlacement(object, optic.mount);
 	}
-	std::vector<double> orientation;
-	if (readDoubles(object["orientation"], orientation) && orientation.size() == 4) {
-		const glm::dquat q(orientation[3], orientation[0], orientation[1], orientation[2]);
-		const double length = glm::length(q);
-		optic.orientation = length > 0.0 ? (std::abs(length - 1.0) > 1e-12 ? q / length : q) : glm::dquat(1.0, 0.0, 0.0, 0.0);
-	}
+	optic.world = optic.mount.freeTransform();
 	simdjson::dom::object materials;
 	if (object["materials"].get_object().get(materials) == simdjson::SUCCESS) {
 		for (size_t slot = 0; slot < traits.slots.size(); slot++) {
@@ -1982,6 +2080,22 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 					ctx.scene.userCoatings.push_back(std::move(coating));
 				}
 			}
+		}
+	}
+	//version 23: the bench
+	simdjson::dom::object bench;
+	if (root["bench"].get_object().get(bench) == simdjson::SUCCESS) {
+		BenchSettings& out = ctx.scene.bench;
+		if (bench["table"].get_bool().get(out.table) != simdjson::SUCCESS) {
+			out.table = false;
+		}
+		std::vector<double> size;
+		if (readDoubles(bench["size"], size) && size.size() == 2) {
+			out.size = snapBenchSize(glm::dvec2(size[0], size[1]));
+		}
+		readDouble(bench["beamHeight"], out.beamHeight);
+		if (bench["snap"].get_bool().get(out.snap) != simdjson::SUCCESS) {
+			out.snap = true;
 		}
 	}
 	simdjson::dom::array optics;

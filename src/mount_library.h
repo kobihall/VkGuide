@@ -9,12 +9,13 @@
 // uses three mounts pays for three.
 //
 // The library lives beside VulkanEngine::m_models, never in it: its models are fixed resources, so they are never
-// saved with a scene and never listed under Models. Nothing draws or traces them until an optic uses one
-// (physoptics-bench-and-mounts.md places them, and builds their BLASes through RaytraceBlasCache from these
-// MeshAssets).
+// saved with a scene and never listed under Models. Nothing draws or traces them until an optic stands in one: the
+// bench (bench_scene.h, docs/plans/completed/physoptics-bench-and-mounts.md) places their parts, and their meshes join
+// the tracer's mesh data, so each part gets one BLAS however many stacks use it.
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,6 +24,13 @@
 
 class VulkanEngine;
 struct LoadedModel;
+
+struct MaterialDef;
+
+// the material a finish is traced with, without its decals: what the bench gives every surface of that finish
+MaterialDef mountFinishMaterial(MountFinish finish);
+// the finish a material of an uploaded model was made for, by its name ("anodized_black decal" is anodized black)
+std::optional<MountFinish> mountFinishOfMaterial(std::string_view name);
 
 class MountLibrary {
 public:

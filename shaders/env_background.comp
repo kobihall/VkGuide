@@ -40,9 +40,10 @@ void main()
 	// image's, so no flip here - the y-flipped projection already accounts for it
 	vec2 ndc = (vec2(texelCoord) + 0.5) / pc.drawExtent * 2.0 - 1.0;
 
-	// two points along the pixel's view ray, at different depths; their difference is the ray
-	vec4 nearPoint = pc.inverseViewProj * vec4(ndc, 0.0, 1.0);
-	vec4 farPoint = pc.inverseViewProj * vec4(ndc, 1.0, 1.0);
+	// two points along the pixel's view ray, at different depths; their difference is the ray. Reverse-Z: depth 1 is the
+	// near plane and 0 the far one
+	vec4 nearPoint = pc.inverseViewProj * vec4(ndc, 1.0, 1.0);
+	vec4 farPoint = pc.inverseViewProj * vec4(ndc, 0.0, 1.0);
 	vec3 direction = normalize(farPoint.xyz / farPoint.w - nearPoint.xyz / nearPoint.w);
 
 	vec3 color = texture(environmentMap, equirectUv(direction)).rgb * pc.exposure;

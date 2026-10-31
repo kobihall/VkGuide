@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "srgb.glsl"
 layout (local_size_x = 16, local_size_y = 16) in;
 layout(rgba8,set = 0, binding = 0) uniform image2D image;
 
@@ -86,6 +88,7 @@ void main()
         vec4 color;
         mainImage(color,texelCoord);
     
-        imageStore(image, texelCoord, color);
+        //display colors: linear here, so that viewport_encode.comp gives back exactly these
+        imageStore(image, texelCoord, vec4(srgbDecode(color.rgb), color.a));
     }   
 }

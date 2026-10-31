@@ -4,7 +4,7 @@ This plan turns the path tracer into a simulator of optical experiments on a las
 
 The request this plan answers is `docs/00-laser-optics.md`. It takes its approach from femtoPro, the University of Würzburg's virtual ultrafast laser laboratory, without copying its feature list. The 18 `physoptics-*.md` plans below implement it, on top of the `pbrt-*.md` plans of the [pbrt roadmap](pbrt-roadmap.md). This file holds the decisions that shape all of them, the resources they reserve, and one linear order to build everything in.
 
-*Written 2026-10-18. The optomechanical models (2026-10-28) and scene capabilities (2026-10-29) are implemented; `docs/physical-optics-overview.md` describes what is built. Read the [pbrt roadmap](pbrt-roadmap.md), `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan here assumes them.*
+*Written 2026-10-18. The optomechanical models (2026-10-28), scene capabilities, the optical surfaces, materials and elements (2026-10-29), and the bench and mounts (2026-10-30) are implemented; `docs/physical-optics-overview.md` describes what is built. Read the [pbrt roadmap](pbrt-roadmap.md), `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan here assumes them.*
 
 ## What femtoPro does, and what this plan takes from it
 
@@ -13,7 +13,7 @@ femtoPro (Brixner et al. 2023; Müller et al. 2025; Brixner et al. 2025) simulat
 What this plan keeps:
 
 - The beam as a few rays per segment for interactive work, with Gaussian beam parameters attached, solved on the CPU, and recomputed only downstream of a change ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)).
-- The split between coarse placement and fine adjustment ([physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)).
+- The split between coarse placement and fine adjustment ([physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md)).
 - A beam that is visible as a volume in the viewport, colored by its spectrum ([physoptics-beam-preview.md](physoptics-beam-preview.md)).
 - Detectors that measure rather than display: power meters, cameras, cards ([physoptics-detectors.md](physoptics-detectors.md)).
 
@@ -87,7 +87,7 @@ Two consumers read the same optics. The solver traces one chief ray per segment 
 | [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) | Glass catalogs (AGF, Sellmeier), coatings (ideal, tabulated, thin-film stacks, metals, absorbers), the optical interface material |
 | [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) | `SceneOptic` and `OPTIC_TRAITS`: every element of the request with its Thorlabs sizes, the Optics folder, the scene file |
 | [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md) | The offline STEP-to-mesh pipeline, cleanup, connection nodes, the mount library, placeholders and the parts list |
-| [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) | The breadboard, posts, post holders and clamps, mount poses, hole snapping, fine adjusters, mounts as traced geometry |
+| [physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md) | The breadboard, posts, post holders and clamps, mount poses, hole snapping, fine adjusters, mounts as traced geometry |
 | [physoptics-laser-sources.md](physoptics-laser-sources.md) | The laser element: Gaussian emission, line spectra, power, polarization, emitted-ray sampling |
 | [physoptics-beam-axis.md](physoptics-beam-axis.md) | The authored graph of elements and ports, its editor, the traced graph beside it |
 | [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) | Chief rays with differential ray transfer, astigmatic beam matrices, clipping, ghosts, selective updating |
@@ -123,7 +123,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 11. [physoptics-optical-surfaces.md](completed/physoptics-optical-surfaces.md). Implemented 2026-10-29, with items 12 and 13 in one change.
 12. [physoptics-optical-materials.md](completed/physoptics-optical-materials.md). Implemented 2026-10-29.
 13. [physoptics-optical-elements.md](completed/physoptics-optical-elements.md). Implemented 2026-10-29, with a per-scene length unit that every panel follows.
-14. [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)
+14. [physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md). Implemented 2026-10-30, with unmounted optics, a continuous post, and the breadboard as a scene object.
 
 ### Milestone 2: beams
 

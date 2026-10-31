@@ -1,6 +1,7 @@
-"""Scene files for the optical elements (docs/plans/completed/physoptics-optical-elements.md): payload version 21, with the
-Optical bench capability on and the elements in "optics". tools/verify/optics_check.py renders them and checks what each
-must show; assets/scenes/optics_*.gltf are these, written by
+"""Scene files for the optical elements (docs/plans/completed/physoptics-optical-elements.md): payload version 23, with the
+Optical bench capability on and the elements in "optics", unmounted where the scene needs them bare and in mid-air, on
+the breadboard in their mounts in optics_bench (docs/plans/completed/physoptics-bench-and-mounts.md). tools/verify/optics_check.py
+renders the first five and checks what each must show; assets/scenes/optics_*.gltf are these, written by
 
     python3 tools/verify/optics_scenes.py
 
@@ -11,7 +12,7 @@ Each scene has an answer:
   optics_cube_split   an ideal 50:50 cube between a red emitter behind it and a green one beside it: (0.5, 0.5, 0)
   optics_lens_focus   a plano-convex lens imaging a bright square 1 m away onto a screen at the image distance
   optics_prism        a white slit seen through an F2 prism at minimum deviation: a spectrum, in the spectral modes
-  optics_bench        one of every kind on a gray table, for the eye and for the save round trip
+  optics_bench        one of every kind in its default mount on posts on a breadboard, for the eye and the save round trip
 """
 
 import json
@@ -45,8 +46,20 @@ def quat_from_z(z_axis, up=(0.0, 1.0, 0.0)):
 def optic(kind, name, position, z_axis=(0.0, 0.0, 1.0), size=None, params=None, materials=None, up=(0.0, 1.0, 0.0)):
     """An element record. A size preset decides the values it sets (a lens's diameter and center thickness): to set those,
     pass size="custom" and give them in `params`"""
-    record = {"type": kind, "name": name, "params": params or {}, "position": [float(c) for c in position],
-              "orientation": [float(c) for c in quat_from_z(z_axis, up)], "materials": materials or {}}
+    mount = {"kind": "none", "position": [float(c) for c in position], "orientation": [float(c) for c in quat_from_z(z_axis, up)]}
+    record = {"type": kind, "name": name, "params": params or {}, "mount": mount, "materials": materials or {}}
+    if size is not None:
+        record["size"] = size
+    return record
+
+
+def mounted(kind, name, mount, origin, yaw, height=0.1, size=None, params=None):
+    """An element standing on the bench in a mount of `mount`'s kind: its origin (a mirror's front face, the center of
+    anything else) at (x, z), turned by `yaw` about it. The post stands where that puts it, and the app seats the fork
+    in a hole when it opens the file"""
+    record = {"type": kind, "name": name, "params": params or {}, "materials": {},
+              "mount": {"kind": mount, "origin": [float(origin[0]), float(origin[1])], "yaw": float(yaw), "height": float(height),
+                        "fork": {"angle": math.pi, "reach": 0.05}}}
     if size is not None:
         record["size"] = size
     return record
@@ -56,16 +69,22 @@ def interface(coating="uncoated", finish=0):
     return {"type": "optical_interface", "coating": coating, "finish": finish}
 
 
-def scene(shapes, materials, optics, cam, width, height, *, background=None, samples=64, ray_depth=16, render_extra=None):
+def scene(shapes, materials, optics, cam, width, height, *, background=None, samples=64, ray_depth=16, render_extra=None, bench=None):
     render = {"width": width, "height": height, "matchViewport": False, "antialiasing": True, "maxSamples": samples,
               "unlimitedSamples": False, "rayDepth": ray_depth, "useFixedSeed": True, "seed": 1, "samplesPerFrame": 16,
               "russianRoulette": False, "minBouncesBeforeRoulette": 4, "restartOnChange": True}
     render.update(render_extra or {})
-    extras = {"version": 21, "models": [], "capabilities": ["optical_bench"], "environmentIntensity": 1.0, "render": render,
+    extras = {"version": 23, "models": [], "capabilities": ["optical_bench"], "environmentIntensity": 1.0, "render": render,
               "renderCamera": 0, "cameras": [cam], "lights": [], "materials": materials, "materialOverrides": [],
               "geometry": shapes, "meshObjects": [], "optics": optics, "lengthUnit": "mm"}
     if background is not None:
         extras["background"] = list(background)
+    if bench is not None:
+        extras["bench"] = bench
+    # the Viewport where the render camera is, with a bench's 1 mm near plane: editing an optic puts the view right up
+    # against it
+    extras["viewport"] = {"position": cam["position"], "orientation": cam["orientation"], "pivot": [0.0, 0.0, 0.0],
+                          "speed": 0.5, "fov": float(cam["fov"]), "near": 0.001, "far": 100.0}
     return {"asset": {"generator": "vulkan_guide", "version": "2.0"}, "nodes": [{"name": "vulkan_guide_scene"}],
             "scene": 0, "scenes": [{"nodes": [0], "extras": extras, "name": "vulkan_guide scene"}], "extensions": {}}
 
@@ -150,21 +169,24 @@ def prism():
 
 
 def bench():
-    # one of every kind in a row on a table, each turned to show itself, lit by a soft overhead panel
-    kinds = [("planar_mirror", "M1", {}), ("concave_mirror", "CM1", {}), ("off_axis_parabola", "OAP1", {}), ("circular_filter", "F1", {"glass": "ND-OD1"}),
-             ("square_filter", "SF1", {}), ("iris", "ID1", {"opening": 0.008}), ("plate_beamsplitter", "BSP1", {}), ("cube_beamsplitter", "BS1", {}),
-             ("spherical_lens", "L1", {}), ("right_angle_prism", "RAP1", {}), ("equilateral_prism", "EP1", {}), ("plate_wedge", "PW1", {}),
-             ("round_wedge", "RW1", {})]
+    # one of every kind in its default mount, their origins in a row on holes 50 mm apart on a 700 x 300 mm breadboard,
+    # each turned a little to show itself, lit by a soft overhead panel
+    kinds = [("planar_mirror", "M1", "kinematic", {}), ("concave_mirror", "CM1", "kinematic", {}), ("off_axis_parabola", "OAP1", "kinematic", {}),
+             ("circular_filter", "F1", "fixed", {"glass": "ND-OD1"}), ("square_filter", "SF1", "plate_holder", {}), ("iris", "ID1", "iris", {"opening": 0.008}),
+             ("plate_beamsplitter", "BSP1", "rotation", {}), ("cube_beamsplitter", "BS1", "prism", {}), ("spherical_lens", "L1", "fixed", {}),
+             ("right_angle_prism", "RAP1", "prism", {}), ("equilateral_prism", "EP1", "prism", {}), ("plate_wedge", "PW1", "plate_holder", {}),
+             ("round_wedge", "RW1", "rotation", {})]
     optics = []
-    for i, (kind, name, params) in enumerate(kinds):
-        x = -0.36 + 0.06 * i
-        optics.append(optic(kind, name, (x, 0.05, 0.0), z_axis=(0.3, 0.0, -1.0), params=params))
-    table = vkscene.quad("table", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), 1.2, 0.6, 0)
-    panel = vkscene.quad("panel", (0.0, 0.6, 0.1), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), 0.8, 0.4, 1)
-    back = vkscene.quad("backdrop", (0.0, 0.2, 0.2), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), 1.2, 0.4, 2)
-    materials = [lambertian("table", (0.35, 0.35, 0.35)), emissive("panel", (1.0, 1.0, 1.0), 6.0), lambertian("backdrop", (0.6, 0.62, 0.65))]
-    cam = look((0.0, 0.18, -0.5), (0.0, 0.05, 0.0), fov=45.0)
-    return scene([table, panel, back], materials, optics, cam, 640, 300, background=(0.05, 0.05, 0.06), samples=128)
+    # each mount's front toward the camera, turned 17 degrees
+    yaw = math.atan2(0.3, -1.0)
+    for i, (kind, name, mount, params) in enumerate(kinds):
+        optics.append(mounted(kind, name, mount, (-0.3 + 0.05 * i, 0.0), yaw, params=params))
+    panel = vkscene.quad("panel", (0.0, 0.6, 0.1), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), 0.8, 0.4, 0)
+    back = vkscene.quad("backdrop", (0.0, 0.2, 0.2), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), 1.2, 0.4, 1)
+    materials = [emissive("panel", (1.0, 1.0, 1.0), 6.0), lambertian("backdrop", (0.6, 0.62, 0.65))]
+    cam = look((0.0, 0.22, -0.55), (0.0, 0.07, 0.0), fov=45.0)
+    return scene([panel, back], materials, optics, cam, 640, 300, background=(0.05, 0.05, 0.06), samples=128,
+                 bench={"table": True, "size": [0.7, 0.3], "beamHeight": 0.1, "snap": True})
 
 
 SCENE_BUILDERS = {

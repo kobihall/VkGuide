@@ -151,8 +151,10 @@
     1.0
    ],
    "part": "adjuster_x",
-   "pitch": null,
-   "pitch_source": "unknown (to confirm)"
+   "pitch": 0.000254,
+   "pitch_source": "3/16-100",
+   "angle_per_rev": 0.013,
+   "angle_source": "Thorlabs: 13 mrad per revolution (3/16-100 adjusters)"
   },
   "adjuster_y_tip": {
    "origin": [
@@ -176,8 +178,10 @@
     1.0
    ],
    "part": "adjuster_y",
-   "pitch": null,
-   "pitch_source": "unknown (to confirm)"
+   "pitch": 0.000254,
+   "pitch_source": "3/16-100",
+   "angle_per_rev": 0.013,
+   "angle_source": "Thorlabs: 13 mrad per revolution (3/16-100 adjusters)"
   }
  },
  "motions": {

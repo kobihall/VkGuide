@@ -177,6 +177,14 @@ void PipelineBuilder::setCullMode(VkCullModeFlags cullMode, VkFrontFace frontFac
 	m_rasterizer.frontFace = frontFace;
 }
 
+void PipelineBuilder::setDepthBias(float constantFactor, float slopeFactor)
+{
+	m_rasterizer.depthBiasEnable = constantFactor != 0.f || slopeFactor != 0.f ? VK_TRUE : VK_FALSE;
+	m_rasterizer.depthBiasConstantFactor = constantFactor;
+	m_rasterizer.depthBiasSlopeFactor = slopeFactor;
+	m_rasterizer.depthBiasClamp = 0.f;
+}
+
 void PipelineBuilder::setMultisamplingNone()
 {
 	m_multisampling.sampleShadingEnable = VK_FALSE;

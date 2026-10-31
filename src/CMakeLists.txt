@@ -169,9 +169,12 @@ endif()
 # Optical bodies, glasses, coatings and the optical element catalog as plain C++ (docs/plans/completed/physoptics-optical-*.md):
 # the surface prescriptions and their exact intersector, templated on the scalar type (the float instantiation is the
 # line-for-line mirror of shaders/rt/include/crt_optic.glsl), the AGF glass reader, the thin-film transfer matrix, the
-# element traits and builders and their preview meshes. Checked by tests/optics_test.cpp; the CPU traversal in rt_bvh
-# intersects optics through it
+# element traits and builders and their preview meshes, and the bench (docs/plans/completed/physoptics-bench-and-mounts.md): the
+# breadboard, the stack of fork, holder, post and mount under every optic by the mount models' mates, and the kinematic
+# mounts' adjusters. Checked by tests/optics_test.cpp; the CPU traversal in rt_bvh intersects optics through it
 add_library(rt_optics STATIC
+    optic_bench.cpp
+    optic_bench.h
     optic_catalog.cpp
     optic_catalog.h
     optic_coating.cpp
@@ -182,10 +185,11 @@ add_library(rt_optics STATIC
     optic_library.h
     optic_mesh.cpp
     optic_mesh.h
+    optic_mount.h
     optic_surface.cpp
     optic_surface.h)
 target_include_directories(rt_optics PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(rt_optics PUBLIC rt_material rt_spectrum glm fmt::fmt)
+target_link_libraries(rt_optics PUBLIC rt_material rt_spectrum rt_optic_models glm fmt::fmt)
 if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
     target_compile_options(rt_optics PRIVATE -O2)
 endif()
@@ -217,6 +221,8 @@ add_executable(vulkan_guide
     vk_loader.h
     mount_library.cpp
     mount_library.h
+    bench_scene.cpp
+    bench_scene.h
     raster_draw_list.cpp
     vk_tonemap.cpp
     vk_tonemap.h

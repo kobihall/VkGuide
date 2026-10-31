@@ -16,6 +16,7 @@
 #include <vk_gizmo.h>
 #include <gpu_selftest.h>
 #include <length_unit.h>
+#include <bench_scene.h>
 #include <mount_library.h>
 #include <optic_library.h>
 #include <scene_capabilities.h>
@@ -27,6 +28,7 @@
 #include <chrono>
 #include <filesystem>
 #include <optional>
+#include <deque>
 #include <map>
 
 struct DeletionQueue
@@ -106,6 +108,8 @@ struct RasterKey {
 	uint64_t environmentMaps { 0 };
 	float environmentExposure { 0.f };
 	bool occlusionCulling { false };
+	// BenchScene::revision(): the breadboard re-meshed, a mount model uploaded
+	uint64_t benchAssets { 0 };
 
 	bool operator==(const RasterKey&) const = default;
 };
@@ -198,6 +202,10 @@ struct MeshDrawList {
 struct GLTFMetallic_Roughness {
 	MaterialPipeline opaquePipeline;
 	MaterialPipeline transparentPipeline;
+	// the same two drawn a few depth steps toward the camera: an optic resting on its mount, whose faces lie exactly in the
+	// mount's, draws over the face it touches instead of flickering with it (VulkanEngine::drawOpticPreviews())
+	MaterialPipeline opaqueBiasedPipeline;
+	MaterialPipeline transparentBiasedPipeline;
 
 	VkDescriptorSetLayout materialLayout;
 
@@ -340,6 +348,13 @@ public:
 	void setLengthUnit(LengthUnit unit);
 	// what an optical element's builder reads from the scene: the library, the design wavelength, the surrounding medium
 	OpticBuildContext opticBuildContext() const;
+	// THE BENCH (docs/plans/completed/physoptics-bench-and-mounts.md): what the stacks are assembled with (the scene's bench, the
+	// mount library's mates, the build context), and the breadboard, posts and mounts on the GPU
+	BenchContext benchContext();
+	BenchScene m_benchScene;
+	// resolves every optic's stack and uploads what the bench needs; rebuilds the tracer's mesh data when that changed.
+	// After the panels each frame, and after a scene is made or opened
+	void updateBench();
 
 	// the models as the raytracer sees them, rebuilt by rebuildSceneDerivedData() exactly when
 	// m_models changes and shared immutably with every render snapshot - see RaytraceMeshData
@@ -442,6 +457,8 @@ public:
 		uint64_t lastFrame { 0 };
 	};
 	std::map<std::string, OpticPreviewMesh> m_opticPreviewMeshes;
+	// this frame's depth-biased copies of the mirror blanks' materials: a deque, so the draw context's pointers stay good
+	std::deque<MaterialInstance> m_opticBiasedMaterials;
 	// the raster pass's view of the optics this frame, drawn by drawRaytraceShapes()
 	void drawOpticPreviews(PreviewShapeSlot& slot, size_t firstMaterial);
 
@@ -467,6 +484,8 @@ public:
 	VkCommandPool m_immCommandPool;
 
 	std::vector<BackgroundEffect> m_backgroundEffects;
+	// shaders/viewport_encode.comp, after every raster pass
+	ComputePass m_viewportEncodePass;
 	int m_currentBackgroundEffect{0};
 	// each effect's editable settings, owned here so the effect closures can capture `this`
 	// rather than a pointer into the vector above
@@ -522,10 +541,11 @@ public:
 	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
 	void destroyBuffer(const AllocatedBuffer& buffer);
-	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+	// `colorView`: an R8G8B8A8_UNORM image of sRGB-encoded color, which also gets an sRGB view (AllocatedImage::colorView)
+	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false, bool colorView = false);
 	// a 2D array image of `layers` layers, viewed as one array (an image2DArray in a shader)
 	AllocatedImage createImageArray(VkExtent3D size, uint32_t layers, VkFormat format, VkImageUsageFlags usage);
-	AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+	AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false, bool colorView = false);
 	void destroyImage(const AllocatedImage& img);
 
 	// the scene as a whole: models + environment map + shapes. Failures never abort and leave
@@ -555,6 +575,8 @@ public:
 	// vulkan; the gizmo wants it as-is. During a first-person edit the fov is wider than the flown
 	// camera's, just enough that its whole frame fits in the viewport whatever the two aspects
 	glm::mat4 rasterProjection() const;
+	// the raster pass's own: reverse-Z in Vulkan's 0 to 1 depth (vk_engine.cpp), y not yet flipped
+	glm::mat4 rasterDepthProjection() const;
 	float rasterVerticalFov() const;
 	// the aspect a render frames: the viewport's under Match viewport, else the render resolution's
 	float renderAspect() const;

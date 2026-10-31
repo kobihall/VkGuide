@@ -2,12 +2,12 @@
 
 The raster viewport should show a table that looks like the lab: a KM100 holding a mirror on a post in a post holder clamped to the breadboard, not a disk floating in space. The user downloaded the Thorlabs STEP files for every mount, holder, iris and mirror blank into `assets/optical_models/`. STEP is a CAD exchange format of exact surfaces, which neither the raster pass nor the tracer can draw, and these files carry detail nobody sees: modeled screw threads, engraved part numbers, springs and bores inside closed bodies. This plan converts each file once, offline, into a cleaned triangle mesh with its parts separated, and records on each model the connection nodes where it mates with others. At run time a fixed model library serves the meshes to the raster preview and their BLASes to the tracer.
 
-*Implemented 2026-10-27, revised 2026-10-28 after the user's review (decals instead of lettering geometry, spring and thread proxies, moving iris blades, the RSP bearings removed). "As built" records where the build departs from the design below, and "Not built" what it leaves out. No plan dependencies: the converter is offline, and the library uses the existing importer path. [physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md) assembles the models into mounts. Part of the [laser optics plan](../physoptics-laser-optics.md).*
+*Implemented 2026-10-27, revised 2026-10-28 after the user's review (decals instead of lettering geometry, spring and thread proxies, moving iris blades, the RSP bearings removed). "As built" records where the build departs from the design below, and "Not built" what it leaves out. No plan dependencies: the converter is offline, and the library uses the existing importer path. [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) assembles the models into mounts. Part of the [laser optics plan](../physoptics-laser-optics.md).*
 
 ## Decisions already made
 
 - The models are fixed resources, generated from the optic that uses them and never saved in the scene, like the preview meshes of the analytic shapes (the request).
-- The breadboard is not converted. Its STEP file sets the dimensions of a procedurally generated plate ([physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md)).
+- The breadboard is not converted. Its STEP file sets the dimensions of a procedurally generated plate ([physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)).
 - Lasers and detectors get procedural placeholders now, and this plan lists Thorlabs parts whose STEP files replace them later (the user, 2026-10-18).
 - The FP01 plate holder replaces the SFH3 for square filters (the user, 2026-10-18). `Filter_mount-SFH3.step` is not converted.
 
@@ -53,7 +53,7 @@ The steps, each a function of the script:
 
 1. **Import** the STEP with `Part.read`, in millimeters whatever the file's unit, and keep its solids and their AP214 colors.
 2. Canonical frame. Move the model into its frame from the manifest: meters, +y up, +z along the optical axis toward the incoming light, origin at the model's primary mate (the optic seat for a mount, the post axis at the base for a holder). The frame is set once per model by hand from the Thorlabs drawing, and checked against the example assembly.
-3. Split into parts. A kinematic mount's front plate moves with fine adjustment, its adjusters turn, a rotation mount's rotor turns, an iris's lever turns, and the FP01's jaw slides with the plate thickness. Each such part is its own mesh in the `.glb`, a node with its own transform, so the preview can move it ([physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md)).
+3. Split into parts. A kinematic mount's front plate moves with fine adjustment, its adjusters turn, a rotation mount's rotor turns, an iris's lever turns, and the FP01's jaw slides with the plate thickness. Each such part is its own mesh in the `.glb`, a node with its own transform, so the preview can move it ([physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)).
 4. Remove threads. Open CASCADE's defeaturing (`Shape.defeaturing(faces)`, `BRepAlgoAPI_Defeaturing`) removes a set of faces and heals the solid. Thread faces are found automatically: B-spline or swept faces whose bounding box lies inside a cylindrical hole or around a cylindrical shank, with a helical sweep. The hole or shank is healed to a plain cylinder at the thread's pitch diameter. The manifest can name extra faces where the detection misses.
 5. Remove text. Engraved and embossed lettering (part numbers, scales, the Thorlabs logo) are clusters of small faces on a planar or cylindrical face. The manifest lists them, a review render shows each candidate cluster, and defeaturing removes them. The removed faces are projected onto their host face and rasterized into a decal texture, 1024² at most, white on transparent, which the mesh's material carries as a base color texture over the anodized black. Engraved scales on rotation mounts keep their graduations this way.
 6. **Tessellate** each part with `MeshPart.meshFromShape` at a linear deflection of 0.02 mm and an angular deflection of 15°, with per-face normals smoothed only across edges below 30°.
@@ -86,7 +86,7 @@ The converter writes mates from the manifest, where each is given either as coor
 
 `MountLibrary` (`src/optic_models.h/.cpp`) loads every `.glb` in `assets/optical_models/meshes/` at startup into `MeshAsset`s and their mates, outside `VulkanEngine::m_models`, so models are never saved and never appear under **Models**. Its meshes go through `RaytraceBlasCache` once, so every placed mount shares one BLAS per model part. A missing or unreadable file falls back to a placeholder box of the model's nominal size with a warning in the Scene panel, so a scene still opens on a machine without the meshes.
 
-`MOUNT_MODELS` names each model once: its id (`"KM100"`, `"LMR1/M"`, `"ID25/M"`, ...), its file stem, its parts and its mates. [physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md) maps each optic kind and size to model ids.
+`MOUNT_MODELS` names each model once: its id (`"KM100"`, `"LMR1/M"`, `"ID25/M"`, ...), its file stem, its parts and its mates. [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) maps each optic kind and size to model ids.
 
 ### Placeholders
 
@@ -181,14 +181,14 @@ The user downloads the STEP files for the parts they want, the manifest gains th
 
 ## Not built
 
-- BLASes through `RaytraceBlasCache`. That cache builds from the scene's `RaytraceMeshData`, and until an optic places a model there is nothing to build; [physoptics-bench-and-mounts.md](../physoptics-bench-and-mounts.md) adds the library's meshes when it places them.
+- BLASes through `RaytraceBlasCache`. That cache builds from the scene's `RaytraceMeshData`, and until an optic places a model there is nothing to build; [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md) adds the library's meshes when it places them, which it does since 2026-10-30.
 - The path tracer's textures. `RaytraceTextureArray` holds every texture at 512 × 512 and rebuilds from `m_models` only, so when the bench places a model, its atlas, 1,024 or 2,048 texels for most mounts, reaches the tracer at a quarter or less of the preview's resolution.
 - The rotation mounts' scale zero is where the model leaves it. Finding the graduation that reads zero needs the lettering read, which the converter does not do.
 - Batched uploads. A model's textures and meshes each wait on their own submit when it is first uploaded.
 
 ## Pending answers
 
-- Adjuster thread pitch. The files model no adjuster threads, so the converter cannot measure them. KM100, KM200 and KM200PM/M carry 1/4"-80 (0.3175 mm), which with KM100's modeled lever of 37.7 mm gives 8.4 mrad per revolution against Thorlabs' 8 mrad. KM05T/M has none. All four are marked `"to confirm"`.
+- Adjuster thread pitch. The files model no adjuster threads, so the converter cannot measure them. KM100, KM200 and KM200PM/M carry 1/4"-80 (0.3175 mm), which with KM100's modeled lever of 37.7 mm gives 8.4 mrad per revolution against Thorlabs' 8 mrad. KM05T/M has none. All four were marked `"to confirm"`. Answered on 2026-10-30 by [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md): each tip carries Thorlabs' angle per revolution as `angle_per_rev`, which sets the effective pitch, and KM05T/M's thread is 3/16-100.
 - Adjuster travel: ±2.5 mm (±1.5 mm for KM05T/M) is a guess from Thorlabs' ±4° range, used only for the visibility poses.
 - The fixed mounts' and FP01's front: the converter faces the retaining ring, and FP01's free plate face, toward the light. Both mounts are symmetric enough that either way works.
 - The texture size the tracer should get, above.
