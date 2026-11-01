@@ -428,6 +428,8 @@ private:
 	uint32_t m_lightGroupCount { 0 };
 	uint32_t m_spectralBuckets { 0 };
 	uint32_t m_outputFeatures { 0 };
+	// the uploaded geometry has second uv sets (binding 64, CRT_FLAG_UV1)
+	bool m_hasUv1 { false };
 	std::string m_outputsNote;
 	float m_autoAoDistance { 1.f };
 	float m_depthScale { 1.f };

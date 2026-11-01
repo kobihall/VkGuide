@@ -391,7 +391,13 @@ Shape "trianglemesh" "point3 P" [0 0 0  1 0 0  1 1 0]
 		const glm::dvec3 L = glm::dvec3(materialColor(emitter.definition, "albedo")) * (double)materialFloat(emitter.definition, "strength");
 		check(emitter.definition.type == MaterialType::Emissive && near(0.2126 * L.x + 0.7152 * L.y + 0.0722 * L.z, 4.0, 2e-3), "the disk emits luminance 4");
 	}
-	check(reportHas(model, "one-sided area light emits from both sides"), "a one-sided area light is reported");
+	//pbrt's area light without "twosided" emits from one side (docs/plans/completed/pbrt-light-types.md), and is no longer reported
+	if (disk != nullptr) {
+		const ImportedMaterial& emitter = model.materials[disk->surfaces[0].material];
+		const ParamValue twoSided = materialValue(emitter.definition, "twoSided");
+		check(std::get_if<bool>(&twoSided) != nullptr && !std::get<bool>(twoSided), "a pbrt area light without twosided is one-sided");
+	}
+	check(!reportHas(model, "one-sided area light emits from both sides"), "a one-sided area light is not reported any more");
 
 	check(model.shapes.size() == 1, "the sphere stays analytic");
 	if (!model.shapes.empty()) {

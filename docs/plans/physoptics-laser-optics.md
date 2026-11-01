@@ -127,7 +127,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 ### Milestone 2: beams
 
-15. [pbrt-light-types.md](pbrt-light-types.md). Emitted-ray sampling, which the laser's emission joins.
+15. [pbrt-light-types.md](completed/pbrt-light-types.md). Emitted-ray sampling, which the laser's emission joins.
 16. [physoptics-laser-sources.md](physoptics-laser-sources.md)
 17. [physoptics-beam-axis.md](physoptics-beam-axis.md)
 18. [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)
@@ -166,7 +166,7 @@ In the order below, which respects the [pbrt roadmap](pbrt-roadmap.md)'s depende
 34. [pbrt-light-shape-sampling.md](pbrt-light-shape-sampling.md)
 35. [pbrt-bvh-light-sampler.md](pbrt-bvh-light-sampler.md)
 36. [pbrt-direct-lighting-strategies.md](pbrt-direct-lighting-strategies.md)
-37. [pbrt-textures.md](pbrt-textures.md)
+37. [pbrt-textures.md](completed/pbrt-textures.md)
 38. [pbrt-bump-mapping.md](pbrt-bump-mapping.md)
 39. [pbrt-layered-materials.md](pbrt-layered-materials.md)
 40. [pbrt-appearance-extras.md](pbrt-appearance-extras.md)

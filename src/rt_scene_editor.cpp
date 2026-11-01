@@ -11,6 +11,7 @@
 
 #include <imgui.h>
 
+#include <rt_lights.h>
 #include <rt_scene.h>
 #include <vk_engine.h>
 #include <vk_gizmo.h>
@@ -223,8 +224,10 @@ bool drawCameraParams(SceneCamera& camera, bool& displayChanged)
 	return changed;
 }
 
-bool drawLightParams(SceneLight& light)
+// `loadImage` is set when the projection or goniometric light's Load... is clicked, for the caller to open the dialog
+bool drawLightParams(SceneLight& light, const LightImage& image, bool& loadImage)
 {
+	loadImage = false;
 	ImGui::TextDisabled("%s", lightKindLabel(light.kind));
 
 	//a directional light has no position that matters to the render: it only places the viewport's
@@ -235,12 +238,37 @@ bool drawLightParams(SceneLight& light)
 	}
 
 	changed |= spectrumEdit("colour", light.color, SpectrumEditOptions { .role = SpectrumRole::Illuminant });
-	//the tracer's radiometric units, on the scale an environment map's radiance is read in
-	const char* intensityLabel = light.kind == LightKind::Directional ? "irradiance (W/m^2)" : "intensity (W/sr)";
-	changed |= ImGui::SliderFloat(intensityLabel, &light.intensity, 0.f, 100000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-	if (ImGui::IsItemHovered()) {
-		ImGui::SetTooltip("A glTF light's candela (lux, for a directional one) divided by 683 on import");
+	//stored in the tracer's radiometric units, on the scale an environment map's radiance is read in, and shown in
+	//whichever unit the light names: the conversion changes the panel, never the render
+	const std::span<const LightUnit> units = lightUnits(light.kind);
+	if (std::find(units.begin(), units.end(), light.unit) == units.end()) {
+		light.unit = LightUnit::Radiometric;
 	}
+	const float factor = lightUnitFactor(light, light.unit, image);
+	float shown = light.intensity * factor;
+	const char* label = light.kind == LightKind::Directional ? "irradiance" : light.unit == LightUnit::Lumen ? "power" : "intensity";
+	ImGui::SetNextItemWidth(ImGui::CalcItemWidth() * 0.68f);
+	if (ImGui::DragFloat("##strength", &shown, std::max(shown, 1e-3f) * 0.01f, 0.f, 1e9f, "%.4g", ImGuiSliderFlags_Logarithmic) && factor > 0.f) {
+		light.intensity = std::max(shown / factor, 0.f);
+		changed = true;
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("A glTF light's candela (lux, for a directional one) is divided by 683 on import. Photometric units\n"
+			"use 683 lm/W and the color's luminance; a luminous power counts the solid angle the light covers");
+	}
+	ImGui::SameLine(0.f, ImGui::GetStyle().ItemInnerSpacing.x);
+	ImGui::SetNextItemWidth(ImGui::CalcItemWidth() * 0.32f - ImGui::GetStyle().ItemInnerSpacing.x);
+	if (ImGui::BeginCombo("##unit", lightUnitLabel(light.kind, light.unit))) {
+		for (const LightUnit unit : units) {
+			if (ImGui::Selectable(lightUnitLabel(light.kind, unit), unit == light.unit)) {
+				light.unit = unit;
+				changed = true;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::SameLine(0.f, ImGui::GetStyle().ItemInnerSpacing.x);
+	ImGui::TextUnformatted(label);
 
 	if (light.kind != LightKind::Directional) {
 		if (light.range > 0.f) {
@@ -256,6 +284,43 @@ bool drawLightParams(SceneLight& light)
 		changed |= ImGui::SliderFloat("outer cone", &light.outerConeDegrees, 0.f, 90.f, "%.1f deg");
 		changed |= ImGui::SliderFloat("inner cone", &light.innerConeDegrees, 0.f, light.outerConeDegrees, "%.1f deg");
 		light.innerConeDegrees = std::min(light.innerConeDegrees, light.outerConeDegrees);
+		int falloff = (int)light.falloff;
+		const char* falloffs[] = { "glTF (squared ramp)", "pbrt (smoothstep)" };
+		if (ImGui::Combo("falloff", &falloff, falloffs, 2)) {
+			light.falloff = (SpotFalloff)falloff;
+			changed = true;
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("How the intensity falls between the cones: glTF's square of a linear ramp in cos(angle), which every\n"
+				"glTF file means, or pbrt-v4's smoothstep. The extent is the same");
+		}
+	}
+	if (light.kind == LightKind::Projection || light.kind == LightKind::Goniometric) {
+		const bool projection = light.kind == LightKind::Projection;
+		const std::string shownPath = light.image.empty() ? std::string("none") : std::filesystem::path(light.image).filename().string();
+		ImGui::Text("%s: %s", projection ? "image" : "distribution", shownPath.c_str());
+		if (ImGui::IsItemHovered() && !light.image.empty()) {
+			ImGui::SetTooltip("%s", light.image.c_str());
+		}
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Load...")) {
+			loadImage = true;
+		}
+		if (!light.image.empty()) {
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Clear")) {
+				light.image.clear();
+				changed = true;
+			}
+		}
+		if (projection) {
+			changed |= ImGui::SliderFloat("field of view", &light.fovDegrees, 1.f, 170.f, "%.1f deg");
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("Of the image's shorter side, as pbrt's fov");
+			}
+		} else {
+			ImGui::TextDisabled("An IES file, or pbrt's equal-area square image in the light's space (+z its axis)");
+		}
 	}
 	return changed;
 }
@@ -505,8 +570,12 @@ MaterialDef RaytraceSceneEditor::userCopyOf(const MaterialDef& source, std::stri
 	copy.origin.reset();
 	copy.opticOrigin.reset();
 	copy.edited.clear();
+	//the model's textures are the copy's own: read under either texture storage, and saved where they are files
+	for (auto& [name, binding] : copy.textures) {
+		binding.derived = false;
+	}
 	//a texture layer means something only for as long as the array is not rebuilt, and nothing in a
-	//scene file: a user material keeps none until texture references exist (pbrt-textures.md). Every type's,
+	//scene file: a user material keeps none; its textures are the library's references (TextureBinding). Every type's,
 	//since a model's material carries its file's textures whatever its type, and the copy may change type
 	for (const MaterialType type : MATERIAL_TYPES) {
 		for (const MaterialParam& param : materialTraits(type).params) {
@@ -1591,7 +1660,42 @@ void RaytraceSceneEditor::drawSelectedShape(VulkanEngine* engine, SceneShape& sh
 
 	//a reference into the library: what the material is, is edited in the Materials window
 	changed |= drawMaterialReference(shape.materialId, shape.name);
-	ImGui::TextDisabled("on a shape, a material's textures are left out");
+	ImGui::TextDisabled("a material's textures read the shape's uvs; a model's own read the legacy array only on meshes");
+	changed |= ImGui::Checkbox("reverse orientation", &shape.reverseOrientation);
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("pbrt's ReverseOrientation: a material that emits from one side (two-sided off) emits from the shape's\n"
+			"inside, or a quad's back. Changes nothing else");
+	}
+	//an emitter's luminous power, which sets its material's strength from this shape's area and sidedness (pbrt's
+	//"power" on an area light). The material's texture is left out of it
+	if (MaterialDef* material = findMaterial(shape.materialId)) {
+		const glm::vec3 emitted = materialEmission(*material);
+		const float luminance = 0.2126f * emitted.r + 0.7152f * emitted.g + 0.0722f * emitted.b;
+		const float strength = materialFloat(*material, "strength");
+		if (luminance > 0.f && strength > 0.f) {
+			float area = 0.f;
+			for (const AreaLightGeometry& surface : shapeLightGeometry(shape.kind, shape.objectToWorld())) {
+				area += surface.area;
+			}
+			const ParamValue twoSided = materialValue(*material, "twoSided");
+			const bool both = std::get_if<bool>(&twoSided) == nullptr || std::get<bool>(twoSided);
+			const float sides = shape.kind == ShapeKind::Quad && both ? 2.f : 1.f;
+			//luminous power per unit of strength
+			const float perStrength = sides * LIGHT_PI * area * (luminance / strength) / PHOTOMETRIC_TO_RADIOMETRIC;
+			float lumens = strength * perStrength;
+			if (perStrength > 0.f && ImGui::DragFloat("luminous power (lm)", &lumens, std::max(lumens, 1.f) * 0.01f, 0.f, 1e9f, "%.4g")) {
+				material->params["strength"] = std::max(lumens / perStrength, 0.f);
+				if (material->origin.has_value()) {
+					material->edited.insert("strength");
+				}
+				changed = true;
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("What the shape emits, at 683 lm/W of its color's luminance: setting it sets the material's emission strength.\n"
+					"A material shared with other objects changes for them too");
+			}
+		}
+	}
 
 	if (changed) {
 		markChanged();
@@ -1659,7 +1763,20 @@ void RaytraceSceneEditor::drawSelectedLight(VulkanEngine* engine, SceneLight& li
 	if (!light.modelKey.empty()) {
 		ImGui::TextDisabled("imported with %s", light.modelKey.c_str());
 	}
-	bool changed = drawLightParams(light);
+	bool loadImage = false;
+	bool changed = drawLightParams(light, lightImageSource ? lightImageSource(light) : LightImage {}, loadImage);
+	if (loadImage) {
+		const bool projection = light.kind == LightKind::Projection;
+		const uint64_t id = light.id;
+		engine->requestOpenFile(projection ? "Projection Light Image" : "Goniometric Distribution",
+			projection ? std::vector<std::string> { "png", "jpg", "jpeg", "hdr", "exr", "pfm", "tga", "bmp" } : std::vector<std::string> { "ies", "IES", "png", "jpg", "jpeg", "hdr", "exr", "pfm" },
+			[this, id](const std::filesystem::path& path) {
+				if (SceneLight* chosen = findLight(id)) {
+					chosen->image = path.string();
+					markChanged();
+				}
+			});
+	}
 	changed |= drawLightGroupCombo("light group", light.lightGroup);
 	if (ImGui::IsItemHovered()) {
 		ImGui::SetTooltip("The group this light's contribution is kept in when a render keeps light groups: Raytrace Render > Outputs.");
@@ -1933,6 +2050,125 @@ void RaytraceSceneEditor::drawMaterialTree(VulkanEngine* engine)
 	ImGui::EndChild();
 }
 
+bool RaytraceSceneEditor::drawMaterialTextures(VulkanEngine* engine, MaterialDef& material)
+{
+	if (material.opticOrigin.has_value() && material.type == MaterialType::OpticalInterface) {
+		return false;
+	}
+	if (!ImGui::TreeNode("Textures")) {
+		return false;
+	}
+	const TextureLibrary& library = engine->m_textureLibrary;
+	//every parameter a texture can change, and the normal map and the coverage, which are not parameters
+	std::vector<std::pair<std::string, std::string>> slots;
+	for (const MaterialParam& param : materialTraits(material.type).params) {
+		if ((param.flags & PARAM_READ_ONLY) == 0 && (param.kind == ParamKind::Float || param.kind == ParamKind::Spectrum) && textureTarget(material, param.name) != 0) {
+			slots.emplace_back(param.name, param.label);
+		}
+	}
+	slots.emplace_back("normal", "normal map");
+	slots.emplace_back("alpha", "alpha (coverage)");
+
+	bool changed = false;
+	const uint64_t materialId = material.id;
+	for (const auto& [name, label] : slots) {
+		ImGui::PushID(name.c_str());
+		const auto bound = material.textures.find(name);
+		const TextureEntry* entry = bound != material.textures.end() ? library.find(bound->second.texture) : nullptr;
+		std::string shown = entry != nullptr ? entry->name : std::string("none");
+		if (entry != nullptr && bound->second.derived) {
+			shown += " (from its file)";
+		}
+		if (ImGui::BeginCombo(label.c_str(), shown.c_str())) {
+			if (ImGui::Selectable("none", entry == nullptr)) {
+				material.textures.erase(name);
+				changed = true;
+			}
+			for (const TextureEntry& candidate : library.entries()) {
+				if (ImGui::Selectable(fmt::format("{}##{}", candidate.name, candidate.id).c_str(), entry != nullptr && entry->id == candidate.id)) {
+					TextureBinding binding = bound != material.textures.end() ? bound->second : TextureBinding {};
+					binding.texture = candidate.id;
+					binding.derived = false;
+					material.textures[name] = binding;
+					changed = true;
+					break;
+				}
+			}
+			const bool color = name != "normal" && name != "alpha" && findMaterialParam(material.type, name) != nullptr && findMaterialParam(material.type, name)->kind == ParamKind::Spectrum;
+			if (ImGui::Selectable("Load image...")) {
+				const std::string slot = name;
+				const bool data = !color;
+				engine->requestOpenFile("Load Texture", { "png", "jpg", "jpeg", "tga", "bmp", "hdr", "exr", "pfm" }, [this, engine, materialId, slot, data](const std::filesystem::path& path) {
+					MaterialDef* target = findMaterial(materialId);
+					if (target == nullptr) {
+						return;
+					}
+					//a color reads its 8-bit file as sRGB, anything else (a roughness, a normal map) as it is
+					TextureSource source;
+					source.path = path;
+					source.encoding = data ? TextureEncoding::Linear : TextureEncoding::Srgb;
+					TextureBinding binding;
+					binding.texture = engine->m_textureLibrary.add(source, data ? TextureColorSpace::Linear : TextureColorSpace::Srgb, TextureSampling {});
+					binding.channel = slot == "alpha" ? TextureChannel::Alpha : TextureChannel::Rgb;
+					target->textures[slot] = binding;
+					markChanged();
+				});
+			}
+			ImGui::EndCombo();
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Its value is the parameter times the texture's texel there (a number reads one channel). The normal map is\n"
+				"tangent-space, on a mesh's tangents or a shape's dp/du and dp/dv; the alpha cuts the surface away below the\n"
+				"alpha cutoff, or, stochastic, keeps a hit with probability alpha");
+		}
+		auto it = material.textures.find(name);
+		if (it != material.textures.end() && it->second.texture != 0) {
+			TextureBinding& binding = it->second;
+			const TextureBinding before = binding;
+			ImGui::Indent();
+			const bool scalar = findMaterialParam(material.type, name) != nullptr && findMaterialParam(material.type, name)->kind == ParamKind::Float;
+			if (scalar || name == "alpha") {
+				const char* channels[] = { "rgb (red)", "red", "green", "blue", "alpha", "average" };
+				int channel = (int)binding.channel;
+				if (ImGui::Combo("channel", &channel, channels, 6)) {
+					binding.channel = (TextureChannel)channel;
+				}
+			}
+			const char* mappings[] = { "uv", "spherical", "cylindrical", "planar" };
+			int mapping = (int)binding.mapping;
+			if (ImGui::Combo("mapping", &mapping, mappings, 4)) {
+				binding.mapping = (TextureMapping)mapping;
+			}
+			if (binding.mapping == TextureMapping::Uv) {
+				int uvSet = (int)binding.uvSet;
+				if (ImGui::SliderInt("uv set", &uvSet, 0, 1)) {
+					binding.uvSet = (uint32_t)uvSet;
+				}
+			}
+			ImGui::DragFloat2("scale", &binding.scale.x, 0.01f);
+			ImGui::DragFloat2("offset", &binding.offset.x, 0.01f);
+			float degrees = glm::degrees(binding.rotation);
+			if (ImGui::DragFloat("rotation", &degrees, 0.5f, -360.f, 360.f, "%.1f deg")) {
+				binding.rotation = glm::radians(degrees);
+			}
+			if (name == "alpha") {
+				bool stochastic = binding.alphaMode == AlphaMode::Stochastic;
+				if (ImGui::Checkbox("stochastic", &stochastic)) {
+					binding.alphaMode = stochastic ? AlphaMode::Stochastic : AlphaMode::Cutoff;
+				}
+			}
+			ImGui::Unindent();
+			if (!(binding == before)) {
+				binding.derived = false;
+				changed = true;
+			}
+		}
+		ImGui::PopID();
+	}
+	ImGui::TreePop();
+	return changed;
+}
+
 void RaytraceSceneEditor::drawMaterialDetails(VulkanEngine* engine, MaterialDef& material)
 {
 	ImGui::PushID((int)material.id);
@@ -2006,9 +2242,11 @@ void RaytraceSceneEditor::drawMaterialDetails(VulkanEngine* engine, MaterialDef&
 	ImGui::EndDisabled();
 
 	changed |= drawMaterialParams(material, imported.has_value() ? &*imported : nullptr, m_materials);
+	changed |= drawMaterialTextures(engine, material);
 
 	//a material that emits is a light, and its light is kept in a group
-	if (material.type == MaterialType::Emissive || material.type == MaterialType::Pbr) {
+	const glm::vec3 emitted = materialEmission(material);
+	if (material.type == MaterialType::Emissive || material.type == MaterialType::Pbr || emitted.r > 0.f || emitted.g > 0.f || emitted.b > 0.f) {
 		changed |= drawLightGroupCombo("light group", material.lightGroup);
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("The group this material's emission is kept in when a render keeps light groups: Raytrace Render > Outputs.");

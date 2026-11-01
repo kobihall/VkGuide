@@ -2,7 +2,7 @@
 
 Materials are about to grow from six types with a handful of scalar fields to around fifteen types whose parameters can be spectra, textures or both. Today each shape and each overridden mesh object carries its own inline `SceneMaterial`, which stores every type's fields at once, and the GPU gets one fixed 64-byte record per material. This plan replaces that with a named material library, a traits table that describes every type's parameters as data, variable-length GPU records, and the two surface queues the user chose for kernel 06.
 
-*Implemented 2026-10-19; the as-built record is the last section before the sources. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md). [pbrt-bsdf-library.md](pbrt-bsdf-library.md), [pbrt-textures.md](../pbrt-textures.md), [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) and every other appearance plan add types and parameter kinds through it. Part of the [roadmap](../pbrt-roadmap.md).*
+*Implemented 2026-10-19; the as-built record is the last section before the sources. Depends on [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md). [pbrt-bsdf-library.md](pbrt-bsdf-library.md), [pbrt-textures.md](pbrt-textures.md), [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) and every other appearance plan add types and parameter kinds through it. Part of the [roadmap](../pbrt-roadmap.md).*
 
 ## Decisions already made
 
@@ -71,7 +71,7 @@ struct MaterialTraits {
 
 Because values are stored by name, switching a material from metal to conductor keeps `roughness` and loses nothing, which preserves today's behavior for every type.
 
-`ParamValue` holds a float, a `SpectrumRef` ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)), a `TexRef` ([pbrt-textures.md](../pbrt-textures.md)), an enum or a bool. Until those plans land, `SpectrumRef` is an RGB triple and `TexRef` is an optional texture layer, which is exactly what `RaytraceTriMaterial` holds today.
+`ParamValue` holds a float, a `SpectrumRef` ([pbrt-spectral-rendering.md](pbrt-spectral-rendering.md)), a `TexRef` ([pbrt-textures.md](pbrt-textures.md)), an enum or a bool. Until those plans land, `SpectrumRef` is an RGB triple and `TexRef` is an optional texture layer, which is exactly what `RaytraceTriMaterial` holds today.
 
 ### GPU records
 
@@ -123,7 +123,7 @@ The registry gains one field: `KernelVariant::perMaterialClass`, set on every ke
 A **Materials** window under **Windows**:
 
 - The library as a tree: **User** materials, then one folder per imported model. The laser optics plans add **Glasses** and **Coatings** folders, whose entries are not materials but are referenced by them ([physoptics-optical-materials.md](physoptics-optical-materials.md)), and a folder per optical element for the materials it owns.
-- Selecting one shows a parameter editor generated from its traits. Color parameters get a color picker; texturable ones a texture picker once [pbrt-textures.md](../pbrt-textures.md) exists.
+- Selecting one shows a parameter editor generated from its traits. Color parameters get a color picker; texturable ones a texture picker once [pbrt-textures.md](pbrt-textures.md) exists.
 - For a glTF material, edited parameters are marked, and **Revert** restores the imported value.
 - **+ New** and **Duplicate**.
 
@@ -175,7 +175,7 @@ Implemented 2026-10-19, in the plan's order of work with steps 3 and 4 together.
 
 - Unreferenced entries are kept (see "Open questions").
 - A new shape gets its own new user material named after it, and **Duplicate** duplicates the material too, so objects stay independent as they were with inline materials. Sharing is opt-in through the combo.
-- Any material may go on any object, but on a shape it is packed without its texture layers until [pbrt-textures.md](../pbrt-textures.md) adds textures on shapes. A textured glTF emitter on a shape would otherwise light the scene through kernel 04 with its texture and through light sampling without it.
+- Any material may go on any object, but on a shape it is packed without its texture layers until [pbrt-textures.md](pbrt-textures.md) adds textures on shapes. A textured glTF emitter on a shape would otherwise light the scene through kernel 04 with its texture and through light sampling without it.
 - Parameters are edited in the **Materials** window only. The **Scene** panel shows the material combo, **Edit** and **New from this**, as the design says.
 
 Decided without the user, and open to change:

@@ -96,12 +96,15 @@ struct SceneShape {
 	// the unit primitive's scale along its own axes. What each axis means is the kind's params; an
 	// axis none of them drives stays 1
 	glm::vec3 size { 1.f };
-	// the library entry it is shaded with (RaytraceSceneEditor::materials()). On a shape a material is
-	// packed without its textures, which shapes cannot carry until docs/plans/pbrt-textures.md
+	// the library entry it is shaded with (RaytraceSceneEditor::materials()). On a shape a material's textures read the
+	// shape's uvs (docs/plans/completed/pbrt-textures.md); a model's own textures in the legacy array never do
 	uint64_t materialId { 0 };
 	// the model this shape was imported with (a pbrt file's sphere), which removing the model removes it with;
 	// empty for a shape made in the editor
 	std::string modelKey;
+	// pbrt's ReverseOrientation: a one-sided emitting material emits from the shape's inside, or a quad's back
+	// (docs/plans/completed/pbrt-light-types.md). Changes nothing else
+	bool reverseOrientation { false };
 
 	// the unit primitive -> world
 	glm::mat4 objectToWorld() const
@@ -223,18 +226,60 @@ struct ViewportCameraSettings {
 
 //---------------------------------------------------------------- punctual lights
 
-// glTF's KHR_lights_punctual three, the values saved in the scene file by name (lightKindName())
+// glTF's KHR_lights_punctual three and pbrt-v4's projection and goniometric lights (docs/plans/completed/pbrt-light-types.md),
+// the values saved in the scene file by name (lightKindName())
 enum class LightKind : uint8_t {
 	Point,
 	Spot,
-	Directional
+	Directional,
+	// a point light that projects an image through a frustum, like a slide projector (PBR 4ed 12.2.2)
+	Projection,
+	// a point light whose intensity varies with direction by a measured distribution (PBR 4ed 12.2.3): an IES file or an
+	// equal-area square image in the light's space
+	Goniometric
 };
 
 inline constexpr LightKind LIGHT_KINDS[] = {
 	LightKind::Point,
 	LightKind::Spot,
 	LightKind::Directional,
+	LightKind::Projection,
+	LightKind::Goniometric,
 };
+
+// a spot light's falloff between its inner and outer cones: glTF's squared ramp in cos(angle), which every glTF file
+// means, or pbrt-v4's smoothstep. The two differ in the transition's shape, not its extent
+enum class SpotFalloff : uint8_t {
+	Gltf,
+	Smoothstep
+};
+
+// The unit a light's strength is shown and edited in (docs/plans/completed/pbrt-light-types.md, photometric specification). The
+// intensity is always stored radiometric, so the unit changes the panel and never the render. Point, spot, projection
+// and goniometric lights: radiant intensity (W/sr), luminous intensity (cd) or luminous power (lm). Directional:
+// irradiance (W/m^2) or illuminance (lux)
+enum class LightUnit : uint8_t {
+	Radiometric,
+	Candela,
+	Lumen,
+	Lux
+};
+
+// the scene file's name of a unit
+inline const char* lightUnitName(LightUnit unit)
+{
+	switch (unit) {
+	case LightUnit::Radiometric:
+		return "radiometric";
+	case LightUnit::Candela:
+		return "candela";
+	case LightUnit::Lumen:
+		return "lumen";
+	case LightUnit::Lux:
+		return "lux";
+	}
+	return "radiometric";
+}
 
 // the scene file's type name, and the prefix of a new light's name
 inline const char* lightKindName(LightKind kind)
@@ -246,6 +291,10 @@ inline const char* lightKindName(LightKind kind)
 		return "spot";
 	case LightKind::Directional:
 		return "directional";
+	case LightKind::Projection:
+		return "projection";
+	case LightKind::Goniometric:
+		return "goniometric";
 	}
 	return "unknown";
 }
@@ -260,6 +309,10 @@ inline const char* lightKindLabel(LightKind kind)
 		return "Spot light";
 	case LightKind::Directional:
 		return "Directional light";
+	case LightKind::Projection:
+		return "Projection light";
+	case LightKind::Goniometric:
+		return "Goniometric light";
 	}
 	return "Light";
 }
@@ -294,6 +347,17 @@ struct SceneLight {
 	// spot: full intensity inside the inner cone, none outside the outer, in degrees from the axis
 	float innerConeDegrees { 20.f };
 	float outerConeDegrees { 30.f };
+	SpotFalloff falloff { SpotFalloff::Gltf };
+	// what the panel shows the intensity in; never changes what is stored
+	LightUnit unit { LightUnit::Radiometric };
+	// projection: the image it projects. Goniometric: its distribution, an IES LM-63 file (.ies) or an equal-area
+	// square image. Absolute; empty for none, which projects nothing
+	std::string image;
+	// projection: the field of view of the image's shorter axis, in degrees, as pbrt's "fov"
+	float fovDegrees { 45.f };
+	// projection and goniometric: the image's frame is left-handed, its z axis -(x cross y), as a pbrt light's can be
+	// (a mirroring transform, or the y and z a goniometric light swaps). Set by the pbrt importer; no rotation can say it
+	bool mirrored { false };
 	// the model this light was imported with, which removing the model removes it with; empty for a
 	// light made in the editor
 	std::string modelKey;
@@ -542,6 +606,20 @@ struct OpticsSettings {
 // How a render is made. Owned by RaytraceRenderer and saved with the scene. The camera's own
 // settings (lens, exposure) live on the SceneCamera, and which camera renders is the
 // renderer's choice
+// where an imported model's four glTF textures are read from (RenderSettings::textureStorage)
+enum class TextureStorage : uint8_t {
+	Legacy,
+	Native
+};
+
+// crt_texture.glsl CRT_TEXTURE_FILTER_*
+enum class TextureFilter : uint8_t {
+	Point,
+	Bilinear,
+	Trilinear,
+	Anisotropic
+};
+
 struct RenderSettings {
 	int width { RESOLUTION_PRESETS[DEFAULT_RESOLUTION_PRESET].width };
 	int height { RESOLUTION_PRESETS[DEFAULT_RESOLUTION_PRESET].height };
@@ -605,6 +683,15 @@ struct RenderSettings {
 	// OPTICS (docs/plans/completed/physoptics-optical-materials.md): the surrounding medium and exact coatings. Changes nothing in a
 	// scene without optical bodies
 	OpticsSettings optics;
+	// TEXTURES (docs/plans/completed/pbrt-textures.md). Where an imported model's own textures are read from: the texture library,
+	// each at its own size with mips (new scenes), or the legacy 512 x 512 array, which reproduces renders from before
+	// the library bit for bit (a file that names no storage). Everything else textured always reads the library
+	TextureStorage textureStorage { TextureStorage::Native };
+	// a library texture's larger side, in texels: a larger image is stored at the mip level within it
+	int maxTextureSize { 4096 };
+	// how a library texture is filtered: point and bilinear at the finest level, trilinear at the level a ray cone's
+	// footprint gives, anisotropic along the footprint's axes
+	TextureFilter textureFilter { TextureFilter::Trilinear };
 
 	bool operator==(const RenderSettings&) const = default;
 };

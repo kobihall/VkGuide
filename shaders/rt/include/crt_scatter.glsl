@@ -407,9 +407,66 @@ bool normalMapped(ClassicMaterial material, GpuTriangleAttributes attributes, ve
 // while it still faces the ray: one tilted past the viewer would send the BSDF's continuation into
 // the surface. `frontFace` is the side of the unmapped normal the ray arrived on, since a normal map
 // changes how a surface shades, not which side it is. Only a glTF material, on a triangle, has a map
-vec3 materialShadingNormal(ClassicMaterial material, HitRecord hit, SurfaceInteraction si, vec3 inDir, out bool frontFace)
+// a normal map of the texture library (CRT_TEX_TARGET_NORMAL_MAP): its tangent-space texel in world space, in the frame
+// of the mesh's vertex tangents, or on a shape in the frame of dp/du and dp/dv
+bool libraryNormalMapped(uint materialIndex, ClassicMaterial material, HitRecord hit, SurfaceInteraction si, TextureSite site, out vec3 mapped)
+{
+	mapped = si.ns;
+	bool found;
+	vec3 texel = materialTextureColor(materialIndex, CRT_TEX_TARGET_NORMAL_MAP, site, found) * 2.0 - 1.0;
+	if (!found) {
+		return false;
+	}
+	texel.xy *= material.type <= CRT_MATERIAL_PBR ? material.normalScale : 1.0;
+	const GpuInstance instance = instances[hit.instance];
+	vec3 t;
+	vec3 b;
+	vec3 n = si.ns;
+	if (instance.nodeBase == CRT_INSTANCE_SHAPE) {
+		t = si.dpdu - n * dot(n, si.dpdu);
+		if (dot(t, t) < 1e-20) {
+			return false;
+		}
+		t = normalize(t);
+		b = cross(n, t);
+		if (dot(b, si.dpdv) < 0.0) {
+			b = -b;
+		}
+		mapped = t * texel.x + b * texel.y + n * texel.z;
+		return dot(mapped, mapped) > 1e-12;
+	}
+	const BvhTriangle tri = blasTriangles[hit.primitive];
+	const GpuTriangleAttributes attributes = triangleAttributes[instance.attributeBase + (floatBitsToUint(tri.v0.w) & CRT_TRIANGLE_INDEX_MASK)];
+	if ((attributes.tangents.w & CRT_TANGENT_MISSING) != 0u) {
+		return false;
+	}
+	const vec2 bary = hit.barycentrics;
+	const vec3 objectNormal = normalize(triangleObjectNormal(attributes, tri, bary));
+	const float w = 1.0 - bary.x - bary.y;
+	t = w * unpackTangent(attributes.tangents.x) + bary.x * unpackTangent(attributes.tangents.y) + bary.y * unpackTangent(attributes.tangents.z);
+	t -= objectNormal * dot(objectNormal, t);
+	if (dot(t, t) < 1e-12) {
+		return false;
+	}
+	t = normalize(t);
+	b = cross(objectNormal, t) * ((attributes.tangents.w & 1u) != 0u ? -1.0 : 1.0);
+	mapped = worldNormal(instance, t * texel.x + b * texel.y + objectNormal * texel.z);
+	return true;
+}
+
+vec3 materialShadingNormal(ClassicMaterial material, HitRecord hit, SurfaceInteraction si, vec3 inDir, out bool frontFace, uint materialIndex, TextureSite site)
 {
 	vec3 normal = facingShadingNormal(si, inDir, frontFace);
+	if (CRT_TEXTURES && material.normalLayer < 0 && (materials[materialIndex].flags & CRT_MATERIAL_FLAG_NORMAL_MAP) != 0u) {
+		vec3 mapped;
+		if (libraryNormalMapped(materialIndex, material, hit, si, site, mapped)) {
+			mapped = frontFace ? mapped : -mapped;
+			if (dot(mapped, inDir) < 0.0) {
+				normal = normalize(mapped);
+			}
+		}
+		return normal;
+	}
 	const GpuInstance instance = instances[hit.instance];
 	if (material.normalLayer < 0 || instance.nodeBase == CRT_INSTANCE_SHAPE) {
 		return normal;
@@ -427,15 +484,32 @@ vec3 materialShadingNormal(ClassicMaterial material, HitRecord hit, SurfaceInter
 	return normal;
 }
 
+vec3 materialShadingNormal(ClassicMaterial material, HitRecord hit, SurfaceInteraction si, vec3 inDir, out bool frontFace)
+{
+	return materialShadingNormal(material, hit, si, inDir, frontFace, si.material, textureSiteAt(si.uv));
+}
+
 // a textured material's factors modulated by its textures, exactly as glTF defines them: base
 // colour by the sRGB base colour texel, roughness and metallic by the metal/rough texel's g and b.
-// textureLod: compute has no derivatives to pick a level with, and the array has no mips
-ClassicMaterial resolveMaterial(uint materialIndex, vec2 uv)
+// textureLod: compute has no derivatives to pick a level with, and the array has no mips. The texture library's
+// references (crt_texture.glsl) multiply the same fields, and the classic parameter, after the layers
+ClassicMaterial resolveMaterial(uint materialIndex, TextureSite site)
 {
+	const vec2 uv = site.uv;
 	ClassicMaterial material = classicMaterial(materialIndex);
 	if (material.albedoLayer >= 0) {
 		const vec3 texel = textureLod(materialTextures, vec3(uv, float(material.albedoLayer)), 0.0).rgb;
 		material.albedo *= srgbToLinear(texel);
+	}
+	vec3 libraryAlbedo = vec3(1.0);
+	if (CRT_TEXTURES) {
+		bool found;
+		libraryAlbedo = materialTextureColor(materialIndex, CRT_TEX_TARGET_ALBEDO, site, found);
+		material.albedo *= libraryAlbedo;
+		material.param *= materialTextureScalar(materialIndex, CRT_TEX_TARGET_PARAM, site, found);
+		material.metallic = clamp(material.metallic * materialTextureScalar(materialIndex, CRT_TEX_TARGET_METALLIC, site, found), 0.0, 1.0);
+		material.roughness = clamp(material.roughness * materialTextureScalar(materialIndex, CRT_TEX_TARGET_ROUGHNESS, site, found), 0.0, 1.0);
+		material.normalScale *= materialTextureScalar(materialIndex, CRT_TEX_TARGET_NORMAL_SCALE, site, found);
 	}
 #ifdef CRT_SPECTRAL
 	// the albedo reference at the path's lanes, an RGB one uplifted with its texel multiplied in (pbrt's
@@ -443,6 +517,9 @@ ClassicMaterial resolveMaterial(uint materialIndex, vec2 uv)
 	vec3 tint = vec3(1.0);
 	if (material.albedoLayer >= 0) {
 		tint = srgbToWorking(srgbToLinear(textureLod(materialTextures, vec3(uv, float(material.albedoLayer)), 0.0).rgb));
+	}
+	if (CRT_TEXTURES) {
+		tint *= srgbToWorking(libraryAlbedo);
 	}
 	material.color = spectrumFromRef(materialSpectrumRef(materialIndex, CRT_SLOT_ALBEDO), tint);
 #endif
@@ -452,6 +529,27 @@ ClassicMaterial resolveMaterial(uint materialIndex, vec2 uv)
 		material.metallic *= texel.b;
 	}
 	return material;
+}
+
+ClassicMaterial resolveMaterial(uint materialIndex, vec2 uv)
+{
+	return resolveMaterial(materialIndex, textureSiteAt(uv));
+}
+
+// how far a non-delta bounce off the material blurs what the path sees next, as a roughness from 0 (a mirror) to 1 (a
+// diffuse surface): what widens the ray cone (continuedRayCone())
+float surfaceConeRoughness(ClassicMaterial m)
+{
+	if (m.type == CRT_MATERIAL_PBR) {
+		return mix(1.0, m.roughness * m.roughness, m.metallic);
+	}
+	if (m.type == CRT_MATERIAL_METAL) {
+		return m.param;
+	}
+	if (m.type == CRT_MATERIAL_PHONG) {
+		return 1.0 - m.param;
+	}
+	return 1.0;
 }
 
 //---------------------------------------------------------------- the complex build's materials
@@ -501,23 +599,33 @@ bool isBxdfMaterialType(uint type)
 // second with the mix's amount (src/bxdf.cpp mixChoosesSecond()). Bounded, so a file whose mixes name each other
 // ends at a mix, which scatters nothing
 #define CRT_MIX_DEPTH 8u
-uint resolveMixMaterial(uint index, vec3 p, vec3 wo)
+uint resolveMixMaterial(uint index, vec3 p, vec3 wo, TextureSite site)
 {
 	for (uint depth = 0u; depth < CRT_MIX_DEPTH; depth++) {
 		if (materials[index].type != CRT_MATERIAL_MIX) {
 			break;
 		}
 		const vec4 record = materialParams[materials[index].paramOffset];
-		index = floatBitsToUint(mixChoosesSecond(record.w, p, wo, index) ? record.y : record.x);
+		float amount = record.w;
+		if (CRT_TEXTURES) {
+			bool found;
+			amount = clamp(amount * materialTextureScalar(index, CRT_TEX_TARGET_AMOUNT, site, found), 0.0, 1.0);
+		}
+		index = floatBitsToUint(mixChoosesSecond(amount, p, wo, index) ? record.y : record.x);
 	}
 	return index;
+}
+
+uint resolveMixMaterial(uint index, vec3 p, vec3 wo)
+{
+	return resolveMixMaterial(index, p, wo, textureSiteAt(vec2(0.0)));
 }
 
 // A glass's or a conductor's record (src/rt_material_record.h CrtBxdfMaterial) as the BxDF reads it. Exact RGB takes
 // the RGB fields: the glass's index at the design wavelength, the conductor's eta and k at 630, 532 and 465 nm. A
 // spectral build reads the conductor's spectra at the path's lanes, and the glass's index where
 // applyDispersion() sets it
-BxdfMaterial resolveBxdfMaterial(uint index, out uint flags)
+BxdfMaterial resolveBxdfMaterial(uint index, out uint flags, TextureSite site)
 {
 	const uint base = materials[index].paramOffset;
 	const vec4 a = materialParams[base];
@@ -579,13 +687,71 @@ BxdfMaterial resolveBxdfMaterial(uint index, out uint flags)
 #endif
 		}
 	}
+	// THE TEXTURE LIBRARY's references (crt_texture.glsl), each multiplying the field its parameter packs into: a color
+	// by its texel (a spectral build's lanes by its uplift, through the working space), a scalar by one channel
+	if (CRT_TEXTURES && (materials[index].flags & CRT_MATERIAL_FLAG_EXTENDED) != 0u) {
+		bool found;
+		const vec3 rgbA = materialTextureColor(index, CRT_TEX_TARGET_RGB_A, site, found);
+		const vec3 rgbB = materialTextureColor(index, CRT_TEX_TARGET_RGB_B, site, found);
+		const vec3 reflectance = materialTextureColor(index, CRT_TEX_TARGET_REFLECTANCE, site, found);
+		const bool texturedReflectance = found;
+		const float scale = materialTextureScalar(index, CRT_TEX_TARGET_SCALE, site, found);
+		if (m.type == CRT_MATERIAL_DIFFUSE || m.type == CRT_MATERIAL_DIFFUSE_TRANSMISSION) {
+#ifndef CRT_SPECTRAL
+			m.reflectance = clamp(m.reflectance * rgbA * scale, vec3(0.0), vec3(1.0));
+			m.transmittance = clamp(m.transmittance * rgbB * scale, vec3(0.0), vec3(1.0));
+#else
+			m.reflectance = spectrumClamp(spectrumScale(spectrumMul(m.reflectance, spectrumFromRef(CRT_SPECTRAL_NONE, srgbToWorking(rgbA))), scale), 0.0, 1.0);
+			m.transmittance = spectrumClamp(spectrumScale(spectrumMul(m.transmittance, spectrumFromRef(CRT_SPECTRAL_NONE, srgbToWorking(rgbB))), scale), 0.0, 1.0);
+#endif
+			const float sigma = materialTextureBase(index, CRT_TEX_TARGET_SIGMA) * materialTextureScalar(index, CRT_TEX_TARGET_SIGMA, site, found);
+			if (found && m.type == CRT_MATERIAL_DIFFUSE) {
+				// Oren-Nayar's A and B for the textured sigma (src/bxdf.cpp DiffuseBxdf::make())
+				const float radians = sigma * (3.14159265358979323846 / 180.0);
+				const float sigma2 = radians * radians;
+				m.orenA = sigma > 0.0 ? 1.0 - sigma2 / (2.0 * (sigma2 + 0.33)) : 1.0;
+				m.orenB = sigma > 0.0 ? 0.45 * sigma2 / (sigma2 + 0.09) : 0.0;
+			}
+		}
+		if (m.type == CRT_MATERIAL_CONDUCTOR) {
+			if ((flags & CRT_BXDF_FLAG_REFLECTANCE) != 0u) {
+				if (texturedReflectance) {
+					// the reflectance's k again, for the textured reflectance: eta 1, k = 2 sqrt(r) / sqrt(1 - r)
+					for (uint i = 0u; i < CRT_LANE_END; i++) {
+						const float k = spectrumLane(m.conductorK, i);
+						const float r0 = k * k / (4.0 + k * k);
+#ifndef CRT_SPECTRAL
+						const float texel = reflectance[i];
+#else
+						const float texel = (reflectance.r + reflectance.g + reflectance.b) / 3.0;
+#endif
+						const float r = clamp(r0 * texel, 0.0, 0.9999);
+						spectrumSetLane(m.conductorK, i, 2.0 * sqrt(r) / sqrt(max(1.0 - r, 0.0)));
+					}
+				}
+			} else {
+#ifndef CRT_SPECTRAL
+				m.conductorEta *= rgbA;
+				m.conductorK *= rgbB;
+#else
+				m.conductorEta = spectrumScale(m.conductorEta, (rgbA.r + rgbA.g + rgbA.b) / 3.0);
+				m.conductorK = spectrumScale(m.conductorK, (rgbB.r + rgbB.g + rgbB.b) / 3.0);
+#endif
+			}
+		}
+		if (m.type == CRT_MATERIAL_GLASS || m.type == CRT_MATERIAL_THIN_GLASS) {
+			m.eta *= materialTextureScalar(index, CRT_TEX_TARGET_ETA, site, found);
+		}
+		m.alpha.x *= materialTextureScalar(index, CRT_TEX_TARGET_ALPHA_X, site, found);
+		m.alpha.y *= materialTextureScalar(index, CRT_TEX_TARGET_ALPHA_Y, site, found);
+	}
 	return m;
 }
 
-ComplexMaterial resolveComplexMaterial(uint index, SurfaceInteraction si)
+ComplexMaterial resolveComplexMaterial(uint index, SurfaceInteraction si, TextureSite site)
 {
 	ComplexMaterial m;
-	m.classic = resolveMaterial(index, si.uv);
+	m.classic = resolveMaterial(index, site);
 	m.isBxdf = isBxdfMaterialType(m.classic.type);
 	m.dpdu = si.dpdu;
 	m.index = index;
@@ -594,9 +760,13 @@ ComplexMaterial resolveComplexMaterial(uint index, SurfaceInteraction si)
 	m.isOptic = CRT_OPTICS && m.classic.type == CRT_MATERIAL_OPTICAL_INTERFACE;
 	if (m.isOptic) {
 		m.optic = resolveOpticInterface(index, si);
+		if (CRT_TEXTURES) {
+			bool found;
+			m.optic.tis = clamp(m.optic.tis * materialTextureScalar(index, CRT_TEX_TARGET_TIS, site, found), 0.0, 0.5);
+		}
 	}
 	if (m.isBxdf) {
-		m.bxdf = resolveBxdfMaterial(index, m.bxdfFlags);
+		m.bxdf = resolveBxdfMaterial(index, m.bxdfFlags, site);
 	} else if (m.isOptic && m.optic.finish == CRT_OPTIC_FINISH_GROUND) {
 		// pbrt's dielectric at roughness 1 between the surface's media: eta inside (minus) over outside (plus)
 		m.isBxdf = true;
@@ -623,6 +793,17 @@ ComplexMaterial resolveComplexMaterial(uint index, SurfaceInteraction si)
 		m.bxdf.orenB = 0.0;
 	}
 	return m;
+}
+
+float surfaceConeRoughness(ComplexMaterial m)
+{
+	if (m.isBxdf) {
+		if (m.bxdf.type == CRT_MATERIAL_DIFFUSE || m.bxdf.type == CRT_MATERIAL_DIFFUSE_TRANSMISSION) {
+			return 1.0;
+		}
+		return max(m.bxdf.alpha.x, m.bxdf.alpha.y);
+	}
+	return surfaceConeRoughness(m.classic);
 }
 
 // The local frame about the OUTWARD shading normal: `normal` faces the ray, and `frontFace` says which side it came

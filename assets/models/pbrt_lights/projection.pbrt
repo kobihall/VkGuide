@@ -1,0 +1,16 @@
+LookAt 0 4 5.5  0 0 -0.5  0 1 0
+Camera "perspective" "float fov" 50
+Sampler "zsobol" "integer pixelsamples" 64
+Integrator "volpath" "integer maxdepth" 1
+Film "rgb" "integer xresolution" 320 "integer yresolution" 240 "string filename" "projection.exr"
+PixelFilter "gaussian"
+WorldBegin
+AttributeBegin
+  Translate 0 2.5 0
+  Rotate 90 1 0 0
+  Rotate 30 0 0 1
+  LightSource "projection" "string filename" "projection.png" "float fov" 60 "float scale" 6
+AttributeEnd
+Material "diffuse" "rgb reflectance" [0.7 0.7 0.7]
+Shape "trianglemesh" "integer indices" [0 1 2 0 2 3] "point3 P" [-5 0 -5  5 0 -5  5 0 5  -5 0 5]
+Shape "trianglemesh" "integer indices" [0 1 2 0 2 3] "point3 P" [-5 0 -3  5 0 -3  5 5 -3  -5 5 -3]

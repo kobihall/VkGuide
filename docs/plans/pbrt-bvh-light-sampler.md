@@ -38,7 +38,7 @@ Each light gets pbrt's `LightBounds` (PBR 4ed §12.6.3): a box, a principal dire
 | Light | Bounds |
 |---|---|
 | Sphere, cylinder | the shape's box; `θo` = π (normals everywhere) |
-| Rectangle, triangle, disk | the shape's box; `w` = the normal, `θo` = 0, two-sided by the emitter's flag ([pbrt-light-types.md](pbrt-light-types.md)) |
+| Rectangle, triangle, disk | the shape's box; `w` = the normal, `θo` = 0, two-sided by the emitter's flag ([pbrt-light-types.md](completed/pbrt-light-types.md)) |
 | Point, goniometric, projection | a degenerate box at the point; `θo` = π |
 | Spot | the point; `w` = the axis, `θo` = the outer cone, `θe` = 0 |
 | Directional, environment, sun | none: infinite lights stay out of the tree |

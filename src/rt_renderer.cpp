@@ -326,6 +326,7 @@ void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEdit
 	drawExportSettings(engine, editor);
 	drawAccelSettings(engine);
 	drawIntersectionSettings();
+	drawTextureSettings(engine);
 
 	//what the scene's capabilities add, such as the optical bench's Optics section
 	forEachEnabledCapability(engine->m_capabilities, [engine](const CapabilityInfo& capability) {
@@ -658,8 +659,13 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	spectral.monochromatic = m_settings.spectral.representation == SpectralRepresentation::Monochromatic ? m_settings.spectral.monochromaticWavelength : 0.f;
 	spectral.surrounding = m_settings.optics.surrounding;
 	spectral.libraryRevision = engine->m_opticalLibrary.revision();
+	//and what the texture library holds, and whether models read their own textures from it
+	SceneTextureContext textureContext;
+	textureContext.library = &engine->m_textureLibrary;
+	textureContext.modelTexturesFromLibrary = m_settings.textureStorage == TextureStorage::Native;
+	textureContext.revision = engine->m_textureLibrary.revision();
 	const bool sameBuild = m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
-		&& m_sceneAccelEnvironment == environment && m_sceneAccelSpectral == spectral;
+		&& m_sceneAccelEnvironment == environment && m_sceneAccelSpectral == spectral && m_sceneAccelTextures == textureContext;
 	if (sameBuild && m_sceneAccelContentRevision == editor.contentRevision()) {
 		return;
 	}
@@ -688,8 +694,9 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 		}
 	}
 	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), editor.lights(), editor.materials(), modelMaterialIds,
-		environment, engine->m_raytraceTextures, spectral, editor.optics(), &engine->m_opticalLibrary, bench.empty() ? nullptr : &bench);
+		environment, engine->m_raytraceTextures, spectral, editor.optics(), &engine->m_opticalLibrary, bench.empty() ? nullptr : &bench, textureContext);
 	m_sceneAccelSpectral = spectral;
+	m_sceneAccelTextures = textureContext;
 	m_sceneAccelOptics = editor.optics();
 	m_sceneAccelBench = std::move(bench);
 
@@ -1648,6 +1655,71 @@ void RaytraceRenderer::drawIntersectionSettings()
 	ImGui::Checkbox("Watertight triangles", &m_settings.watertightTriangles);
 	if (ImGui::IsItemHovered()) {
 		ImGui::SetTooltip("A triangle test that cannot let a ray through the edge or vertex two triangles share, and box\ntests widened so rounding cannot cull a ray grazing one. Off, Moller-Trumbore and plain box\ntests: a little faster, with rare pinholes along edges. Saved with the scene.");
+	}
+}
+
+void RaytraceRenderer::drawTextureSettings(VulkanEngine* engine)
+{
+	if (!ImGui::CollapsingHeader("Textures")) {
+		return;
+	}
+	int storage = (int)m_settings.textureStorage;
+	const char* storages[] = { "Legacy array", "Native" };
+	if (ImGui::Combo("Texture storage", &storage, storages, 2)) {
+		m_settings.textureStorage = (TextureStorage)storage;
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Where an imported model's own textures are read from. Native: the texture library, each texture at its\n"
+			"own size with mip levels and its own sampler. Legacy array: every texture at 512 x 512 without mips, which\n"
+			"reproduces renders from before the library bit for bit, and what a scene saved before it opens with.\n"
+			"Textures you give a material, a shape's textures and light images always read the library. Saved with the scene.");
+	}
+	int filter = (int)m_settings.textureFilter;
+	const char* filters[] = { "Point", "Bilinear", "Trilinear (ray cones)", "Anisotropic (ray cones)" };
+	if (ImGui::Combo("Texture filtering", &filter, filters, 4)) {
+		m_settings.textureFilter = (TextureFilter)filter;
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("How a library texture is filtered. Point and bilinear read the finest level, so distant textures alias into\n"
+			"noise that only more samples average out. Trilinear picks the level a ray cone's footprint covers, which\n"
+			"carries through mirrors and glossy bounces; anisotropic samples along the footprint's long axis too.\n"
+			"The alpha test always reads the finest level.");
+	}
+	//applied when the slider is let go: every texture is reloaded at the new size
+	int maxSize = m_pendingMaxTextureSize > 0 ? m_pendingMaxTextureSize : m_settings.maxTextureSize;
+	if (ImGui::SliderInt("Maximum texture size", &maxSize, 64, 16384, "%d", ImGuiSliderFlags_Logarithmic)) {
+		m_pendingMaxTextureSize = maxSize;
+	}
+	if (ImGui::IsItemDeactivatedAfterEdit() && m_pendingMaxTextureSize > 0) {
+		m_settings.maxTextureSize = m_pendingMaxTextureSize;
+		m_pendingMaxTextureSize = 0;
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("A larger image is stored at its first mip level within this many texels on its longer side. Changing it\n"
+			"reloads every texture when you let go.");
+	}
+	const TextureLibrary& library = engine->m_textureLibrary;
+	size_t failed = 0;
+	for (const TextureEntry& entry : library.entries()) {
+		failed += entry.error.empty() ? 0 : 1;
+	}
+	ImGui::TextDisabled("%zu texture(s) in the library, %.1f MB", library.entries().size(), (double)library.bytes() / (1024.0 * 1024.0));
+	if (failed > 0) {
+		ImGui::TextColored(ImVec4(1.f, 0.6f, 0.3f, 1.f), "%zu texture(s) did not load; they read as white", failed);
+	}
+	//each texture's size and memory, its file's size where the cap shrank it
+	if (!library.entries().empty() && ImGui::TreeNode("Each texture")) {
+		for (const TextureEntry& entry : library.entries()) {
+			if (!entry.error.empty()) {
+				ImGui::TextDisabled("%s: %s", entry.name.c_str(), entry.error.c_str());
+			} else if (entry.size != entry.sourceSize) {
+				ImGui::Text("%s: %u x %u of %u x %u, %u levels, %.2f MB", entry.name.c_str(), entry.size.x, entry.size.y, entry.sourceSize.x, entry.sourceSize.y, entry.levels,
+					(double)entry.bytes / (1024.0 * 1024.0));
+			} else {
+				ImGui::Text("%s: %u x %u, %u levels, %.2f MB", entry.name.c_str(), entry.size.x, entry.size.y, entry.levels, (double)entry.bytes / (1024.0 * 1024.0));
+			}
+		}
+		ImGui::TreePop();
 	}
 }
 

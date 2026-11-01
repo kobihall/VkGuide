@@ -684,6 +684,102 @@ float spotFalloff(float cosAngle, float cosOuter, float cosInner)
 	return t * t;
 }
 
+float spotFalloffSmooth(float cosAngle, float cosOuter, float cosInner)
+{
+	const float scale = 1.f / std::max(0.001f, cosInner - cosOuter);
+	const float t = std::clamp((cosAngle - cosOuter) * scale, 0.f, 1.f);
+	return t * t * (3.f - 2.f * t);
+}
+
+float spotSolidAngle(float cosOuter, float cosInner, bool smoothstep)
+{
+	const float ring = smoothstep ? 0.5f : 1.f / 3.f;
+	return 2.f * LIGHT_PI * ((1.f - cosInner) + (cosInner - cosOuter) * ring);
+}
+
+glm::vec2 projectionExtents(float fovDegrees, float aspect)
+{
+	const float half = std::tan(std::clamp(fovDegrees, 1.f, 170.f) * (LIGHT_PI / 180.f) * 0.5f);
+	return aspect >= 1.f ? glm::vec2(half * aspect, half) : glm::vec2(half, half / std::max(aspect, 1e-6f));
+}
+
+float lightImageSolidAngle(bool projection, float fovDegrees, uint32_t width, uint32_t height, const float* values, float* peak)
+{
+	double integral = 0.0;
+	float largest = 0.f;
+	if (width == 0 || height == 0 || values == nullptr) {
+		return 0.f;
+	}
+	const glm::vec2 extents = projectionExtents(fovDegrees, (float)width / (float)height);
+	for (uint32_t y = 0; y < height; y++) {
+		for (uint32_t x = 0; x < width; x++) {
+			const float value = std::max(values[(size_t)y * width + x], 0.f);
+			largest = std::max(largest, value);
+			if (projection) {
+				//a texel's patch of the image plane at unit distance, and the solid angle it subtends there
+				const float px = (2.f * ((float)x + 0.5f) / (float)width - 1.f) * extents.x;
+				const float py = (1.f - 2.f * ((float)y + 0.5f) / (float)height) * extents.y;
+				const float area = (2.f * extents.x / (float)width) * (2.f * extents.y / (float)height);
+				const float r2 = 1.f + px * px + py * py;
+				integral += (double)value * area / (r2 * std::sqrt(r2));
+			} else {
+				integral += (double)value * 4.0 * LIGHT_PI / ((double)width * height);
+			}
+		}
+	}
+	if (peak != nullptr) {
+		*peak = largest;
+	}
+	return (float)integral;
+}
+
+glm::vec3 equalAreaSquareToSphere(const glm::vec2& p)
+{
+	const float u = 2.f * p.x - 1.f;
+	const float v = 2.f * p.y - 1.f;
+	const float up = std::abs(u);
+	const float vp = std::abs(v);
+	//the radius is the signed distance from the diagonal
+	const float signedDistance = 1.f - (up + vp);
+	const float d = std::abs(signedDistance);
+	const float r = 1.f - d;
+	const float phi = (r == 0.f ? 1.f : (vp - up) / r + 1.f) * LIGHT_PI / 4.f;
+	const float z = std::copysign(1.f - r * r, signedDistance);
+	const float cosPhi = std::copysign(std::cos(phi), u);
+	const float sinPhi = std::copysign(std::sin(phi), v);
+	const float s = r * std::sqrt(std::max(2.f - r * r, 0.f));
+	return glm::vec3(cosPhi * s, sinPhi * s, z);
+}
+
+glm::vec2 equalAreaSphereToSquare(const glm::vec3& d)
+{
+	const float x = std::abs(d.x);
+	const float y = std::abs(d.y);
+	const float z = std::abs(d.z);
+	const float r = std::sqrt(std::max(1.f - z, 0.f));
+	const float a = std::max(x, y);
+	float b = std::min(x, y);
+	b = a == 0.f ? 0.f : b / a;
+	//pbrt's polynomial for atan(b) * 2 / pi
+	float phi = 0.406758566246788489601959989e-5f
+		+ b * (0.636226545274016134946890922156f
+			+ b * (0.61572017898280213493197203466e-2f
+				+ b * (-0.247333733281268944196501420480f + b * (0.881770664775316294736387951347e-1f + b * (0.419038818029165735901852432784e-1f + b * -0.251390972343483509333252996350e-1f)))));
+	if (x < y) {
+		phi = 1.f - phi;
+	}
+	float v = phi * r;
+	float u = r - v;
+	if (d.z < 0.f) {
+		std::swap(u, v);
+		u = 1.f - u;
+		v = 1.f - v;
+	}
+	u = std::copysign(u, d.x);
+	v = std::copysign(v, d.y);
+	return glm::vec2(0.5f * (u + 1.f), 0.5f * (v + 1.f));
+}
+
 float rangeWindow(float distance, float range)
 {
 	if (range <= 0.f) {

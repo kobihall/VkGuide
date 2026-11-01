@@ -46,6 +46,12 @@ ComputePassBuilder& ComputePassBuilder::addSpecialization(uint32_t constantId, u
 	return *this;
 }
 
+ComputePassBuilder& ComputePassBuilder::setSecondSetLayout(VkDescriptorSetLayout layout)
+{
+	m_secondSetLayout = layout;
+	return *this;
+}
+
 ComputePass ComputePassBuilder::build(VkDevice device)
 {
 	ComputePass pass;
@@ -63,8 +69,14 @@ ComputePass ComputePassBuilder::build(VkDevice device)
 
 	VkPipelineLayoutCreateInfo layoutInfo {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	layoutInfo.setLayoutCount = pass.setLayout != VK_NULL_HANDLE ? 1 : 0;
-	layoutInfo.pSetLayouts = &pass.setLayout;
+	//set 1 needs a set 0 beside it, even an empty one
+	if (m_secondSetLayout != VK_NULL_HANDLE && pass.setLayout == VK_NULL_HANDLE) {
+		pass.setLayout = m_layoutBuilder.build(device, VK_SHADER_STAGE_COMPUTE_BIT);
+	}
+	pass.secondSetLayout = m_secondSetLayout;
+	const VkDescriptorSetLayout setLayouts[2] = { pass.setLayout, m_secondSetLayout };
+	layoutInfo.setLayoutCount = m_secondSetLayout != VK_NULL_HANDLE ? 2 : (pass.setLayout != VK_NULL_HANDLE ? 1 : 0);
+	layoutInfo.pSetLayouts = setLayouts;
 	layoutInfo.pushConstantRangeCount = m_pushConstantSize > 0 ? 1 : 0;
 	layoutInfo.pPushConstantRanges = &pushConstant;
 
@@ -116,12 +128,19 @@ VkExtent3D computeGroupCount(VkExtent3D domain, VkExtent3D workgroupSize)
 namespace {
 
 //everything a dispatch needs bound and pushed, shared by the direct and indirect entry points
-void bindComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData)
+void bindComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkDescriptorSet secondSet)
 {
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.pipeline);
 
 	if (pass.setLayout != VK_NULL_HANDLE) {
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.pipelineLayout, 0, 1, &set, 0, nullptr);
+	}
+	if (pass.secondSetLayout != VK_NULL_HANDLE) {
+		if (secondSet == VK_NULL_HANDLE) {
+			fmt::println("dispatchComputePass: the pass has a second set layout but no set was supplied for it");
+			abort();
+		}
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.pipelineLayout, 1, 1, &secondSet, 0, nullptr);
 	}
 
 	if (pass.pushConstantSize > 0) {
@@ -135,15 +154,16 @@ void bindComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorS
 
 }
 
-void dispatchComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkExtent3D groupCount)
+void dispatchComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkExtent3D groupCount, VkDescriptorSet secondSet)
 {
-	bindComputePass(cmd, pass, set, pushData);
+	bindComputePass(cmd, pass, set, pushData, secondSet);
 	vkCmdDispatch(cmd, groupCount.width, groupCount.height, groupCount.depth);
 }
 
-void dispatchComputePassIndirect(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkBuffer argumentBuffer, VkDeviceSize argumentOffset)
+void dispatchComputePassIndirect(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkBuffer argumentBuffer, VkDeviceSize argumentOffset,
+	VkDescriptorSet secondSet)
 {
-	bindComputePass(cmd, pass, set, pushData);
+	bindComputePass(cmd, pass, set, pushData, secondSet);
 	vkCmdDispatchIndirect(cmd, argumentBuffer, argumentOffset);
 }
 

@@ -2,7 +2,7 @@
 
 **This plan is incomplete.** On 2026-09-26 the user said procedural textures are not a priority and left their representation undecided. This file records what the sources describe and the options on the table, so that the decision can be made later without re-reading the books. Do not implement it until the open question below is settled.
 
-*Not implemented. Depends on [pbrt-textures.md](pbrt-textures.md), whose `TexRef.kind` is where procedural kinds plug in. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-textures.md](completed/pbrt-textures.md), whose `TexRef.kind` is where procedural kinds plug in. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the sources describe
 
@@ -22,7 +22,7 @@ Textures that compute their value instead of reading an image:
 | Scale, mix, direction mix | PBR 4ed §10.3.2 to §10.3.3 | combine other textures by a factor, a blend texture, or the normal's angle to a direction |
 | Worley (cellular) noise | PBR 3ed and 4ed exercises | distance to the nearest feature point |
 
-Antialiasing is part of each: a procedural texture should remove frequencies above what the footprint can represent (PBR 4ed §10.1.4), and the checkerboard and noise idioms show how, clamping octaves by the ray-cone width that [pbrt-textures.md](pbrt-textures.md) provides.
+Antialiasing is part of each: a procedural texture should remove frequencies above what the footprint can represent (PBR 4ed §10.1.4), and the checkerboard and noise idioms show how, clamping octaves by the ray-cone width that [pbrt-textures.md](completed/pbrt-textures.md) provides.
 
 ## The undecided representation
 
@@ -37,7 +37,7 @@ The user was offered three options:
 Whichever representation wins, these are shared and can be written in advance if another plan needs them:
 
 - `crt_noise.glsl` with Perlin noise, fBm and turbulence, mirrored in `rt_texture` for testing, following PBR 3ed §10.6 and Kensler's permutation-free hashing so no permutation table has to be uploaded.
-- The 3D texture mapping (object or world space) in `TexRef.mapping`, which [pbrt-textures.md](pbrt-textures.md) reserves.
+- The 3D texture mapping (object or world space) in `TexRef.mapping`, which [pbrt-textures.md](completed/pbrt-textures.md) reserves.
 
 ## Importing pbrt scenes
 

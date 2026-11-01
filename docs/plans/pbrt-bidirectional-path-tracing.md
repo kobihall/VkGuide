@@ -2,7 +2,7 @@
 
 A path tracer builds every path from the camera. Light that reaches the camera only through a small or specular route, such as a caustic under a glass sphere or a room lit through a narrow gap, is found by chance and converges slowly. Bidirectional methods also trace paths from the lights and connect the two. PBR 3rd edition chapter 16, whose material the 4th edition moved online, gives the path-space measurement equation, camera importance, light tracing and bidirectional path tracing (BDPT) with multiple importance sampling. On 2026-09-26 the user chose two BDPT integrators: pbrt 3's, for parity with pbrt, and a light-vertex-cache BDPT built for GPUs. This plan adds light tracing, which both share, and then both.
 
-*Not implemented. Depends on [pbrt-light-types.md](pbrt-light-types.md) (emitted-ray sampling), [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md) (importance transport), [pbrt-cameras.md](pbrt-cameras.md) and [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md) (the splat hook, in `crt_film_update.glsl`). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-light-types.md](completed/pbrt-light-types.md) (emitted-ray sampling), [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md) (importance transport), [pbrt-cameras.md](pbrt-cameras.md) and [pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md) (the splat hook, in `crt_film_update.glsl`). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Decisions already made
 
@@ -24,7 +24,7 @@ On 2026-09-26 the user chose:
 ### What every bidirectional method needs
 
 - For camera importance, pbrt 3's `PerspectiveCamera` provides `We()` (the importance a ray carries), `Pdf_We()` and `Sample_Wi()` (a point on the lens and the raster position a scene point projects to), PBR 3ed §16.1.1. `crt_camera.glsl` gains them for the thin-lens perspective camera. pbrt supports only that camera for these methods, and so does this plan: the **Integrator** combo disables the bidirectional integrators for the other camera kinds.
-- Emitted rays come from `sampleLe()` and `pdfLe()` per light kind ([pbrt-light-types.md](pbrt-light-types.md)).
+- Emitted rays come from `sampleLe()` and `pdfLe()` per light kind ([pbrt-light-types.md](completed/pbrt-light-types.md)).
 - Light subpaths scatter with the BxDFs' importance mode ([pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md)): no 1/η² on refraction, and pbrt's correction factor for shading normals (PBR 3ed §16.1.3). Legacy materials have symmetric BSDFs except the shading-normal factor, which applies to them too.
 - A connection to the camera lands at an arbitrary raster position, so its contribution is a splat. Splats go into binding 42, `SplatAccumulation`, a float buffer of three channels per pixel, with float atomics (`shaderBufferFloat32AtomicAdd`; image atomics are unsupported on this GPU). With a pixel filter, each splat is spread over the pixels within the filter's radius, weighted by the filter, as pbrt-v4's `RGBFilm::AddSplat()` does. The film's resolve adds `splatSum / lightPathsPerPixel` to the pixel ([pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md)).
 

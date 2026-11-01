@@ -1,5 +1,6 @@
 #pragma once
 
+#include <texture_library.h>
 #include <vk_types.h>
 #include <vk_descriptors.h>
 #include <unordered_map>
@@ -20,6 +21,17 @@ enum class GltfAlphaMode : uint8_t {
 	Blend
 };
 
+// One of a glTF material's textures as the texture library reads it: the image's index in the file, the sampler's wrap
+// and filters, the uv set and KHR_texture_transform. `image` -1 for none
+struct GltfTextureRef {
+	int image { -1 };
+	TextureSampling sampling;
+	uint32_t texCoord { 0 };
+	glm::vec2 offset { 0.f };
+	glm::vec2 scale { 1.f };
+	float rotation { 0.f };
+};
+
 struct GLTFMaterial {
 	MaterialInstance data;
 
@@ -34,6 +46,9 @@ struct GLTFMaterial {
 	float normalScale { 1.f };
 	GltfAlphaMode alphaMode { GltfAlphaMode::Opaque };
 	float alphaCutoff { 0.5f };
+	// the coverage is not the base color's alpha but an alpha texture of the texture library (a pbrt shape's): MASK marks
+	// the triangles, and the legacy texture array, which cannot read it, never cuts them
+	bool alphaFromLibrary { false };
 
 	// KHR_materials_ior, _specular and _transmission (docs/plans/completed/pbrt-bsdf-library.md). The index
 	// (1.5 when the file names none), the dielectric's reflectance at normal incidence the index and the specular factor
@@ -50,6 +65,11 @@ struct GLTFMaterial {
 	AllocatedImage normalImage {};
 	AllocatedImage metalRoughImage {};
 	AllocatedImage emissiveImage {};
+	// the same textures as the texture library reads them, at their own size with their own samplers
+	GltfTextureRef baseColorTexture;
+	GltfTextureRef normalTexture;
+	GltfTextureRef metalRoughTexture;
+	GltfTextureRef emissiveTexture;
 };
 
 struct Bounds {
@@ -82,6 +102,8 @@ struct MeshAsset {
 	// which the raster shaders read by buffer address, because only the path tracer's normal maps
 	// use it. May be empty for a mesh built outside the loader
 	std::vector<glm::vec4> cpuTangents;
+	// per cpuVertices entry, the second uv set (glTF TEXCOORD_1); empty for a mesh without one
+	std::vector<glm::vec2> cpuUv1;
 	// the file gave no vertex normals: the path tracer shades each triangle with its own (glTF requires flat normals
 	// then, and pbrt uses the geometric normal). cpuVertices still hold smooth ones for the raster preview
 	bool cpuNormalsMissing { false };
@@ -120,6 +142,9 @@ struct LoadedModel : public IRenderable {
 	std::unordered_map<std::string, std::shared_ptr<MeshAsset>> meshes;
 	std::unordered_map<std::string, std::shared_ptr<Node>> nodes;
 	std::unordered_map<std::string, AllocatedImage> images;
+	// the same images by their index in the file (a stand-in where one did not load): what the texture library names a
+	// model's image by (TextureSource::modelImage)
+	std::vector<AllocatedImage> imagesByIndex;
 	std::unordered_map<std::string, std::shared_ptr<GLTFMaterial>> materials;
 	// the same materials by their index in the file, and the key each has in `materials`: what a
 	// material library entry names its glTF material by (ModelMaterialOrigin)
@@ -145,7 +170,7 @@ struct LoadedModel : public IRenderable {
 
 	// what an importer other than glTF's brought beyond the geometry (pbrt_import.h): each material's library
 	// definition by index in materialsByIndex, the lights, shapes and cameras, an environment, the file's render
-	// settings and the import report. Empty for a glTF model. Its meshes and images are cleared once on the GPU
+	// settings and the import report. Empty for a glTF model. Its meshes, and its images' pixels, are cleared once on the GPU
 	std::optional<ImportedModel> imported;
 
 	~LoadedModel() { clearAll(); };

@@ -2,7 +2,7 @@
 
 Every beam axis starts at a laser. To the beam solver a laser is a chief ray and a complex beam parameter at its waist; to the path tracer it is a light that emits a few milliwatts into a cone a milliradian wide from a spot a millimeter across. Neither exists today: the tracer's lights are punctual lights, emitting surfaces and the environment. This plan adds the laser as an optical element and as a light: its Gaussian beam with M², astigmatism and a waist that need not sit at the output, its spectrum from a single line to a femtosecond pulse's bandwidth, its power and its polarization, and the emitted-ray sampling that light tracing draws from.
 
-*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) (the element), [pbrt-light-types.md](pbrt-light-types.md) (emitted-ray sampling, `sampleLe()` and `pdfLe()`) and [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) (line spectra, wavelength sampling by the emitter). Rendering its light needs the light integrator of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md); the beam solver needs only the element. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) (the element), [pbrt-light-types.md](completed/pbrt-light-types.md) (emitted-ray sampling, `sampleLe()` and `pdfLe()`) and [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) (line spectra, wavelength sampling by the emitter). Rendering its light needs the light integrator of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md); the beam solver needs only the element. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer does today
 
@@ -44,7 +44,7 @@ Sampling starts at the waist and carries each ray straight to the housing's aper
 ### As a light
 
 - `LightKind` and `GpuLightKind` gain `Laser`. Its 96-byte `GpuLight` record holds the aperture center, the axis, the x axis, and per axis the waist radius, the waist's distance from the aperture and the far-field half angle.
-- `sampleLe()` for a laser is the sampling above, and `pdfLe()` its product of Gaussian densities over position and direction ([pbrt-light-types.md](pbrt-light-types.md)'s emission table gains the row). The light integrator picks lights by power, so a laser of a few milliwatts beside a 100 W room light gets its share by power; when every light is a laser, as on an optical bench, every light path starts at one.
+- `sampleLe()` for a laser is the sampling above, and `pdfLe()` its product of Gaussian densities over position and direction ([pbrt-light-types.md](completed/pbrt-light-types.md)'s emission table gains the row). The light integrator picks lights by power, so a laser of a few milliwatts beside a 100 W room light gets its share by power; when every light is a laser, as on an optical bench, every light path starts at one.
 - Next-event estimation from a camera path never samples a laser: its emission is confined to a cone of milliradians, so a shadow ray toward it would almost never land inside the cone. `LightListBuilder` keeps lasers out of both alias tables, with a flag, as the infinite plane is kept out today.
 - Looking into the laser still works. The aperture is a one-sided emitting disk whose material, `laser_aperture`, names the laser's light record, and kernel 04 evaluates its radiance for a camera ray that hits it, at full weight since no light sample can reach it, as the beam's phase-space density at that point and direction: `P` times the two normal densities in position and in angle, divided by the cosine. The spot is as bright as it should be and as small.
 
@@ -64,7 +64,7 @@ The laser gives the solver its root segment: the chief ray from the aperture's c
 ## Registry, bindings and data
 
 - `OpticKind::Laser`, its traits, presets and housings.
-- `LightKind::Laser`, `GpuLightKind::Laser` (`CRT_LIGHT_LASER`, the next free kind number after the ones [pbrt-light-types.md](pbrt-light-types.md) adds), the record layout above, the no-NEE flag.
+- `LightKind::Laser`, `GpuLightKind::Laser` (`CRT_LIGHT_LASER`, the next free kind number after the ones [pbrt-light-types.md](completed/pbrt-light-types.md) adds), the record layout above, the no-NEE flag.
 - `sampleLaserLe()` and `pdfLaserLe()` in `crt_light.glsl`, mirrored in `light_sampling.cpp`; the `laser_aperture` material type and its radiance in kernel 04.
 - Scene file: the laser's parameters, by name, in the optic record.
 - No new binding.

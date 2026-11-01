@@ -101,6 +101,10 @@ enum class CrtBinding : uint32_t {
 	SpectralData = 24,
 	SpectralUplift = 25,
 	MaterialParams = 26,
+	// THE TEXTURE LIBRARY (src/texture_library.h): not in set 0 like every other binding but set 1 of its own, binding 0
+	// the samplers and 27 the images, written once per library change. A kernel that declares it gets the library's set
+	// layout as its second (GpuRenderer::pass())
+	Textures = 27,
 	// 27 and 28 are reserved by docs/plans/pbrt-roadmap.md for plans not built yet
 	// the first visible surface of each camera path, while an auxiliary output is on
 	// (docs/plans/completed/pbrt-aovs-and-image-output.md). A sample's filter weight rides in the w of its
@@ -128,6 +132,9 @@ enum class CrtBinding : uint32_t {
 	FilmCascade = 62,
 	// a spectral build's path throughputs, CRT_LANES floats per path (docs/plans/completed/pbrt-spectral-rendering.md)
 	PathSpectra = 63,
+	// each mesh triangle's three TEXCOORD_1 uvs (docs/plans/completed/pbrt-textures.md), six floats, by global attribute record;
+	// a stub while no loaded mesh has a second uv set
+	TriangleUv1 = 64,
 	Count
 };
 

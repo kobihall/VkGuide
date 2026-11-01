@@ -95,8 +95,9 @@ void main()
 			// the camera sampled no light, so whatever a camera ray finds counts in full
 			path.misPdf = CRT_MIS_FULL;
 			path.misExponent = 1.0;
-			path.pad0 = 0u;
-			path.pad1 = 0u;
+			// the ray cone of a pinhole: no width at the eye, the angle one pixel subtends
+			path.coneWidth = 0.0;
+			path.coneSpread = CRT_RAY_CONES ? pc.pixelSpread : 0.0;
 			paths[index] = path;
 		}
 	}

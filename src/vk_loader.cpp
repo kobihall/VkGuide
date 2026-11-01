@@ -112,7 +112,7 @@ static void generateTangents(std::span<const uint32_t> indices, std::span<const 
 }
 
 static GeoSurface loadPrimitiveGeometry(fastgltf::Asset& gltf, fastgltf::Primitive& p,
-	std::vector<uint32_t>& indices, std::vector<Vertex>& vertices, std::vector<glm::vec4>& tangents, size_t& outInitialVertex)
+	std::vector<uint32_t>& indices, std::vector<Vertex>& vertices, std::vector<glm::vec4>& tangents, std::vector<glm::vec2>& uv1, size_t& outInitialVertex)
 {
 	GeoSurface newSurface;
 	newSurface.startIndex = (uint32_t)indices.size();
@@ -170,6 +170,24 @@ static GeoSurface loadPrimitiveGeometry(fastgltf::Asset& gltf, fastgltf::Primiti
 			});
 	}
 
+	// the second uv set (TEXCOORD_1), which a texture with texCoord 1 reads: kept only once some primitive of the mesh has
+	// one, the first set standing in for it elsewhere
+	auto uvSet1 = p.findAttribute("TEXCOORD_1");
+	if (uvSet1 != p.attributes.end() || !uv1.empty()) {
+		//every vertex not yet given one (earlier primitives without a second set, and this one's) reads its first set
+		const size_t before = uv1.size();
+		uv1.resize(vertices.size());
+		for (size_t v = before; v < vertices.size(); v++) {
+			uv1[v] = glm::vec2(vertices[v].uv_x, vertices[v].uv_y);
+		}
+		if (uvSet1 != p.attributes.end()) {
+			fastgltf::iterateAccessorWithIndex<glm::vec2>(gltf, gltf.accessors[(*uvSet1).accessorIndex],
+				[&](glm::vec2 v, size_t index) {
+					uv1[initial_vtx + index] = v;
+				});
+		}
+	}
+
 	// load vertex colors
 	auto colors = p.findAttribute("COLOR_0");
 	if (colors != p.attributes.end()) {
@@ -225,6 +243,7 @@ std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngi
 	std::vector<uint32_t> indices;
 	std::vector<Vertex> vertices;
 	std::vector<glm::vec4> tangents;
+	std::vector<glm::vec2> uv1;
 	for (fastgltf::Mesh& mesh : gltf.meshes) {
 		MeshAsset newmesh;
 
@@ -234,10 +253,11 @@ std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngi
 		indices.clear();
 		vertices.clear();
 		tangents.clear();
+		uv1.clear();
 
 		for (auto&& p : mesh.primitives) {
 			size_t initialVertex;
-			GeoSurface newSurface = loadPrimitiveGeometry(gltf, p, indices, vertices, tangents, initialVertex);
+			GeoSurface newSurface = loadPrimitiveGeometry(gltf, p, indices, vertices, tangents, uv1, initialVertex);
 			newmesh.surfaces.push_back(newSurface);
 		}
 
@@ -271,7 +291,7 @@ std::optional<std::shared_ptr<LoadedModel>> loadGltf(VulkanEngine* engine, std::
 	//extensions fastgltf is not told about are skipped silently, and a file that *requires* one of
 	//them fails to load. KHR_lights_punctual is read into LoadedModel::lights, which importGltf() turns
 	//into scene lights
-	fastgltf::Parser parser { fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_ior
+	fastgltf::Parser parser { fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_ior
 		| fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_volume };
 
 	constexpr auto gltfOptions = fastgltf::Options::DontRequireValidAssetMember | fastgltf::Options::AllowDouble | fastgltf::Options::LoadExternalBuffers;
@@ -366,6 +386,8 @@ std::optional<std::shared_ptr<LoadedModel>> loadGltf(VulkanEngine* engine, std::
 			std::cout << "gltf failed to load texture " << image.name << std::endl;
 		}
 	}
+
+	file.imagesByIndex = images;
 
 	// create buffer to hold the material data
 	file.materialDataBuffer = engine->createBuffer(sizeof(GLTFMetallic_Roughness::MaterialConstants) * gltf.materials.size(),
@@ -462,6 +484,47 @@ std::optional<std::shared_ptr<LoadedModel>> loadGltf(VulkanEngine* engine, std::
 			const size_t image = gltf.textures[textureIndex].imageIndex.value();
 			return image < images.size() ? std::optional(images[image]) : std::nullopt;
 		};
+		// what the texture library reads of a texture: its image, its sampler and its uv transform
+		auto textureRef = [&](const fastgltf::TextureInfo& info) {
+			GltfTextureRef ref;
+			if (info.textureIndex >= gltf.textures.size() || !gltf.textures[info.textureIndex].imageIndex.has_value()) {
+				return ref;
+			}
+			const fastgltf::Texture& texture = gltf.textures[info.textureIndex];
+			ref.image = (int)texture.imageIndex.value();
+			if (texture.samplerIndex.has_value() && *texture.samplerIndex < gltf.samplers.size()) {
+				const fastgltf::Sampler& sampler = gltf.samplers[*texture.samplerIndex];
+				auto wrap = [](fastgltf::Wrap w) {
+					return w == fastgltf::Wrap::ClampToEdge ? TextureWrap::Clamp : w == fastgltf::Wrap::MirroredRepeat ? TextureWrap::Mirror : TextureWrap::Repeat;
+				};
+				ref.sampling.wrapU = wrap(sampler.wrapS);
+				ref.sampling.wrapV = wrap(sampler.wrapT);
+				ref.sampling.nearestMag = sampler.magFilter.has_value() && extract_filter(*sampler.magFilter) == VK_FILTER_NEAREST;
+				ref.sampling.nearestMin = sampler.minFilter.has_value() && extract_filter(*sampler.minFilter) == VK_FILTER_NEAREST;
+			}
+			ref.texCoord = (uint32_t)info.texCoordIndex;
+			if (info.transform != nullptr) {
+				ref.offset = glm::vec2(info.transform->uvOffset[0], info.transform->uvOffset[1]);
+				ref.scale = glm::vec2(info.transform->uvScale[0], info.transform->uvScale[1]);
+				ref.rotation = info.transform->rotation;
+				if (info.transform->texCoordIndex.has_value()) {
+					ref.texCoord = (uint32_t)*info.transform->texCoordIndex;
+				}
+			}
+			return ref;
+		};
+		if (mat.pbrData.baseColorTexture.has_value()) {
+			newMat->baseColorTexture = textureRef(*mat.pbrData.baseColorTexture);
+		}
+		if (mat.pbrData.metallicRoughnessTexture.has_value()) {
+			newMat->metalRoughTexture = textureRef(*mat.pbrData.metallicRoughnessTexture);
+		}
+		if (mat.normalTexture.has_value()) {
+			newMat->normalTexture = textureRef(*mat.normalTexture);
+		}
+		if (mat.emissiveTexture.has_value()) {
+			newMat->emissiveTexture = textureRef(*mat.emissiveTexture);
+		}
 		if (mat.pbrData.baseColorTexture.has_value()) {
 			const size_t texture = mat.pbrData.baseColorTexture->textureIndex;
 			if (auto image = textureImage(texture)) {
@@ -504,6 +567,7 @@ std::optional<std::shared_ptr<LoadedModel>> loadGltf(VulkanEngine* engine, std::
 	std::vector<uint32_t> indices;
 	std::vector<Vertex> vertices;
 	std::vector<glm::vec4> tangents;
+	std::vector<glm::vec2> uv1;
 
 	for (fastgltf::Mesh& mesh : gltf.meshes) {
 		std::shared_ptr<MeshAsset> newmesh = std::make_shared<MeshAsset>();
@@ -515,10 +579,11 @@ std::optional<std::shared_ptr<LoadedModel>> loadGltf(VulkanEngine* engine, std::
 		indices.clear();
 		vertices.clear();
 		tangents.clear();
+		uv1.clear();
 
 		for (auto&& p : mesh.primitives) {
 			size_t initialVertex;
-			GeoSurface newSurface = loadPrimitiveGeometry(gltf, p, indices, vertices, tangents, initialVertex);
+			GeoSurface newSurface = loadPrimitiveGeometry(gltf, p, indices, vertices, tangents, uv1, initialVertex);
 
 			if (p.materialIndex.has_value()) {
 				newSurface.material = materials[p.materialIndex.value()];
@@ -545,6 +610,7 @@ std::optional<std::shared_ptr<LoadedModel>> loadGltf(VulkanEngine* engine, std::
 		newmesh->cpuIndices = indices;
 		newmesh->cpuVertices = vertices;
 		newmesh->cpuTangents = tangents;
+		newmesh->cpuUv1 = uv1;
 
 		newmesh->meshBuffers = engine->uploadMesh(indices, vertices);
 	}
@@ -885,6 +951,7 @@ std::shared_ptr<LoadedModel> loadImportedModel(VulkanEngine* engine, ImportedMod
 		images[i] = *image;
 		file.images[uniqueKey(file.images, imported.images[i].path.filename().string(), "image", i)] = *image;
 	}
+	file.imagesByIndex = images;
 
 	//the raster preview's materials, and what the path tracer's texture array and the library read from them
 	file.materialDataBuffer = engine->createBuffer(sizeof(GLTFMetallic_Roughness::MaterialConstants) * imported.materials.size(),
@@ -899,6 +966,12 @@ std::shared_ptr<LoadedModel> loadImportedModel(VulkanEngine* engine, ImportedMod
 		auto imageOf = [&](int index) { return index >= 0 && (size_t)index < images.size() ? images[(size_t)index] : AllocatedImage {}; };
 		material->baseColorImage = imageOf(source.baseColorImage);
 		material->normalImage = imageOf(source.normalImage);
+		//a shape's alpha texture (the texture library's): its triangles are marked for the traversal's alpha test, which
+		//only the library's reference cuts by
+		if (source.alphaTextured) {
+			material->alphaMode = GltfAlphaMode::Mask;
+			material->alphaFromLibrary = true;
+		}
 		constants[i].colorFactors = material->colorFactors;
 		constants[i].metalRoughFactors = glm::vec4(material->metalRoughFactors, 0.f, 0.f);
 
@@ -996,7 +1069,12 @@ std::shared_ptr<LoadedModel> loadImportedModel(VulkanEngine* engine, ImportedMod
 	}
 
 	imported.meshes.clear();
-	imported.images.clear();
+	//an image's pixels are on the GPU; its path and encoding stay, which the texture library loads it by
+	//(VulkanEngine::resolveModelTextures())
+	for (ImportedImage& image : imported.images) {
+		image.rgba8.clear();
+		image.rgba8.shrink_to_fit();
+	}
 	imported.nodes.clear();
 	file.imported = std::move(imported);
 	return scene;

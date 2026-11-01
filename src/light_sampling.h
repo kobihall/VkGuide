@@ -139,6 +139,25 @@ float areaLightPdf(const AreaLightGeometry& light, const glm::vec3& ref, const g
 // glTF's recommended spot cone falloff: 1 inside the inner cone, 0 outside the outer, a squared
 // ramp in cos(angle) between them
 float spotFalloff(float cosAngle, float cosOuter, float cosInner);
+// pbrt-v4's spot falloff (SpotLight::I()): a smoothstep in cos(angle) over the same range
+float spotFalloffSmooth(float cosAngle, float cosOuter, float cosInner);
+// pbrt-v4's equal-area mapping between the unit square and the sphere (Clarberg 2008; PBR 4ed 3.8.3), which a
+// goniometric light's image is laid out in: equal areas of the square are equal solid angles
+glm::vec3 equalAreaSquareToSphere(const glm::vec2& p);
+glm::vec2 equalAreaSphereToSquare(const glm::vec3& d);
+
+// The solid angle a spot light's intensity covers, its falloff weighed in, so its power is that times its intensity: the
+// inner cone in full and the ring between the cones at the falloff's mean over cos(angle), a third for glTF's squared
+// ramp and a half for pbrt's smoothstep (pbrt-v4's SpotLight::Phi)
+float spotSolidAngle(float cosOuter, float cosInner, bool smoothstep);
+// pbrt-v4's frustum of a projection light: the half-extents at unit distance of an image `aspect` wide per unit of
+// height, its field of view along the shorter side
+glm::vec2 projectionExtents(float fovDegrees, float aspect);
+// What a projection's (`projection`) or a goniometric light's image of `width` x `height` linear values, row 0 its top,
+// integrates to over the directions it covers: each texel times the solid angle it subtends through the frustum, or
+// 4 pi over the texel count on the equal-area square. Its largest value in `peak`
+float lightImageSolidAngle(bool projection, float fovDegrees, uint32_t width, uint32_t height, const float* values, float* peak = nullptr);
+
 // glTF's recommended window on the inverse-square law when a light has a range; 1 for range 0
 float rangeWindow(float distance, float range);
 

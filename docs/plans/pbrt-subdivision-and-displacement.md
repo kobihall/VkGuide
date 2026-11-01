@@ -2,7 +2,7 @@
 
 A coarse control mesh can describe a smooth surface: Loop subdivision refines it toward a limit surface with continuous normals (PBR 3ed §3.8; pbrt-v4's `loopsubdiv` shape). A displacement texture can move a mesh's surface for real, where bump mapping only changes its shading. pbrt-v4 does both on the CPU at load time: it subdivides, or splits triangles until every edge is shorter than an `edgelength`, displaces the vertices along their normals, and hands the resulting triangles to the ordinary mesh path. This plan does the same, so the GPU traversal does not change.
 
-*Not implemented. Displacement textures come from [pbrt-textures.md](pbrt-textures.md) (CPU-side images) and share the material parameter [pbrt-bump-mapping.md](pbrt-bump-mapping.md) introduces. Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Displacement textures come from [pbrt-textures.md](completed/pbrt-textures.md) (CPU-side images) and share the material parameter [pbrt-bump-mapping.md](pbrt-bump-mapping.md) introduces. Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -37,7 +37,7 @@ pbrt-v4's `TriQuadMesh::Displace()`, applied to a mesh whose material has a disp
 2. Displace: move each vertex along its interpolated normal by the texture's value at its uv, times the displacement scale.
 3. Recompute vertex normals from the displaced triangles.
 
-The texture is evaluated on the CPU from the decoded image [pbrt-textures.md](pbrt-textures.md) keeps for textured emission. Procedural displacement waits for [pbrt-procedural-textures.md](pbrt-procedural-textures.md); its noise functions would need CPU mirrors, which the shared `crt_noise.glsl` plan already includes.
+The texture is evaluated on the CPU from the decoded image [pbrt-textures.md](completed/pbrt-textures.md) keeps for textured emission. Procedural displacement waits for [pbrt-procedural-textures.md](pbrt-procedural-textures.md); its noise functions would need CPU mirrors, which the shared `crt_noise.glsl` plan already includes.
 
 The **Displacement** mode per object is **Bump** (shading only, [pbrt-bump-mapping.md](pbrt-bump-mapping.md), the default) or **Geometry** (this plan). With geometry displacement the material's bump mapping is skipped for that object, since the geometry already carries the detail. pbrt's `displacementedgescale` option, which scales every edge length for quick previews, becomes a global **Displacement detail** setting.
 

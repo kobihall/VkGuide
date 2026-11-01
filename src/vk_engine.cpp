@@ -81,6 +81,19 @@ void VulkanEngine::init()
 
 	//before the tracer: its descriptor sets always name the array's view, so it must exist first
 	m_raytraceTextures.init(this);
+	m_textureLibrary.init(this);
+	//what the light panel's photometric units read of a light's image
+	m_raytraceScene.lightImageSource = [this](const SceneLight& light) {
+		if ((light.kind != LightKind::Projection && light.kind != LightKind::Goniometric) || light.image.empty()) {
+			return LightImage {};
+		}
+		const LightImageRequest request = lightImageRequest(light.image);
+		const TextureEntry* entry = m_textureLibrary.find(request.source, request.colorSpace, request.sampling);
+		if (entry == nullptr || entry->luminance.empty()) {
+			return LightImage {};
+		}
+		return lightImageMeasure(light.kind == LightKind::Projection, light.fovDegrees, entry->luminanceSize.x, entry->luminanceSize.y, entry->luminance.data());
+	};
 	m_raytracer.init(this);
 
 	//the raster preview reaches the screen through the Viewport window, which samples the draw image
@@ -783,6 +796,11 @@ void VulkanEngine::run()
 		m_transformGizmo.beginFrame();
 
 		m_displayRegistry.beginFrame(m_frameNumber);
+
+		//the texture library loads what was added since the last frame (a model, a user texture, a light's image),
+		//before the tracer packs the scene that names it
+		syncLightImages();
+		m_textureLibrary.update(this, (uint32_t)std::clamp(m_raytracer.settings().maxTextureSize, 16, 16384));
 
 		//before the imgui content below, so a raytrace that finished since the last frame has
 		//its output on screen this frame rather than the next one
@@ -1521,6 +1539,76 @@ void VulkanEngine::rebuildSceneDerivedData()
 	m_sceneRevision++;
 }
 
+void VulkanEngine::syncLightImages()
+{
+	for (const SceneLight& light : m_raytraceScene.lights()) {
+		if ((light.kind == LightKind::Projection || light.kind == LightKind::Goniometric) && !light.image.empty()) {
+			const LightImageRequest request = lightImageRequest(light.image);
+			m_textureLibrary.add(request.source, request.colorSpace, request.sampling, std::filesystem::path(light.image).filename().string());
+		}
+	}
+}
+
+void VulkanEngine::resolveModelTextures(MaterialDef& material, const std::string& key, const LoadedModel& model, uint32_t index)
+{
+	//a pbrt model's references name its images by index: each becomes the library's entry for that file (or, for an
+	//image the import decoded itself, for the model's copy of it), read as the importer said
+	if (model.imported.has_value()) {
+		for (auto& [name, binding] : material.textures) {
+			if (binding.importImage < 0 || (size_t)binding.importImage >= model.imported->images.size()) {
+				continue;
+			}
+			const ImportedImage& image = model.imported->images[(size_t)binding.importImage];
+			TextureSource source;
+			//an image the import decoded itself (its pixels are freed once uploaded, its size kept) has no file to read
+			if (!image.rgba8.empty() || image.width != 0) {
+				source.modelKey = key;
+				source.modelImage = binding.importImage;
+			} else {
+				source.path = image.path;
+				source.encoding = image.encoding == ImageEncoding::Linear ? TextureEncoding::Linear : image.encoding == ImageEncoding::Gamma ? TextureEncoding::Gamma : TextureEncoding::Srgb;
+				source.gamma = image.gamma;
+				source.invert = image.invert;
+			}
+			binding.texture = m_textureLibrary.add(source, binding.importColorSpace, binding.importSampling, image.path.filename().string());
+			binding.derived = true;
+			binding.importImage = -1;
+		}
+		return;
+	}
+	//a glTF material's four textures, read as glTF defines them: the base color (and its alpha as the coverage of a
+	//MASK material), metallic and roughness from the blue and green of one texture, the normal map, the emission
+	if (index >= model.materialsByIndex.size() || model.materialsByIndex[index] == nullptr) {
+		return;
+	}
+	const GLTFMaterial& gltf = *model.materialsByIndex[index];
+	auto bind = [&](const char* name, const GltfTextureRef& ref, TextureColorSpace colorSpace, TextureChannel channel) {
+		if (ref.image < 0) {
+			return;
+		}
+		TextureSource source;
+		source.modelKey = key;
+		source.modelImage = ref.image;
+		TextureBinding binding;
+		binding.texture = m_textureLibrary.add(source, colorSpace, ref.sampling);
+		binding.channel = channel;
+		binding.uvSet = std::min(ref.texCoord, 1u);
+		binding.offset = ref.offset;
+		binding.scale = ref.scale;
+		binding.rotation = ref.rotation;
+		binding.derived = true;
+		material.textures[name] = binding;
+	};
+	bind("albedo", gltf.baseColorTexture, TextureColorSpace::Srgb, TextureChannel::Rgb);
+	if (gltf.alphaMode == GltfAlphaMode::Mask) {
+		bind("alpha", gltf.baseColorTexture, TextureColorSpace::Srgb, TextureChannel::Alpha);
+	}
+	bind("roughness", gltf.metalRoughTexture, TextureColorSpace::Linear, TextureChannel::Green);
+	bind("metallic", gltf.metalRoughTexture, TextureColorSpace::Linear, TextureChannel::Blue);
+	bind("normal", gltf.normalTexture, TextureColorSpace::Linear, TextureChannel::Rgb);
+	bind("emission", gltf.emissiveTexture, TextureColorSpace::Srgb, TextureChannel::Rgb);
+}
+
 std::string VulkanEngine::addModel(std::shared_ptr<LoadedModel> model, const std::filesystem::path& path)
 {
 	model->sourcePath = absoluteNormalized(path);
@@ -1545,6 +1633,7 @@ std::string VulkanEngine::addModel(std::shared_ptr<LoadedModel> model, const std
 	std::vector<uint64_t> modelMaterialIds;
 	for (uint32_t i = 0; i < loaded.materialsByIndex.size(); i++) {
 		MaterialDef material = modelMaterialDef(loaded, i, m_raytraceTextures);
+		resolveModelTextures(material, key, loaded, i);
 		material.name = i < loaded.materialNames.size() ? loaded.materialNames[i] : fmt::format("material{}", i);
 		material.origin = ModelMaterialOrigin { key, i };
 		modelMaterialIds.push_back(m_raytraceScene.addMaterial(std::move(material)));
@@ -1705,6 +1794,7 @@ void VulkanEngine::removeModel(const std::string& name)
 	//LoadedModel::clearAll() destroys them the moment the last reference goes. A wait is the
 	//simple, obviously-correct way to retire them for a menu-driven action
 	vkDeviceWaitIdle(m_device);
+	m_textureLibrary.removeModel(name);
 	m_models.erase(it);
 	//the objects placing this model's nodes go with it: their geometry has just stopped existing.
 	//So do the lights it brought, which belong to it the same way
@@ -1730,6 +1820,7 @@ void VulkanEngine::clearModels()
 	}
 	vkDeviceWaitIdle(m_device);
 	for (const auto& [name, model] : m_models) {
+		m_textureLibrary.removeModel(name);
 		m_raytraceScene.removeLightsOf(name);
 		m_raytraceScene.removeShapesOf(name);
 		m_raytraceScene.removeMaterialsOf(name);
@@ -1814,7 +1905,8 @@ SceneDescription VulkanEngine::describeScene()
 			continue;
 		}
 		const auto model = modelIndices.find(material.origin->modelKey);
-		if ((material.edited.empty() && material.lightGroup == 0) || model == modelIndices.end()) {
+		const bool userTextures = std::any_of(material.textures.begin(), material.textures.end(), [](const auto& entry) { return !entry.second.derived; });
+		if ((material.edited.empty() && material.lightGroup == 0 && !userTextures) || model == modelIndices.end()) {
 			continue;
 		}
 		SceneMaterialOverride edit;
@@ -1824,7 +1916,39 @@ SceneDescription VulkanEngine::describeScene()
 		for (const std::string& name : material.edited) {
 			edit.params[name] = materialValue(material, name);
 		}
+		for (const auto& [name, binding] : material.textures) {
+			if (!binding.derived) {
+				edit.textures[name] = binding;
+			}
+		}
 		scene.materialOverrides.push_back(std::move(edit));
+	}
+	//the textures the user gave materials, which name library entries no file holds: each becomes an index into the
+	//scene's list of image files. A texture of a model's own image cannot be named by a file and is left out
+	auto texturesToFile = [&](std::map<std::string, TextureBinding, std::less<>>& textures) {
+		for (auto it = textures.begin(); it != textures.end();) {
+			TextureBinding& binding = it->second;
+			const TextureEntry* entry = binding.derived ? nullptr : m_textureLibrary.find(binding.texture);
+			if (entry == nullptr || entry->source.isModelImage()) {
+				it = binding.derived ? std::next(it) : textures.erase(it);
+				continue;
+			}
+			SceneTextureRecord record { entry->source.path, entry->colorSpace, entry->sampling, entry->source.encoding, entry->source.gamma, entry->source.invert };
+			const auto found = std::find_if(scene.textures.begin(), scene.textures.end(), [&](const SceneTextureRecord& r) {
+				return r.path == record.path && r.colorSpace == record.colorSpace && r.sampling == record.sampling && r.encoding == record.encoding && r.gamma == record.gamma && r.invert == record.invert;
+			});
+			binding.fileTexture = (int)(found - scene.textures.begin());
+			if (found == scene.textures.end()) {
+				scene.textures.push_back(record);
+			}
+			++it;
+		}
+	};
+	for (MaterialDef& material : scene.materials) {
+		texturesToFile(material.textures);
+	}
+	for (SceneMaterialOverride& edit : scene.materialOverrides) {
+		texturesToFile(edit.textures);
 	}
 	auto materialRef = [&](uint64_t id) {
 		SceneMaterialRef ref;
@@ -2006,8 +2130,25 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 		modelKeys.push_back(std::move(key));
 	}
 
+	//the image files the materials' textures read, into the texture library, and each reference to one as its id
+	std::vector<uint64_t> textureIds;
+	for (const SceneTextureRecord& record : scene.textures) {
+		TextureSource source;
+		source.path = record.path;
+		source.encoding = record.encoding;
+		source.gamma = record.gamma;
+		source.invert = record.invert;
+		textureIds.push_back(m_textureLibrary.add(source, record.colorSpace, record.sampling));
+	}
+	auto texturesFromFile = [&](std::map<std::string, TextureBinding, std::less<>>& textures) {
+		for (auto& [name, binding] : textures) {
+			binding.texture = binding.fileTexture >= 0 && binding.fileTexture < (int)textureIds.size() ? textureIds[(size_t)binding.fileTexture] : 0;
+			binding.fileTexture = -1;
+		}
+	};
+
 	//the library: the edits to the glTF materials the imports just made, then the user materials
-	for (const SceneMaterialOverride& edit : scene.materialOverrides) {
+	for (SceneMaterialOverride& edit : scene.materialOverrides) {
 		const std::string& key = edit.model < (int)modelKeys.size() ? modelKeys[edit.model] : std::string();
 		MaterialDef* material = key.empty() ? nullptr : m_raytraceScene.findModelMaterial(key, edit.modelMaterial);
 		if (material == nullptr) {
@@ -2017,10 +2158,15 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 			material->params[name] = value;
 			material->edited.insert(name);
 		}
+		texturesFromFile(edit.textures);
+		for (const auto& [name, binding] : edit.textures) {
+			material->textures[name] = binding;
+		}
 		material->lightGroup = edit.lightGroup;
 	}
 	std::vector<uint64_t> userIds;
 	for (MaterialDef& material : scene.materials) {
+		texturesFromFile(material.textures);
 		userIds.push_back(m_raytraceScene.addMaterial(std::move(material)));
 	}
 	//a reference the file holds, as a library id; an object whose material went missing gets a new
@@ -2730,6 +2876,12 @@ void VulkanEngine::stepBatch()
 	}
 }
 
+void VulkanEngine::requestOpenFile(std::string title, std::vector<std::string> extensions, std::function<void(const std::filesystem::path&)> chosen)
+{
+	m_pendingFileRequest = FileRequest { std::move(title), std::move(extensions), std::move(chosen) };
+	m_pendingFileAction = FileAction::OpenFileFor;
+}
+
 void VulkanEngine::runPendingFileAction()
 {
 	const FileAction action = m_pendingFileAction;
@@ -2816,6 +2968,16 @@ void VulkanEngine::runPendingFileAction()
 			}
 		}
 		break;
+	case FileAction::OpenFileFor: {
+		FileRequest request = std::move(m_pendingFileRequest);
+		m_pendingFileRequest = {};
+		if (auto chosen = showOpenFileDialog(request.title, request.extensions, sceneDirectory)) {
+			if (request.chosen) {
+				request.chosen(*chosen);
+			}
+		}
+		break;
+	}
 	case FileAction::ImportCoatingReflectance:
 	case FileAction::ImportCoatingTransmittance:
 		if (auto chosen = showOpenFileDialog("Import Coating Curve", { "csv", "txt" }, sceneDirectory)) {
@@ -2869,11 +3031,23 @@ void VulkanEngine::initVulkan()
 	VkPhysicalDeviceVulkan12Features features{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
 	features.bufferDeviceAddress = true;
 	features.descriptorIndexing = true;
+	//the texture library's set (src/texture_library.h): an array of images indexed per invocation, written after it is
+	//bound, partly filled and sized when it is allocated
+	features.runtimeDescriptorArray = true;
+	features.shaderSampledImageArrayNonUniformIndexing = true;
+	features.descriptorBindingPartiallyBound = true;
+	features.descriptorBindingSampledImageUpdateAfterBind = true;
+	features.descriptorBindingVariableDescriptorCount = true;
 
 	//use vkbootstrap to select a gpu. 
 	//We want a gpu that can write to the GLFW surface and supports vulkan 1.3 with the correct features
+	//the texture library's samplers are anisotropic, for the anisotropic texture filter
+	VkPhysicalDeviceFeatures coreFeatures {};
+	coreFeatures.samplerAnisotropy = VK_TRUE;
+
 	vkb::PhysicalDeviceSelector selector{ vkb_inst };
 	auto physdev_ret = selector
+		.set_required_features(coreFeatures)
 		.set_minimum_version(1, 2)
 		.add_required_extension(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)
 		.add_required_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME)
@@ -3981,6 +4155,7 @@ void VulkanEngine::cleanup()
 		m_meshNodes.clear();
 		//after the tracer, whose descriptor sets name the array's view
 		m_raytraceTextures.destroy(this);
+		m_textureLibrary.destroy(this);
 		destroyEnvironmentMap();
 
 		m_metalRoughMaterial.clearResources(m_device);

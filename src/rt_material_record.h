@@ -29,6 +29,73 @@ inline constexpr uint32_t CRT_MATERIAL_FLAG_COMPLEX = 1u << 2;
 // the traversal alpha-tests a flagged triangle against this material
 inline constexpr uint32_t CRT_MATERIAL_FLAG_CUTOUT = 1u << 3;
 inline constexpr uint32_t CRT_MATERIAL_FLAG_NORMAL_MAP = 1u << 4;
+// the record's last vec4 is its extension header (CrtMaterialExtension): the emission block and the texture table
+inline constexpr uint32_t CRT_MATERIAL_FLAG_EXTENDED = 1u << 5;
+// it emits only on the side its geometric normal faces, and with REVERSED, only on the back
+inline constexpr uint32_t CRT_MATERIAL_FLAG_ONE_SIDED = 1u << 6;
+inline constexpr uint32_t CRT_MATERIAL_FLAG_REVERSED = 1u << 7;
+// the traversal's alpha test reads the library texture targeting the coverage (TextureTarget::Alpha)
+inline constexpr uint32_t CRT_MATERIAL_FLAG_ALPHA_TEXTURE = 1u << 8;
+
+// The extension header, the last vec4 of a record flagged CRT_MATERIAL_FLAG_EXTENDED: where the emission block and the
+// texture table are, in vec4s from the record's start (0 for none), and how many entries the table has
+struct CrtMaterialExtension {
+	uint32_t emissionOffset;
+	uint32_t textureOffset;
+	uint32_t textureCount;
+	uint32_t unused;
+};
+static_assert(sizeof(CrtMaterialExtension) == 16);
+
+// The emission block of a type that has no emission of its own (all but emissive and pbr): its radiance before any
+// texture, color x strength, and the strength alone
+struct CrtEmissionBlock {
+	glm::vec3 radiance;
+	float strength;
+};
+static_assert(sizeof(CrtEmissionBlock) == 16);
+
+// what a texture reference modulates (crt_texture.glsl CRT_TEX_TARGET_*)
+inline constexpr uint32_t CRT_TEX_TARGET_NONE = 0;
+inline constexpr uint32_t CRT_TEX_TARGET_ALBEDO = 1;
+inline constexpr uint32_t CRT_TEX_TARGET_PARAM = 2;
+inline constexpr uint32_t CRT_TEX_TARGET_METALLIC = 3;
+inline constexpr uint32_t CRT_TEX_TARGET_ROUGHNESS = 4;
+inline constexpr uint32_t CRT_TEX_TARGET_EMISSION = 5;
+inline constexpr uint32_t CRT_TEX_TARGET_NORMAL_SCALE = 6;
+inline constexpr uint32_t CRT_TEX_TARGET_RGB_A = 7;
+inline constexpr uint32_t CRT_TEX_TARGET_RGB_B = 8;
+inline constexpr uint32_t CRT_TEX_TARGET_ETA = 9;
+inline constexpr uint32_t CRT_TEX_TARGET_ALPHA_X = 10;
+inline constexpr uint32_t CRT_TEX_TARGET_ALPHA_Y = 11;
+inline constexpr uint32_t CRT_TEX_TARGET_SIGMA = 12;
+inline constexpr uint32_t CRT_TEX_TARGET_SCALE = 13;
+inline constexpr uint32_t CRT_TEX_TARGET_AMOUNT = 14;
+inline constexpr uint32_t CRT_TEX_TARGET_TIS = 15;
+inline constexpr uint32_t CRT_TEX_TARGET_EMIT_COLOR = 16;
+inline constexpr uint32_t CRT_TEX_TARGET_EMIT_STRENGTH = 17;
+inline constexpr uint32_t CRT_TEX_TARGET_NORMAL_MAP = 18;
+inline constexpr uint32_t CRT_TEX_TARGET_ALPHA = 19;
+// a conductor's reflectance in its reflectance mode
+inline constexpr uint32_t CRT_TEX_TARGET_REFLECTANCE = 20;
+// how a value is applied (crt_texture.glsl CRT_TEX_OP_*)
+inline constexpr uint32_t CRT_TEX_OP_MULTIPLY = 0;
+inline constexpr uint32_t CRT_TEX_OP_MULTIPLY_SQRT = 1;
+inline constexpr uint32_t CRT_TEXTURE_ENTRY_VEC4S = 6;
+
+// One texture reference of the table (crt_texture.glsl), six vec4s: what it modulates (TextureTarget) | channel << 8 |
+// mapping << 12 | op << 16 | uv set << 20 | world space << 24; the library descriptor and sampler; the parameter's own value, for a target
+// derived on the GPU; the uv offset and scale; the rotation's cosine and sine; the object-to-texture rows of a mapping
+struct CrtTextureEntry {
+	uint32_t bits;
+	uint32_t texture;
+	uint32_t sampler;
+	float base;
+	glm::vec4 offsetScale;
+	glm::vec4 rotation;
+	glm::vec4 mapping[3];
+};
+static_assert(sizeof(CrtTextureEntry) == 96);
 
 // The parameter record of the six original types (lambertian, metal, phong, dielectric, emissive,
 // pbr), four vec4s in binding 26: the 64-byte material every one of them packed before the header
@@ -39,8 +106,9 @@ struct CrtClassicMaterial {
 	// fuzz | smoothness | ir | strength, by type; unused by pbr
 	float param;
 	uint32_t type;
-	// the texture layers (the pbr type's texture parameters), -1 for none. Always -1 for a material
-	// packed for a shape, which carries no textures until docs/plans/pbrt-textures.md
+	// the legacy texture array's layers (the pbr type's texture parameters), -1 for none. Always -1 for a material packed
+	// for a shape, or under native texture storage: the texture library's references are the record's texture table
+	// (docs/plans/completed/pbrt-textures.md)
 	int32_t albedoLayer;
 	// the traversal's alpha test threshold on the base colour texel, 0 for never cut out
 	float alphaCutoff;

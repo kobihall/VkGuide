@@ -19,6 +19,7 @@
 #include <bvh.h>
 #include <optic_bench.h>
 #include <optic_catalog.h>
+#include <rt_lights.h>
 #include <rt_scene_types.h>
 #include <vk_types.h>
 
@@ -64,6 +65,11 @@ public:
 	const SceneOptic* findOptic(uint64_t id) const;
 	MaterialDef* findMaterial(uint64_t id);
 	const MaterialDef* findMaterial(uint64_t id) const;
+
+	// a projection or goniometric light's image as its photometric units read it (lightImageMeasure(), src/rt_lights.h):
+	// the solid angle its texels cover at unit intensity and its peak. The engine supplies it, since the image is the
+	// texture library's; not valid for any other light or before the image has loaded
+	std::function<LightImage(const SceneLight&)> lightImageSource;
 
 	// world boxes, for the viewport to frame and orbit: the selected object's, and the scene's (its shapes, mesh
 	// objects and optics, or its cameras and lights when it has none of those). A camera or light is a box around its
@@ -230,6 +236,8 @@ private:
 	// the Materials window's parts
 	void drawMaterialTree(VulkanEngine* engine);
 	void drawMaterialDetails(VulkanEngine* engine, MaterialDef& material);
+	// the Textures folder of a material: a texture of the library for each parameter, the normal map and the alpha
+	bool drawMaterialTextures(VulkanEngine* engine, MaterialDef& material);
 	// a user material that copies `source`: its parameters, without the origin, the edits or the
 	// textures a user material cannot keep yet
 	MaterialDef userCopyOf(const MaterialDef& source, std::string name) const;

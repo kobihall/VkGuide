@@ -26,6 +26,7 @@
 
 struct MeshAsset;
 class RaytraceTextureArray;
+class TextureLibrary;
 
 // how the raytracer's BLASes are built and laid out. Not saved with the scene: these are the knobs
 // for comparing construction methods, and the defaults below are the choice
@@ -63,6 +64,8 @@ static_assert(sizeof(GpuTriangleAttributes) == 80);
 struct RaytraceBlas {
 	Blas blas;
 	std::vector<GpuTriangleAttributes> attributes;
+	// per attribute record, its three TEXCOORD_1 uvs; empty for a mesh without a second uv set
+	std::vector<glm::vec2> uv1;
 	// the mesh's GeoSurfaces, which an instance's material table is indexed by
 	uint32_t surfaceCount { 0 };
 };
@@ -147,6 +150,8 @@ struct RaytraceGeometry {
 	std::vector<glm::uvec4> nodes;
 	std::vector<BvhTriangle> triangles;
 	std::vector<GpuTriangleAttributes> attributes;
+	// three TEXCOORD_1 uvs per attribute record (binding 64), or empty when no mesh has a second uv set
+	std::vector<glm::vec2> uv1;
 	std::vector<BlasPlacement> placements;
 };
 
@@ -222,6 +227,8 @@ struct RaytraceSceneAccel {
 	std::vector<glm::vec4> opticData;
 	std::vector<glm::vec4> coatingData;
 	uint32_t opticCount { 0 };
+	// some packed material reads a library texture: the kernels are built with CRT_TEXTURES
+	bool textured { false };
 	// THE BENCH: per entry of `instances`, its index in benchTags, or -1 for an instance that is not the bench's
 	std::vector<BenchTag> benchTags;
 	std::vector<int32_t> instanceBenchTag;
@@ -279,6 +286,19 @@ void refreshModelMaterialDef(MaterialDef& entry, const GLTFMaterial& material, c
 // objects shaded with their glTF materials
 using ModelMaterialIds = std::unordered_map<const GLTFMaterial*, uint64_t>;
 
+// What the records read the texture library through (docs/plans/completed/pbrt-textures.md): the library, where an imported
+// model's own textures come from (RenderSettings::textureStorage), and the library's revision, which renumbers
+// descriptors
+struct SceneTextureContext {
+	const TextureLibrary* library { nullptr };
+	bool modelTexturesFromLibrary { false };
+	uint64_t revision { 0 };
+	bool operator==(const SceneTextureContext& other) const
+	{
+		return library == other.library && modelTexturesFromLibrary == other.modelTexturesFromLibrary && revision == other.revision;
+	}
+};
+
 // Builds the top level over the visible mesh objects, the shapes, the optics and the bench, and the light list over them,
 // the punctual lights and the environment, with every material they reference packed from the
 // library. `geometry` must be packGeometry(*blases); it is passed in so it is packed once per BLAS
@@ -286,4 +306,5 @@ using ModelMaterialIds = std::unordered_map<const GLTFMaterial*, uint64_t>;
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
 	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures,
-	const SpectralSceneContext& spectral = {}, const std::vector<SceneOptic>& optics = {}, const OpticalLibrary* library = nullptr, const BenchTrace* bench = nullptr);
+	const SpectralSceneContext& spectral = {}, const std::vector<SceneOptic>& optics = {}, const OpticalLibrary* library = nullptr, const BenchTrace* bench = nullptr,
+	const SceneTextureContext& textureContext = {});

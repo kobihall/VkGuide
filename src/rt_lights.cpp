@@ -13,7 +13,79 @@ float luminanceOf(const glm::vec3& c)
 
 }
 
-void LightListBuilder::addPunctual(const SceneLight& light)
+float lightUnitFactor(const SceneLight& light, LightUnit unit, const LightImage& image)
+{
+	if (unit == LightUnit::Radiometric) {
+		return 1.f;
+	}
+	const glm::vec3 rgb = light.color.kind == SpectrumKind::Rgb ? light.color.rgb : exactRgb(light.color, SpectrumRole::Illuminant, {});
+	const float photometric = luminanceOf(glm::max(rgb, glm::vec3(0.f))) / PHOTOMETRIC_TO_RADIOMETRIC;
+	const bool imaged = (light.kind == LightKind::Projection || light.kind == LightKind::Goniometric) && image.valid;
+	if (unit != LightUnit::Lumen) {
+		//an image's intensity is the light's times its texel: a candela is its brightest direction's
+		return imaged ? photometric * image.peak : photometric;
+	}
+	switch (light.kind) {
+	case LightKind::Point:
+		return photometric * 4.f * LIGHT_PI;
+	case LightKind::Spot: {
+		const float outerDegrees = std::clamp(light.outerConeDegrees, 0.f, 90.f);
+		const float cosOuter = std::cos(glm::radians(outerDegrees));
+		const float cosInner = std::cos(glm::radians(std::clamp(light.innerConeDegrees, 0.f, outerDegrees)));
+		return photometric * spotSolidAngle(cosOuter, cosInner, light.falloff);
+	}
+	case LightKind::Projection:
+	case LightKind::Goniometric:
+		return photometric * (imaged ? image.solidAngle : 4.f * LIGHT_PI);
+	case LightKind::Directional:
+		break;
+	}
+	return photometric;
+}
+
+std::span<const LightUnit> lightUnits(LightKind kind)
+{
+	static constexpr LightUnit POINT_UNITS[] = { LightUnit::Radiometric, LightUnit::Candela, LightUnit::Lumen };
+	static constexpr LightUnit DIRECTIONAL_UNITS[] = { LightUnit::Radiometric, LightUnit::Lux };
+	if (kind == LightKind::Directional) {
+		return DIRECTIONAL_UNITS;
+	}
+	return POINT_UNITS;
+}
+
+const char* lightUnitLabel(LightKind kind, LightUnit unit)
+{
+	switch (unit) {
+	case LightUnit::Radiometric:
+		return kind == LightKind::Directional ? "W/m^2" : "W/sr";
+	case LightUnit::Candela:
+		return "cd";
+	case LightUnit::Lumen:
+		return "lm";
+	case LightUnit::Lux:
+		return "lux";
+	}
+	return "";
+}
+
+float spotSolidAngle(float cosOuter, float cosInner, SpotFalloff falloff)
+{
+	return spotSolidAngle(cosOuter, cosInner, falloff == SpotFalloff::Smoothstep);
+}
+
+LightImage lightImageMeasure(bool projection, float fovDegrees, uint32_t width, uint32_t height, const float* luminance)
+{
+	LightImage image;
+	if (width == 0 || height == 0 || luminance == nullptr) {
+		return image;
+	}
+	image.valid = true;
+	image.solidAngle = lightImageSolidAngle(projection, fovDegrees, width, height, luminance, &image.peak);
+	image.aspect = (float)width / (float)height;
+	return image;
+}
+
+void LightListBuilder::addPunctual(const SceneLight& light, const LightImage& image)
 {
 	//the delta lights must be lights[0, deltaCount), the range the BSDF strategy's table covers
 	if (m_list.lights.size() != m_list.header.deltaCount) {
@@ -55,9 +127,10 @@ void LightListBuilder::addPunctual(const SceneLight& light)
 		const float cosInner = std::cos(glm::radians(std::clamp(light.innerConeDegrees, 0.f, outerDegrees)));
 		record.b = glm::vec4(direction, cosOuter);
 		record.c = glm::vec4(cosInner, 0.f, 0.f, 0.f);
-		//the inner cone at full intensity and the falloff ring at a third of it, the mean of the
-		//squared ramp in cos(angle) glTF recommends (pbrt-v4's SpotLight::Phi, for that falloff)
-		record.power = 2.f * LIGHT_PI * luminance * ((1.f - cosInner) + (cosInner - cosOuter) / 3.f);
+		record.power = luminance * spotSolidAngle(cosOuter, cosInner, light.falloff);
+		if (light.falloff == SpotFalloff::Smoothstep) {
+			record.kind |= GPU_LIGHT_FLAG_SMOOTHSTEP;
+		}
 		break;
 	}
 	case LightKind::Directional:
@@ -66,6 +139,32 @@ void LightListBuilder::addPunctual(const SceneLight& light)
 		//irradiance over the scene's cross-section, priced once its size is known
 		crossSection = luminance;
 		break;
+	case LightKind::Projection:
+	case LightKind::Goniometric: {
+		//without its image, a point light of its intensity: what the importer made of one before
+		if (!image.valid) {
+			record.kind = (uint32_t)GpuLightKind::Point;
+			record.a = glm::vec4(light.position, 0.f);
+			record.power = 4.f * LIGHT_PI * luminance;
+			break;
+		}
+		const bool projection = light.kind == LightKind::Projection;
+		record.kind = (uint32_t)(projection ? GpuLightKind::Projection : GpuLightKind::Goniometric) | (light.mirrored ? GPU_LIGHT_FLAG_MIRRORED : 0u);
+		const uint32_t imageBits = image.descriptor | (image.sampler << 20);
+		record.a = glm::vec4(light.position, std::bit_cast<float>(imageBits));
+		const glm::vec3 xAxis = glm::normalize(light.orientation * glm::vec3(1.f, 0.f, 0.f));
+		const glm::vec3 yAxis = glm::normalize(light.orientation * glm::vec3(0.f, 1.f, 0.f));
+		glm::vec2 extents(0.f);
+		if (projection && image.solidAngle > 0.f) {
+			extents = projectionExtents(light.fovDegrees, image.aspect);
+		}
+		record.b = glm::vec4(xAxis, extents.x);
+		record.c = glm::vec4(yAxis, extents.y);
+		//the image's texels times the intensity, over the directions they cover (pbrt-v4's ProjectionLight::Phi and
+		//GoniometricLight::Phi)
+		record.power = luminance * image.solidAngle;
+		break;
+	}
 	}
 	m_list.lights.push_back(record);
 	m_crossSectionPower.push_back(crossSection);
@@ -73,7 +172,7 @@ void LightListBuilder::addPunctual(const SceneLight& light)
 	m_list.punctualLights++;
 }
 
-uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance, uint32_t group, const LightSpectrum& spectrum)
+uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance, uint32_t group, const LightSpectrum& spectrum, const ShapeEmitter& emitter)
 {
 	float luminance = luminanceOf(radiance);
 	if (!(luminance > 0.f)) {
@@ -85,35 +184,56 @@ uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWor
 	}
 
 	const uint32_t first = (uint32_t)m_list.lights.size();
-	for (const AreaLightGeometry& surface : surfaces) {
+	for (size_t face = 0; face < surfaces.size(); face++) {
+		const AreaLightGeometry& surface = surfaces[face];
 		GpuLight record;
-		record.kind = (uint32_t)surface.kind;
+		record.kind = (uint32_t)surface.kind | emitter.flags;
+		//a rectangle's sampler gives cross(b, c) as its normal, which for a quad (+y outward) and the box's faces on the
+		//negative side of their axis points in: its record says so, so a one-sided sample faces the way the hit does
+		if (surface.kind == AreaLightKind::Rectangle && (emitter.flags & GPU_LIGHT_FLAG_ONE_SIDED) != 0) {
+			glm::vec3 outward(0.f, 1.f, 0.f);
+			if (kind == ShapeKind::Box) {
+				outward = glm::vec3(0.f);
+				outward[face / 2] = (face & 1u) != 0 ? 1.f : -1.f;
+			}
+			if (glm::dot(glm::cross(surface.b, surface.c), glm::vec3(objectToWorld * glm::vec4(outward, 0.f))) < 0.f) {
+				record.kind ^= GPU_LIGHT_FLAG_REVERSED;
+			}
+		}
 		record.radiance = radiance;
 		record.group = group;
 		record.spectrum = spectrum.index;
 		record.spectrumScale = spectrum.scale;
+		const float instance = (emitter.flags & GPU_LIGHT_FLAG_TEXTURED) != 0 ? std::bit_cast<float>(emitter.instance) : 0.f;
 		switch (surface.kind) {
 		case AreaLightKind::Sphere:
 			record.a = glm::vec4(surface.a, surface.radius);
+			record.b = glm::vec4(0.f, 0.f, 0.f, instance);
 			break;
 		case AreaLightKind::Rectangle:
-			record.a = glm::vec4(surface.a, 0.f);
+			record.a = glm::vec4(surface.a, instance);
 			record.b = glm::vec4(surface.b, 0.f);
 			record.c = glm::vec4(surface.c, 0.f);
 			break;
 		case AreaLightKind::Cylinder:
 			record.a = glm::vec4(surface.a, surface.radius);
 			record.b = glm::vec4(surface.b, surface.height);
-			record.c = glm::vec4(surface.c, 0.f);
+			record.c = glm::vec4(surface.c, instance);
 			break;
 		case AreaLightKind::Triangle:
 			break;
 		}
 		//pi L per unit area leaves a surface into its outward hemisphere. A quad is seen from both
-		//sides and emits twice that; a closed shape's inside is never seen. A degenerate box face keeps
-		//its record, at zero power, so the faces stay in the order the intersect kernel names them
-		const float sides = kind == ShapeKind::Quad ? 2.f : 1.f;
-		const float power = sides * LIGHT_PI * surface.area * luminance;
+		//sides and emits twice that, unless it emits from one; a closed shape's inside is never seen. A degenerate box
+		//face keeps its record, at zero power, so the faces stay in the order the intersect kernel names them
+		const bool oneSided = (emitter.flags & GPU_LIGHT_FLAG_ONE_SIDED) != 0;
+		const bool reversed = (emitter.flags & GPU_LIGHT_FLAG_REVERSED) != 0;
+		float sides = kind == ShapeKind::Quad && !oneSided ? 2.f : 1.f;
+		//a closed shape that emits only inward lights nothing outside it
+		if (oneSided && reversed && kind != ShapeKind::Quad) {
+			sides = 0.f;
+		}
+		const float power = sides * LIGHT_PI * surface.area * luminance * emitter.textureMean;
 		record.power = std::isfinite(power) ? std::max(power, 0.f) : 0.f;
 		m_list.lights.push_back(record);
 		m_crossSectionPower.push_back(0.f);
@@ -123,17 +243,18 @@ uint32_t LightListBuilder::addShape(ShapeKind kind, const glm::mat4& objectToWor
 }
 
 uint32_t LightListBuilder::addTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, const glm::vec3& radiance, uint32_t attributeIndex, uint32_t material, int emissiveLayer, float textureMean, uint32_t group,
-	const LightSpectrum& spectrum)
+	const LightSpectrum& spectrum, uint32_t flags)
 {
 	const float area = 0.5f * glm::length(glm::cross(v1 - v0, v2 - v0));
-	//two-sided, as the tracer's triangles are, and as bright as its texture is on average over it
+	//two-sided unless its material emits from one side, and as bright as its texture is on average over it
 	const float luminance = luminanceOf(radiance) > 0.f ? luminanceOf(radiance) : spectrum.price;
-	const float power = 2.f * LIGHT_PI * area * luminance * textureMean;
+	const float sides = (flags & GPU_LIGHT_FLAG_ONE_SIDED) != 0 ? 1.f : 2.f;
+	const float power = sides * LIGHT_PI * area * luminance * textureMean;
 	if (!(power > 0.f) || !std::isfinite(power)) {
 		return GPU_NO_LIGHT;
 	}
 	GpuLight record;
-	record.kind = (uint32_t)GpuLightKind::Triangle;
+	record.kind = (uint32_t)GpuLightKind::Triangle | flags;
 	record.a = glm::vec4(v0, std::bit_cast<float>(attributeIndex));
 	record.b = glm::vec4(v1, std::bit_cast<float>((int32_t)emissiveLayer));
 	record.c = glm::vec4(v2, std::bit_cast<float>(material));

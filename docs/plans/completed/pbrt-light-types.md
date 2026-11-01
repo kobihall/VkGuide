@@ -2,7 +2,7 @@
 
 The tracer has pbrt's point, spot and distant lights, diffuse area emission from shapes and triangles, and an environment map. pbrt-v4 has nine light types; the missing ones are the projection light and the goniometric light. Its area lights can be one-sided and can carry an image, and its lights can be specified by the power or illuminance they deliver rather than by a raw scale. This plan adds those, and gives every light the emission-sampling functions that light tracing, BDPT and photon mapping need.
 
-*Not implemented. Depends on [pbrt-textures.md](pbrt-textures.md) (images for projection, goniometric and textured emission), [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (shape uvs) and [pbrt-material-system.md](completed/pbrt-material-system.md) (emission parameters). Color temperature comes from [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Implemented 2026-10-31, together with [pbrt-textures.md](pbrt-textures.md), except emission sampling, which the user left for the first bidirectional integrator ("Not built"). "As built" records what differs from the design below. Depends on [pbrt-textures.md](pbrt-textures.md) (images for projection, goniometric and textured emission), [pbrt-thin-hit-record.md](pbrt-thin-hit-record.md) (shape uvs) and [pbrt-material-system.md](pbrt-material-system.md) (emission parameters). Color temperature comes from [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md). Part of the [roadmap](../pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -21,7 +21,7 @@ A point light that projects an image through a frustum, like a slide projector (
 
 ### Goniometric light
 
-A point light whose intensity varies with direction according to a measured distribution (PBR 4ed §12.2.3), the way real luminaires are described. pbrt-v4 stores the distribution as an equal-area square image in the light's space ([pbrt-environment-lighting.md](pbrt-environment-lighting.md) adds the same mapping for environment maps).
+A point light whose intensity varies with direction according to a measured distribution (PBR 4ed §12.2.3), the way real luminaires are described. pbrt-v4 stores the distribution as an equal-area square image in the light's space ([pbrt-environment-lighting.md](../pbrt-environment-lighting.md) adds the same mapping for environment maps).
 
 Luminaire manufacturers publish their distributions as IES LM-63 files, which pbrt does not read. A loader in `src/ies_loader.cpp` parses the vertical and horizontal angle tables and the candela values, expands the file's symmetry (a single horizontal angle, a quarter, a half or the full circle), and resamples it into a 256² equal-area image. The candela values are divided by 683, as imported glTF lights are.
 
@@ -31,7 +31,7 @@ A **Falloff** choice on spot lights: glTF (today's, the default and the only one
 
 ### Area emission
 
-Emission becomes part of the material ([pbrt-material-system.md](completed/pbrt-material-system.md)) with these parameters:
+Emission becomes part of the material ([pbrt-material-system.md](pbrt-material-system.md)) with these parameters:
 
 - **Emission** as a `SpectrumRef`, and a **Strength**.
 - **Emission texture** as a `TexRef`. A shape's emission reads it through the shape's uvs. The light list prices a textured emitter by its texture's mean, as it does for triangles today.
@@ -52,7 +52,7 @@ Each light can be specified in the units a lighting designer uses. The stored va
 
 For a spot light, pbrt's power-to-intensity conversion uses the cone's solid angle adjusted for the falloff (`SpotLight::Phi()`): each falloff choice has its own.
 
-A **Color temperature** option replaces a light's color with a normalized blackbody (PBR 4ed §4.4.1). In exact RGB it is the blackbody's RGB at luminance 1; in spectral modes it is the `Blackbody` `SpectrumRef` itself. [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) built this on 2026-10-23, as the **Spectral** menu beside every light's and emitter's color, with the other spectrum kinds, so the new light types only need to take a `SpectrumRef` color.
+A **Color temperature** option replaces a light's color with a normalized blackbody (PBR 4ed §4.4.1). In exact RGB it is the blackbody's RGB at luminance 1; in spectral modes it is the `Blackbody` `SpectrumRef` itself. [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) built this on 2026-10-23, as the **Spectral** menu beside every light's and emitter's color, with the other spectrum kinds, so the new light types only need to take a `SpectrumRef` color.
 
 ### Emission sampling
 
@@ -66,9 +66,9 @@ A **Color temperature** option replaces a light's color with a normalized blackb
 | Directional | uniform on a disk the size of the scene's bounding sphere, facing the light | the light's direction |
 | Sphere, rectangle, cylinder, triangle | uniform by area | cosine-weighted about the normal; for two-sided emission, a side picked with probability ½ |
 | Environment | uniform on a disk the size of the scene's bounding sphere | by the map's distribution, as `SampleLi()` already does |
-| Laser ([physoptics-laser-sources.md](physoptics-laser-sources.md)) | Gaussian over the beam's waist, carried to the output aperture | Gaussian about the axis with the far-field divergence, the beam's Wigner distribution |
+| Laser ([physoptics-laser-sources.md](../physoptics-laser-sources.md)) | Gaussian over the beam's waist, carried to the output aperture | Gaussian about the axis with the far-field divergence, the beam's Wigner distribution |
 
-The path tracer never calls them, and next-event estimation never samples a laser, whose emission is confined to a cone of milliradians: lasers stay out of the alias tables, and only light paths start at them. [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md), [pbrt-photon-mapping.md](pbrt-photon-mapping.md) and [pbrt-metropolis-light-transport.md](pbrt-metropolis-light-transport.md) do, and this plan gives them one tested implementation instead of three.
+The path tracer never calls them, and next-event estimation never samples a laser, whose emission is confined to a cone of milliradians: lasers stay out of the alias tables, and only light paths start at them. [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md), [pbrt-photon-mapping.md](../pbrt-photon-mapping.md) and [pbrt-metropolis-light-transport.md](../pbrt-metropolis-light-transport.md) do, and this plan gives them one tested implementation instead of three.
 
 The C++ mirrors go into `light_sampling.cpp`, and `bin/light_test` gains a check per kind: the emitted-ray densities integrate to 1, and the sampled power matches the light's `power`.
 
@@ -80,7 +80,7 @@ The C++ mirrors go into `light_sampling.cpp`, and `bin/light_test` gains a check
 
 ## Importing pbrt scenes
 
-[completed/pbrt-scene-import.md](completed/pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
+[completed/pbrt-scene-import.md](pbrt-scene-import.md) imports pbrt-v4 scenes today and substitutes for this plan's features. Each substitution is a line in the import report, so `./bin/pbrt_test --report <file.pbrt>` lists the scenes that need this plan. When this plan lands, change the importer as follows, then run `tools/verify/pbrt_compare.py` on the scenes named below.
 
 - **One-sided area lights.** pbrt's `diffuse` area light emits from the front only unless `"bool twosided" true`; 2405 of the 2688 in `pbrt-v4-scenes` are one-sided. The importer makes every emitter a two-sided `Emissive` material and reports it (`areaLightRadiance()`). In `ganesha` two lights face the statue from either side, and their backs light the room behind them, which pbrt leaves dark. To restore pbrt's behavior: add a one-sided flag to the emissive material (a `CRT_MATERIAL_FLAG_*` bit packed by `packClassic()`), make kernel 04 return no emission when the ray arrives at the back (`frontFace` false), make `sampleLight()` give zero for a point whose normal faces away from the shading point, and halve the light list's power for a one-sided emitter (`LightListBuilder`). Then set the flag in `shapeMaterial()` from `twosided`, flip it with `PbrtShape::reverseOrientation`, and remove the report. With the flag off, existing scenes must stay bit-identical.
 - **An emitter's own reflection.** pbrt's area light is a property of a shape whose material still reflects; the `Emissive` type absorbs. `shapeMaterial()` reports "an emitter's own reflectance is dropped" when the shape's material is not black (`crown`, `book`, `ganesha`, `pavilion-night`). An emission parameter on `lambertian` and `pbr` (pbr has one, which does not end the path) would remove the substitution: have `shapeMaterial()` keep the resolved material and set its emission instead of switching to `Emissive`.
@@ -104,6 +104,40 @@ The C++ mirrors go into `light_sampling.cpp`, and `bin/light_test` gains a check
 3. Emission textures on shapes, once shapes have uvs.
 4. Projection and goniometric lights, and the IES loader.
 5. Emission sampling, when the first bidirectional integrator starts.
+
+## As built
+
+- **Emission on every type.** Every material type but the optical interface has **emission**, **emission strength** and **two-sided**. `emissive` and `pbr` keep their own records' emission. Every other type packs a 16-byte emission block (`CrtEmissionBlock`) after its record, which kernel 04 reads when the type is neither. The spectral builds read the emission's slot 1, as they did. A material that does not emit packs the record it always did.
+- **One-sided emission** is two material flags, `CRT_MATERIAL_FLAG_ONE_SIDED` and `_REVERSED`. A shape with **Reverse orientation** packs its material a second time with `_REVERSED`. Kernel 04 counts nothing from the side a one-sided emitter does not face. `sampleLight()` gives no sample of such a point, after the sampler's own normal is turned to the hit's: a quad's and the box's negative faces' samplers point inward, and a triangle under a mirroring transform winds against its normal. The light list prices a one-sided quad or triangle at half, and a closed shape that emits only inward at zero.
+- **Light records** have no padding left, so the flags ride in `GpuLight::kind` above its low 8 bits: smoothstep, one-sided, reversed, textured, mirrored. `lightKindOf()` reads the kind. A projection or goniometric light keeps its image's descriptor and sampler in `a.w`, in place of a range they do not have; its frame's x and y axes are `b.xyz` and `c.xyz`, the frustum's half-extents `b.w` and `c.w`.
+- **Light images** are textures of the library, added by `VulkanEngine::syncLightImages()`. An IES file becomes a 256 × 256 equal-area image as it loads (`src/ies_loader.h`). The light list measures a light's image for its power (`lightImageSolidAngle()`). A goniometric light reads its image's channels averaged, as pbrt-v4 does.
+- **Textured emission on a shape**: a shape's records name its instance, whose material's references the sample's uv is looked up in (`shapeLightTexture()`).
+- **Photometric units** are `SceneLight::unit`: W/sr, cd or lm for a point, spot, projection or goniometric light, W/m² or lux for a directional one. A shape's luminous power is in its panel. The environment's illuminance is not built.
+- **Color temperature** is the **Spectral** menu's color temperature, which every light's and emitter's color already had.
+
+### Importing pbrt scenes as built
+
+- One-sided area lights, reverse orientation (a sphere's through **Reverse orientation**, a mesh's in its normals or winding), an emitter's own reflection (a material that reflects keeps its type and adds its emission), the spot's smoothstep, and area lights' images are imported as the plan says, and their report lines are gone.
+- A projection light's frame is its pbrt frame's (x, y), a goniometric light's its (x, z), and `SceneLight::mirrored` turns the z axis around where that frame is left-handed. `tools/verify/pbrt_light_scenes.py` found both conventions against pbrt.
+- `power` on a projection or goniometric light is reported and ignored, since the importer does not read images.
+
+### Verification as built
+
+`tools/verify/light_texture_scenes.py` writes the scenes, `light_texture_check.py` renders and checks them, and `run_all.py` runs it.
+
+- With no new kind or option in use, seven scenes render byte for byte as before ([pbrt-textures.md](pbrt-textures.md) lists them).
+- `bin/light_test` passes. Both spot falloffs' power agrees with their falloff integrated over the sphere to five digits. The equal-area mapping's round trip is within 3e-6. An isotropic IES file's image is its candela over 683 everywhere. A white projection's solid angle is the frustum's, 4 asin(sin a sin b), to 2e-5.
+- A goniometric light of an isotropic IES file renders as a point light of its intensity: mean ratio 1.00000.
+- A white 90° projection lights a wall as a point light does inside its frustum (median ratio 1.0000 over 22,470 pixels), nothing outside it, in a patch twice as wide as tall.
+- A one-sided quad seen from behind is black, and the floor on its back side is 0, under the BSDF, light and MIS strategies.
+- 1000 lm inside a diffuse sphere of albedo 0.5, which spreads every reflected watt evenly over itself: the point light gives 0.03709 against ρΦ / (πA(1 − ρ)) = 0.03709, and the spot light, on the wall it does not face, 0.01853 against ρ²Φ / (πA(1 − ρ)) = 0.01854. Both deliver their 1000 lm.
+- A checker-textured emissive quad lights its floor alike by BSDF sampling (0.1293), light sampling (0.1281) and MIS (0.1282).
+- Against pbrt, the hand-made scenes of `assets/models/pbrt_lights/`: a turned projection light matches to mean ratios 1.002, 1.000, 1.001, a goniometric light to 0.9999, and in hero wavelengths the same.
+
+## Not built
+
+- **Emission sampling** (`SampleLe()` and `PDF_Le()`): the user chose on 2026-10-31 to leave it for [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md), the first integrator that calls it.
+- **Illuminance for the environment** on an upward-facing surface.
 
 ## Sources
 

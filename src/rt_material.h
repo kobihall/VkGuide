@@ -15,9 +15,9 @@
 // here, its parameters, its pack function, and its case in the shaders.
 //
 // A color parameter is a SpectrumRef (src/spectrum_ref.h): an RGB triple by default, or any spectrum, which the
-// parameter's SpectrumRole says how to read (docs/plans/completed/pbrt-spectral-rendering.md). Until
-// docs/plans/pbrt-textures.md lands a TexRef is a layer of the texture array: exactly what the tracer stored before
-// parameters were data.
+// parameter's SpectrumRole says how to read (docs/plans/completed/pbrt-spectral-rendering.md). A TexRef is a layer of the
+// legacy texture array, what the tracer stored before parameters were data; the texture library's references are
+// MaterialDef::textures (docs/plans/completed/pbrt-textures.md).
 
 #include <array>
 #include <cstdint>
@@ -34,6 +34,7 @@
 #include <glm/glm.hpp>
 
 #include <spectrum_ref.h>
+#include <texture_types.h>
 
 //---------------------------------------------------------------- types
 
@@ -88,12 +89,75 @@ inline constexpr size_t MATERIAL_TYPE_COUNT = sizeof(MATERIAL_TYPES) / sizeof(MA
 
 //---------------------------------------------------------------- parameters
 
-// a texture a parameter reads, or none (pbrt-textures.md): a layer of RaytraceTextureArray until
-// then. Only a glTF material's import sets one, and only for this session: the layers are
-// re-resolved whenever the array is rebuilt, and a texture reference is never saved
+// a legacy texture array layer a parameter reads, or none: what the renderer read before the texture library
+// (docs/plans/completed/pbrt-textures.md), which Texture storage "legacy array" still reads. Only a model's import sets one,
+// and only for this session: the layers are re-resolved whenever the array is rebuilt, and the layer is never saved
 struct TexRef {
 	int layer { -1 };
 	bool operator==(const TexRef&) const = default;
+};
+
+// WHAT A PARAMETER'S TEXTURE IS (docs/plans/completed/pbrt-textures.md): an image of the texture library (src/texture_library.h)
+// by its id, and how a surface looks it up. Any Float or Spectrum parameter can have one, in MaterialDef::textures by the
+// parameter's name, and its value is then the parameter times the texel (a scalar parameter reads one channel). Two
+// names are not parameters: "normal", a tangent-space normal map, and "alpha", the coverage the traversal cuts the
+// surface away by. A model's materials get theirs from the file (derived), which the scene file never saves
+
+// which coordinates a lookup uses (PBR 4ed 10.2): a uv set, or the object-space point carried into texture space by
+// `TextureBinding::mappingTransform` and projected about its origin (spherical, cylindrical about z) or onto its xy plane
+enum class TextureMapping : uint8_t {
+	Uv,
+	Spherical,
+	Cylindrical,
+	Planar
+};
+
+// which of the texel's channels a scalar parameter reads; a color parameter takes rgb whatever this says
+enum class TextureChannel : uint8_t {
+	Rgb,
+	Red,
+	Green,
+	Blue,
+	Alpha,
+	Average
+};
+
+// how the alpha texture cuts a surface: below the material's alpha cutoff (glTF's MASK), or by pbrt's stochastic test,
+// which keeps a hit with probability alpha
+enum class AlphaMode : uint8_t {
+	Cutoff,
+	Stochastic
+};
+
+struct TextureBinding {
+	// the library's id, 0 for none
+	uint64_t texture { 0 };
+	TextureChannel channel { TextureChannel::Rgb };
+	TextureMapping mapping { TextureMapping::Uv };
+	// TEXCOORD_0 or TEXCOORD_1, for the uv mapping
+	uint32_t uvSet { 0 };
+	// KHR_texture_transform, in its order: scale, rotate by `rotation` radians, then offset
+	glm::vec2 offset { 0.f };
+	glm::vec2 scale { 1.f };
+	float rotation { 0.f };
+	// the other mappings: object space to texture space, or world space with `worldSpace` (a pbrt texture's, which
+	// pbrt defines in its world)
+	glm::mat4 mappingTransform { 1.f };
+	bool worldSpace { false };
+	// the alpha texture's test
+	AlphaMode alphaMode { AlphaMode::Cutoff };
+	// from the model's file, re-derived on every load and never saved
+	bool derived { false };
+	// An importer's reference, before the library holds the image: its index in ImportedModel::images, and how it is
+	// read. VulkanEngine::addModel() adds it to the library and sets `texture`; -1 everywhere else
+	int importImage { -1 };
+	TextureColorSpace importColorSpace { TextureColorSpace::Srgb };
+	TextureSampling importSampling;
+	// the copies a SceneDescription holds: the texture's index in its "textures" list (the scene file's reference), which
+	// VulkanEngine::saveScene() and openScene() convert to and from `texture`; -1 everywhere else
+	int fileTexture { -1 };
+
+	bool operator==(const TextureBinding&) const = default;
 };
 
 // A reference to another library material (a mix's children), by the id the library gives it. The id is never saved: the
@@ -193,6 +257,8 @@ struct MaterialDef {
 	// for a glTF material: the parameters the user changed from the imported values, which are all
 	// the scene file saves of it
 	std::set<std::string, std::less<>> edited;
+	// the textures its parameters read, by parameter name (and "normal", "alpha")
+	std::map<std::string, TextureBinding, std::less<>> textures;
 	// the light group (0 to 7) what the material emits is kept in, beside the picture
 	// (docs/plans/completed/pbrt-aovs-and-image-output.md). A material that does not emit has none to use
 	uint32_t lightGroup { 0 };
@@ -223,14 +289,22 @@ inline bool isUserMaterial(const MaterialDef& material)
 
 //---------------------------------------------------------------- the GPU record
 
-// what the pack functions are told about where the material is used. A shape has no textures
-// until pbrt-textures.md adds them, so a material on a shape is packed without its texture layers
+// what the pack functions are told about where the material is used. A material on a shape is packed without the legacy
+// texture array's layers, which a shape never read; the texture library's references it keeps
 struct PackContext {
 	bool textures { true };
 	// the working space, which exact RGB converts a material's RGB values from
 	SpectrumContext spectra;
 	// what exact RGB reads a dispersive index at (src/spectral.h SpectralSettings::designWavelength)
 	float designWavelength { 587.6f };
+	// THE TEXTURE LIBRARY, when the material is packed for a render: a library id's descriptor (x) and sampler (y) in set
+	// 1, or nothing for an id it does not hold. Empty, nothing is textured through the library
+	std::function<std::optional<glm::uvec2>(uint64_t id)> textureSlot;
+	// Texture storage: native, a model's own textures (TextureBinding::derived) are read through the library; the legacy
+	// array reads them from the texture layers instead, as before the library existed
+	bool modelTexturesFromLibrary { false };
+	// packed for a shape with Reverse orientation: a one-sided emitter emits from its back
+	bool reversed { false };
 	// The index in the scene's material table of the library material `id`, packing it first if it is not there yet. A
 	// mix's pack function calls it for its two children. Empty where nothing packs a scene (a preview), and the mix's
 	// children are then index 0
@@ -261,6 +335,10 @@ struct PackedMaterial {
 	// outside the visible range has none: its radiance integrated over wavelength over CIE_Y_INTEGRAL, so it compares
 	// with a luminance. 0 for an emitter with luminance, whose RGB prices it as before
 	float emissionPrice { 0.f };
+	// the library texture an emitter's emission reads (its mean prices it in the light list), 0 for none
+	uint64_t emissionTexture { 0 };
+	// it reads at least one library texture: the scene's kernels are built with CRT_TEXTURES
+	bool textured { false };
 
 	bool operator==(const PackedMaterial&) const = default;
 };
@@ -305,5 +383,10 @@ std::optional<MaterialType> findMaterialType(std::string_view name);
 const MaterialParam* findMaterialParam(MaterialType type, std::string_view name);
 
 PackedMaterial packMaterial(const MaterialDef& material, const PackContext& context);
+// the record field a parameter of `type` modulates when it is textured (crt_texture.glsl CRT_TEX_TARGET_*), 0 for a
+// parameter no texture can change (an enum, a link, the ABg lobe's shape, which the CPU integrates)
+uint32_t textureTarget(const MaterialDef& material, std::string_view name);
+// a type that emits through the emission block (every type but emissive, pbr and the optical interface)
+bool usesEmissionBlock(MaterialType type);
 glm::vec3 materialEmission(const MaterialDef& material);
 glm::vec3 materialPreviewColor(const MaterialDef& material);

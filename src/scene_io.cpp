@@ -94,7 +94,17 @@ namespace {
 //   render), "solid", "sky" (Ray Tracing in One Weekend's) or "environment". "background" is always written, the color
 //   "solid" shows. An older file's choice was implied: a "background" was the solid color whatever else the file had,
 //   otherwise a map was the environment, otherwise the sky, which it reads as, so it renders as it did
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 24;
+//25: adds the texture library and the new light types (docs/plans/completed/pbrt-textures.md, pbrt-light-types.md). "textures" lists
+//   the image files materials read, each a "path", "colorSpace" ("srgb", "linear"), "wrap" ([u, v], each "repeat",
+//   "clamp", "mirror" or "black"), "nearest" ([mag, min]), and a pbrt imagemap's "encoding", "gamma" and "invert". A
+//   material (and a glTF material's override) holds "textures", by parameter name (and "normal", "alpha"): a "texture"
+//   index, the "channel", "mapping", "uvSet", "offset", "scale", "rotation", the mapping's "transform" (16 numbers,
+//   column-major) and an alpha texture's "alphaMode". Every type takes "emission", "strength" and "twoSided". A shape
+//   has "reverseOrientation"; "render" adds "textureStorage" ("legacy", "native"), "maxTextureSize" and
+//   "textureFilter". A light adds the types "projection" and "goniometric" with an "image" and a projection's "fov",
+//   a spot's "falloff" ("smoothstep"), and the "unit" the panel shows. An older file has no texture storage, and reads
+//   as the legacy array, so it renders as it did
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 25;
 
 //---------------------------------------------------------------- writing
 
@@ -189,6 +199,34 @@ std::string jsonQuat(const glm::quat& q)
 
 std::string materialRefJson(const SceneMaterialRef& ref);
 
+const char* const TEXTURE_CHANNEL_NAMES[] = { "rgb", "r", "g", "b", "a", "average" };
+const char* const TEXTURE_MAPPING_NAMES[] = { "uv", "spherical", "cylindrical", "planar" };
+const char* const TEXTURE_WRAP_NAMES[] = { "repeat", "clamp", "mirror", "black" };
+const char* const TEXTURE_FILTER_NAMES[] = { "point", "bilinear", "trilinear", "anisotropic" };
+
+//version 25: the textures the user gave a material's parameters, by name, each naming its image by index into the
+//file's "textures" (TextureBinding::fileTexture, set by VulkanEngine::saveScene()). A model's own are never written
+std::string materialTexturesJson(const std::map<std::string, TextureBinding, std::less<>>& textures)
+{
+	std::string json;
+	for (const auto& [name, binding] : textures) {
+		if (binding.derived || binding.fileTexture < 0) {
+			continue;
+		}
+		std::string transform;
+		for (int c = 0; c < 4; c++) {
+			for (int r = 0; r < 4; r++) {
+				transform += fmt::format("{}{}", transform.empty() ? "" : ",", jsonNumber(binding.mappingTransform[c][r]));
+			}
+		}
+		json += fmt::format(R"({}{}:{{"texture":{},"channel":"{}","mapping":"{}","uvSet":{},"offset":[{},{}],"scale":[{},{}],"rotation":{},"transform":[{}],"worldSpace":{},"alphaMode":"{}"}})",
+			json.empty() ? "" : ",", jsonString(name), binding.fileTexture, TEXTURE_CHANNEL_NAMES[(size_t)binding.channel], TEXTURE_MAPPING_NAMES[(size_t)binding.mapping], binding.uvSet,
+			jsonNumber(binding.offset.x), jsonNumber(binding.offset.y), jsonNumber(binding.scale.x), jsonNumber(binding.scale.y), jsonNumber(binding.rotation), transform,
+			binding.worldSpace, binding.alphaMode == AlphaMode::Stochastic ? "stochastic" : "cutoff");
+	}
+	return json.empty() ? std::string() : fmt::format(R"(,"textures":{{{}}})", json);
+}
+
 //a material's parameters as json fields, by the names MATERIAL_TRAITS gives them: those of its
 //type that are in `names` (every one, for a user material), never a read-only one, which is derived
 //rather than authored
@@ -216,9 +254,8 @@ std::string materialParamsJson(const MaterialDef& material, const std::set<std::
 				json += fmt::format(R"(,"{}":{})", param.name, materialRefJson(SceneMaterialRef { link->fileUser, link->fileModel, link->fileModelMaterial }));
 			}
 		}
-		//a texture reference is never saved until pbrt-textures.md gives textures a stable identity
 	}
-	return json;
+	return json + materialTexturesJson(material.textures);
 }
 
 std::string materialRefJson(const SceneMaterialRef& ref)
@@ -447,6 +484,9 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	json += fmt::format(R"(,"render":{{"width":{},"height":{},"matchViewport":{},"antialiasing":{},"maxSamples":{},"unlimitedSamples":{},"rayDepth":{},"useFixedSeed":{},"seed":{},"samplesPerFrame":{},"russianRoulette":{},"minBouncesBeforeRoulette":{},"restartOnChange":{},"errorBoundedOffsets":{},"watertightTriangles":{},"samplerRandomization":{})",
 		r.width, r.height, r.matchViewport, r.antialiasing, r.maxSamples, r.unlimitedSamples, r.rayDepth, r.useFixedSeed, r.seed, r.samplesPerFrame, r.russianRoulette, r.minBouncesBeforeRoulette, r.restartOnChange,
 		r.errorBoundedOffsets, r.watertightTriangles, jsonString(samplerRandomizationId(r.samplerRandomization)));
+	//version 25: the textures
+	json += fmt::format(R"(,"textureStorage":"{}","maxTextureSize":{},"textureFilter":"{}")", r.textureStorage == TextureStorage::Legacy ? "legacy" : "native", r.maxTextureSize,
+		TEXTURE_FILTER_NAMES[(size_t)r.textureFilter]);
 	//version 15: the film
 	json += fmt::format(R"(,"pixelFilter":{{"kind":{},"radius":{},"sigma":{},"b":{},"c":{},"tau":{}}},"clampSamples":{},"clampValue":{},"outlierKappa":{}}})",
 		jsonString(pixelFilterId(r.pixelFilter.kind)), jsonNumber(r.pixelFilter.radius), jsonNumber(r.pixelFilter.sigma), jsonNumber(r.pixelFilter.b), jsonNumber(r.pixelFilter.c),
@@ -553,6 +593,21 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		}
 		if (light.kind == LightKind::Spot) {
 			json += fmt::format(R"(,"innerCone":{},"outerCone":{})", jsonNumber(light.innerConeDegrees), jsonNumber(light.outerConeDegrees));
+			if (light.falloff == SpotFalloff::Smoothstep) {
+				json += R"(,"falloff":"smoothstep")";
+			}
+		}
+		if (light.kind == LightKind::Projection || light.kind == LightKind::Goniometric) {
+			json += fmt::format(R"(,"image":{})", jsonString(light.image.empty() ? std::string() : portablePath(std::filesystem::path(light.image), sceneDirectory)));
+			if (light.kind == LightKind::Projection) {
+				json += fmt::format(R"(,"fov":{})", jsonNumber(light.fovDegrees));
+			}
+			if (light.mirrored) {
+				json += R"(,"mirrored":true)";
+			}
+		}
+		if (light.unit != LightUnit::Radiometric) {
+			json += fmt::format(R"(,"unit":"{}")", lightUnitName(light.unit));
 		}
 		if (scene.lights[i].model >= 0) {
 			json += fmt::format(R"(,"model":{})", scene.lights[i].model);
@@ -561,6 +616,17 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 			json += fmt::format(R"(,"lightGroup":{})", light.lightGroup);
 		}
 		json += '}';
+	}
+	json += ']';
+
+	//version 25: the image files the materials' textures read
+	json += R"(,"textures":[)";
+	for (size_t i = 0; i < scene.textures.size(); i++) {
+		const SceneTextureRecord& texture = scene.textures[i];
+		json += fmt::format(R"({}{{"path":{},"colorSpace":"{}","wrap":["{}","{}"],"nearest":[{},{}],"encoding":"{}","gamma":{},"invert":{}}})", i > 0 ? "," : "",
+			jsonString(portablePath(texture.path, sceneDirectory)), texture.colorSpace == TextureColorSpace::Linear ? "linear" : "srgb", TEXTURE_WRAP_NAMES[(size_t)texture.sampling.wrapU],
+			TEXTURE_WRAP_NAMES[(size_t)texture.sampling.wrapV], texture.sampling.nearestMag, texture.sampling.nearestMin,
+			texture.encoding == TextureEncoding::Linear ? "linear" : texture.encoding == TextureEncoding::Gamma ? "gamma" : "srgb", jsonNumber(texture.gamma), texture.invert);
 	}
 	json += ']';
 
@@ -584,6 +650,7 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		MaterialDef edited;
 		edited.type = MaterialType::Pbr;
 		edited.params = edit.params;
+		edited.textures = edit.textures;
 		std::set<std::string, std::less<>> names;
 		for (const auto& [name, value] : edit.params) {
 			names.insert(name);
@@ -628,6 +695,9 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		}
 		if (scene.shapes[i].model >= 0) {
 			json += fmt::format(R"(,"model":{})", scene.shapes[i].model);
+		}
+		if (shape.reverseOrientation) {
+			json += R"(,"reverseOrientation":true)";
 		}
 		json += fmt::format(R"(,"material":{}}})", materialRefJson(scene.shapes[i].material));
 	}
@@ -1075,9 +1145,24 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 {
 	//a file before version 15 has no filter, and its renders placed a sample uniformly in its pixel
 	out.pixelFilter = boxPixelFilter();
+	//and one before 25 read its models' textures from the legacy array
+	out.textureStorage = TextureStorage::Legacy;
 	simdjson::dom::object object;
 	if (element.get_object().get(object) != simdjson::SUCCESS) {
 		return;
+	}
+	std::string_view textureText;
+	if (object["textureStorage"].get_string().get(textureText) == simdjson::SUCCESS) {
+		out.textureStorage = textureText == "native" ? TextureStorage::Native : TextureStorage::Legacy;
+	}
+	readOptionalInt(object["maxTextureSize"], out.maxTextureSize);
+	out.maxTextureSize = std::clamp(out.maxTextureSize, 16, 16384);
+	if (object["textureFilter"].get_string().get(textureText) == simdjson::SUCCESS) {
+		for (size_t i = 0; i < 4; i++) {
+			if (textureText == TEXTURE_FILTER_NAMES[i]) {
+				out.textureFilter = (TextureFilter)i;
+			}
+		}
 	}
 	readOptionalInt(object["width"], out.width);
 	readOptionalInt(object["height"], out.height);
@@ -1261,7 +1346,9 @@ bool readCamera(simdjson::dom::object object, SceneCamera& out, std::string& err
 
 //One "lights" record. The type, the position and a non-negative intensity must be there; the rest
 //keeps SceneLight's defaults when missing
-bool readLight(simdjson::dom::object object, size_t index, size_t modelCount, SceneLightRecord& out, std::string& error)
+std::filesystem::path resolvePath(std::string_view text, const std::filesystem::path& sceneDirectory);
+
+bool readLight(simdjson::dom::object object, size_t index, size_t modelCount, const std::filesystem::path& sceneDirectory, SceneLightRecord& out, std::string& error)
 {
 	std::string_view typeName;
 	if (object["type"].get_string().get(typeName) != simdjson::SUCCESS) {
@@ -1307,6 +1394,23 @@ bool readLight(simdjson::dom::object object, size_t index, size_t modelCount, Sc
 	readOptionalFloat(object["outerCone"], light.outerConeDegrees);
 	readOptionalUint(object["lightGroup"], light.lightGroup);
 	light.lightGroup = std::min(light.lightGroup, MAX_LIGHT_GROUPS - 1u);
+	std::string_view text;
+	if (object["falloff"].get_string().get(text) == simdjson::SUCCESS && text == "smoothstep") {
+		light.falloff = SpotFalloff::Smoothstep;
+	}
+	if (object["unit"].get_string().get(text) == simdjson::SUCCESS) {
+		for (const LightUnit unit : { LightUnit::Radiometric, LightUnit::Candela, LightUnit::Lumen, LightUnit::Lux }) {
+			if (text == lightUnitName(unit)) {
+				light.unit = unit;
+			}
+		}
+	}
+	if (object["image"].get_string().get(text) == simdjson::SUCCESS && !text.empty()) {
+		light.image = resolvePath(text, sceneDirectory).string();
+	}
+	readOptionalFloat(object["fov"], light.fovDegrees);
+	readOptionalBool(object["mirrored"], light.mirrored);
+	light.fovDegrees = std::clamp(light.fovDegrees, 1.f, 170.f);
 	light.range = std::max(light.range, 0.f);
 	light.outerConeDegrees = std::clamp(light.outerConeDegrees, 0.f, 90.f);
 	light.innerConeDegrees = std::clamp(light.innerConeDegrees, 0.f, light.outerConeDegrees);
@@ -1362,6 +1466,12 @@ bool readShape(simdjson::dom::object object, bool legacySphere, size_t index, Sc
 	if (traits.rotatable) {
 		readQuat(object["orientation"], out.orientation);
 	}
+	{
+		bool reversed = false;
+		if (object["reverseOrientation"].get_bool().get(reversed) == simdjson::SUCCESS) {
+			out.reverseOrientation = reversed;
+		}
+	}
 
 	for (const ShapeParam& param : traits.params) {
 		double value = 0.0;
@@ -1377,6 +1487,62 @@ bool readShape(simdjson::dom::object object, bool legacySphere, size_t index, Sc
 
 //the parameters of `type` a version-12 record carries, by name, into `params`. One the record lacks
 //keeps its default, and one of the wrong kind is skipped; a read-only one is never in a file
+//version 25: a material's "textures", which name their images by index into the file's "textures"
+void readMaterialTextures(simdjson::dom::object object, std::map<std::string, TextureBinding, std::less<>>& textures, size_t textureCount)
+{
+	simdjson::dom::object map;
+	if (object["textures"].get_object().get(map) != simdjson::SUCCESS) {
+		return;
+	}
+	for (auto [key, value] : map) {
+		TextureBinding binding;
+		int64_t index = -1;
+		if (value["texture"].get_int64().get(index) != simdjson::SUCCESS || index < 0 || index >= (int64_t)textureCount) {
+			continue;
+		}
+		binding.fileTexture = (int)index;
+		std::string_view text;
+		if (value["channel"].get_string().get(text) == simdjson::SUCCESS) {
+			for (size_t i = 0; i < 6; i++) {
+				if (text == TEXTURE_CHANNEL_NAMES[i]) {
+					binding.channel = (TextureChannel)i;
+				}
+			}
+		}
+		if (value["mapping"].get_string().get(text) == simdjson::SUCCESS) {
+			for (size_t i = 0; i < 4; i++) {
+				if (text == TEXTURE_MAPPING_NAMES[i]) {
+					binding.mapping = (TextureMapping)i;
+				}
+			}
+		}
+		readOptionalUint(value["uvSet"], binding.uvSet);
+		binding.uvSet = std::min(binding.uvSet, 1u);
+		simdjson::dom::array pair;
+		if (value["offset"].get_array().get(pair) == simdjson::SUCCESS && pair.size() == 2) {
+			binding.offset = glm::vec2((float)pair.at(0).get_double().value_unsafe(), (float)pair.at(1).get_double().value_unsafe());
+		}
+		if (value["scale"].get_array().get(pair) == simdjson::SUCCESS && pair.size() == 2) {
+			binding.scale = glm::vec2((float)pair.at(0).get_double().value_unsafe(), (float)pair.at(1).get_double().value_unsafe());
+		}
+		readOptionalFloat(value["rotation"], binding.rotation);
+		simdjson::dom::array transform;
+		if (value["transform"].get_array().get(transform) == simdjson::SUCCESS && transform.size() == 16) {
+			for (size_t i = 0; i < 16; i++) {
+				double v = 0.0;
+				if (transform.at(i).get_double().get(v) == simdjson::SUCCESS) {
+					binding.mappingTransform[(int)(i / 4)][(int)(i % 4)] = (float)v;
+				}
+			}
+		}
+		readOptionalBool(value["worldSpace"], binding.worldSpace);
+		if (value["alphaMode"].get_string().get(text) == simdjson::SUCCESS && text == "stochastic") {
+			binding.alphaMode = AlphaMode::Stochastic;
+		}
+		textures[std::string(key)] = binding;
+	}
+}
+
 void readMaterialParams(simdjson::dom::object object, MaterialType type, ParamSet& params)
 {
 	for (const MaterialParam& param : materialTraits(type).params) {
@@ -1561,7 +1727,7 @@ bool readCoating(simdjson::dom::object object, OpticCoating& out)
 	return true;
 }
 
-bool readMaterialDef(simdjson::dom::object object, size_t index, MaterialDef& out, std::string& error);
+bool readMaterialDef(simdjson::dom::object object, size_t index, MaterialDef& out, std::string& error, size_t textureCount);
 
 //a free optic's "position" and "orientation", each the default's where absent
 void readFreePlacement(simdjson::dom::object object, MountPose& mount)
@@ -1700,7 +1866,7 @@ bool readOptic(simdjson::dom::object object, size_t index, SceneOpticRecord& out
 			}
 			MaterialDef material;
 			std::string error;
-			if (readMaterialDef(materialObject, slot, material, error)) {
+			if (readMaterialDef(materialObject, slot, material, error, 0)) {
 				out.slots[slot] = std::move(material);
 			} else {
 				warnings.push_back(fmt::format("optic \"{}\" slot {}: {}", optic.name, traits.slots[slot].name, error));
@@ -1711,7 +1877,7 @@ bool readOptic(simdjson::dom::object object, size_t index, SceneOpticRecord& out
 }
 
 //one "materials" record: a user material
-bool readMaterialDef(simdjson::dom::object object, size_t index, MaterialDef& out, std::string& error)
+bool readMaterialDef(simdjson::dom::object object, size_t index, MaterialDef& out, std::string& error, size_t textureCount)
 {
 	std::string_view name;
 	out.name = object["name"].get_string().get(name) == simdjson::SUCCESS ? std::string(name) : fmt::format("material_{}", index + 1);
@@ -1727,6 +1893,7 @@ bool readMaterialDef(simdjson::dom::object object, size_t index, MaterialDef& ou
 	}
 	out.type = *type;
 	readMaterialParams(object, out.type, out.params);
+	readMaterialTextures(object, out.textures, textureCount);
 	readOptionalUint(object["lightGroup"], out.lightGroup);
 	out.lightGroup = std::min(out.lightGroup, MAX_LIGHT_GROUPS - 1u);
 	return true;
@@ -2009,11 +2176,54 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 				return;
 			}
 			SceneLightRecord record;
-			if (!readLight(lightObject, lightIndex, ctx.scene.modelPaths.size(), record, ctx.error)) {
+			if (!readLight(lightObject, lightIndex, ctx.scene.modelPaths.size(), ctx.sceneDirectory, record, ctx.error)) {
 				return;
 			}
 			ctx.scene.lights.push_back(std::move(record));
 			lightIndex++;
+		}
+	}
+
+	//version 25: the image files the materials' textures read, before the materials
+	simdjson::dom::array textureList;
+	if (root["textures"].get_array().get(textureList) == simdjson::SUCCESS) {
+		for (simdjson::dom::element entry : textureList) {
+			SceneTextureRecord texture;
+			std::string_view text;
+			if (entry["path"].get_string().get(text) == simdjson::SUCCESS) {
+				texture.path = resolvePath(text, ctx.sceneDirectory);
+			}
+			if (entry["colorSpace"].get_string().get(text) == simdjson::SUCCESS && text == "linear") {
+				texture.colorSpace = TextureColorSpace::Linear;
+			}
+			simdjson::dom::array wrap;
+			if (entry["wrap"].get_array().get(wrap) == simdjson::SUCCESS && wrap.size() == 2) {
+				for (size_t axis = 0; axis < 2; axis++) {
+					std::string_view mode;
+					if (wrap.at(axis).get_string().get(mode) == simdjson::SUCCESS) {
+						for (size_t i = 0; i < 4; i++) {
+							if (mode == TEXTURE_WRAP_NAMES[i]) {
+								(axis == 0 ? texture.sampling.wrapU : texture.sampling.wrapV) = (TextureWrap)i;
+							}
+						}
+					}
+				}
+			}
+			simdjson::dom::array nearest;
+			if (entry["nearest"].get_array().get(nearest) == simdjson::SUCCESS && nearest.size() == 2) {
+				bool mag = false;
+				bool min = false;
+				(void)nearest.at(0).get_bool().get(mag);
+				(void)nearest.at(1).get_bool().get(min);
+				texture.sampling.nearestMag = mag;
+				texture.sampling.nearestMin = min;
+			}
+			if (entry["encoding"].get_string().get(text) == simdjson::SUCCESS) {
+				texture.encoding = text == "linear" ? TextureEncoding::Linear : text == "gamma" ? TextureEncoding::Gamma : TextureEncoding::Srgb;
+			}
+			readOptionalFloat(entry["gamma"], texture.gamma);
+			readOptionalBool(entry["invert"], texture.invert);
+			ctx.scene.textures.push_back(std::move(texture));
 		}
 	}
 
@@ -2028,7 +2238,7 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 				return;
 			}
 			MaterialDef material;
-			if (!readMaterialDef(materialObject, materialIndex, material, ctx.error)) {
+			if (!readMaterialDef(materialObject, materialIndex, material, ctx.error, ctx.scene.textures.size())) {
 				return;
 			}
 			ctx.scene.materials.push_back(std::move(material));
@@ -2050,6 +2260,7 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			edit.model = (int)model;
 			edit.modelMaterial = (uint32_t)modelMaterial;
 			readMaterialParams(overrideObject, MaterialType::Pbr, edit.params);
+			readMaterialTextures(overrideObject, edit.textures, ctx.scene.textures.size());
 			readOptionalUint(overrideObject["lightGroup"], edit.lightGroup);
 			edit.lightGroup = std::min(edit.lightGroup, MAX_LIGHT_GROUPS - 1u);
 			ctx.scene.materialOverrides.push_back(std::move(edit));

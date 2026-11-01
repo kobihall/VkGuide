@@ -2,7 +2,7 @@
 
 These are appearance models from PBR's "Further Reading" and exercises that pbrt itself does not implement: energy compensation for microfacet models, a sheen lobe for cloth, thin-film iridescence, and glints. Each is independent of the others and lands as a material parameter or lobe through the material system.
 
-*Research extension, planned at the user's request on 2026-09-26. Not implemented. Depends on [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md); iridescence is best with [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md); glints need the ray footprint from [pbrt-textures.md](pbrt-textures.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Research extension, planned at the user's request on 2026-09-26. Not implemented. Depends on [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md); iridescence is best with [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md); glints need the ray footprint from [pbrt-textures.md](completed/pbrt-textures.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## Microfacet energy compensation
 
@@ -41,7 +41,7 @@ Glittery paint, bead-blasted plastic and scratched metal under a sun show sparkl
 - Jakob et al. 2014: a stochastic count of mirror facets per footprint and direction cone, evaluated on the fly.
 - Atanasov, Wilkie and Koylazov 2021: a multi-level structure over a discretized normal distribution, cheaper than Jakob's and with a visible-normal sampling scheme (Chermain et al. 2021).
 
-It needs the ray-cone footprint at the hit ([pbrt-textures.md](pbrt-textures.md)) to know how many facets a pixel covers. It becomes a `glint` density and roughness on `conductor` and `pbr`, in the complex queue. This is the most speculative item here; do it last and only if the others are done.
+It needs the ray-cone footprint at the hit ([pbrt-textures.md](completed/pbrt-textures.md)) to know how many facets a pixel covers. It becomes a `glint` density and roughness on `conductor` and `pbr`, in the complex queue. This is the most speculative item here; do it last and only if the others are done.
 
 ## Verification
 

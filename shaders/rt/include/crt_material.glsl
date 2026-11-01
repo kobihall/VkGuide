@@ -13,6 +13,8 @@
 #ifndef CRT_MATERIAL_GLSL
 #define CRT_MATERIAL_GLSL
 
+#include "crt_texture.glsl"
+
 // 64 bytes, four vec4s. src/rt_gpu_types.h CrtClassicMaterial
 struct ClassicMaterial {
 	// the base colour or the emitted colour, by type

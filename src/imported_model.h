@@ -69,6 +69,8 @@ struct ImportedMaterial {
 	// images (into ImportedModel::images) read as the base colour and the normal map, -1 for none
 	int baseColorImage { -1 };
 	int normalImage { -1 };
+	// its definition has an alpha texture (a pbrt shape's "alpha"): the meshes it shades are alpha-tested
+	bool alphaTextured { false };
 	// what the raster preview shows, which has no path tracer to resolve the real appearance with
 	glm::vec4 previewColor { 1.f };
 	float previewMetallic { 0.f };

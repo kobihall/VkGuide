@@ -124,7 +124,8 @@ struct CrtParams {
 	// the environment map's rotation about +y, its cosine and sine (environmentRotation(), src/light_sampling.h)
 	float environmentCos;
 	float environmentSin;
-	uint32_t paramsPad;
+	// the angle one pixel subtends at the camera: a ray cone's spread at the eye (CRT_RAY_CONES)
+	float pixelSpread;
 };
 static_assert(sizeof(CrtParams) == 240);
 
@@ -138,6 +139,10 @@ inline constexpr uint32_t CRT_FLAG_WATERTIGHT = 1u << 5;
 // an optical surface's coating is evaluated by its transfer matrix at every hit, not looked up in its table
 // (shaders/rt/include/crt_optic_material.glsl)
 inline constexpr uint32_t CRT_FLAG_EXACT_COATINGS = 1u << 6;
+// RenderSettings::textureFilter in bits 7 and 8 (crt_texture.glsl CRT_TEXTURE_FILTER_*)
+inline constexpr uint32_t CRT_TEXTURE_FILTER_SHIFT = 7;
+// binding 64 holds the meshes' TEXCOORD_1 uvs
+inline constexpr uint32_t CRT_FLAG_UV1 = 1u << 9;
 
 // Params.bounce for kernel 01's pass over the whole pool before kernel 00 (crt_common.glsl)
 inline constexpr uint32_t CRT_CAMERA_PASS = 0xFFFFFFFFu;

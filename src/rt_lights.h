@@ -37,7 +37,28 @@ enum class GpuLightKind : uint32_t {
 	Point = 4,
 	Spot = 5,
 	Directional = 6,
-	Environment = 7
+	Environment = 7,
+	Projection = 8,
+	Goniometric = 9
+};
+
+// GpuLight::kind holds the kind in its low 8 bits and these flags above (crt_common.glsl CRT_LIGHT_FLAG_*)
+inline constexpr uint32_t GPU_LIGHT_KIND_MASK = 0xFFu;
+inline constexpr uint32_t GPU_LIGHT_FLAG_SMOOTHSTEP = 1u << 8;
+inline constexpr uint32_t GPU_LIGHT_FLAG_ONE_SIDED = 1u << 9;
+inline constexpr uint32_t GPU_LIGHT_FLAG_REVERSED = 1u << 10;
+// an area light whose emission reads a library texture: a shape's record names its instance (sphere b.w, rectangle a.w,
+// cylinder c.w), a triangle's its material (c.w), whose texture table the sample's uv is looked up in
+inline constexpr uint32_t GPU_LIGHT_FLAG_TEXTURED = 1u << 11;
+// a projection or goniometric light whose image frame is left-handed: its z axis is -(b x c) (SceneLight::mirrored)
+inline constexpr uint32_t GPU_LIGHT_FLAG_MIRRORED = 1u << 12;
+
+// what a shape's records carry beyond its geometry and radiance: GPU_LIGHT_FLAG_*, the instance a textured one's samples
+// look their uv up through, and its texture's mean, which scales its power
+struct ShapeEmitter {
+	uint32_t flags { 0 };
+	uint32_t instance { 0 };
+	float textureMean { 1.f };
 };
 
 // crt_common.glsl CRT_NO_LIGHT: the index of no light
@@ -96,6 +117,35 @@ struct RaytraceLightList {
 	float totalPower { 0.f };
 };
 
+// The solid angle a spot light's intensity covers, its falloff weighed in: its power over its intensity
+float spotSolidAngle(float cosOuter, float cosInner, SpotFalloff falloff);
+
+// A projection or goniometric light's image, as the light list reads it from the texture library: its descriptor and
+// sampler, and what it integrates to (lightImageMeasure())
+struct LightImage {
+	bool valid { false };
+	uint32_t descriptor { 0 };
+	uint32_t sampler { 0 };
+	// the solid angle its texels cover at unit intensity, each weighed by its value, and its brightest texel
+	float solidAngle { 0.f };
+	float peak { 0.f };
+	// width over height
+	float aspect { 1.f };
+};
+
+// a projection's or goniometric light's image of `width` x `height` linear luminances measured for its power
+// (lightImageSolidAngle(), src/light_sampling.h), with its peak and its aspect
+LightImage lightImageMeasure(bool projection, float fovDegrees, uint32_t width, uint32_t height, const float* luminance);
+
+// THE PHOTOMETRIC UNITS. What `light`'s stored strength (W/sr, or W/m^2 for a directional light) is multiplied by to
+// show it in `unit`: 683 lm/W times the luminance of its color, times the solid angle its intensity covers for a luminous
+// power. For a projection or goniometric light `image` gives that solid angle, its image integrated over the directions it
+// covers (lightImageMeasure()), and a candela its brightest texel; one whose image is not loaded yet reads as a point light
+float lightUnitFactor(const SceneLight& light, LightUnit unit, const LightImage& image = {});
+// the units a light of `kind` can be shown in, radiometric first
+std::span<const LightUnit> lightUnits(LightKind kind);
+const char* lightUnitLabel(LightKind kind, LightUnit unit);
+
 // What an emitter's records carry for the spectral builds: its emission's index in the scene's spectra, the factor
 // that multiplies it, and the price the light selection takes when its RGB has no luminance (PackedMaterial::
 // emissionPrice), which is what keeps an emitter only a spectral build sees in the list
@@ -111,16 +161,18 @@ struct LightSpectrum {
 class LightListBuilder {
 public:
 	explicit LightListBuilder(SceneSpectra* spectra = nullptr, SpectrumContext context = {}) : m_spectra(spectra), m_context(context) {}
-	void addPunctual(const SceneLight& light);
+	// `image` is a projection or goniometric light's; such a light without one is a point light of its intensity
+	void addPunctual(const SceneLight& light, const LightImage& image = {});
 	// an analytic shape's emitting surfaces (shapeLightGeometry()), all with the same radiance. The
 	// first record's index, or GPU_NO_LIGHT when the shape adds none
-	uint32_t addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance, uint32_t group = 0, const LightSpectrum& spectrum = {});
+	uint32_t addShape(ShapeKind kind, const glm::mat4& objectToWorld, const glm::vec3& radiance, uint32_t group = 0, const LightSpectrum& spectrum = {}, const ShapeEmitter& emitter = {});
 	// one emitting triangle of a placed mesh, in world space: its record's index, or GPU_NO_LIGHT for
 	// a triangle with no area or no emission. `attributeIndex` is its global attribute record,
 	// `material` its index in the scene's materials (for the alpha test of a cut-out emitter),
 	// `emissiveLayer` its texture, -1 for none, and `textureMean` that texture's mean luminance over it
+	// `flags` the GPU_LIGHT_FLAG_* of a one-sided or library-textured emitter
 	uint32_t addTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, const glm::vec3& radiance, uint32_t attributeIndex, uint32_t material, int emissiveLayer, float textureMean, uint32_t group = 0,
-		const LightSpectrum& spectrum = {});
+		const LightSpectrum& spectrum = {}, uint32_t flags = 0);
 	// `luminanceIntegral` is EnvironmentDistribution::luminanceIntegral
 	void addEnvironment(float luminanceIntegral, float intensity, uint32_t group = 0);
 

@@ -17,6 +17,7 @@
 //
 // Run:  ./bin/light_test [--samples N]
 
+#include <ies_loader.h>
 #include <light_sampling.h>
 
 #include <bvh_layout.h>
@@ -446,6 +447,100 @@ void testEnvironmentStorage()
 
 }
 
+// docs/plans/completed/pbrt-light-types.md: each spot falloff's solid angle against the falloff integrated over the sphere
+void testSpotFalloffs()
+{
+	const float cosOuter = std::cos(35.f * LIGHT_PI / 180.f);
+	const float cosInner = std::cos(20.f * LIGHT_PI / 180.f);
+	for (const bool smooth : { false, true }) {
+		double integral = 0.0;
+		const int steps = 200000;
+		for (int i = 0; i < steps; i++) {
+			const float cosTheta = -1.f + 2.f * ((float)i + 0.5f) / (float)steps;
+			const float falloff = smooth ? spotFalloffSmooth(cosTheta, cosOuter, cosInner) : spotFalloff(cosTheta, cosOuter, cosInner);
+			integral += 2.0 * LIGHT_PI * falloff * (2.0 / steps);
+		}
+		const float expected = spotSolidAngle(cosOuter, cosInner, smooth);
+		fmt::println("  {} falloff: {:.5f} sr integrated, {:.5f} sr priced", smooth ? "pbrt smoothstep" : "glTF squared ramp", integral, expected);
+		check(std::abs(integral - expected) < 1e-4 * expected, fmt::format("{} spot falloff: the power's solid angle disagrees with the falloff", smooth ? "smoothstep" : "glTF"));
+	}
+	check(spotFalloffSmooth(cosInner, cosOuter, cosInner) == 1.f && spotFalloffSmooth(cosOuter, cosOuter, cosInner) == 0.f, "smoothstep falloff: not 1 at the inner cone and 0 at the outer");
+}
+
+// pbrt's equal-area square: the round trip, unit directions, and equal areas of the square as equal solid angles
+void testEqualArea()
+{
+	double worst = 0.0;
+	double worstLength = 0.0;
+	for (int i = 0; i < 100000; i++) {
+		const glm::vec2 p(uniform(), uniform());
+		const glm::vec3 d = equalAreaSquareToSphere(p);
+		worstLength = std::max(worstLength, (double)std::abs(glm::length(d) - 1.f));
+		const glm::vec2 back = equalAreaSphereToSquare(d);
+		worst = std::max(worst, (double)glm::length(back - p));
+	}
+	fmt::println("  equal-area square: round trip within {:.2e}, unit within {:.2e}", worst, worstLength);
+	check(worst < 2e-5 && worstLength < 1e-5, "equal-area square: the mapping and its inverse disagree");
+	//a cap about +z of solid angle 2 pi (1 - cos theta) takes that share of 4 pi of the square's points
+	size_t inside = 0;
+	const size_t count = 200000;
+	for (size_t i = 0; i < count; i++) {
+		inside += equalAreaSquareToSphere(glm::vec2(uniform(), uniform())).z > 0.5f ? 1 : 0;
+	}
+	const double share = (double)inside / (double)count;
+	check(std::abs(share - 0.25) < 0.005, fmt::format("equal-area square: the cap above z = 0.5 takes {:.4f} of it, not 0.25", share));
+}
+
+// an isotropic IES file (every candela the same) becomes a flat image of that candela over 683, and a typical one's
+// symmetry expands: the quadrant file reads the same in all four quadrants
+void testIes()
+{
+	const std::string isotropic = "IESNA:LM-63-2002\n[TEST] isotropic\nTILT=NONE\n1 -1 1 5 1 1 2 0 0 0\n1 1 100\n0 45 90 135 180\n0\n500 500 500 500 500\n";
+	IesData ies;
+	std::string error;
+	check(parseIes(isotropic, ies, &error), "IES: the isotropic file does not parse: " + error);
+	const std::vector<float> image = iesEqualAreaImage(ies, 32);
+	float lo = 1e30f;
+	float hi = 0.f;
+	for (const float v : image) {
+		lo = std::min(lo, v);
+		hi = std::max(hi, v);
+	}
+	fmt::println("  IES isotropic: {:.6f} to {:.6f} W/sr (expected {:.6f})", lo, hi, 500.f / 683.f);
+	check(std::abs(lo - 500.f / 683.f) < 1e-5f && std::abs(hi - 500.f / 683.f) < 1e-5f, "IES: an isotropic file's image is not flat at candela / 683");
+	const float power = lightImageSolidAngle(false, 0.f, 32, 32, image.data());
+	check(std::abs(power - 4.f * LIGHT_PI * 500.f / 683.f) < 1e-3f * power, "IES: an isotropic file's power is not 4 pi I");
+
+	const std::string quadrant = "IESNA:LM-63-2002\nTILT=NONE\n1 -1 2 3 3 1 2 0 0 0\n1 1 100\n0 45 90\n0 45 90\n100 80 0\n200 150 0\n300 250 0\n";
+	check(parseIes(quadrant, ies, &error), "IES: the quadrant file does not parse: " + error);
+	bool symmetric = true;
+	for (const float h : { 10.f, 30.f, 80.f }) {
+		const float a = iesCandela(ies, 30.f, h);
+		symmetric &= std::abs(a - iesCandela(ies, 30.f, 180.f - h)) < 1e-4f && std::abs(a - iesCandela(ies, 30.f, 180.f + h)) < 1e-4f && std::abs(a - iesCandela(ies, 30.f, 360.f - h)) < 1e-4f;
+	}
+	check(symmetric, "IES: a quadrant file is not mirrored into the other three");
+	check(std::abs(iesCandela(ies, 0.f, 45.f) - 2.f * 200.f) < 1e-3f, "IES: the candela multiplier is not applied");
+	check(iesCandela(ies, 120.f, 0.f) == 0.f, "IES: a direction past the file's vertical angles is not dark");
+	check(!parseIes("not an ies file", ies, &error), "IES: a file without TILT= parses");
+}
+
+// a white projection image's power is the frustum's solid angle, 4 asin(sin a sin b) for half-angles a and b
+void testProjectionPower()
+{
+	for (const float fov : { 30.f, 90.f, 140.f }) {
+		const uint32_t width = 200;
+		const uint32_t height = 100;
+		const std::vector<float> white((size_t)width * height, 1.f);
+		const float measured = lightImageSolidAngle(true, fov, width, height, white.data());
+		const glm::vec2 extents = projectionExtents(fov, (float)width / (float)height);
+		const double a = std::atan(extents.x);
+		const double b = std::atan(extents.y);
+		const double exact = 4.0 * std::asin(std::sin(a) * std::sin(b));
+		fmt::println("  projection {:.0f} deg: {:.5f} sr measured, {:.5f} sr exact", fov, measured, exact);
+		check(std::abs(measured - exact) < 2e-3 * exact, fmt::format("projection {} deg: a white image's solid angle is not the frustum's", fov));
+	}
+}
+
 int main(int argc, char* argv[])
 {
 	size_t samples = 20000;
@@ -492,6 +587,12 @@ int main(int argc, char* argv[])
 
 	fmt::println("environment map storage:");
 	testEnvironmentStorage();
+
+	fmt::println("light types:");
+	testSpotFalloffs();
+	testEqualArea();
+	testIes();
+	testProjectionPower();
 
 	fmt::println("\n{}", g_failures == 0 ? "PASS" : fmt::format("FAIL ({} problem(s))", g_failures));
 	return g_failures == 0 ? 0 : 2;

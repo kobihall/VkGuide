@@ -108,7 +108,7 @@ The atomics add in no fixed order, so the groups sum to the picture to float rou
 ## Not built
 
 - The spectral band images (`nBuckets` bands over [360, 830] nm, in Fichet et al.'s layout). They need the hero-wavelength representation of [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md), which writes them into `ChannelSums` after the light groups.
-- `dzdx` and `dzdy`. pbrt takes them from ray differentials. The channels are left out of the file until [pbrt-textures.md](../pbrt-textures.md) adds ray-cone footprints, so no channel holds a value nothing computed.
+- `dzdx` and `dzdy`. pbrt takes them from ray differentials. The channels are left out of the file until [pbrt-textures.md](pbrt-textures.md) adds ray-cone footprints, so no channel holds a value nothing computed.
 
 ## Where it departs from the plan and from pbrt
 

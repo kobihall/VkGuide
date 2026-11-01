@@ -13,6 +13,7 @@
 #include <rt_renderer.h>
 #include <rt_scene_editor.h>
 #include <rt_textures.h>
+#include <texture_library.h>
 #include <vk_gizmo.h>
 #include <gpu_selftest.h>
 #include <length_unit.h>
@@ -377,6 +378,8 @@ public:
 	// every model's base-colour textures in one array image, for the path tracer's triangles.
 	// Rebuilt alongside the mesh data, so the layers a triangle's material names always exist
 	RaytraceTextureArray m_raytraceTextures;
+	// every texture binding 27 holds, each at its own size with mips (docs/plans/completed/pbrt-textures.md)
+	TextureLibrary m_textureLibrary;
 	// bumped whenever m_models changes, so anything that derives data from the models (a future
 	// simulation plane's intersections, say) can compare against the revision it last acted on
 	uint64_t m_sceneRevision { 0 };
@@ -514,9 +517,18 @@ public:
 		NewFromTemplate,
 		LoadGlassCatalog,
 		ImportCoatingReflectance,
-		ImportCoatingTransmittance
+		ImportCoatingTransmittance,
+		// any open dialog a panel asked for through requestOpenFile()
+		OpenFileFor
 	};
 	FileAction m_pendingFileAction { FileAction::None };
+	// what FileAction::OpenFileFor shows and who it hands the chosen file to
+	struct FileRequest {
+		std::string title;
+		std::vector<std::string> extensions;
+		std::function<void(const std::filesystem::path&)> chosen;
+	};
+	FileRequest m_pendingFileRequest;
 	// the template FileAction::NewFromTemplate starts from
 	SceneTemplate m_pendingTemplate;
 
@@ -672,6 +684,16 @@ private:
 	// the View menu: the raster preview's render scale, when it pauses, and occlusion culling
 	void drawViewMenu();
 	void runPendingFileAction();
+	// a model's library entry gets its textures from the texture library: a glTF material's four, or the references a
+	// pbrt import made by image index (TextureBinding::importImage), each added to the library
+	void resolveModelTextures(MaterialDef& material, const std::string& key, const LoadedModel& model, uint32_t index);
+	// every projection and goniometric light's image in the texture library (an IES file as its equal-area image)
+	void syncLightImages();
+public:
+	// opens a file dialog once the imgui frame is finished, and calls `chosen` with the file picked (never on a cancel).
+	// For a panel's Load... button, which cannot run a dialog in the middle of a frame
+	void requestOpenFile(std::string title, std::vector<std::string> extensions, std::function<void(const std::filesystem::path&)> chosen);
+private:
 	// the scene in its file's form: what saveScene() and saveTemplate() write
 	SceneDescription describeScene();
 	// File -> New from Template, between frames

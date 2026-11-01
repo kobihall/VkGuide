@@ -27,6 +27,8 @@ endif()
 # shaders/rt/include/crt_light.glsl, built into the app (the environment map's tables, the light
 # list's geometry) and checked on its own by tests/light_test.cpp
 add_library(rt_light STATIC
+    ies_loader.cpp
+    ies_loader.h
     light_sampling.cpp
     light_sampling.h)
 target_include_directories(rt_light PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -270,6 +272,8 @@ add_executable(vulkan_guide
     rt_accel.h
     rt_lights.cpp
     rt_lights.h
+    texture_library.cpp
+    texture_library.h
     rt_kernels.cpp
     rt_kernels.h
     gpu_selftest.cpp

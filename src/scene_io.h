@@ -64,6 +64,8 @@ struct SceneMaterialOverride {
 	int model { 0 };
 	uint32_t modelMaterial { 0 };
 	ParamSet params;
+	// version 25: the textures the user gave its parameters (never the ones its file did)
+	std::map<std::string, TextureBinding, std::less<>> textures;
 	// version 16: the light group (0 to 7) the material's emission is kept in
 	uint32_t lightGroup { 0 };
 };
@@ -111,6 +113,18 @@ struct SceneViewportRecord {
 struct SceneTemplateInfo {
 	std::string name;
 	std::string description;
+};
+
+// version 25: an image file a material's texture reads (docs/plans/completed/pbrt-textures.md), and how: what the texture
+// library's entry for it is made from. A model's own textures are not here; its import finds them again
+struct SceneTextureRecord {
+	// absolute
+	std::filesystem::path path;
+	TextureColorSpace colorSpace { TextureColorSpace::Srgb };
+	TextureSampling sampling;
+	TextureEncoding encoding { TextureEncoding::Srgb };
+	float gamma { 2.2f };
+	bool invert { false };
 };
 
 struct SceneDescription {
@@ -182,6 +196,8 @@ struct SceneDescription {
 	std::optional<SceneViewportRecord> viewport;
 	// version 23: the bench and its breadboard (docs/plans/completed/physoptics-bench-and-mounts.md); a new scene's in an older file
 	BenchSettings bench;
+	// version 25: the image files the materials' textures read, which TextureBinding::fileTexture indexes
+	std::vector<SceneTextureRecord> textures;
 };
 
 IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);

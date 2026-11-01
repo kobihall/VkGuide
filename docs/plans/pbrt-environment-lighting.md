@@ -2,7 +2,7 @@
 
 The environment is an equirectangular Radiance `.hdr` map, fixed in world space, sampled by a piecewise-constant distribution with pbrt's MIS compensation. That covers pbrt-v4's `ImageInfiniteLight` except for its map parameterization. pbrt adds a portal light for interiors lit through a window, and its `imgtool makesky` generates a physically based sky. This plan adds those, map rotation, the equal-area parameterization pbrt uses for every spherical image, and a sun with a finite disk.
 
-*Not implemented. Depends on [pbrt-light-types.md](pbrt-light-types.md) (photometric units for the environment) and, for the sky's spectral form, [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). OpenEXR maps load through [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-light-types.md](completed/pbrt-light-types.md) (photometric units for the environment) and, for the sky's spectral form, [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). OpenEXR maps load through [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -25,7 +25,7 @@ pbrt-v4 stores every spherical image, environment maps included, in Clarberg's e
 - The GPU sampler cannot wrap across the octahedron's folded edges, so equal-area lookups filter by hand: four `texelFetch` calls with pbrt's octahedral wrap (`WrapMode::OctahedralSphere`).
 - **Convert to equal-area** resamples an equirectangular map on load, as `imgtool makeequiarea` does offline.
 
-The goniometric light ([pbrt-light-types.md](pbrt-light-types.md)), the spherical camera's equal-area output ([pbrt-cameras.md](pbrt-cameras.md)) and the sky below use the same mapping, through one `crt_equal_area.glsl` mirrored in `light_sampling.cpp`.
+The goniometric light ([pbrt-light-types.md](completed/pbrt-light-types.md)), the spherical camera's equal-area output ([pbrt-cameras.md](pbrt-cameras.md)) and the sky below use the same mapping, through one `crt_equal_area.glsl` mirrored in `light_sampling.cpp`.
 
 ### Portals
 

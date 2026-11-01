@@ -21,6 +21,8 @@
 struct ComputePass {
 	// VK_NULL_HANDLE when the shader binds nothing (push constants only)
 	VkDescriptorSetLayout setLayout { VK_NULL_HANDLE };
+	// set 1's layout, which another owner keeps (the texture library's), or VK_NULL_HANDLE for a pass with one set
+	VkDescriptorSetLayout secondSetLayout { VK_NULL_HANDLE };
 	VkPipelineLayout pipelineLayout { VK_NULL_HANDLE };
 	VkPipeline pipeline { VK_NULL_HANDLE };
 	// 0 if the shader takes none
@@ -50,6 +52,8 @@ public:
 	// around it - which an ordinary uniform or push constant does not promise (docs/plans/completed/
 	// pbrt-sample-generation.md: a dynamic flag moved a floating-point result by one ulp)
 	ComputePassBuilder& addSpecialization(uint32_t constantId, uint32_t value);
+	// set 1, a layout someone else owns and keeps alive while the pass lives (src/texture_library.h)
+	ComputePassBuilder& setSecondSetLayout(VkDescriptorSetLayout layout);
 
 	// aborts if the shader cannot be loaded or any vulkan object fails to build, matching the
 	// checkVkResult convention: a missing shader is a broken build, not recoverable input
@@ -62,15 +66,17 @@ private:
 	VkExtent3D m_workgroupSize { 16, 16, 1 };
 	std::vector<VkSpecializationMapEntry> m_specializationEntries;
 	std::vector<uint32_t> m_specializationData;
+	VkDescriptorSetLayout m_secondSetLayout { VK_NULL_HANDLE };
 };
 
 // the number of workgroups needed to cover `domain` invocations at `workgroupSize` each
 VkExtent3D computeGroupCount(VkExtent3D domain, VkExtent3D workgroupSize);
 
-// binds the pipeline, binds `set` at index 0 (skipped when the pass has no bindings), pushes
+// binds the pipeline, binds `set` at index 0 (skipped when the pass has no bindings) and `secondSet` at 1 for a pass
+// with a second set layout, pushes
 // pass.pushConstantSize bytes from pushData (skipped when the pass has none - pushData must
 // otherwise be non-null), and dispatches groupCount workgroups
-void dispatchComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkExtent3D groupCount);
+void dispatchComputePass(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkExtent3D groupCount, VkDescriptorSet secondSet = VK_NULL_HANDLE);
 
 // the same, dispatching enough workgroups to cover `domain` invocations - typically an image's
 // extent. The shader still has to bounds-check, since the last workgroup along each axis
@@ -82,4 +88,5 @@ void dispatchComputePassOver(VkCommandBuffer cmd, const ComputePass& pass, VkDes
 // a multiple of 4 and the buffer created with VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT). Whatever
 // wrote the arguments must be made visible to the VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT stage
 // with VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT first - the caller's barrier, as always
-void dispatchComputePassIndirect(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkBuffer argumentBuffer, VkDeviceSize argumentOffset);
+void dispatchComputePassIndirect(VkCommandBuffer cmd, const ComputePass& pass, VkDescriptorSet set, const void* pushData, VkBuffer argumentBuffer, VkDeviceSize argumentOffset,
+	VkDescriptorSet secondSet = VK_NULL_HANDLE);

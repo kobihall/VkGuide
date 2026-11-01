@@ -25,6 +25,7 @@
 
 #include "crt_shape.glsl"
 #include "crt_optic.glsl"
+#include "crt_texture.glsl"
 
 // SurfaceInteraction::opticSurface and opticCoating for none
 #define CRT_NO_OPTIC 0xFFFFFFFFu
@@ -278,4 +279,54 @@ mat3 shadingFrame(SurfaceInteraction si, vec3 normal)
 		bitangent = cross(normal, tangent);
 	}
 	return mat3(tangent, bitangent, normal);
+}
+
+// Where a texture lookup at this hit is (crt_texture.glsl TextureSite): its uvs, its point in the instance's object
+// space (the spherical, cylindrical and planar mappings), its derivatives, and the ray cone's footprint there, as two
+// world-space vectors across the ellipse the cone of width `coneWidth + coneSpread t` cuts from the surface: one along
+// the ray's projection, stretched by 1 / |cos theta|, one across it
+TextureSite surfaceTextureSite(SurfaceInteraction si, HitRecord hit, vec3 rayDirection, float coneWidth, float coneSpread)
+{
+	TextureSite site = textureSiteAt(si.uv);
+	if (!CRT_TEXTURES) {
+		return site;
+	}
+	site.uv1 = triangleUv1(hit, si.uv);
+	site.objectPoint = toObjectPoint(instances[hit.instance], si.p);
+	site.worldPoint = si.p;
+	site.dpdu = si.dpdu;
+	site.dpdv = si.dpdv;
+	if (CRT_RAY_CONES) {
+		const float width = abs(coneWidth + coneSpread * si.t);
+		const vec3 d = normalize(rayDirection);
+		const float cosTheta = max(abs(dot(d, si.n)), 0.05);
+		vec3 along = d - si.n * dot(d, si.n);
+		vec3 across = cross(si.n, d);
+		if (dot(across, across) < 1e-12) {
+			vec3 b;
+			interactionFrame(si.n, along, b);
+			across = b;
+		}
+		site.footprintA = normalize(along) * (width / cosTheta);
+		site.footprintB = normalize(across) * width;
+	}
+	return site;
+}
+
+// The ray cone a continuation from this hit leaves with (Akenine-Moller et al. 2019, 2021): the width the cone has
+// reached, and its spread widened by the surface's curvature, |dn/ds| twice for a mirror's reflected cone, and by a
+// glossy lobe of roughness `alpha` (1 for a diffuse surface, 0 for a delta one), which blurs what the path sees next
+vec2 continuedRayCone(SurfaceInteraction si, float coneWidth, float coneSpread, float alpha)
+{
+	const float width = abs(coneWidth + coneSpread * si.t);
+	float curvature = 0.0;
+	const float du = dot(si.dpdu, si.dpdu);
+	const float dv = dot(si.dpdv, si.dpdv);
+	if (du > 1e-20) {
+		curvature = max(curvature, length(si.dndu) / sqrt(du));
+	}
+	if (dv > 1e-20) {
+		curvature = max(curvature, length(si.dndv) / sqrt(dv));
+	}
+	return vec2(width, coneSpread + 2.0 * curvature * width + clamp(alpha, 0.0, 1.0) * 0.5);
 }

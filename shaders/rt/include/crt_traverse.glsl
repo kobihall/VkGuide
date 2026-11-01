@@ -59,13 +59,33 @@ uint g_primitivesTested;
 // texel - and the flag is set only where the glTF material is alphaMode MASK. The material still
 // decides: an object that overrides its glTF material is not CRT_MATERIAL_FLAG_CUTOUT and is never
 // cut, and a material's parameters are read only when it is
-bool cutAway(uint instanceSlot, uint triangleBits, vec2 bary)
+bool cutAway(uint instanceSlot, uint triangleBits, vec2 bary, vec3 origin, vec3 direction)
 {
 	const GpuInstance instance = instances[instanceSlot];
 	const GpuTriangleAttributes attributes = triangleAttributes[instance.attributeBase + (triangleBits & CRT_TRIANGLE_INDEX_MASK)];
 	const uint materialIndex = instanceMaterials[instance.materialBase + floatBitsToUint(attributes.vAndSurface.w)];
 	if ((materials[materialIndex].flags & CRT_MATERIAL_FLAG_CUTOUT) == 0u) {
 		return false;
+	}
+	// an alpha texture of the library (crt_texture.glsl), always at its finest level so a cut-out does not change with
+	// distance: below the cutoff, or with pbrt's stochastic test kept with probability alpha, by a hash of the ray
+	if (CRT_TEXTURES && (materials[materialIndex].flags & CRT_MATERIAL_FLAG_ALPHA_TEXTURE) != 0u) {
+		bool found;
+		const float alpha = materialTextureScalar(materialIndex, CRT_TEX_TARGET_ALPHA, textureSiteAt(triangleUv(attributes, bary)), found);
+		const float cutoff = materialTextureBase(materialIndex, CRT_TEX_TARGET_ALPHA);
+		if (cutoff >= 0.0) {
+			return alpha < cutoff;
+		}
+		if (alpha >= 1.0) {
+			return false;
+		}
+		const uvec3 o = floatBitsToUint(origin);
+		const uvec3 d = floatBitsToUint(direction);
+		uint h = o.x * 747796405u ^ (o.y * 2891336453u) ^ (o.z * 277803737u) ^ (d.x * 1103515245u) ^ (d.y * 2246822519u) ^ (d.z * 3266489917u);
+		h ^= h >> 16u;
+		h *= 0x7feb352du;
+		h ^= h >> 15u;
+		return float(h >> 8u) * (1.0 / 16777216.0) > alpha;
 	}
 	const ClassicMaterial material = classicMaterial(materialIndex);
 	// textureLod: compute has no derivatives, and the array has no mips
@@ -84,7 +104,7 @@ void testTriangles(uint first, uint count, uint instance, vec3 origin, vec3 dire
 		const BvhTriangle triangle = blasTriangles[i];
 		if (hitTriangle(triangle, origin, direction, tMin, tMax, t, bary)) {
 			const uint bits = floatBitsToUint(triangle.v0.w);
-			if ((bits & CRT_TRIANGLE_CUTOUT) != 0u && cutAway(instance, bits, bary)) {
+			if ((bits & CRT_TRIANGLE_CUTOUT) != 0u && cutAway(instance, bits, bary, origin, direction)) {
 				continue;
 			}
 			tMax = t;

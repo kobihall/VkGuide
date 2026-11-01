@@ -30,6 +30,8 @@
 // triangles are tested with the watertight algorithm, and a box test widens its far distance by
 // CRT_BOX_FAR_SCALE: neither can lose a hit through rounding
 #define CRT_FLAG_WATERTIGHT 32u
+// binding 64 holds the meshes' TEXCOORD_1 uvs (bit 6 is CRT_FLAG_EXACT_COATINGS, 7 and 8 the texture filter)
+#define CRT_FLAG_UV1 512u
 // the value of Params.bounce for the pass of kernel 01 that runs before kernel 00, over the whole
 // pool, and writes the camera's dimensions into the record
 #define CRT_CAMERA_PASS 0xFFFFFFFFu
@@ -52,6 +54,9 @@ layout (constant_id = 5) const bool CRT_SPECTRAL_IMAGES = false;
 // 02 and surfaceInteraction() rebuild their hits, and kernel 06 evaluates the optical interface; a scene without any is
 // built without that code. Every kernel that reads the instances is specialized for it
 layout (constant_id = 6) const bool CRT_OPTICS = false;
+// paths carry ray cones (PathState.coneWidth, coneSpread) for the trilinear and anisotropic texture filters. constant_id 8
+// is CRT_TEXTURES (crt_texture.glsl)
+layout (constant_id = 9) const bool CRT_RAY_CONES = false;
 
 #define CRT_DEBUG_NONE 0u
 #define CRT_DEBUG_PRIMARY_DIRECTION 1u
@@ -135,8 +140,11 @@ struct PathState {
 	// strategy; 03 and 04 only follow the record (pbrt-v4's wavefront keeps r_u and r_l the same way)
 	float misPdf;
 	float misExponent;
-	uint pad0;
-	uint pad1;
+	// THE RAY CONE (docs/plans/completed/pbrt-textures.md; Akenine-Moller et al. 2019, 2021): the footprint's width at `origin` and
+	// the angle it spreads by, which the trilinear and anisotropic texture filters size their lookups from. Kernel 00
+	// sets them, kernel 06 carries them on. Zero, and never read, without CRT_RAY_CONES
+	float coneWidth;
+	float coneSpread;
 };
 #else
 // 64 bytes in every family, the RGB layout's fields at the same offsets: the throughput's twelve bytes hold the one
@@ -155,8 +163,11 @@ struct PathState {
 	uint bounce;
 	float misPdf;
 	float misExponent;
-	uint pad0;
-	uint pad1;
+	// THE RAY CONE (docs/plans/completed/pbrt-textures.md; Akenine-Moller et al. 2019, 2021): the footprint's width at `origin` and
+	// the angle it spreads by, which the trilinear and anisotropic texture filters size their lookups from. Kernel 00
+	// sets them, kernel 06 carries them on. Zero, and never read, without CRT_RAY_CONES
+	float coneWidth;
+	float coneSpread;
 };
 #endif
 
@@ -268,6 +279,14 @@ struct GpuMaterial {
 // the traversal alpha-tests a triangle flagged CRT_TRIANGLE_CUTOUT against it
 #define CRT_MATERIAL_FLAG_CUTOUT 8u
 #define CRT_MATERIAL_FLAG_NORMAL_MAP 16u
+// the record's last vec4 is its extension header: the emission block and the texture table (crt_texture.glsl)
+#define CRT_MATERIAL_FLAG_EXTENDED 32u
+// it emits only on the side its geometric normal faces (pbrt's area lights without "twosided")
+#define CRT_MATERIAL_FLAG_ONE_SIDED 64u
+// and that side is the back: a shape with Reverse orientation (a separate record of the same library entry)
+#define CRT_MATERIAL_FLAG_REVERSED 128u
+// the traversal tests it against an alpha texture of the library (CRT_TEX_TARGET_ALPHA) rather than a texture layer
+#define CRT_MATERIAL_FLAG_ALPHA_TEXTURE 256u
 
 // the kinds of light (GpuLight.kind); src/light_sampling.h AreaLightKind for the first four
 #define CRT_LIGHT_SPHERE 0u
@@ -278,6 +297,21 @@ struct GpuMaterial {
 #define CRT_LIGHT_SPOT 5u
 #define CRT_LIGHT_DIRECTIONAL 6u
 #define CRT_LIGHT_ENVIRONMENT 7u
+// pbrt-v4's projection and goniometric lights (docs/plans/completed/pbrt-light-types.md): delta lights with an image
+#define CRT_LIGHT_PROJECTION 8u
+#define CRT_LIGHT_GONIOMETRIC 9u
+// GpuLight.kind holds the kind in its low 8 bits (lightKindOf()) and these flags above them. src/rt_lights.h GPU_LIGHT_*
+#define CRT_LIGHT_KIND_MASK 0xFFu
+// a spot light falls off as pbrt's smoothstep instead of glTF's squared ramp
+#define CRT_LIGHT_FLAG_SMOOTHSTEP 256u
+// an area light emits only on the side its normal faces (pbrt's area lights without "twosided")
+#define CRT_LIGHT_FLAG_ONE_SIDED 512u
+// and that side is the one away from its normal: a shape with Reverse orientation
+#define CRT_LIGHT_FLAG_REVERSED 1024u
+// its emission reads a library texture (src/rt_lights.h GPU_LIGHT_FLAG_TEXTURED)
+#define CRT_LIGHT_FLAG_TEXTURED 2048u
+// a projection or goniometric light's image frame is left-handed: its z axis is -(b x c)
+#define CRT_LIGHT_FLAG_MIRRORED 4096u
 
 // 96 bytes: one light the next-event estimation of kernel 06 can sample, in world space.
 // src/rt_lights.h GpuLight
@@ -289,6 +323,10 @@ struct GpuMaterial {
 //   point        a = position, range (0: none)
 //   spot         a = position, range; b = the direction it shines, cos(outer cone); c.x = cos(inner)
 //   directional  a.xyz = the direction the light travels
+//   projection   a = position, its image (texture descriptor | 2 x sampler << 20, uint bits; 0 for none); b = its frame's
+//                x axis, the half-width of the frustum at unit distance; c = its y axis, the half-height. It shines down
+//                cross(c, b), the light's -z
+//   goniometric  a = position, its image as a projection's; b.xyz, c.xyz its frame's x and y axes
 //   environment  nothing: the map's tables are environmentSampling
 struct GpuLight {
 	vec4 a;
@@ -577,6 +615,8 @@ layout (std430, set = 0, binding = 55) readonly buffer OpticSurfaceBuffer { vec4
 layout (std430, set = 0, binding = 56) readonly buffer OpticCoatingBuffer { vec4 coatingData[]; };
 
 layout (std430, set = 0, binding = 62) buffer FilmCascadeBuffer { vec4 filmCascade[]; };
+// each mesh triangle's TEXCOORD_1 uvs, six floats by global attribute record, while CRT_FLAG_UV1 says a mesh has them
+layout (std430, set = 0, binding = 64) readonly buffer TriangleUv1Buffer { float triangleUv1s[]; };
 #ifdef CRT_SPECTRAL
 // the throughput of every path of a spectral family, by path index: CRT_LANES floats. The exact RGB build keeps it in
 // PathState.throughput and does not bind it
@@ -645,7 +685,8 @@ layout (push_constant) uniform Params {
 	// the environment map's rotation about +y, as its cosine and sine (environmentRotation())
 	float environmentCos;
 	float environmentSin;
-	uint paramsPad0;
+	// the angle one pixel subtends at the camera: a ray cone's spread at the eye (CRT_RAY_CONES)
+	float pixelSpread;
 } pc;
 
 // the rotation environmentToMap() and environmentFromMap() (equirect.glsl) take
@@ -754,6 +795,20 @@ vec3 safeReciprocal(vec3 d)
 {
 	const vec3 signs = vec3(greaterThanEqual(d, vec3(0.0))) * 2.0 - 1.0;
 	return 1.0 / mix(d, signs * 1e-12, lessThan(abs(d), vec3(1e-12)));
+}
+
+// a hit's TEXCOORD_1 uv: a mesh triangle's second uv set, or the first (`uv`) on a shape or without one
+vec2 triangleUv1(HitRecord hit, vec2 uv)
+{
+	const GpuInstance instance = instances[hit.instance];
+	if ((pc.flags & CRT_FLAG_UV1) == 0u || instance.nodeBase == CRT_INSTANCE_SHAPE) {
+		return uv;
+	}
+	const uint record = instance.attributeBase + (floatBitsToUint(blasTriangles[hit.primitive].v0.w) & CRT_TRIANGLE_INDEX_MASK);
+	const float w = 1.0 - hit.barycentrics.x - hit.barycentrics.y;
+	const uint base = record * 6u;
+	return w * vec2(triangleUv1s[base], triangleUv1s[base + 1u]) + hit.barycentrics.x * vec2(triangleUv1s[base + 2u], triangleUv1s[base + 3u])
+		+ hit.barycentrics.y * vec2(triangleUv1s[base + 4u], triangleUv1s[base + 5u]);
 }
 
 // a point's uv from its triangle's attribute record and barycentrics

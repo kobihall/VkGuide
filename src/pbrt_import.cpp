@@ -82,6 +82,11 @@ struct TexValue {
 	int image { -1 };
 	// pbrt's uv mapping of the image: (su, sv, du, dv)
 	glm::dvec4 mapping { 1.0, 1.0, 0.0, 0.0 };
+	// how the texture library reads it (docs/plans/completed/pbrt-textures.md): pbrt's wrap, and a mapping other than uv as the
+	// renderer's kind and the transform from pbrt's world to the texture's space (planar's own vectors folded in)
+	TextureSampling sampling;
+	TextureMapping mappingKind { TextureMapping::Uv };
+	glm::dmat4 textureFromWorld { 1.0 };
 };
 
 enum class SpectrumUse {
@@ -97,6 +102,8 @@ struct Resolved {
 	glm::dvec4 mapping { 1.0, 1.0, 0.0, 0.0 };
 	// "interface" or none: the shape is only a medium's boundary and is not drawn
 	bool invisible { false };
+	// the textures its parameters read, by parameter name, resolved against `mapping` once the material is mapped
+	std::vector<std::tuple<std::string, TexValue, TextureChannel, bool>> textures;
 	// a material the renderer reflects nothing from would hide that pbrt's emitter also reflects
 	bool reflects { false };
 };
@@ -444,17 +451,40 @@ private:
 			value.factor = glm::dvec3(p.getFloat("scale", 1.0));
 			value.image = imageIndex(path, encoding, gamma, p.getBool("invert", false));
 			value.mapping = { p.getFloat("uscale", 1.0), p.getFloat("vscale", 1.0), p.getFloat("udelta", 0.0), p.getFloat("vdelta", 0.0) };
+			//pbrt's other mappings take the point in the texture's space (where the Texture directive was); planar
+			//projects it onto v1 and v2, and offsets by udelta and vdelta
 			const std::string mapping = p.getString("mapping", "uv");
-			if (mapping != "uv") {
+			const glm::dmat4 textureFromWorld = glm::inverse(t.worldFromTexture);
+			if (mapping == "spherical") {
+				value.mappingKind = TextureMapping::Spherical;
+				value.textureFromWorld = textureFromWorld;
+			} else if (mapping == "cylindrical") {
+				value.mappingKind = TextureMapping::Cylindrical;
+				value.textureFromWorld = textureFromWorld;
+			} else if (mapping == "planar") {
+				value.mappingKind = TextureMapping::Planar;
+				const glm::dvec3 v1 = p.getVector3("v1").value_or(glm::dvec3(1.0, 0.0, 0.0));
+				const glm::dvec3 v2 = p.getVector3("v2").value_or(glm::dvec3(0.0, 1.0, 0.0));
+				glm::dmat4 planar(0.0);
+				for (int c = 0; c < 3; c++) {
+					planar[c][0] = v1[c];
+					planar[c][1] = v2[c];
+				}
+				planar[3][0] = value.mapping.z;
+				planar[3][1] = value.mapping.w;
+				planar[3][3] = 1.0;
+				value.textureFromWorld = planar * textureFromWorld;
+			} else if (mapping != "uv") {
 				report(fmt::format("imagemap mapping \"{}\" is read as \"uv\"", mapping), t.loc, PLAN_TEXTURES);
-				p.find("v1");
-				p.find("v2");
 			}
 			const std::string wrap = p.getString("wrap", "repeat");
-			if (wrap != "repeat") {
-				report(fmt::format("imagemap wrap \"{}\" repeats instead", wrap), t.loc, PLAN_TEXTURES);
+			const TextureWrap mode = wrap == "black" ? TextureWrap::Black : wrap == "clamp" || wrap == "octahedralsphere" ? TextureWrap::Clamp : TextureWrap::Repeat;
+			value.sampling.wrapU = mode;
+			value.sampling.wrapV = mode;
+			if (wrap == "octahedralsphere") {
+				report("imagemap wrap \"octahedralsphere\" clamps", t.loc, PLAN_TEXTURES);
 			}
-			//the renderer filters its own way (the texture array has no mips yet)
+			//the renderer filters its own way (Render Settings > Textures)
 			p.find("filter");
 			p.find("maxanisotropy");
 			return value;
@@ -465,7 +495,8 @@ private:
 		if (t.className == "scale") {
 			const TexValue a = textureOrValue(p, "tex", t.spectrum, glm::dvec3(1.0), t.loc, depth);
 			const TexValue b = textureOrValue(p, "scale", false, glm::dvec3(1.0), t.loc, depth);
-			TexValue value { a.factor * b.factor, a.image >= 0 ? a.image : b.image, a.image >= 0 ? a.mapping : b.mapping };
+			TexValue value = a.image >= 0 ? a : b;
+			value.factor = a.factor * b.factor;
 			if (a.image >= 0 && b.image >= 0) {
 				report("scale texture of two images keeps only the first", t.loc, PLAN_TEXTURES);
 			}
@@ -528,6 +559,56 @@ private:
 		return p->numbers.empty() ? fallback : p->numbers[0];
 	}
 
+	// a float parameter that may be a texture, as its constant and its image (-1 for none)
+	TexValue floatTexture(const PbrtParams& params, std::string_view name, double fallback)
+	{
+		const PbrtParam* p = params.find(name);
+		if (p == nullptr) {
+			return TexValue { glm::dvec3(fallback) };
+		}
+		if (p->type == "texture") {
+			return texture(p->strings.empty() ? std::string() : p->strings[0], false, p->loc);
+		}
+		return TexValue { glm::dvec3(p->numbers.empty() ? fallback : p->numbers[0]) };
+	}
+
+	// A texture as the binding a material's parameter reads it through (docs/plans/completed/pbrt-textures.md). A uv mapping is
+	// given relative to the one the meshes have baked in (`baked`, the material's base color's, which the legacy texture
+	// array reads), so each texture keeps its own; pbrt's t runs up the image and the renderer's v down it. The other
+	// mappings take the world point carried back into pbrt's world, then into the texture's space
+	TextureBinding bindingOf(const TexValue& v, const glm::dvec4& baked, TextureChannel channel, bool color) const
+	{
+		TextureBinding b;
+		b.importImage = v.image;
+		b.importColorSpace = color ? TextureColorSpace::Srgb : TextureColorSpace::Linear;
+		b.importSampling = v.sampling;
+		b.channel = channel;
+		b.mapping = v.mappingKind;
+		if (v.mappingKind == TextureMapping::Uv) {
+			const double ru = v.mapping.x / (baked.x != 0.0 ? baked.x : 1.0);
+			const double rv = v.mapping.y / (baked.y != 0.0 ? baked.y : 1.0);
+			b.scale = glm::vec2((float)ru, (float)rv);
+			b.offset = glm::vec2((float)(v.mapping.z - ru * baked.z), (float)(1.0 - v.mapping.w - rv * (1.0 - baked.w)));
+		} else {
+			//pbrt's cylindrical u starts at -x, the renderer's at +x
+			b.scale = glm::vec2(1.f, -1.f);
+			b.offset = glm::vec2(v.mappingKind == TextureMapping::Cylindrical ? 0.5f : 0.f, 1.f);
+			b.mappingTransform = toMat4(v.textureFromWorld * glm::inverse(W));
+			b.worldSpace = true;
+		}
+		return b;
+	}
+
+	// the references the material collected, as its definition's bindings
+	void resolveTextures(Resolved& r) const
+	{
+		for (const auto& [name, value, channel, color] : r.textures) {
+			if (value.image >= 0) {
+				r.material.definition.textures[name] = bindingOf(value, r.mapping, channel, color);
+			}
+		}
+	}
+
 	//---------------------------------------------------------------- materials
 
 	// pbrt's roughness parameters ("roughness", or "uroughness" and "vroughness") as the `pbr` type's
@@ -575,6 +656,7 @@ private:
 
 	void setPbr(Resolved& r, const TexValue& base, float metallic, float roughness)
 	{
+		r.textures.emplace_back("albedo", base, TextureChannel::Rgb, true);
 		r.material.definition.type = MaterialType::Pbr;
 		r.material.definition.params["albedo"] = rgbSpectrum(toVec3(base.factor));
 		r.material.definition.params["metallic"] = metallic;
@@ -589,6 +671,7 @@ private:
 
 	void setLambertian(Resolved& r, const TexValue& base)
 	{
+		r.textures.emplace_back("albedo", base, TextureChannel::Rgb, true);
 		r.material.definition.type = MaterialType::Lambertian;
 		r.material.definition.params["albedo"] = rgbSpectrum(toVec3(base.factor));
 		r.material.baseColorImage = base.image;
@@ -598,17 +681,19 @@ private:
 	}
 
 	// pbrt's roughness parameters as the glass and conductor types take them: u and v, and whether to remap them
-	void setRoughness(Resolved& r, const PbrtParams& params, const std::string& prefix, const PbrtLoc& loc)
+	void setRoughness(Resolved& r, const PbrtParams& params, const std::string& prefix, const PbrtLoc&)
 	{
-		double u = floatParam(params, prefix + "roughness", 0.0, loc, PLAN_TEXTURES);
-		double v = u;
+		TexValue u = floatTexture(params, prefix + "roughness", 0.0);
+		TexValue v = u;
 		if (params.find(prefix + "uroughness") != nullptr || params.find(prefix + "vroughness") != nullptr) {
-			u = floatParam(params, prefix + "uroughness", u, loc, PLAN_TEXTURES);
-			v = floatParam(params, prefix + "vroughness", v, loc, PLAN_TEXTURES);
+			u = floatTexture(params, prefix + "uroughness", u.factor.x);
+			v = floatTexture(params, prefix + "vroughness", v.factor.x);
 		}
-		r.material.definition.params["uRoughness"] = (float)u;
-		r.material.definition.params["vRoughness"] = (float)v;
+		r.material.definition.params["uRoughness"] = (float)u.factor.x;
+		r.material.definition.params["vRoughness"] = (float)v.factor.x;
 		r.material.definition.params["remapRoughness"] = params.getBool("remaproughness", true);
+		r.textures.emplace_back("uRoughness", u, TextureChannel::Average, false);
+		r.textures.emplace_back("vRoughness", v, TextureChannel::Average, false);
 	}
 
 	// a dielectric's eta as the spectrum it is, which the spectral modes disperse and exact RGB reads at the design
@@ -650,9 +735,21 @@ private:
 	{
 		r.material.definition.type = MaterialType::Conductor;
 		if (const PbrtParam* reflectance = params.find("reflectance")) {
+			if (reflectance->type == "texture") {
+				//its constant times its image, which the reflectance's texture reference reads
+				const TexValue value = textureOrValue(params, "reflectance", true, glm::dvec3(1.0), loc, 0);
+				r.material.definition.params["useReflectance"] = true;
+				r.material.definition.params["albedo"] = rgbSpectrum(toVec3(value.factor));
+				r.textures.emplace_back("albedo", value, TextureChannel::Rgb, true);
+				r.mapping = value.mapping;
+				setRoughness(r, params, "", loc);
+				r.material.previewColor = glm::vec4(toVec3(value.factor), 1.f);
+				r.material.previewMetallic = 1.f;
+				r.reflects = true;
+				return true;
+			}
 			const std::optional<glm::dvec3> rgb = spectrumRgb(reflectance, SpectrumUse::Albedo);
 			if (!rgb.has_value()) {
-				//a textured reflectance needs pbrt-textures.md on this type: the caller keeps pbr
 				return false;
 			}
 			r.material.definition.params["useReflectance"] = true;
@@ -723,12 +820,7 @@ private:
 			TexValue reflectance = textureOrValue(params, "reflectance", true, glm::dvec3(0.25), loc, 0);
 			const TexValue transmittance = textureOrValue(params, "transmittance", true, glm::dvec3(0.25), loc, 0);
 			const double scale = params.getFloat("scale", 1.0);
-			if (reflectance.image >= 0 || transmittance.image >= 0) {
-				//the diffuse_transmission type takes no textures until pbrt-textures.md: the texture is worth more than the transmission
-				reflectance.factor *= scale;
-				setLambertian(r, reflectance);
-				report("a diffusetransmission with a textured reflectance or transmittance is Lambertian with its texture; its transmission is dropped", loc, PLAN_TEXTURES);
-			} else {
+			{
 				r.material.definition.type = MaterialType::DiffuseTransmission;
 				r.material.definition.params["albedo"] = rgbSpectrum(toVec3(reflectance.factor));
 				r.material.definition.params["transmittance"] = rgbSpectrum(toVec3(transmittance.factor));
@@ -743,10 +835,17 @@ private:
 				}
 				r.material.previewColor = glm::vec4(toVec3(reflectance.factor * scale), 1.f);
 				r.reflects = maxComponent(reflectance.factor) > 0.0;
+				//either may be an image, which its texture reference reads; the meshes take the reflectance's mapping
+				r.textures.emplace_back("albedo", reflectance, TextureChannel::Rgb, true);
+				r.textures.emplace_back("transmittance", transmittance, TextureChannel::Rgb, true);
+				r.mapping = reflectance.image >= 0 ? reflectance.mapping : transmittance.mapping;
+				r.material.baseColorImage = reflectance.image >= 0 ? reflectance.image : transmittance.image;
 			}
 		} else if (type == "mix") {
 			const PbrtParam* names = params.find("materials");
-			const double amount = floatParam(params, "amount", 0.5, loc, PLAN_TEXTURES);
+			const TexValue amountValue = floatTexture(params, "amount", 0.5);
+			const double amount = amountValue.factor.x;
+			r.textures.emplace_back("amount", amountValue, TextureChannel::Average, false);
 			if (names == nullptr || names->strings.size() != 2) {
 				report("mix material without two \"materials\"; gray Lambertian is used", loc);
 				setLambertian(r, TexValue { glm::dvec3(0.5) });
@@ -810,12 +909,14 @@ private:
 			if (path.is_relative()) {
 				path = s.directory / path;
 			}
-			if (r.material.definition.type == MaterialType::Pbr || r.material.definition.type == MaterialType::Lambertian) {
-				r.material.normalImage = imageIndex(path, ImageEncoding::Linear, 1.f, false, true);
-			} else {
-				report(fmt::format("normal map on a {} material is ignored", materialTypeName(r.material.definition.type)), loc, PLAN_BUMP);
-			}
+			//on any type: the legacy texture array reads it only on lambertian and pbr, the texture library on every type.
+			//pbrt reads a normal map at the mesh's own uvs, without any texture's mapping
+			r.material.normalImage = imageIndex(path, ImageEncoding::Linear, 1.f, false, true);
+			TexValue normal;
+			normal.image = r.material.normalImage;
+			r.textures.emplace_back("normal", normal, TextureChannel::Rgb, false);
 		}
+		resolveTextures(r);
 		reportUnused(params, where);
 		return r;
 	}
@@ -861,14 +962,15 @@ private:
 	}
 
 	// an area light's emission (its spectrum and its linear RGB at pbrt's normalization) and its "scale" (and "power",
-	// given the area): the radiance is the emission times the returned scale
-	double areaLightRadiance(const PbrtEntity& light, double area, Emission& emission)
+	// given the area): the radiance is the emission times the returned scale. Whether it emits from both sides, and its
+	// image (-1 for none), which pbrt's emission is the texel of, times the scale
+	double areaLightRadiance(const PbrtEntity& light, double area, Emission& emission, bool& twoSided, int& image)
 	{
 		const PbrtParams& p = light.params;
 		emission = emissionOf(p.find("L"));
 		const glm::dvec3 L = emission.rgb;
 		double scale = p.getFloat("scale", 1.0);
-		const bool twoSided = p.getBool("twosided", false);
+		twoSided = p.getBool("twosided", false);
 		const double power = p.getFloat("power", -1.0);
 		if (power > 0.0 && area > 0.0) {
 			//k_e: the luminance times the emitting area and pi; the RGB is already at luminance 1 for a spectrum
@@ -876,23 +978,50 @@ private:
 			const double k = (twoSided ? 2.0 : 1.0) * area * PI * std::max(luminance, 1e-12);
 			scale *= power / k;
 		}
-		if (!p.getString("filename", "").empty()) {
-			report("area light image is ignored; its L is used", light.loc, PLAN_LIGHTS);
-		}
-		if (!twoSided) {
-			report("one-sided area light emits from both sides", light.loc, PLAN_LIGHTS);
+		image = -1;
+		std::filesystem::path path = p.getString("filename", "");
+		if (!path.empty()) {
+			if (path.is_relative()) {
+				path = s.directory / path;
+			}
+			image = imageIndex(path, ImageEncoding::Srgb, 1.f, false);
+			emission = Emission {};
+			if (power > 0.0) {
+				report("an area light image's power is its scale: the image's mean is not counted", light.loc, PLAN_LIGHTS);
+			}
 		}
 		reportUnused(p, fmt::format("AreaLightSource \"{}\"", light.type));
 		return scale;
 	}
 
-	// the library material a shape is shaded with, as an index into m.materials; nullopt for an invisible shape
+	// the library material a shape is shaded with, as an index into m.materials; nullopt for an invisible shape. An area
+	// light keeps the shape's own material and adds its emission, as pbrt's does; a shape with an alpha texture gets a
+	// copy of its material that cuts it away there
 	std::optional<uint32_t> shapeMaterial(const PbrtShape& shape, double area)
 	{
 		std::string key;
-		const Resolved base = resolveMaterial(shape.material, shape.loc, key);
+		Resolved base = resolveMaterial(shape.material, shape.loc, key);
 		if (base.invisible) {
 			return std::nullopt;
+		}
+		//pbrt's alpha: 0 hides the shape; a texture cuts it where it is low, stochastically
+		if (const PbrtParam* alpha = shape.params.find("alpha")) {
+			if (alpha->type == "texture" && !alpha->strings.empty()) {
+				const TexValue value = texture(alpha->strings[0], false, alpha->loc);
+				if (value.image >= 0) {
+					TextureBinding binding = bindingOf(value, base.mapping, TextureChannel::Average, false);
+					binding.alphaMode = AlphaMode::Stochastic;
+					base.material.definition.textures["alpha"] = binding;
+					base.material.alphaTextured = true;
+					key += "|alpha " + alpha->strings[0];
+				} else if (value.factor.x <= 0.0) {
+					return std::nullopt;
+				}
+			} else if (!alpha->numbers.empty() && alpha->numbers[0] <= 0.0) {
+				return std::nullopt;
+			} else if (!alpha->numbers.empty() && alpha->numbers[0] < 1.0) {
+				report(fmt::format("a constant alpha of {} is opaque", alpha->numbers[0]), alpha->loc, PLAN_TEXTURES);
+			}
 		}
 		if (shape.areaLight < 0) {
 			return materialIndex(key, base.material);
@@ -903,24 +1032,39 @@ private:
 			return materialIndex(key, base.material);
 		}
 		Emission emission;
-		const double scale = areaLightRadiance(light, area, emission);
-		const glm::dvec3 radiance = emission.rgb * scale;
-		if (base.reflects) {
-			report("an emitter's own reflectance is dropped: emissive surfaces absorb", light.loc, PLAN_LIGHTS);
-		}
-		ImportedMaterial emitter;
-		emitter.definition.type = MaterialType::Emissive;
+		bool twoSided = false;
+		int image = -1;
+		const double scale = areaLightRadiance(light, area, emission, twoSided, image);
+		const glm::dvec3 radiance = image >= 0 ? glm::dvec3(scale) : emission.rgb * scale;
 		const double peak = std::max(maxComponent(radiance), 1e-30);
-		if (emission.color.kind == SpectrumKind::Rgb) {
-			emitter.definition.params["albedo"] = rgbSpectrum(toVec3(radiance / peak));
+		//a surface that reflects keeps its material and emits through its emission parameters; one that reflects nothing
+		//is the emissive type, which ends the path there and costs nothing more
+		ImportedMaterial emitter = base.material;
+		const bool keep = base.reflects;
+		if (!keep) {
+			emitter = ImportedMaterial {};
+			emitter.definition.type = MaterialType::Emissive;
+			emitter.definition.name = base.material.definition.name;
+		}
+		const char* color = keep ? "emission" : "albedo";
+		if (emission.color.kind == SpectrumKind::Rgb || image >= 0) {
+			emitter.definition.params[color] = rgbSpectrum(toVec3(radiance / peak));
 			emitter.definition.params["strength"] = (float)peak;
 		} else {
 			//the spectrum, normalized to luminance 1 by its role, times the scale
-			emitter.definition.params["albedo"] = emission.color;
+			emitter.definition.params[color] = emission.color;
 			emitter.definition.params["strength"] = (float)scale;
 		}
-		emitter.previewColor = glm::vec4(toVec3(radiance / peak), 1.f);
-		const std::string emitterKey = fmt::format("{}|L {:.9g} {:.9g} {:.9g} {}", key, radiance.x, radiance.y, radiance.z, spectrumKindName(emission.color.kind));
+		emitter.definition.params["twoSided"] = twoSided;
+		if (image >= 0) {
+			TexValue value;
+			value.image = image;
+			emitter.definition.textures[color] = bindingOf(value, base.mapping, TextureChannel::Rgb, true);
+		}
+		if (!keep) {
+			emitter.previewColor = glm::vec4(toVec3(radiance / peak), 1.f);
+		}
+		const std::string emitterKey = fmt::format("{}|L {:.9g} {:.9g} {:.9g} {} {} {}", key, radiance.x, radiance.y, radiance.z, spectrumKindName(emission.color.kind), twoSided, image);
 		if (const auto found = m_materialIndex.find(emitterKey); found != m_materialIndex.end()) {
 			return found->second;
 		}
@@ -1166,6 +1310,22 @@ private:
 				return std::nullopt;
 			}
 		}
+		//pbrt gives every triangle of a mesh without uvs the corners (0, 0), (1, 0), (1, 1): a textured material reads
+		//them, so its triangles stop sharing vertices
+		if (data.uv.empty() && !m.materials[material].definition.textures.empty()) {
+			MeshData expanded;
+			for (size_t i = 0; i < data.indices.size(); i++) {
+				const int vertex = data.indices[i];
+				expanded.p.push_back(data.p[(size_t)vertex]);
+				if (!data.n.empty()) {
+					expanded.n.push_back(data.n[(size_t)vertex]);
+				}
+				const size_t corner = i % 3;
+				expanded.uv.push_back(corner == 0 ? glm::dvec2(0.0, 0.0) : corner == 1 ? glm::dvec2(1.0, 0.0) : glm::dvec2(1.0, 1.0));
+				expanded.indices.push_back((int)i);
+			}
+			data = std::move(expanded);
+		}
 		ImportedMesh mesh;
 		mesh.name = fmt::format("{} {}", shape.type, m.meshes.size());
 		mesh.positions.reserve(data.p.size());
@@ -1283,9 +1443,6 @@ private:
 		if (shape.animated) {
 			report("a shape's transform is animated; the shutter-open pose is used", shape.loc, PLAN_MOTION);
 		}
-		if (const PbrtParam* alpha = shape.params.find("alpha")) {
-			report(fmt::format("shape alpha ({}) is ignored", alpha->type), alpha->loc, PLAN_TEXTURES);
-		}
 		if (!shape.insideMedium.empty() || !shape.outsideMedium.empty()) {
 			report("a shape's media are ignored", shape.loc, PLAN_MEDIA);
 		}
@@ -1325,6 +1482,8 @@ private:
 			imported.shape.name = name;
 			imported.shape.position = toVec3(glm::dvec3(world[3]));
 			imported.shape.size = toVec3(radius * scale);
+			//pbrt's ReverseOrientation: a one-sided area light on the sphere emits inward
+			imported.shape.reverseOrientation = shape.reverseOrientation;
 			imported.material = *material;
 			m.shapes.push_back(imported);
 			return;
@@ -1476,8 +1635,8 @@ private:
 				out.orientation = rotationTo(worldVector(light.worldFromLight, to - from));
 				out.outerConeDegrees = (float)cone;
 				out.innerConeDegrees = (float)std::max(cone - delta, 0.0);
+				out.falloff = SpotFalloff::Smoothstep;
 				addLight(out, I, scale);
-				report("spot light falls off as the square of a linear ramp, pbrt's as a smoothstep", light.loc, PLAN_LIGHTS);
 			} else if (light.type == "distant") {
 				double scale = 1.0;
 				const glm::dvec3 L = lightRgb(light, "L", scale);
@@ -1503,16 +1662,45 @@ private:
 				}
 				haveEnvironment = environment(light);
 			} else if (light.type == "goniometric" || light.type == "projection") {
+				//pbrt-v4's projection light has no "I": its image is its color, times its scale. The goniometric light's "I"
+				//multiplies its image
+				const bool projection = light.type == "projection";
 				double scale = 1.0;
-				const glm::dvec3 I = lightRgb(light, "I", scale);
+				const glm::dvec3 I = projection ? glm::dvec3(1.0) : lightRgb(light, "I", scale);
+				scale = p.getFloat("scale", 1.0);
 				SceneLight out;
-				out.kind = LightKind::Point;
+				out.kind = projection ? LightKind::Projection : LightKind::Goniometric;
 				out.position = toVec3(worldPoint(light.worldFromLight, glm::dvec3(0.0)));
+				//the light's frame in the renderer's world. A projection looks down pbrt's +z, the renderer's lights down -z,
+				//with the image's top towards +y in both: the frame (x, y), whose z must be pbrt's -z, which a right-handed
+				//pbrt frame makes mirrored. A goniometric light swaps y and z before its equal-area lookup: the frame (x, z),
+				//whose z must be pbrt's y. A frame whose cross product points the other way is mirrored, which no rotation
+				//can hold (compared against pbrt with tools/verify/pbrt_light_scenes.py)
+				const glm::dvec3 x = glm::normalize(worldVector(light.worldFromLight, glm::dvec3(1.0, 0.0, 0.0)));
+				const glm::dvec3 y = glm::normalize(worldVector(light.worldFromLight, glm::dvec3(0.0, 1.0, 0.0)));
+				const glm::dvec3 z = glm::normalize(worldVector(light.worldFromLight, glm::dvec3(0.0, 0.0, 1.0)));
+				const glm::dvec3 xAxis = x;
+				glm::dvec3 yAxis = projection ? y : z;
+				const glm::dvec3 zWanted = projection ? -z : y;
+				yAxis = glm::normalize(yAxis - xAxis * glm::dot(xAxis, yAxis));
+				const glm::dvec3 zAxis = glm::cross(xAxis, yAxis);
+				out.mirrored = glm::dot(zAxis, zWanted) < 0.0;
+				out.orientation = glm::normalize(glm::quat_cast(glm::mat3(toVec3(xAxis), toVec3(yAxis), toVec3(zAxis))));
+				std::filesystem::path path = p.getString("filename", "");
+				if (!path.empty() && path.is_relative()) {
+					path = s.directory / path;
+				}
+				out.image = path.string();
+				if (path.empty()) {
+					report(fmt::format("{} light without an image is a point light", light.type), light.loc);
+				}
+				if (projection) {
+					out.fovDegrees = (float)p.getFloat("fov", 90.0);
+				}
+				if (p.getFloat("power", -1.0) > 0.0) {
+					report(fmt::format("{} light's power is ignored: its image's integral is not read at import; its scale is used", light.type), light.loc, PLAN_LIGHTS);
+				}
 				addLight(out, I, scale);
-				p.find("filename");
-				p.find("fov");
-				p.find("power");
-				report(fmt::format("{} light is a point light without its image", light.type), light.loc, PLAN_LIGHTS);
 			} else {
 				report(fmt::format("LightSource \"{}\" is not supported; skipped", light.type), light.loc, PLAN_LIGHTS);
 				continue;
@@ -1885,56 +2073,6 @@ void ImportReport::add(const std::string& text, const std::string& where, const 
 		}
 	}
 	messages.push_back({ text, where, 1, plan });
-}
-
-glm::vec3 equalAreaSquareToSphere(glm::vec2 p)
-{
-	const float u = 2.f * p.x - 1.f;
-	const float v = 2.f * p.y - 1.f;
-	const float up = std::abs(u);
-	const float vp = std::abs(v);
-	const float signedDistance = 1.f - (up + vp);
-	const float d = std::abs(signedDistance);
-	const float r = 1.f - d;
-	const float phi = (r == 0.f ? 1.f : (vp - up) / r + 1.f) * (float)PI / 4.f;
-	const float z = std::copysign(1.f - r * r, signedDistance);
-	const float cosPhi = std::copysign(std::cos(phi), u);
-	const float sinPhi = std::copysign(std::sin(phi), v);
-	const float s = r * std::sqrt(std::max(2.f - r * r, 0.f));
-	return glm::vec3(cosPhi * s, sinPhi * s, z);
-}
-
-glm::vec2 equalAreaSphereToSquare(glm::vec3 d)
-{
-	const float x = std::abs(d.x);
-	const float y = std::abs(d.y);
-	const float z = std::abs(d.z);
-	const float r = std::sqrt(std::max(1.f - z, 0.f));
-	const float a = std::max(x, y);
-	float b = std::min(x, y);
-	b = a == 0.f ? 0.f : b / a;
-	//pbrt's minimax polynomial for atan(b) * 2 / pi on [0, 1]
-	const float t1 = 0.406758566246788489601959989e-5f;
-	const float t2 = 0.636226545274016134946890922156f;
-	const float t3 = 0.61572017898280213493197203466e-2f;
-	const float t4 = -0.247333733281268944196501420480f;
-	const float t5 = 0.881770664775316294736387951347e-1f;
-	const float t6 = 0.419038818029165735901852432784e-1f;
-	const float t7 = -0.251390972343483509333252996350e-1f;
-	float phi = t1 + b * (t2 + b * (t3 + b * (t4 + b * (t5 + b * (t6 + b * t7)))));
-	if (x < y) {
-		phi = 1.f - phi;
-	}
-	float v = phi * r;
-	float u = r - v;
-	if (d.z < 0.f) {
-		std::swap(u, v);
-		u = 1.f - u;
-		v = 1.f - v;
-	}
-	u = std::copysign(u, d.x);
-	v = std::copysign(v, d.y);
-	return glm::vec2(0.5f * (u + 1.f), 0.5f * (v + 1.f));
 }
 
 void importPbrtScene(const PbrtScene& scene, ImportedModel& model)

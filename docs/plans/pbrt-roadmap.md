@@ -66,7 +66,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 | [pbrt-layered-materials.md](pbrt-layered-materials.md) | Coated diffuse and coated conductor (stochastic layered BSDF), Fresnel blend |
 | [pbrt-measured-bsdfs.md](pbrt-measured-bsdfs.md) | RGL measured BRDFs, with the 3rd edition's Fourier BSDF as an option |
 | [pbrt-appearance-extras.md](pbrt-appearance-extras.md) | Microfacet energy compensation, sheen, thin-film iridescence, glints (research) |
-| [pbrt-textures.md](pbrt-textures.md) | Native-size mipmapped textures, ray-cone footprints, texture references, uv mappings, textures on shapes |
+| [pbrt-textures.md](completed/pbrt-textures.md) | Native-size mipmapped textures, ray-cone footprints, texture references, uv mappings, textures on shapes |
 | [pbrt-procedural-textures.md](pbrt-procedural-textures.md) | Checker, noise, fBm, marble and the rest. Incomplete: representation undecided |
 | [pbrt-bump-mapping.md](pbrt-bump-mapping.md) | Displacement-texture bump mapping, normal maps in the material kernel, shadow-terminator fixes |
 | [pbrt-cameras.md](pbrt-cameras.md) | Orthographic, spherical, realistic lens systems, aperture shapes, tilt-shift, click-to-focus |
@@ -77,7 +77,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 
 | Plan | What it adds |
 |---|---|
-| [pbrt-light-types.md](pbrt-light-types.md) | Projection and goniometric (IES) lights, textured and one-sided area lights, photometric units, emitted-ray sampling |
+| [pbrt-light-types.md](completed/pbrt-light-types.md) | Projection and goniometric (IES) lights, textured and one-sided area lights, photometric units, emitted-ray sampling |
 | [pbrt-environment-lighting.md](pbrt-environment-lighting.md) | Portal environment lights, procedural sky and sun, equal-area maps, map rotation |
 | [pbrt-light-shape-sampling.md](pbrt-light-shape-sampling.md) | Cosine-warped triangle and rectangle sampling, projected-solid-angle spheres, better disk and cylinder sampling |
 | [pbrt-bvh-light-sampler.md](pbrt-bvh-light-sampler.md) | Light selection setting: uniform, power, exhaustive and BVH (Conty and Kulla) |
@@ -191,7 +191,7 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 24 | `SpectralData` | spectral-rendering (implemented) |
 | 25 | `SpectralUplift` | spectral-rendering (implemented) |
 | 26 | `MaterialParams` | material-system |
-| 27 | `Textures` (descriptor array) | textures |
+| 27 | `Textures` (descriptor array) | textures (implemented): binding 27 of descriptor set 1, the texture library's own set, beside its samplers at binding 0 of that set |
 | 28 | `LightBvh` | bvh-light-sampler |
 | 29 | `PixelState` | aovs-and-image-output (implemented): 72 bytes a pool slot while an output is on. A sample's filter weight rides in its radiance slot's `w` ([completed/pbrt-film-and-reconstruction.md](completed/pbrt-film-and-reconstruction.md)) |
 | 30 | `FilterTable` | film-and-reconstruction (implemented) |
@@ -220,7 +220,7 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 53 | `BdptVertices` | bidirectional-path-tracing |
 | 54 | `VisiblePoints` | photon-mapping |
 
-Bindings 55 to 61 are reserved by the [laser optics plan](physoptics-laser-optics.md): 55 `OpticSurfaces`, 56 `OpticCoatings`, 57 `OpticPathState`, 58 `BeamGraph`, 59 `Detectors`, 60 `DetectorFilm`, 61 `RayRecords`. Binding 62, `FilmCascade`, is the outlier-reweighted film's cascade of buffers by brightness, which the film plan added. Binding 63, `PathSpectra`, is a spectral build's path throughputs, which spectral rendering added.
+Bindings 55 to 61 are reserved by the [laser optics plan](physoptics-laser-optics.md): 55 `OpticSurfaces`, 56 `OpticCoatings`, 57 `OpticPathState`, 58 `BeamGraph`, 59 `Detectors`, 60 `DetectorFilm`, 61 `RayRecords`. Binding 62, `FilmCascade`, is the outlier-reweighted film's cascade of buffers by brightness, which the film plan added. Binding 63, `PathSpectra`, is a spectral build's path throughputs, which spectral rendering added. Binding 64, `TriangleUv1`, is the meshes' second uv sets, which textures added.
 
 The Radeon Pro 560X allows 31 storage buffers per stage (`maxPerStageDescriptorStorageBuffers`). No kernel may declare more; the per-variant subsets keep every kernel well under it today (kernel 02 declares 14).
 
@@ -247,13 +247,13 @@ The queue set (`crt_common.glsl`) grows by appending. Each queue costs `poolSize
 | `origin`, `radianceSlot`, `direction`, `rngState`, `bounce`, `misPdf`, `misExponent` | existing | |
 | `prevNormal` | `uint`: the octahedral-encoded shading normal kernel 06 sampled lights with | light-shape-sampling |
 | `throughput` | `vec3` in the exact RGB build; a spectral build keeps it in `PathSpectra` (binding 63) | spectral-rendering (implemented) |
-| `medium` | `uint`, reuses `pad0` | participating-media |
-| `flags` | `uint`, reuses `pad1`: specular bounce, any non-specular bounce, inside-dielectric | path-regularization, russian-roulette |
+| `medium` | `uint`, once `pad0`: the ray cone took both pads, so it grows `PathState` | participating-media |
+| `flags` | `uint`, once `pad1`, which the ray cone took: specular bounce, any non-specular bounce, inside-dielectric | path-regularization, russian-roulette |
 | `etaScale` | `float` | russian-roulette |
 | `lambdaU` | `float`, in the spectral builds only: the one sample hero wavelengths are derived from | spectral-rendering (implemented) |
 | `laneMask` | `uint`, in the spectral builds only: which lanes are still alive after dispersion | spectral-rendering (implemented) |
 | `time` | `float` | motion-blur |
-| `coneWidth`, `coneSpread` | `float` × 2 | textures |
+| `coneWidth`, `coneSpread` | `float` × 2, the former `pad0` and `pad1` | textures (implemented) |
 
 `PathState` is 64 bytes in every build: a spectral build puts `lambdaU` and `laneMask` where the exact RGB build keeps its throughput, and the throughput in `PathSpectra`, 4 bytes a lane per path. The fields the other plans add grow it from there. Fields in `PixelState`: the first-hit position, normals, depth, uv, albedo and ids (aovs-and-image-output). The film plan did not allocate it: a sample's filter weight (+1 or -1) is the `w` of its radiance slot, and the camera's ray weight can start as the path's throughput, since pbrt multiplies it into the radiance and not into the film weight. Light groups need no path state: each contribution is added to its group's sums as it happens.
 

@@ -37,8 +37,9 @@
 layout (local_size_x = CRT_WORKGROUP) in;
 
 // what the surface emits towards the ray: an emissive material's colour times its strength, a pbr
-// material's emission times its sRGB emissive texel
-vec3 emittedRadiance(ClassicMaterial light, SurfaceInteraction si)
+// material's emission times its sRGB emissive texel, any other type's emission block (an area light on a material that
+// scatters, docs/plans/completed/pbrt-light-types.md), and the texture library's emission textures over all three
+vec3 emittedRadiance(ClassicMaterial light, uint materialIndex, SurfaceInteraction si, TextureSite site)
 {
 	vec3 emitted = light.albedo * light.param;
 	if (light.type == CRT_MATERIAL_PBR) {
@@ -46,23 +47,42 @@ vec3 emittedRadiance(ClassicMaterial light, SurfaceInteraction si)
 		if (light.emissiveLayer >= 0) {
 			emitted *= srgbToLinear(textureLod(materialTextures, vec3(si.uv, float(light.emissiveLayer)), 0.0).rgb);
 		}
+	} else if (light.type != CRT_MATERIAL_EMISSIVE) {
+		emitted = materialEmissionBlock(materialIndex).xyz;
+	}
+	if (CRT_TEXTURES) {
+		emitted *= materialEmissionTexture(materialIndex, site);
 	}
 	return emitted;
 }
 
 // the same as the path's spectrum: the material's emission reference (slot 1 of its spectral record, the emissive
 // color or the pbr emission, in the Illuminant role) times the strength, with the emissive texel as a tint
-Spectrum emittedSpectrum(ClassicMaterial light, uint materialIndex, SurfaceInteraction si)
+Spectrum emittedSpectrum(ClassicMaterial light, uint materialIndex, SurfaceInteraction si, TextureSite site)
 {
 #ifndef CRT_SPECTRAL
-	return emittedRadiance(light, si);
+	return emittedRadiance(light, materialIndex, si, site);
 #else
 	vec3 tint = vec3(1.0);
 	if (light.type == CRT_MATERIAL_PBR && light.emissiveLayer >= 0) {
 		tint = srgbToWorking(srgbToLinear(textureLod(materialTextures, vec3(si.uv, float(light.emissiveLayer)), 0.0).rgb));
 	}
+	if (CRT_TEXTURES) {
+		tint *= srgbToWorking(materialEmissionTexture(materialIndex, site));
+	}
 	return spectrumScale(spectrumFromRef(materialSpectrumRef(materialIndex, CRT_SLOT_EMISSION), tint), materialEmissionScale(materialIndex));
 #endif
+}
+
+// a one-sided emitter (CRT_MATERIAL_FLAG_ONE_SIDED) is seen only from the side it emits on: the front, or with
+// Reverse orientation the back
+bool emitsTowardsRay(uint materialIndex, SurfaceInteraction si)
+{
+	const uint flags = materials[materialIndex].flags;
+	if ((flags & CRT_MATERIAL_FLAG_ONE_SIDED) == 0u) {
+		return true;
+	}
+	return si.frontFace != ((flags & CRT_MATERIAL_FLAG_REVERSED) != 0u);
 }
 
 float luminanceOf(vec3 c)
@@ -91,6 +111,8 @@ void main()
 #endif
 	const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
 	const ClassicMaterial light = classicMaterial(si.material);
+	const TextureSite site = surfaceTextureSite(si, hit, inDir, path.coneWidth, path.coneSpread);
+	const bool emits = emitsTowardsRay(si.material, si);
 
 	// the MIS weight of a light found by the BSDF sample, against light sampling from the vertex the
 	// ray left (the path's origin, which 06 has not yet moved on)
@@ -107,9 +129,9 @@ void main()
 	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS) {
 		if (path.bounce == 1u) {
 #ifndef CRT_SPECTRAL
-			radiance[path.radianceSlot].rgb += vec3(luminanceOf(path.throughput * emittedRadiance(light, si) * weight), 0.0, 0.0);
+			radiance[path.radianceSlot].rgb += vec3(emits ? luminanceOf(path.throughput * emittedRadiance(light, si.material, si, site) * weight) : 0.0, 0.0, 0.0);
 #else
-			radiance[path.radianceSlot].rgb += vec3(luminanceOf(spectrumToFilm(spectrumScale(spectrumMul(throughput, emittedSpectrum(light, si.material, si)), weight))), 0.0, 0.0);
+			radiance[path.radianceSlot].rgb += vec3(emits ? luminanceOf(spectrumToFilm(spectrumScale(spectrumMul(throughput, emittedSpectrum(light, si.material, si, site)), weight))) : 0.0, 0.0, 0.0);
 #endif
 		}
 		return;
@@ -142,10 +164,14 @@ void main()
 		aovRecord(path.radianceSlot, si.p, si.n, shadingNormal, si.uv, vec3(0.0), hit.instance, si.material);
 	}
 
+	// the back of a one-sided emitter sends nothing towards the ray
+	if (!emits) {
+		return;
+	}
 	// added, not written: the path may have passed other glowing surfaces on earlier bounces. The
 	// weight is applied only when it is not 1, so a strategy without light sampling adds exactly
 	// what it always did
-	Spectrum contribution = spectrumMul(throughput, emittedSpectrum(light, si.material, si));
+	Spectrum contribution = spectrumMul(throughput, emittedSpectrum(light, si.material, si, site));
 	if (weight != 1.0) {
 		contribution = spectrumScale(contribution, weight);
 	}

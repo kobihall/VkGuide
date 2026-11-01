@@ -11,6 +11,16 @@ namespace {
 
 //---------------------------------------------------------------- parameters, per type
 
+// THE EMISSION EVERY TYPE CAN CARRY (docs/plans/completed/pbrt-light-types.md), as pbrt's area light does whatever the shape's
+// material: the emitted color and its strength (emissive and pbr have their own) and the side it emits on
+#define CRT_EMISSION_ROWS \
+	{ "emission", "emission", ParamKind::Spectrum, rgbSpectrum(glm::vec3(0.f)), 0.f, 1.f, PARAM_COLOR | PARAM_TEXTURABLE, \
+		"What the surface emits, as an area light: the radiance is emission x strength. Black for a surface that does not glow", SpectrumRole::Illuminant }, \
+	{ "strength", "emission strength", ParamKind::Float, 1.f, 0.f, 1000.f, PARAM_LOGARITHMIC, "The emitted radiance is emission x strength" }
+#define CRT_TWO_SIDED_ROW \
+	{ "twoSided", "two-sided", ParamKind::Bool, true, 0.f, 0.f, 0, \
+		"Emit from both sides. Off, the surface emits only on the side its normal faces, as pbrt's area lights do without\n\"twosided\" (a shape's Reverse orientation flips the side), and half the power" }
+
 // the defaults are what SceneMaterial held before parameters were data, so a material made today
 // starts where one did then
 const SpectrumRef DEFAULT_ALBEDO = rgbSpectrum(glm::vec3(0.7f));
@@ -20,21 +30,29 @@ const MaterialParam LAMBERTIAN_PARAMS[] = {
 	{ "albedo", "albedo", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR | PARAM_TEXTURABLE, nullptr },
 	{ "baseColorTexture", "albedo texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "sRGB, multiplies the albedo" },
 	{ "normalTexture", "normal texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "Tangent space; applied on meshes with tangents" },
+	CRT_EMISSION_ROWS,
+	CRT_TWO_SIDED_ROW,
 };
 
 const MaterialParam METAL_PARAMS[] = {
 	{ "albedo", "albedo", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR | PARAM_TEXTURABLE, nullptr },
 	// the scatter clamps fuzz to at most 1, so the slider stops there too
 	{ "fuzz", "fuzz", ParamKind::Float, 0.3f, 0.f, 1.f, 0, "The radius of the ball the mirror direction is perturbed within. Below 1e-4 the metal is a perfect mirror" },
+	CRT_EMISSION_ROWS,
+	CRT_TWO_SIDED_ROW,
 };
 
 const MaterialParam PHONG_PARAMS[] = {
 	{ "albedo", "albedo", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR | PARAM_TEXTURABLE, nullptr },
 	{ "smoothness", "smoothness", ParamKind::Float, 0.5f, 0.f, 1.f, 0, "Mapped to a lobe exponent of 1 to 1000" },
+	CRT_EMISSION_ROWS,
+	CRT_TWO_SIDED_ROW,
 };
 
 const MaterialParam DIELECTRIC_PARAMS[] = {
 	{ "ir", "index of refraction", ParamKind::Float, 1.5f, 1.f, 3.f, 0, "1.0 vacuum, 1.33 water, 1.5 glass, 2.42 diamond" },
+	CRT_EMISSION_ROWS,
+	CRT_TWO_SIDED_ROW,
 };
 
 // a light's color is what it emits, but it is the same value an albedo is, so switching a surface
@@ -42,6 +60,7 @@ const MaterialParam DIELECTRIC_PARAMS[] = {
 const MaterialParam EMISSIVE_PARAMS[] = {
 	{ "albedo", "colour", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR, nullptr, SpectrumRole::Illuminant },
 	{ "strength", "strength", ParamKind::Float, 1.f, 0.f, 1000.f, PARAM_LOGARITHMIC, "The radiance is colour x strength, so a light can be far brighter than white" },
+	CRT_TWO_SIDED_ROW,
 };
 
 const MaterialParam PBR_PARAMS[] = {
@@ -59,6 +78,7 @@ const MaterialParam PBR_PARAMS[] = {
 	{ "emissiveTexture", "emission texture", ParamKind::Texture, TexRef {}, 0.f, 0.f, PARAM_READ_ONLY, "sRGB, multiplies the emission" },
 	{ "alphaCutoff", "alpha cutoff", ParamKind::Float, 0.f, 0.f, 2.f, PARAM_READ_ONLY,
 		"The base colour texel's alpha below which the surface is cut away: glTF's alphaCutoff divided by the base colour factor's alpha. 0 for never" },
+	CRT_TWO_SIDED_ROW,
 };
 
 // pbrt-v4's glass and conductor (docs/plans/completed/pbrt-bsdf-library.md). Roughness is pbrt's: remapped to alpha by its
@@ -69,6 +89,8 @@ const MaterialParam GLASS_PARAMS[] = {
 	{ "uRoughness", "roughness u", ParamKind::Float, 0.f, 0.f, 1.f, 0, "Along dp/du. 0 is smooth glass" },
 	{ "vRoughness", "roughness v", ParamKind::Float, 0.f, 0.f, 1.f, 0, "Along dp/dv" },
 	{ "remapRoughness", "remap roughness", ParamKind::Bool, true, 0.f, 0.f, 0, "Map roughness to GGX's alpha by its square root, as pbrt does" },
+	CRT_EMISSION_ROWS,
+	CRT_TWO_SIDED_ROW,
 };
 
 const MaterialParam CONDUCTOR_PARAMS[] = {
@@ -79,6 +101,8 @@ const MaterialParam CONDUCTOR_PARAMS[] = {
 	{ "uRoughness", "roughness u", ParamKind::Float, 0.f, 0.f, 1.f, 0, "Along dp/du. 0 is a mirror" },
 	{ "vRoughness", "roughness v", ParamKind::Float, 0.f, 0.f, 1.f, 0, "Along dp/dv" },
 	{ "remapRoughness", "remap roughness", ParamKind::Bool, true, 0.f, 0.f, 0, "Map roughness to GGX's alpha by its square root, as pbrt does" },
+	CRT_EMISSION_ROWS,
+	CRT_TWO_SIDED_ROW,
 };
 
 // pbrt-v4's diffuse: reflectance and Oren-Nayar's roughness. pbrt-v4 has no Oren-Nayar; PBR 3ed 8.4.1 does
@@ -86,18 +110,24 @@ const MaterialParam DIFFUSE_PARAMS[] = {
 	{ "albedo", "reflectance", ParamKind::Spectrum, DEFAULT_ALBEDO, 0.f, 1.f, PARAM_COLOR, "Clamped to 0 to 1" },
 	{ "sigma", "roughness sigma", ParamKind::Float, 0.f, 0.f, 90.f, 0,
 		"Oren and Nayar's microfacet slope in degrees. 0 is a Lambertian surface; rough clay is about 20 and the moon about 30" },
+	CRT_EMISSION_ROWS,
+	CRT_TWO_SIDED_ROW,
 };
 
 const MaterialParam THIN_GLASS_PARAMS[] = {
 	{ "eta", "index of refraction", ParamKind::Spectrum, constantRef(1.5f), 1.f, 3.f, 0,
 		"A thin pane: light goes straight through, and the pane reflects what two parallel interfaces and their inter-reflections do. A constant, a named glass, a dispersion formula or a table",
 		SpectrumRole::Scalar },
+	CRT_EMISSION_ROWS,
+	CRT_TWO_SIDED_ROW,
 };
 
 const MaterialParam DIFFUSE_TRANSMISSION_PARAMS[] = {
 	{ "albedo", "reflectance", ParamKind::Spectrum, rgbSpectrum(glm::vec3(0.25f)), 0.f, 1.f, PARAM_COLOR, "Clamped to 0 to 1 after the scale" },
 	{ "transmittance", "transmittance", ParamKind::Spectrum, rgbSpectrum(glm::vec3(0.25f)), 0.f, 1.f, PARAM_COLOR, "Clamped to 0 to 1 after the scale" },
 	{ "scale", "scale", ParamKind::Float, 1.f, 0.f, 10.f, 0, "Multiplies both" },
+	CRT_EMISSION_ROWS,
+	CRT_TWO_SIDED_ROW,
 };
 
 const MaterialParam MIX_PARAMS[] = {
@@ -106,6 +136,8 @@ const MaterialParam MIX_PARAMS[] = {
 	{ "materialB", "second material", ParamKind::Material, MaterialLink {}, 0.f, 0.f, 0, "A hit takes this one with the chance amount" },
 	{ "amount", "amount", ParamKind::Float, 0.5f, 0.f, 1.f, 0,
 		"The chance of the second material. The choice is a hash of the hit point and the direction, so a hit chooses the same child each time it is evaluated" },
+	CRT_EMISSION_ROWS,
+	CRT_TWO_SIDED_ROW,
 };
 
 const char* const OPTIC_FINISHES[] = { "Polished", "Ground" };
@@ -601,6 +633,158 @@ void MaterialRecordWriter::write(const void* data, size_t bytes)
 	std::memcpy(&out.params[first], data, bytes);
 }
 
+bool usesEmissionBlock(MaterialType type)
+{
+	return type != MaterialType::Emissive && type != MaterialType::Pbr && type != MaterialType::OpticalInterface;
+}
+
+uint32_t textureTarget(const MaterialDef& material, std::string_view name)
+{
+	if (name == "normal") {
+		return CRT_TEX_TARGET_NORMAL_MAP;
+	}
+	if (name == "alpha") {
+		return CRT_TEX_TARGET_ALPHA;
+	}
+	const MaterialType type = material.type;
+	if (usesEmissionBlock(type)) {
+		if (name == "emission") {
+			return CRT_TEX_TARGET_EMIT_COLOR;
+		}
+		if (name == "strength") {
+			return CRT_TEX_TARGET_EMIT_STRENGTH;
+		}
+	}
+	switch (type) {
+	case MaterialType::Lambertian:
+	case MaterialType::Metal:
+	case MaterialType::Phong:
+	case MaterialType::Dielectric:
+	case MaterialType::Emissive:
+	case MaterialType::Pbr:
+		//the classic record: its albedo, its one parameter (fuzz, smoothness, index, strength, F0) and pbr's own fields
+		if (name == "albedo") {
+			return CRT_TEX_TARGET_ALBEDO;
+		}
+		if (name == "fuzz" || name == "smoothness" || name == "ir" || name == "f0" || (type == MaterialType::Emissive && name == "strength")) {
+			return CRT_TEX_TARGET_PARAM;
+		}
+		if (type == MaterialType::Pbr) {
+			if (name == "metallic") {
+				return CRT_TEX_TARGET_METALLIC;
+			}
+			if (name == "roughness") {
+				return CRT_TEX_TARGET_ROUGHNESS;
+			}
+			if (name == "emission" || name == "strength") {
+				return CRT_TEX_TARGET_EMISSION;
+			}
+			if (name == "normalScale") {
+				return CRT_TEX_TARGET_NORMAL_SCALE;
+			}
+		}
+		return CRT_TEX_TARGET_NONE;
+	case MaterialType::Diffuse:
+		if (name == "albedo") {
+			return CRT_TEX_TARGET_RGB_A;
+		}
+		return name == "sigma" ? CRT_TEX_TARGET_SIGMA : CRT_TEX_TARGET_NONE;
+	case MaterialType::DiffuseTransmission:
+		if (name == "albedo") {
+			return CRT_TEX_TARGET_RGB_A;
+		}
+		if (name == "transmittance") {
+			return CRT_TEX_TARGET_RGB_B;
+		}
+		return name == "scale" ? CRT_TEX_TARGET_SCALE : CRT_TEX_TARGET_NONE;
+	case MaterialType::Glass:
+	case MaterialType::ThinGlass:
+	case MaterialType::Conductor:
+		if (name == "eta") {
+			return type == MaterialType::Conductor ? CRT_TEX_TARGET_RGB_A : CRT_TEX_TARGET_ETA;
+		}
+		if (name == "k") {
+			return CRT_TEX_TARGET_RGB_B;
+		}
+		if (name == "albedo" && type == MaterialType::Conductor) {
+			return CRT_TEX_TARGET_REFLECTANCE;
+		}
+		if (name == "uRoughness") {
+			return CRT_TEX_TARGET_ALPHA_X;
+		}
+		if (name == "vRoughness") {
+			return CRT_TEX_TARGET_ALPHA_Y;
+		}
+		return CRT_TEX_TARGET_NONE;
+	case MaterialType::Mix:
+		return name == "amount" ? CRT_TEX_TARGET_AMOUNT : CRT_TEX_TARGET_NONE;
+	case MaterialType::OpticalInterface:
+		//the ABg lobe's B and g shape a table the CPU integrates, so only its total scatter can vary over the surface
+		return name == "tis" ? CRT_TEX_TARGET_TIS : CRT_TEX_TARGET_NONE;
+	}
+	return CRT_TEX_TARGET_NONE;
+}
+
+namespace {
+
+// the table's entries, one per textured parameter whose texture the library holds
+std::vector<CrtTextureEntry> packTextureTable(const MaterialDef& material, const PackContext& context, uint64_t& emissionTexture, bool& alphaTexture)
+{
+	std::vector<CrtTextureEntry> entries;
+	if (!context.textureSlot) {
+		return entries;
+	}
+	for (const auto& [name, binding] : material.textures) {
+		if (binding.texture == 0 || (binding.derived && !context.modelTexturesFromLibrary)) {
+			continue;
+		}
+		const uint32_t target = textureTarget(material, name);
+		if (target == CRT_TEX_TARGET_NONE) {
+			continue;
+		}
+		const std::optional<glm::uvec2> slot = context.textureSlot(binding.texture);
+		if (!slot.has_value()) {
+			continue;
+		}
+		CrtTextureEntry entry {};
+		uint32_t op = CRT_TEX_OP_MULTIPLY;
+		if (target == CRT_TEX_TARGET_ALPHA_X || target == CRT_TEX_TARGET_ALPHA_Y) {
+			//the record holds alpha = sqrt(roughness) when remapped: a textured roughness multiplies alpha by its root
+			const ParamValue remap = materialValue(material, "remapRoughness");
+			const bool* on = std::get_if<bool>(&remap);
+			op = on != nullptr && *on ? CRT_TEX_OP_MULTIPLY_SQRT : CRT_TEX_OP_MULTIPLY;
+		}
+		entry.bits = target | ((uint32_t)binding.channel << 8) | ((uint32_t)binding.mapping << 12) | (op << 16) | (std::min(binding.uvSet, 1u) << 20)
+			| (binding.worldSpace ? 1u << 24 : 0u);
+		entry.texture = slot->x;
+		entry.sampler = slot->y;
+		if (target == CRT_TEX_TARGET_SIGMA) {
+			entry.base = std::max(materialFloat(material, "sigma"), 0.f);
+		} else if (target == CRT_TEX_TARGET_ALPHA) {
+			//the cutoff, or a negative one for pbrt's stochastic test
+			entry.base = binding.alphaMode == AlphaMode::Stochastic ? -1.f : std::max(materialFloat(material, "alphaCutoff"), 0.f);
+			alphaTexture = true;
+		}
+		entry.offsetScale = glm::vec4(binding.offset, binding.scale);
+		entry.rotation = glm::vec4(std::cos(binding.rotation), std::sin(binding.rotation), 0.f, 0.f);
+		const glm::mat4 rows = glm::transpose(binding.mappingTransform);
+		for (int r = 0; r < 3; r++) {
+			entry.mapping[r] = rows[r];
+		}
+		//what an emitter's texture is, for the light list: its color's texture (an emissive's albedo, a pbr's emission, the
+		//emission block's color) prices it, and any texture of its emission marks its records textured
+		const bool emissionTarget = target == CRT_TEX_TARGET_EMISSION || target == CRT_TEX_TARGET_EMIT_COLOR || target == CRT_TEX_TARGET_EMIT_STRENGTH
+			|| (material.type == MaterialType::Emissive && (target == CRT_TEX_TARGET_ALBEDO || target == CRT_TEX_TARGET_PARAM));
+		if (emissionTarget && (emissionTexture == 0 || target != CRT_TEX_TARGET_EMIT_STRENGTH)) {
+			emissionTexture = binding.texture;
+		}
+		entries.push_back(entry);
+	}
+	return entries;
+}
+
+}
+
 PackedMaterial packMaterial(const MaterialDef& material, const PackContext& context)
 {
 	const MaterialTraits& traits = materialTraits(material.type);
@@ -610,11 +794,66 @@ PackedMaterial packMaterial(const MaterialDef& material, const PackContext& cont
 	MaterialRecordWriter writer { packed };
 	traits.pack(material, context, writer);
 	packed.emission = traits.emission(material);
+
+	//THE EXTENSION: the emission block of a type without emission of its own, the texture table, and the header that
+	//finds them, as the record's last vec4. A material with neither packs exactly the record it always did
+	CrtMaterialExtension extension {};
+	if (usesEmissionBlock(material.type)) {
+		const float strength = std::max(materialFloat(material, "strength"), 0.f);
+		const glm::vec3 radiance = glm::max(materialColor(material, "emission", context.spectra), glm::vec3(0.f)) * strength;
+		const SpectrumRef emission = materialSpectrum(material, "emission");
+		float price = 0.f;
+		if (emission.kind != SpectrumKind::Rgb && !(0.2126f * radiance.r + 0.7152f * radiance.g + 0.0722f * radiance.b > 0.f)) {
+			price = spectrumRadiometricPrice(emission) * strength;
+		}
+		if (radiance.r > 0.f || radiance.g > 0.f || radiance.b > 0.f || price > 0.f) {
+			extension.emissionOffset = (uint32_t)packed.params.size();
+			const CrtEmissionBlock block { radiance, strength };
+			writer.write(&block, sizeof(block));
+			packed.flags |= CRT_MATERIAL_FLAG_EMITS;
+			packed.emission = radiance;
+			packed.emissionPrice = price;
+			packed.spectra[1] = std::make_pair(emission, SpectrumRole::Illuminant);
+			packed.emissionScale = strength;
+		}
+	}
+	bool alphaTexture = false;
+	const std::vector<CrtTextureEntry> entries = packTextureTable(material, context, packed.emissionTexture, alphaTexture);
+	if (!entries.empty()) {
+		extension.textureOffset = (uint32_t)packed.params.size();
+		extension.textureCount = (uint32_t)entries.size();
+		writer.write(entries.data(), entries.size() * sizeof(CrtTextureEntry));
+		packed.textured = true;
+		for (const CrtTextureEntry& entry : entries) {
+			if ((entry.bits & 255u) == CRT_TEX_TARGET_NORMAL_MAP) {
+				packed.flags |= CRT_MATERIAL_FLAG_NORMAL_MAP;
+			}
+		}
+		if (alphaTexture) {
+			packed.flags |= CRT_MATERIAL_FLAG_CUTOUT | CRT_MATERIAL_FLAG_ALPHA_TEXTURE;
+		}
+	}
+	if (extension.emissionOffset != 0 || extension.textureCount != 0) {
+		writer.write(&extension, sizeof(extension));
+		packed.flags |= CRT_MATERIAL_FLAG_EXTENDED;
+	}
+
+	//one-sided emission, from the front unless the shape is reversed
+	if ((packed.flags & CRT_MATERIAL_FLAG_EMITS) != 0) {
+		const ParamValue twoSided = materialValue(material, "twoSided");
+		const bool* both = std::get_if<bool>(&twoSided);
+		if (both != nullptr && !*both) {
+			packed.flags |= CRT_MATERIAL_FLAG_ONE_SIDED | (context.reversed ? CRT_MATERIAL_FLAG_REVERSED : 0u);
+		}
+	}
 	return packed;
 }
 
 glm::vec3 materialEmission(const MaterialDef& material)
 {
+	if (usesEmissionBlock(material.type)) {
+		return glm::max(materialColor(material, "emission"), glm::vec3(0.f)) * std::max(materialFloat(material, "strength"), 0.f);
+	}
 	return materialTraits(material.type).emission(material);
 }
 

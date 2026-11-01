@@ -19,6 +19,7 @@
 
 // src/light_sampling.h LIGHT_MIN_SPHERICAL_SOLID_ANGLE / LIGHT_MAX_SPHERICAL_SOLID_ANGLE
 #include "crt_material.glsl"
+#include "crt_shape.glsl"
 
 #define CRT_MIN_SPHERICAL_SOLID_ANGLE 1e-3
 #define CRT_MAX_SPHERICAL_SOLID_ANGLE 6.22
@@ -37,6 +38,13 @@ struct LightSample {
 };
 
 //---------------------------------------------------------------- shared
+
+// the kind without its flags
+uint lightKindOf(GpuLight light)
+{
+	return light.kind & CRT_LIGHT_KIND_MASK;
+}
+
 
 float lightSafeSqrt(float x)
 {
@@ -495,6 +503,88 @@ float spotFalloff(float cosAngle, float cosOuter, float cosInner)
 	return t * t;
 }
 
+// pbrt-v4's SpotLight::I(): a smoothstep in cos(angle) over the same range
+float spotFalloffSmooth(float cosAngle, float cosOuter, float cosInner)
+{
+	const float scale = 1.0 / max(0.001, cosInner - cosOuter);
+	const float t = clamp((cosAngle - cosOuter) * scale, 0.0, 1.0);
+	return t * t * (3.0 - 2.0 * t);
+}
+
+// a spot light's falloff by its flag
+float spotFalloffOf(uint kind, float cosAngle, float cosOuter, float cosInner)
+{
+	return (kind & CRT_LIGHT_FLAG_SMOOTHSTEP) != 0u ? spotFalloffSmooth(cosAngle, cosOuter, cosInner) : spotFalloff(cosAngle, cosOuter, cosInner);
+}
+
+// pbrt-v4's equal-area mapping (src/light_sampling.cpp equalAreaSphereToSquare()), which a goniometric light's image is
+// laid out in
+vec2 equalAreaSphereToSquare(vec3 d)
+{
+	const float x = abs(d.x);
+	const float y = abs(d.y);
+	const float z = abs(d.z);
+	const float r = sqrt(max(1.0 - z, 0.0));
+	const float a = max(x, y);
+	float b = min(x, y);
+	b = a == 0.0 ? 0.0 : b / a;
+	float phi = 0.406758566246788489601959989e-5
+		+ b * (0.636226545274016134946890922156
+			+ b * (0.61572017898280213493197203466e-2
+				+ b * (-0.247333733281268944196501420480 + b * (0.881770664775316294736387951347e-1 + b * (0.419038818029165735901852432784e-1 + b * -0.251390972343483509333252996350e-1)))));
+	if (x < y) {
+		phi = 1.0 - phi;
+	}
+	float v = phi * r;
+	float u = r - v;
+	if (d.z < 0.0) {
+		const float t = u;
+		u = 1.0 - v;
+		v = 1.0 - t;
+	}
+	u = d.x < 0.0 ? -u : u;
+	v = d.y < 0.0 ? -v : v;
+	return vec2(0.5 * (u + 1.0), 0.5 * (v + 1.0));
+}
+
+// What a projection or goniometric light sends towards `direction` (unit, from the light), as a multiple of its
+// intensity: the image's texel where the direction pierces the frustum's image plane (0 outside it, or behind), or the
+// distribution's at the direction in the light's frame (PBR 4ed 12.2.2, 12.2.3). Its image is the texture library's,
+// read at the finest level
+vec3 imagedLightFactor(GpuLight light, vec3 direction)
+{
+	const uint bits = floatBitsToUint(light.a.w);
+	const uint texture = bits & 0xFFFFFu;
+	const uint samplerIndex = 2u * (bits >> 20u);
+	const vec3 xAxis = light.b.xyz;
+	const vec3 yAxis = light.c.xyz;
+	// the light shines down its -z, which a mirrored frame turns around
+	const vec3 zAxis = (light.kind & CRT_LIGHT_FLAG_MIRRORED) != 0u ? -cross(xAxis, yAxis) : cross(xAxis, yAxis);
+	const vec3 local = vec3(dot(direction, xAxis), dot(direction, yAxis), dot(direction, zAxis));
+	vec2 uv;
+	if (lightKindOf(light) == CRT_LIGHT_PROJECTION) {
+		if (!(local.z < 0.0)) {
+			return vec3(0.0);
+		}
+		const vec2 screen = local.xy / -local.z;
+		if (abs(screen.x) > light.b.w || abs(screen.y) > light.c.w) {
+			return vec3(0.0);
+		}
+		uv = vec2(0.5 * (screen.x / light.b.w + 1.0), 0.5 * (1.0 - screen.y / light.c.w));
+	} else {
+		uv = equalAreaSphereToSquare(local);
+	}
+	if (!CRT_TEXTURES) {
+		return vec3(1.0);
+	}
+	const vec3 texel = textureLod(sampler2D(textures[nonuniformEXT(texture)], textureSamplers[nonuniformEXT(samplerIndex)]), uv, 0.0).rgb;
+	// a goniometric light's distribution has no color of its own: its image's channels averaged, as pbrt-v4 reads it
+	if (lightKindOf(light) == CRT_LIGHT_GONIOMETRIC) {
+		return vec3((texel.r + texel.g + texel.b) / 3.0);
+	}
+	return texel;
+}
+
 float rangeWindow(float distance, float range)
 {
 	if (range <= 0.0) {
@@ -627,9 +717,11 @@ uint sampleDeltaLightIndex(float u)
 	return up < lights[offset].deltaAliasQ ? offset : lights[offset].deltaAliasIndex;
 }
 
+// `kind` with or without flags
 bool isDeltaLight(uint kind)
 {
-	return kind == CRT_LIGHT_POINT || kind == CRT_LIGHT_SPOT || kind == CRT_LIGHT_DIRECTIONAL;
+	kind &= CRT_LIGHT_KIND_MASK;
+	return kind == CRT_LIGHT_PROJECTION || kind == CRT_LIGHT_GONIOMETRIC || kind == CRT_LIGHT_POINT || kind == CRT_LIGHT_SPOT || kind == CRT_LIGHT_DIRECTIONAL;
 }
 
 // what a light emits before any texture or falloff: its RGB radiance in the exact RGB build, its packed reference times
@@ -652,7 +744,8 @@ vec3 triangleLightRadiance(GpuLight light, vec3 barycentrics)
 	const int layer = floatBitsToInt(light.b.w);
 	const ClassicMaterial material = classicMaterial(floatBitsToUint(light.c.w));
 	const bool cutout = material.alphaCutoff > 0.0 && material.albedoLayer >= 0;
-	if (layer < 0 && !cutout) {
+	const bool textured = CRT_TEXTURES && (light.kind & CRT_LIGHT_FLAG_TEXTURED) != 0u;
+	if (layer < 0 && !cutout && !textured) {
 		return light.radiance;
 	}
 	const GpuTriangleAttributes attributes = triangleAttributes[floatBitsToUint(light.a.w)];
@@ -660,7 +753,11 @@ vec3 triangleLightRadiance(GpuLight light, vec3 barycentrics)
 	if (cutout && textureLod(materialTextures, vec3(uv, float(material.albedoLayer)), 0.0).a < material.alphaCutoff) {
 		return vec3(0.0);
 	}
-	return layer < 0 ? light.radiance : light.radiance * srgbToLinear(textureLod(materialTextures, vec3(uv, float(layer)), 0.0).rgb);
+	vec3 radiance = layer < 0 ? light.radiance : light.radiance * srgbToLinear(textureLod(materialTextures, vec3(uv, float(layer)), 0.0).rgb);
+	if (textured) {
+		radiance *= materialEmissionTexture(floatBitsToUint(light.c.w), textureSiteAt(uv));
+	}
+	return radiance;
 }
 #endif
 
@@ -673,7 +770,8 @@ bool triangleLightTint(GpuLight light, vec3 barycentrics, out vec3 tint)
 	const int layer = floatBitsToInt(light.b.w);
 	const ClassicMaterial material = classicMaterial(floatBitsToUint(light.c.w));
 	const bool cutout = material.alphaCutoff > 0.0 && material.albedoLayer >= 0;
-	if (layer < 0 && !cutout) {
+	const bool textured = CRT_TEXTURES && (light.kind & CRT_LIGHT_FLAG_TEXTURED) != 0u;
+	if (layer < 0 && !cutout && !textured) {
 		return true;
 	}
 	const GpuTriangleAttributes attributes = triangleAttributes[floatBitsToUint(light.a.w)];
@@ -684,9 +782,38 @@ bool triangleLightTint(GpuLight light, vec3 barycentrics, out vec3 tint)
 	if (layer >= 0) {
 		tint = srgbToWorking(srgbToLinear(textureLod(materialTextures, vec3(uv, float(layer)), 0.0).rgb));
 	}
+	if (textured) {
+		tint *= srgbToWorking(materialEmissionTexture(floatBitsToUint(light.c.w), textureSiteAt(uv)));
+	}
 	return true;
 }
 #endif
+
+// A one-sided area light's sample faces the reference point: the light emits along its front normal, the sampler's
+// normal or, for a record flagged CRT_LIGHT_FLAG_REVERSED, its opposite (src/rt_lights.cpp)
+bool areaSampleFacesReference(GpuLight light, LightSample s)
+{
+	if ((light.kind & CRT_LIGHT_FLAG_ONE_SIDED) == 0u) {
+		return true;
+	}
+	const vec3 front = (light.kind & CRT_LIGHT_FLAG_REVERSED) != 0u ? -s.normal : s.normal;
+	return dot(front, s.direction) < 0.0;
+}
+
+// A textured shape emitter's texel at a sampled point, as a multiple of its emission: the point carried into its
+// instance's object space, the shape's uv there, and its material's emission textures (crt_texture.glsl)
+vec3 shapeLightTexture(GpuLight light, vec3 point)
+{
+	if (!CRT_TEXTURES || (light.kind & CRT_LIGHT_FLAG_TEXTURED) == 0u) {
+		return vec3(1.0);
+	}
+	const uint kind = lightKindOf(light);
+	const uint slot = floatBitsToUint(kind == CRT_LIGHT_SPHERE ? light.b.w : kind == CRT_LIGHT_RECTANGLE ? light.a.w : light.c.w);
+	const GpuInstance instance = instances[slot];
+	const vec3 p = toObjectPoint(instance, point);
+	const uint shape = instance.triangleBase;
+	return materialEmissionTexture(instance.materialBase, textureSiteAt(shapeUv(shape, shapePart(shape, p), p)));
+}
 
 // The one direction from `ref` towards a point, spot or directional light, how far away it is and
 // what arrives along it - a delta distribution, so there is no density to report. Kept apart from
@@ -699,7 +826,7 @@ bool sampleDeltaLight(GpuLight light, vec3 ref, out vec3 direction, out float di
 	radiance = spectrumConst(0.0);
 	lightNormal = vec3(0.0);
 #ifndef CRT_SPECTRAL
-	if (light.kind == CRT_LIGHT_DIRECTIONAL) {
+	if (lightKindOf(light) == CRT_LIGHT_DIRECTIONAL) {
 		direction = -light.a.xyz;
 		distance = CRT_INFINITY;
 		radiance = light.radiance;
@@ -712,14 +839,20 @@ bool sampleDeltaLight(GpuLight light, vec3 ref, out vec3 direction, out float di
 	}
 	distance = sqrt(distanceSquared);
 	direction = toLight / distance;
+	const uint deltaKind = lightKindOf(light);
+	if (deltaKind == CRT_LIGHT_PROJECTION || deltaKind == CRT_LIGHT_GONIOMETRIC) {
+		// no range: pbrt's imaged lights fall off as the inverse square alone
+		radiance = light.radiance * imagedLightFactor(light, -direction) / distanceSquared;
+		return true;
+	}
 	radiance = light.radiance * rangeWindow(distance, light.a.w) / distanceSquared;
-	if (light.kind == CRT_LIGHT_SPOT) {
-		radiance *= spotFalloff(dot(light.b.xyz, -direction), light.b.w, light.c.x);
+	if (lightKindOf(light) == CRT_LIGHT_SPOT) {
+		radiance *= spotFalloffOf(light.kind, dot(light.b.xyz, -direction), light.b.w, light.c.x);
 	}
 #else
 	// the spectrum is evaluated once, after the geometry, so the shader inlines it once
 	float falloff = 1.0;
-	if (light.kind == CRT_LIGHT_DIRECTIONAL) {
+	if (lightKindOf(light) == CRT_LIGHT_DIRECTIONAL) {
 		direction = -light.a.xyz;
 		distance = CRT_INFINITY;
 	} else {
@@ -731,8 +864,14 @@ bool sampleDeltaLight(GpuLight light, vec3 ref, out vec3 direction, out float di
 		distance = sqrt(distanceSquared);
 		direction = toLight / distance;
 		falloff = rangeWindow(distance, light.a.w) / distanceSquared;
-		if (light.kind == CRT_LIGHT_SPOT) {
-			falloff *= spotFalloff(dot(light.b.xyz, -direction), light.b.w, light.c.x);
+		if (lightKindOf(light) == CRT_LIGHT_SPOT) {
+			falloff *= spotFalloffOf(light.kind, dot(light.b.xyz, -direction), light.b.w, light.c.x);
+		}
+		if (lightKindOf(light) == CRT_LIGHT_PROJECTION || lightKindOf(light) == CRT_LIGHT_GONIOMETRIC) {
+			// the image's texel tints the light's spectrum, as an emissive texel does
+			radiance = spectrumScale(spectrumFromRefOrRgb(sceneSpectrumRef(light.spectrum), srgbToWorking(imagedLightFactor(light, -direction)), CRT_ROLE_ILLUMINANT),
+				uintBitsToFloat(light.spectrumScale) / distanceSquared);
+			return true;
 		}
 	}
 	radiance = spectrumScale(lightSpectrum(light), falloff);
@@ -764,7 +903,7 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 	if (isDeltaLight(light.kind)) {
 		pdf = 1.0;
 		float falloff = 1.0;
-		if (light.kind == CRT_LIGHT_DIRECTIONAL) {
+		if (lightKindOf(light) == CRT_LIGHT_DIRECTIONAL) {
 			direction = -light.a.xyz;
 			distance = CRT_INFINITY;
 		} else {
@@ -776,12 +915,16 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 			distance = sqrt(distanceSquared);
 			direction = toLight / distance;
 			falloff = rangeWindow(distance, light.a.w) / distanceSquared;
-			if (light.kind == CRT_LIGHT_SPOT) {
-				falloff *= spotFalloff(dot(light.b.xyz, -direction), light.b.w, light.c.x);
+			if (lightKindOf(light) == CRT_LIGHT_SPOT) {
+				falloff *= spotFalloffOf(light.kind, dot(light.b.xyz, -direction), light.b.w, light.c.x);
+			}
+			if (lightKindOf(light) == CRT_LIGHT_PROJECTION || lightKindOf(light) == CRT_LIGHT_GONIOMETRIC) {
+				falloff = 1.0 / distanceSquared;
+				tint = srgbToWorking(imagedLightFactor(light, -direction));
 			}
 		}
 		scale *= falloff;
-	} else if (light.kind == CRT_LIGHT_ENVIRONMENT) {
+	} else if (lightKindOf(light) == CRT_LIGHT_ENVIRONMENT) {
 		if (!sampleEnvironment(environmentTable, u, environmentRotation(), direction, pdf)) {
 			return false;
 		}
@@ -793,7 +936,7 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 		LightSample s;
 		vec3 barycentrics = vec3(0.0);
 		bool ok = false;
-		switch (light.kind) {
+		switch (lightKindOf(light)) {
 		case CRT_LIGHT_SPHERE:
 			ok = sampleSphereLight(light.a.xyz, light.a.w, ref, u, s);
 			break;
@@ -810,8 +953,11 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 			}
 			break;
 		}
-		if (!ok) {
+		if (!ok || !areaSampleFacesReference(light, s)) {
 			return false;
+		}
+		if (lightKindOf(light) != CRT_LIGHT_TRIANGLE) {
+			tint *= srgbToWorking(shapeLightTexture(light, s.point));
 		}
 		direction = s.direction;
 		distance = s.distance;
@@ -841,7 +987,7 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 	LightSample s;
 	vec3 barycentrics = vec3(0.0);
 	bool ok = false;
-	switch (light.kind) {
+	switch (lightKindOf(light)) {
 	case CRT_LIGHT_SPHERE:
 		ok = sampleSphereLight(light.a.xyz, light.a.w, ref, u, s);
 		radiance = light.radiance;
@@ -868,8 +1014,11 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 		radiance = textureLod(environmentMap, equirectUv(environmentToMap(direction, environmentRotation())), 0.0).rgb * pc.environmentIntensity;
 		return true;
 	}
-	if (!ok) {
+	if (!ok || !areaSampleFacesReference(light, s)) {
 		return false;
+	}
+	if (lightKindOf(light) != CRT_LIGHT_TRIANGLE) {
+		radiance *= shapeLightTexture(light, s.point);
 	}
 	direction = s.direction;
 	distance = s.distance;
@@ -884,7 +1033,7 @@ bool sampleLight(uint index, vec3 ref, vec2 u, uint environmentTable, out vec3 d
 float areaLightPdf(uint index, vec3 ref, vec3 lightPoint)
 {
 	const GpuLight light = lights[index];
-	switch (light.kind) {
+	switch (lightKindOf(light)) {
 	case CRT_LIGHT_SPHERE:
 		return sphereLightPdf(light.a.xyz, light.a.w, ref, lightPoint);
 	case CRT_LIGHT_RECTANGLE:

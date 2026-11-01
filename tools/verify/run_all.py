@@ -5,8 +5,8 @@
   bin/bvh_bench, bin/optic_models_test, bin/optics_test           the CPU tests
   VKGUIDE_SELFTEST=1 bin/vulkan_guide                              shaders against their C++ mirrors
   furnace_check.py, cornell_check.py, filter_check.py, film_check.py, aov_check.py, spectral_check.py, bsdf_check.py,
-  optics_check.py                                                  scene-level energy, reference, filter, film, output,
-                                                                   spectral and optics checks
+  optics_check.py, light_texture_check.py                          scene-level energy, reference, filter, film, output,
+                                                                   spectral, optics, light type and texture checks
 
 Build first (cd build && cmake --build .). The renders need the GPU and take a few minutes; --cpu-only
 skips them, --quick shrinks them.
@@ -72,6 +72,7 @@ def main():
         ok &= run("spectral_check", [sys.executable, os.path.join(HERE, "spectral_check.py")] + quick, cwd=HERE)
         ok &= run("bsdf_check", [sys.executable, os.path.join(HERE, "bsdf_check.py")], cwd=HERE)
         ok &= run("optics_check", [sys.executable, os.path.join(HERE, "optics_check.py")] + quick, cwd=HERE)
+        ok &= run("light_texture_check", [sys.executable, os.path.join(HERE, "light_texture_check.py")] + quick, cwd=HERE)
     print("all checks passed" if ok else "some checks failed")
     return 0 if ok else 1
 

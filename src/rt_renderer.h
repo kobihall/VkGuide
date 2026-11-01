@@ -208,6 +208,10 @@ private:
 	// the "Intersection precision" section: error-bounded ray offsets and watertight triangles. Apart
 	// from the acceleration structure's, since every traversal takes both
 	void drawIntersectionSettings();
+	// Texture storage, filtering and the maximum size (docs/plans/completed/pbrt-textures.md)
+	void drawTextureSettings(VulkanEngine* engine);
+	// the Maximum texture size slider's value while it is dragged; 0 when it is not
+	int m_pendingMaxTextureSize { 0 };
 	// the "Integrator" combo, shared by both panels: true when the selection changed
 	bool drawIntegratorCombo();
 	// the "Direct lighting" combo over kernel 06's variants and what the light list holds
@@ -275,6 +279,7 @@ private:
 	std::vector<MaterialDef> m_sceneAccelMaterials;
 	EnvironmentLight m_sceneAccelEnvironment;
 	SpectralSceneContext m_sceneAccelSpectral;
+	SceneTextureContext m_sceneAccelTextures;
 	uint64_t m_sceneAccelModelRevision { 0 };
 	uint64_t m_sceneAccelRevision { 0 };
 	// the editor's content revision the scene acceleration structure was built or last checked at

@@ -9,7 +9,7 @@ The strongest test of a physically based renderer is the same scene rendered by 
 On 2026-10-21, when implementation started, the user answered four questions:
 
 - A `.pbrt` file builds the same in-engine model a glTF file does. Names that were glTF-only and now cover both became neutral: `LoadedGLTF` is `LoadedModel`, `GltfMaterialOrigin` is `ModelMaterialOrigin`, `MeshMaterialMode::Gltf` is `MeshMaterialMode::Model`, and `findGltfMaterial()` is `findModelMaterial()`. Scene file keys did not change.
-- Area lights import as two-sided. pbrt's are one-sided unless `twosided` is set, and [pbrt-light-types.md](../pbrt-light-types.md) records what restores that.
+- Area lights import as two-sided. pbrt's are one-sided unless `twosided` is set, and [pbrt-light-types.md](pbrt-light-types.md) records what restores that.
 - The RGB projection of spectra starts the `rt_spectrum` library now, which [pbrt-spectral-rendering.md](pbrt-spectral-rendering.md) extends.
 - An infinite light's map is converted in memory to the renderer's equirectangular layout, with its rotation baked in, and owned by the model.
 
@@ -143,7 +143,7 @@ pbrt's image is divided by its imaging ratio. `--out DIR` keeps PNGs of both ren
 ## Not built
 
 - A scene of hundreds of thousands of instances (`landscape`, `sanmiguel`) imports, but each instance is a mesh object in the **Scene** panel and the TLAS, and each mesh is uploaded with its own immediate submit. Scenes of that size need batched uploads and a scene panel that does not list every object.
-- The texture array holds 256 layers at 512 by 512, so `sanmiguel`'s 231 images fit and lose resolution, and a larger set loses images. [pbrt-textures.md](../pbrt-textures.md) replaces it.
+- The texture array holds 256 layers at 512 by 512, so `sanmiguel`'s 231 images fit and lose resolution, and a larger set loses images. [pbrt-textures.md](pbrt-textures.md) replaces it.
 - The import report is not saved with the scene; reopening the scene imports the file again and rebuilds it.
 
 ## Sources

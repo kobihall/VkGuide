@@ -333,12 +333,15 @@ void drawMemorySection(VulkanEngine* engine)
 	const GpuMemoryUse renderer = engine->m_raytracer.memoryUse(engine->m_memAllocator);
 	const uint64_t environment = allocationBytes(engine->m_memAllocator, engine->m_environmentMap.allocation);
 	const uint64_t drawImages = allocationBytes(engine->m_memAllocator, engine->m_drawImage.allocation) + allocationBytes(engine->m_memAllocator, engine->m_depthImage.allocation);
-	const uint64_t known = renderer.film + renderer.outputs + renderer.wavefront + renderer.scene + renderer.other + environment + drawImages;
+	//the texture library's images (docs/plans/completed/pbrt-textures.md), apart from the models' own, which are in the rest
+	const uint64_t textureLibrary = engine->m_textureLibrary.bytes();
+	const uint64_t known = renderer.film + renderer.outputs + renderer.wavefront + renderer.scene + renderer.other + environment + drawImages + textureLibrary;
 	const uint64_t rest = allocated > known ? allocated - known : 0;
 
-	const char* labels[] = { "Render film", "Render outputs", "Wavefront pool", "Render scene", "Render other", "Environment map", "Draw images", "Meshes, textures, rest" };
+	const char* labels[] = { "Render film", "Render outputs", "Wavefront pool", "Render scene", "Render other", "Environment map", "Texture library", "Draw images",
+		"Meshes, textures, rest" };
 	const double megabytes[] = { (double)renderer.film, (double)renderer.outputs, (double)renderer.wavefront, (double)renderer.scene, (double)renderer.other,
-		(double)environment, (double)drawImages, (double)rest };
+		(double)environment, (double)textureLibrary, (double)drawImages, (double)rest };
 	constexpr int count = (int)std::size(labels);
 	double values[count];
 	double positions[count];

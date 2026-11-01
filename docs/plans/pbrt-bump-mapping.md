@@ -2,7 +2,7 @@
 
 The tracer applies glTF normal maps and nothing else: no material can perturb its shading normal from a height or displacement texture, which is what pbrt's `BumpMap()` does. Shading normals that differ from the geometry also cause artifacts the tracer does not guard against: black or faceted terminators on low-polygon meshes, and light leaking through surfaces whose shading normal faces a light the geometry hides. This plan adds displacement-based bump mapping and the two known fixes for those artifacts.
 
-*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (geometric normal, dp/du, dn/du; normal mapping moved to the material kernel) and [pbrt-textures.md](pbrt-textures.md) (scalar texture references, footprints). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on [pbrt-thin-hit-record.md](completed/pbrt-thin-hit-record.md) (geometric normal, dp/du, dn/du; normal mapping moved to the material kernel) and [pbrt-textures.md](completed/pbrt-textures.md) (scalar texture references, footprints). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -23,7 +23,7 @@ du = 0.5 × (|∂u/∂x| + |∂u/∂y|), or 0.0005 when the footprint gives noth
 
 and the same in v. The shading normal becomes their cross product, flipped to the side of the original. Three texture evaluations per hit, so a material with a displacement texture is complex ([pbrt-material-system.md](completed/pbrt-material-system.md)).
 
-The step `du` comes from the ray-cone footprint ([pbrt-textures.md](pbrt-textures.md)) when there is one, so bump detail filters away with distance like texture detail does.
+The step `du` comes from the ray-cone footprint ([pbrt-textures.md](completed/pbrt-textures.md)) when there is one, so bump detail filters away with distance like texture detail does.
 
 Displacement and normal maps are exclusive per material, as in pbrt: a material has at most one of them.
 

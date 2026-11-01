@@ -27,5 +27,3 @@ void importPbrtScene(const PbrtScene& scene, ImportedModel& model);
 
 // pbrt-v4's equal-area octahedral mapping between the unit square and the sphere (Clarberg), which its image
 // infinite lights are stored in (src/pbrt/util/math.cpp)
-glm::vec3 equalAreaSquareToSphere(glm::vec2 p);
-glm::vec2 equalAreaSphereToSquare(glm::vec3 d);

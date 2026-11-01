@@ -14,6 +14,22 @@
 - **Stats** draws a bar chart per bounce for the paths alive, the shadow rays and the surface hits of each material class, one bar per bounce, with a bar more for the paths alive. The counts are on a log scale, so a deep bounce's few paths show beside the camera rays.
 - **Stats** lists the BLAS and TLAS side by side, and shows each GPU memory heap's use against its budget, and the GPU memory the film, the outputs, the wavefront pool, the scene buffers, the environment map and the draw images hold.
 - **Windows** → **Debug** → **ImPlot Demo** shows the plotting library's demo.
+- Textures are a texture library. Each texture is its own image at its own size, up to **Render Settings** → **Textures** → **Maximum texture size** (4096 by default), with a full mip chain and its glTF sampler's wrap and filters. Color textures decode sRGB in the sampler, so filtering is linear. Up to 1024 textures, the most MoltenVK supports in one set on the Radeon Pro 560X.
+- Any float or color parameter of any material can read a texture: **Materials** → a material → **Textures** lists each one, the normal map and the alpha. A texture multiplies the parameter. **Load image...** adds a PNG, JPEG, TGA, BMP, HDR, EXR or PFM file, read as sRGB for a color and as data otherwise. Each reference picks a channel, a mapping (uv, spherical, cylindrical or planar), the uv set, and KHR_texture_transform's scale, offset and rotation.
+- Shapes take textures, through their own uvs, including normal maps (in the frame of dp/du and dp/dv) and textured emission.
+- **Render Settings** → **Textures** → **Texture filtering** picks point, bilinear, trilinear or anisotropic. Trilinear and anisotropic size each lookup from a ray cone (Akenine-Möller et al. 2019, 2021) that widens at curved and glossy bounces, so a reflected texture stays filtered. On the checkered plane of `assets/scenes/tx_checker_plane.gltf` at 1 sample a pixel, trilinear filtering takes the far plane's noise from 0.115 to 0.018.
+- **Render Settings** → **Textures** → **Each texture** lists every library texture's size, mip levels and memory, and **Stats** shows the library's GPU memory beside the other owners.
+- **Render Settings** → **Textures** → **Texture storage** keeps the 512 × 512 texture array as **Legacy array**, for an imported model's own textures. It reproduces renders from before the library bit for bit.
+- glTF's `TEXCOORD_1` and `KHR_texture_transform` are read.
+- Every material type can emit: **emission**, **emission strength** and **two-sided** join each type's parameters, as pbrt's area light attaches to any material. A surface that emits also reflects as its type does. **two-sided** off emits only on the side the normal faces, at half a quad's or triangle's power.
+- A shape's **reverse orientation** makes a one-sided emitter emit from its inside, or from a quad's back.
+- A shape whose material emits shows its **luminous power (lm)**, from its area and sidedness; setting it sets the material's emission strength.
+- **Add** → **Projection light** throws an image through a frustum, like a slide projector. **Field of view** is the image's shorter side's, as pbrt's `fov`.
+- **Add** → **Goniometric light** shines a measured distribution: an IES LM-63 file (type C photometry, any of its symmetries) or pbrt's equal-area square image. An IES file's candela values are divided by 683, so the light's intensity is a scale that is 1 for the file's own values.
+- A spot light's **falloff** is glTF's squared ramp or pbrt's smoothstep.
+- A light's strength can be shown and edited in candela, lumens or, for a directional light, lux. The intensity is stored radiometric, so the unit changes the panel and never the render.
+- `tools/verify/light_texture_scenes.py` writes 11 verification scenes to `assets/scenes/` (`lt_*.gltf`, `tx_*.gltf`) with their images in `assets/textures/` and `assets/ies/`. `tools/verify/light_texture_check.py` checks them, and `run_all.py` runs it.
+- `tools/verify/pbrt_light_scenes.py` writes pbrt-v4 scenes of a projection light, a goniometric light, and textures with an imaged one-sided area light to `assets/models/pbrt_lights/`. `pbrt_compare.py` matches pbrt on all three to within 0.2 percent in the mean.
 
 ### Changed
 
@@ -24,6 +40,10 @@
 - The **Render** workspace is called **Raytracing**, so its tab is not mistaken for the **Render** button. Its saved layout carries over.
 - The convergence plot under **Compare to reference** has log axes with ticks, a legend and hover readouts.
 - Scene files are payload version 24, which adds `"backgroundMode"` and `"environmentRotation"` and always writes `"background"`, the solid color. An older file renders as it did: one with a `"background"` opens on **Solid color**, one with a map on **Environment map**, and any other on **Sky**.
+- Scene files are payload version 25, which adds the texture library's image files and each material's textures, the emission parameters every type has, a shape's reverse orientation, the projection and goniometric lights, a spot's falloff, a light's unit, and the texture settings. A file without a texture storage opens on the legacy array and renders as it did.
+- The pbrt importer maps what it used to substitute. Area lights are one-sided unless `twosided`, keep the shape's material when it reflects, and read their `filename` image. Spot lights fall off as a smoothstep. Projection and goniometric lights keep their images. Every textured parameter keeps its texture, including roughness, a mix's amount, a conductor's reflectance and a diffuse transmission's reflectance and transmittance. The spherical, cylindrical and planar mappings and the `black` and `clamp` wraps are read. A shape's alpha texture cuts it away stochastically. A mesh without uvs gets pbrt's (0, 0), (1, 0), (1, 1) on each triangle when its material is textured. pbrt scenes render differently from before where these applied: `ganesha`'s area lights no longer light the room behind them.
+- The pbrt importer's normal maps apply to every material type, not only `lambertian` and `pbr`.
+- The development machine uses Vulkan SDK 1.4.363 (MoltenVK 1.4.2), whose Metal argument buffers the texture library's set needs. A build tree from the earlier SDK has to be rebuilt clean (`ninja -t clean`), since the new headers keep their old dates.
 
 ### Internal
 
@@ -32,6 +52,11 @@
 - ImPlot 1.0 is vendored at `../CPPLibraries/implot` and built as the `implot` target in the root `CMakeLists.txt`.
 - `src/stats_window.h/.cpp` hold the **Stats** window and `FrameHistory`, which `VulkanEngine::run()` fills every frame. The render's sections are `RaytraceRenderer::drawStats()` in `src/rt_renderer_stats.cpp`.
 - `FrameData::rasterTimestamps` times the raster pass, and `EngineStats::rasterGpuTime` holds the result two frames late. `GpuRenderer::memoryUse()` and `WavefrontPool::deviceBytes()` total the renderer's allocations, through `allocationBytes()` (`src/vk_types.h`).
+- `TextureLibrary` (`src/texture_library.h`) owns the library: the images, a sampler cache, and descriptor set 1 (binding 0 the samplers, binding 27 the images, update-after-bind and variable count), which every kernel that declares `CrtBinding::Textures` binds through `ComputePassBuilder::setSecondSetLayout()`. `GpuRenderer::bindingsOf()` adds it to every kernel that reads materials, and binding 64, `TriangleUv1`, to every kernel that reads triangle attributes.
+- A material's texture references are a table at the end of its record, found by an extension header in its last vec4 (`CRT_MATERIAL_FLAG_EXTENDED`, `CrtMaterialExtension`), beside the emission block of a type without emission of its own. `textureTarget()` (`src/rt_material.cpp`) names the record field each parameter modulates. `shaders/rt/include/crt_texture.glsl` reads them behind the specialization constant `CRT_TEXTURES` (8); ray cones are behind `CRT_RAY_CONES` (9), in `PathState`'s two former pad words.
+- `GpuLight::kind` carries flags above its low 8 bits (`GPU_LIGHT_FLAG_*`): smoothstep, one-sided, reversed, textured and mirrored. Read the kind through `lightKindOf()`. `CRT_LIGHT_PROJECTION` (8) and `CRT_LIGHT_GONIOMETRIC` (9) keep their image's descriptor in `a.w`.
+- `src/ies_loader.h` reads IES files, and `equalAreaSquareToSphere()`, `spotSolidAngle()`, `projectionExtents()` and `lightImageSolidAngle()` are in `src/light_sampling.h`, all in `rt_light`. `bin/light_test` checks both falloffs' power, the equal-area mapping, IES parsing and symmetry, and a projection's solid angle. The pbrt importer's own copy of the equal-area mapping is gone.
+- `VulkanEngine::requestOpenFile()` opens a file dialog after the frame for any panel.
 
 ## 2026-10-30
 

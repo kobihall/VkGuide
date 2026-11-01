@@ -290,14 +290,16 @@ void main()
 #endif
 		// the path's origin has not moved since kernel 02 traced from it
 		const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
+		// where the texture library's lookups are, and how wide the ray cone is there (crt_texture.glsl)
+		const TextureSite site = surfaceTextureSite(si, hit, inDir, path.coneWidth, path.coneSpread);
 #if CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
 		// a mix is one of its children for this hit, here and everywhere the hit's material is read below
-		const uint materialIndex = resolveMixMaterial(si.material, si.p, -inDir);
+		const uint materialIndex = resolveMixMaterial(si.material, si.p, -inDir, site);
 #else
 		const uint materialIndex = si.material;
 #endif
 		bool frontFace;
-		const vec3 normal = materialShadingNormal(classicMaterial(materialIndex), hit, si, inDir, frontFace);
+		const vec3 normal = materialShadingNormal(classicMaterial(materialIndex), hit, si, inDir, frontFace, materialIndex, site);
 
 		vec3 debugValue;
 		if (pc.debugView == CRT_DEBUG_AMBIENT_OCCLUSION) {
@@ -308,10 +310,10 @@ void main()
 			radiance[path.radianceSlot] = vec4(debugValue, 1.0);
 		} else {
 #if CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
-			ComplexMaterial material = resolveComplexMaterial(materialIndex, si);
+			ComplexMaterial material = resolveComplexMaterial(materialIndex, si, site);
 			material.frontFace = frontFace;
 #else
-			const ClassicMaterial material = resolveMaterial(materialIndex, si.uv);
+			const ClassicMaterial material = resolveMaterial(materialIndex, site);
 #endif
 			if (CRT_AOV) {
 				aovCapture(path.radianceSlot, hit, si, material, inDir, normal, frontFace);
@@ -391,6 +393,13 @@ void main()
 				pathSpectra[pathIndex] = throughput;
 #endif
 				path.bounce = nextBounce;
+				// the ray cone the continuation carries: a delta bounce widens it by the curvature alone, a glossy or diffuse
+				// one by its lobe too
+				if (CRT_RAY_CONES) {
+					const vec2 cone = continuedRayCone(si, path.coneWidth, path.coneSpread, specular ? 0.0 : surfaceConeRoughness(material));
+					path.coneWidth = cone.x;
+					path.coneSpread = cone.y;
+				}
 				// THE MIS RECORD for the light the new ray finds
 				// a surface that is part delta and part glossy (an optical interface's ABg lobe) says which this continuation was
 #if CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
