@@ -45,6 +45,13 @@ if (NOT MSVC)
     target_compile_options(light_test PRIVATE -O2)
 endif()
 
+# CPU-only verification of the camera models behind kernel 00: ./bin/camera_test
+add_executable(camera_test tests/camera_test.cpp)
+target_link_libraries(camera_test PRIVATE rt_camera fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(camera_test PRIVATE -O2)
+endif()
+
 # CPU-only verification of the sample generators behind kernel 01: ./bin/sampler_test
 add_executable(sampler_test tests/sampler_test.cpp)
 target_link_libraries(sampler_test PRIVATE rt_sampler fmt::fmt)

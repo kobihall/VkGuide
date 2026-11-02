@@ -1,0 +1,228 @@
+#version 460
+
+// 11 EMIT LIGHT RAYS (docs/plans/completed/pbrt-bidirectional-path-tracing.md; pbrt-v4's LightPathIntegrator). Starts a
+// light path in each slot below the frame's light path count: picks a light by its power (the alias table every light
+// sample uses), samples a ray leaving it (crt_light_emission.glsl), and writes the path's state with its throughput,
+// L |cos| / (pmf pdfPos pdfDir), for kernel 02 to trace. A point or spot light's range window keeps its range in the
+// path's misPdf, which kernels 12 and 13 apply to the first segment.
+//
+// It also connects the light's own point to the camera: the strategy of a path one edge long, the light seen directly,
+// whose contribution goes to kernel 14 as a splat. A light at infinity has no point to see. Serving the light vertex
+// cache (CRT_LIGHT_VERTEX_CACHE), it leaves that to the camera paths, and keeps each path's emission record instead.
+//
+// Every spawned slot of the pool writes its radiance slot (0, 0, 0, 1), so kernel 09 counts the pixel samples a light
+// path stands for; light tracing renders by splats alone. The light path's numbers come from its own dimensions of the
+// pixel sample (src/sampler.h SAMPLE_LIGHT_PATH_BASE), and in a spectral build its wavelengths from the path's own
+// sample, or the frame's under CRT_BIDIR_FLAG_FRAME_WAVELENGTHS (the light vertex cache's).
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
+#include "include/crt_interaction.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_samples.glsl"
+#include "equirect.glsl"
+#include "include/crt_light.glsl"
+#include "include/crt_light_emission.glsl"
+#include "include/crt_spawn.glsl"
+#include "include/crt_camera.glsl"
+#include "include/crt_light_vertex_cache.glsl"
+#include "include/crt_bdpt.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+// a light path's stream, apart from the camera path the same pixel sample would start
+#define CRT_LIGHT_STREAM_SALT 0x9e3779b9u
+
+// the intensity a light at a point sends along the unit `direction`: a spot light's falloff, an imaged light's texel
+Spectrum pointLightIntensity(GpuLight light, vec3 direction)
+{
+	const uint kind = lightKindOf(light);
+	if (kind == CRT_LIGHT_SPOT) {
+		return lightEmission(light, vec3(1.0), spotFalloffOf(light.kind, dot(light.b.xyz, direction), light.b.w, light.c.x));
+	}
+	if (kind == CRT_LIGHT_PROJECTION || kind == CRT_LIGHT_GONIOMETRIC) {
+		return lightEmission(light, imagedLightFactor(light, direction), 1.0);
+	}
+	return lightEmission(light, vec3(1.0), 1.0);
+}
+
+// The light's own point seen through the camera: a lens point sampled from it (pbrt's SampleWi()), Le towards it,
+// and the shadow ray to it in shadowRays[entry]. False when there is nothing to add
+bool connectLightToCamera(uint lightIndex, LightLeSample le, float pmf, vec2 u, uint entry, float lambdaU)
+{
+	const GpuLight light = lights[lightIndex];
+	if (le.deltaDirection || lightKindOf(light) == CRT_LIGHT_ENVIRONMENT) {
+		return false;
+	}
+	CameraWiSample cs;
+	if (!cameraSampleWi(le.origin, u, cs)) {
+		return false;
+	}
+	// towards the lens: wi points from the light's point to it
+	const vec3 toward = cs.wi;
+	Spectrum emitted;
+	float cosLight = 1.0;
+	if (le.deltaPosition) {
+		emitted = pointLightIntensity(light, toward);
+		const uint kind = lightKindOf(light);
+		if (kind == CRT_LIGHT_POINT || kind == CRT_LIGHT_SPOT) {
+			emitted = spectrumScale(emitted, rangeWindow(cs.distance, light.a.w));
+		}
+	} else {
+		// an area light emits the radiance at its point along every direction of the sides it emits from
+		const vec3 front = (light.kind & CRT_LIGHT_FLAG_REVERSED) != 0u ? -le.normal : le.normal;
+		cosLight = dot(le.normal, toward);
+		if (!areaLightTwoSided(light) && !(dot(front, toward) > 0.0)) {
+			return false;
+		}
+		cosLight = abs(cosLight);
+		emitted = le.radiance;
+	}
+	const Spectrum contribution = spectrumScale(emitted, cosLight * cs.we * pc.lightPathScale / (pmf * le.pdfPos * cs.pdf));
+	if (!(spectrumMaxValue(contribution) > 0.0)) {
+		return false;
+	}
+	ShadowRay ray;
+	ray.mediumAndGroup = floatBitsToUint(cs.film.y);
+	ray.radianceSlot = floatBitsToUint(cs.film.x);
+	// from past the light point's error bound on the camera's side; a point light is a point
+	ray.origin = le.deltaPosition ? le.origin : offsetRayOrigin(le.origin, CRT_GAMMA(CRT_LIGHT_END_GAMMA) * abs(le.origin), le.normal, toward);
+	ray.direction = toward;
+	ray.tMax = length(cs.lensPoint - ray.origin) * (1.0 - 1e-4);
+	ray.contribution = contribution;
+#ifdef CRT_SPECTRAL
+	ray.lambdaU = lambdaU;
+	ray.laneMask = spectrumFullLaneMask();
+	ray.spectralPad = 0u;
+#endif
+	shadowRays[entry] = ray;
+	return true;
+}
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	// no early return: queueAppend() below has barriers every invocation must reach
+	const bool inPool = index < pc.poolSize;
+
+	bool spawn = false;
+	bool shadow = false;
+
+	if (inPool) {
+		const uint pixel = index / pc.samplesPerFrame;
+		const uint k = index - pixel * pc.samplesPerFrame;
+		const uint x = pixel % pc.width;
+		const uint y = pixel / pc.width;
+		const bool sampled = k < min(sampleBudget[pixel], pc.samplesPerFrame);
+		// the pixel samples the frame takes: kernel 09 counts them, and divides the splats by their total
+		radiance[index] = vec4(0.0, 0.0, 0.0, sampled ? 1.0 : 0.0);
+
+		if (sampled && index < pc.lightPathCount && lightHeader.count > 0u) {
+			const uint sampleIndex = imageLoad(samplesTaken, ivec2(x, y)).r + k;
+			uint rng = pcgHash(pixel ^ pcgHash(sampleIndex ^ pcgHash(pc.seed ^ CRT_LIGHT_STREAM_SALT)));
+			if (CRT_SAMPLE_RECORD) {
+				rng = pcgHash(rng ^ CRT_RECORD_STREAM_SALT);
+			}
+			const uint lightIndex = sampleLightIndex(sampleDimension(index, rng, CRT_SAMPLE_EMIT_LIGHT));
+			const vec2 uPos = sampleDimension2D(index, rng, CRT_SAMPLE_EMIT_POSITION);
+			const vec2 uDir = sampleDimension2D(index, rng, CRT_SAMPLE_EMIT_DIRECTION);
+			uint lensRng = pcgHash(rng ^ 0x27d4eb2fu);
+			const vec2 uLens = vec2(randomFloat(lensRng), randomFloat(lensRng));
+			float lambdaU = 0.0;
+#ifdef CRT_SPECTRAL
+			// drawn last, as kernel 00 draws a camera path's; under pbrt 3's BDPT from the pixel sample, as its camera subpath's
+			if (spectralRepresentation() == CRT_REPRESENTATION_HERO) {
+				lambdaU = CRT_BDPT ? bdptLambdaU(pixel, sampleIndex)
+				        : (pc.bidirFlags & CRT_BIDIR_FLAG_FRAME_WAVELENGTHS) != 0u ? pc.frameLambdaU : sampleDimension(index, rng, CRT_SAMPLE_CAMERA_WAVELENGTH);
+			}
+			spectralBegin(lambdaU);
+#endif
+			LightLeSample le;
+			const float pmf = lightPmf(lightIndex);
+			if (pmf > 0.0 && sampleLe(lightIndex, uPos, uDir, le)) {
+				// the light vertex cache's and pbrt 3's BDPT's camera paths see a light directly themselves: only light tracing
+				// connects its point
+				shadow = !CRT_LIGHT_VERTEX_CACHE && !CRT_BDPT && connectLightToCamera(lightIndex, le, pmf, uLens, index, lambdaU);
+
+				const float cosLight = le.deltaPosition || le.deltaDirection || dot(le.normal, le.normal) == 0.0 ? 1.0 : abs(dot(le.normal, le.direction));
+				// the emission record the first hit makes the path's MIS sums from (crt_light_vertex_cache.glsl)
+				if (CRT_LIGHT_VERTEX_CACHE) {
+					const uint kind = lightKindOf(lights[lightIndex]);
+					const uint flags = (le.deltaPosition ? CRT_LVC_LIGHT_DELTA_POSITION : 0u) | (le.deltaDirection ? CRT_LVC_LIGHT_DELTA_DIRECTION : 0u)
+						| (isInfiniteLight(kind) ? CRT_LVC_LIGHT_INFINITE : 0u);
+					lvcWords[index] = uvec4(floatBitsToUint(le.pdfPos * le.pdfDir), floatBitsToUint(cosLight), lightIndex, flags);
+				}
+				const Spectrum beta = spectrumScale(le.radiance, cosLight / (pmf * le.pdfPos * le.pdfDir));
+				const GpuLight light = lights[lightIndex];
+				const uint kind = lightKindOf(light);
+				// pbrt 3's BDPT: the light subpath's first vertex, its beta Le and its pdfFwd the light's pick times the point's
+				// density, or for a light at infinity the density of its direction over every such light
+				// (GenerateLightSubpath(), InfiniteLightDensity())
+				if (CRT_BDPT) {
+					const bool infinite = isInfiniteLight(kind);
+					const bool area = !le.deltaPosition && !infinite;
+					BdptVertex v;
+					v.flags = CRT_BDPT_LIGHT | (le.deltaPosition || le.deltaDirection ? CRT_BDPT_DELTA_LIGHT : 0u) | (area ? CRT_BDPT_ON_SURFACE : 0u)
+						| (infinite ? CRT_BDPT_INFINITE : 0u) | (le.deltaDirection ? 0u : CRT_BDPT_CONNECTIBLE) | bdptLightBits(lightIndex);
+					v.p = le.origin;
+					v.n = infinite ? -le.direction : le.normal;
+					v.pdfFwd = pmf * le.pdfPos;
+					if (kind == CRT_LIGHT_ENVIRONMENT) {
+						v.pdfFwd = pmf * environmentPdf(0u, -le.direction, environmentRotation());
+					} else if (kind == CRT_LIGHT_DIRECTIONAL) {
+						v.pdfFwd = 0.0;
+					}
+					v.pdfRev = 0.0;
+					v.hit.t = 0.0;
+					v.hit.instance = 0u;
+					v.hit.barycentrics = vec2(0.0);
+					v.hit.primitive = 0u;
+					v.hit.traversalCost = 0.0;
+					v.rayOrigin = le.origin;
+					v.rayDirection = le.direction;
+					v.beta = le.radiance;
+					const uint slot = bdptSlotOf(index);
+					bdptStoreVertex(slot, true, 0u, v);
+					bdptSetCount(slot, true, 1u);
+				}
+				if (spectrumMaxValue(beta) > 0.0) {
+					PathState path;
+					path.origin = le.deltaPosition || dot(le.normal, le.normal) == 0.0 ? le.origin
+					              : offsetRayOrigin(le.origin, CRT_GAMMA(CRT_LIGHT_END_GAMMA) * abs(le.origin), le.normal, le.direction);
+					path.radianceSlot = index;
+					path.direction = le.direction;
+					path.bounce = 0u;
+					path.misPdf = (kind == CRT_LIGHT_POINT || kind == CRT_LIGHT_SPOT) ? light.a.w : 0.0;
+					path.misExponent = 1.0;
+					// pbrt 3's BDPT carries the density of the direction to the next vertex, by solid angle, in misExponent;
+					// a light at infinity its point's density instead, which pbrt takes as the next vertex's pdfFwd
+					if (CRT_BDPT) {
+						const bool infinite = isInfiniteLight(kind);
+						path.misExponent = infinite ? le.pdfPos : le.pdfDir;
+						if (infinite) {
+							path.misPdf = CRT_BDPT_FROM_INFINITY;
+						}
+					}
+					path.coneWidth = 0.0;
+					path.coneSpread = 0.0;
+#ifndef CRT_SPECTRAL
+					path.rngState = rng;
+					path.throughput = beta;
+#else
+					path.lambdaU = lambdaU;
+					path.rngState = rng;
+					path.laneMask = spectrumFullLaneMask();
+					path.spectralPad = 0u;
+					pathSpectra[index] = beta;
+#endif
+					paths[index] = path;
+					spawn = true;
+				}
+			}
+		}
+	}
+
+	queueAppend(CRT_QUEUE_RAY_A, spawn, index);
+	queueAppend(CRT_QUEUE_SHADOW, shadow, index);
+}

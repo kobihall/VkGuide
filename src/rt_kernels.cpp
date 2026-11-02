@@ -101,26 +101,28 @@ const std::vector<KernelVariant>& registry()
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::GenerateCameraRays,
 			.id = "thin_lens",
-			.name = "Thin lens (box pixels)",
-			.description = "One primary ray per pool slot, jittered uniformly in the pixel and over the aperture. What a scene saved before pixel filters opens with.",
+			.name = "Box pixels",
+			.description = "One camera ray per pool slot, jittered uniformly in the pixel and over the aperture. What a scene saved before pixel filters opens with.",
 			.shader = "rt/0001_generate_camera_rays.comp",
 			.domain = KernelDomain::Pool,
-			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples, CrtBinding::PixelState }),
+			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples, CrtBinding::PixelState, CrtBinding::ImageDistributions }),
 			.readsRecord = true,
+			.readsCamera = true,
 			.usesOutputs = true,
 			.laneDependent = true,
 		});
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::GenerateCameraRays,
 			.id = "filter_importance",
-			.name = "Thin lens (filtered pixels)",
-			.description = "One primary ray per pool slot, placed by importance sampling the pixel filter, and jittered over the aperture. pbrt-v4's way of filtering.",
+			.name = "Filtered pixels",
+			.description = "One camera ray per pool slot, placed by importance sampling the pixel filter, and jittered over the aperture. pbrt-v4's way of filtering.",
 			.shader = "rt/0002_generate_camera_rays_filtered.comp",
 			.domain = KernelDomain::Pool,
-			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples, CrtBinding::FilterTable, CrtBinding::PixelState }),
+			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples, CrtBinding::FilterTable, CrtBinding::PixelState, CrtBinding::ImageDistributions }),
 			.isDefault = true,
 			.settings = KernelSettings::PixelFilter,
 			.readsRecord = true,
+			.readsCamera = true,
 			.usesOutputs = true,
 			.laneDependent = true,
 		});
@@ -342,11 +344,12 @@ const std::vector<KernelVariant>& registry()
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::UpdateFilm,
 			.id = "compensated_mean",
+			.foldsSplats = true,
 			.name = "Compensated mean",
 			.description = "Weighted sums with Neumaier compensation, the luminance's running variance, an optional clamp, and a count of samples taken apart from the count accepted, so a dropped sample is not drawn again.",
 			.shader = "rt/0902_update_film_compensated.comp",
 			.domain = KernelDomain::Pixels,
-			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::AccumulationError, CrtBinding::PixelState, CrtBinding::AovImages, CrtBinding::ChannelSums },
+			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::AccumulationError, CrtBinding::PixelState, CrtBinding::AovImages, CrtBinding::ChannelSums, CrtBinding::SplatAccumulation },
 			.isDefault = true,
 			.settings = KernelSettings::Film,
 			.keepsFilmRecord = true,
@@ -355,16 +358,151 @@ const std::vector<KernelVariant>& registry()
 		v.push_back(KernelVariant {
 			.slot = KernelSlot::UpdateFilm,
 			.id = "outlier_reweighted",
+			.foldsSplats = true,
 			.name = "Outlier reweighted",
 			.description = "The compensated mean, with each pixel's value resolved from a cascade of buffers by brightness: samples of a brightness too rare in the pixel and its neighbors are weighed down or dropped (Zirr et al. 2018). Removes fireflies with far less lost energy than the clamp.",
 			.shader = "rt/0903_update_film_outliers.comp",
 			.domain = KernelDomain::Pixels,
-			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::AccumulationError, CrtBinding::FilmCascade, CrtBinding::PixelState, CrtBinding::AovImages, CrtBinding::ChannelSums },
+			.bindings = { CrtBinding::Radiance, CrtBinding::Accumulation, CrtBinding::SamplesTaken, CrtBinding::TraversalStats, CrtBinding::AccumulationError, CrtBinding::FilmCascade, CrtBinding::PixelState, CrtBinding::AovImages, CrtBinding::ChannelSums, CrtBinding::SplatAccumulation },
 			.settings = KernelSettings::Film,
 			.keepsFilmRecord = true,
 			.keepsFilmCascade = true,
 			.passes = 2,
 			.usesOutputs = true,
+		});
+
+		//---------------------------------------------------------------- 11 to 14: light paths
+		//docs/plans/completed/pbrt-bidirectional-path-tracing.md. Light tracing runs 11, 01, 02, 12, 13 and 14; the light
+		//vertex cache's light pass runs them too. A light path's splats carry its film point in its ShadowRay
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::EmitLightRays,
+			.id = "emit",
+			.name = "Emit light rays",
+			.description = "Picks a light by its power, samples a ray leaving it (pbrt's SampleLe()), and connects the light's own point to the camera.",
+			.shader = "rt/1101_emit_light_rays.comp",
+			.domain = KernelDomain::Pool,
+			.bindings = withCore({ CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::RaySamples, CrtBinding::Lights, CrtBinding::Instances,
+				CrtBinding::Materials, CrtBinding::MaterialParams, CrtBinding::MaterialTextures, CrtBinding::TriangleAttributes, CrtBinding::EnvironmentMap,
+				CrtBinding::EnvironmentSampling, CrtBinding::ShadowRays, CrtBinding::ImageDistributions, CrtBinding::LightVertexCache, CrtBinding::BdptVertices }),
+			.readsRecord = true,
+			.servesLightVertexCache = true,
+			.storesBdptVertices = true,
+			.laneDependent = true,
+			.readsCamera = true,
+		});
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::ConnectToCamera,
+			.id = "camera",
+			.name = "Connect to the camera",
+			.description = "Samples a point on the lens from each light path vertex and weighs the connection by the camera's importance and the adjoint BSDF.",
+			.shader = "rt/1201_connect_to_camera.comp",
+			.domain = KernelDomain::SurfaceQueues,
+			.queue = QUEUE_SURFACE,
+			.bindings = withInteraction(withCore({ CrtBinding::Materials, CrtBinding::MaterialParams, CrtBinding::MaterialTextures, CrtBinding::ShadowRays, CrtBinding::RaySamples,
+				CrtBinding::ImageDistributions, CrtBinding::Lights, CrtBinding::LightVertexCache })),
+			.perMaterialClass = true,
+			.readsRecord = true,
+			.servesLightVertexCache = true,
+			.laneDependent = true,
+			.readsCamera = true,
+		});
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::ScatterLightPaths,
+			.id = "importance",
+			.name = "Scatter light paths",
+			.description = "Samples each light path vertex's BSDF in importance mode, the adjoint of the materials that are not reciprocal, and continues the path.",
+			.shader = "rt/1301_scatter_light_paths.comp",
+			.domain = KernelDomain::SurfaceQueues,
+			.queue = QUEUE_SURFACE,
+			.bindings = withInteraction(withCore({ CrtBinding::Materials, CrtBinding::MaterialParams, CrtBinding::MaterialTextures, CrtBinding::RaySamples, CrtBinding::Lights,
+				CrtBinding::LightVertexCache })),
+			.perMaterialClass = true,
+			.readsRecord = true,
+			.servesLightVertexCache = true,
+			.laneDependent = true,
+		});
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::TraceCameraConnections,
+			.id = "splat",
+			.name = "Trace camera connections",
+			.description = "Traces each connection to the camera and splats the unoccluded ones over the pixel filter's footprint.",
+			.shader = "rt/1401_trace_camera_connections.comp",
+			.domain = KernelDomain::FixedQueue,
+			.queue = QUEUE_SHADOW,
+			.bindings = withCore({ CrtBinding::ShadowRays, CrtBinding::TraversalStats, CrtBinding::SplatAccumulation, CrtBinding::FilterTable }),
+			.traces = true,
+			.laneDependent = true,
+		});
+
+		//---------------------------------------------------------------- 15, 16: the light vertex cache's camera pass
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::HandleEmittersBidirectional,
+			.id = "recursive_mis",
+			.name = "Handle emitters (recursive MIS)",
+			.description = "Kernels 03 and 04 for camera paths, each light found weighed against every bidirectional strategy by Georgiev's recursive MIS. Launched over the escaped queue, then the emissive one.",
+			.shader = "rt/1501_handle_emitters_lvc.comp",
+			.domain = KernelDomain::FixedQueue,
+			.queue = QUEUE_ESCAPED,
+			.bindings = withInteraction(withCore({ CrtBinding::Radiance, CrtBinding::Materials, CrtBinding::MaterialParams, CrtBinding::MaterialTextures, CrtBinding::Lights,
+				CrtBinding::EnvironmentMap, CrtBinding::EnvironmentSampling, CrtBinding::PixelState, CrtBinding::LightVertexCache, CrtBinding::ImageDistributions })),
+			.usesOutputs = true,
+			.laneDependent = true,
+		});
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::ScatterAndConnect,
+			.id = "light_vertex_cache",
+			.name = "Scatter and connect",
+			.description = "Kernel 06 for camera paths with recursive MIS: a light sample, connections to vertices picked from the light vertex cache (traced here), and the scatter.",
+			.shader = "rt/1601_scatter_and_connect.comp",
+			.domain = KernelDomain::SurfaceQueues,
+			.queue = QUEUE_SURFACE,
+			.bindings = [] {
+				std::vector<CrtBinding> bindings = scatterBindings(true);
+				bindings.push_back(CrtBinding::LightVertexCache);
+				bindings.push_back(CrtBinding::ImageDistributions);
+				return bindings;
+			}(),
+			.traces = true,
+			.perMaterialClass = true,
+			.readsRecord = true,
+			.usesOutputs = true,
+			.laneDependent = true,
+		});
+
+		//---------------------------------------------------------------- 17, 18: pbrt 3's bidirectional path tracer
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::StoreVertices,
+			.id = "random_walk",
+			.name = "Store vertices and scatter",
+			.description = "pbrt-v3's RandomWalk(): records each surface a camera or light subpath reaches as a vertex with its densities both ways, and samples its BSDF in the subpath's transport mode. Also launched over the escaped and emissive queues, where a camera subpath ends.",
+			.shader = "rt/1701_store_vertices_and_scatter.comp",
+			.domain = KernelDomain::SurfaceQueues,
+			.queue = QUEUE_SURFACE,
+			.bindings = withInteraction(withCore({ CrtBinding::Materials, CrtBinding::MaterialParams, CrtBinding::MaterialTextures, CrtBinding::RaySamples, CrtBinding::Lights,
+				CrtBinding::BdptVertices, CrtBinding::SamplesTaken, CrtBinding::ImageDistributions, CrtBinding::PixelState })),
+			.perMaterialClass = true,
+			.readsRecord = true,
+			.usesOutputs = true,
+			.laneDependent = true,
+			.readsCamera = true,
+		});
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::ConnectSubpaths,
+			.id = "connect_bdpt",
+			.name = "Connect subpaths",
+			.description = "pbrt-v3's ConnectBDPT() for every strategy (s, t) of a pixel sample's subpaths, each weighed by MISWeight(); the strategies that end on the camera splat. Traces its own visibility tests.",
+			.shader = "rt/1801_connect_subpaths.comp",
+			.domain = KernelDomain::Pool,
+			//no queue, path state or sample record: the vertices hold all it reads of the subpaths, and its spectral build would
+			//pass the 31 storage buffers a stage this GPU allows with them
+			.bindings = { CrtBinding::Radiance, CrtBinding::SampleBudget, CrtBinding::SamplesTaken, CrtBinding::Instances, CrtBinding::Materials,
+				CrtBinding::MaterialParams, CrtBinding::MaterialTextures, CrtBinding::EnvironmentMap, CrtBinding::EnvironmentSampling, CrtBinding::Lights,
+				CrtBinding::BlasTriangles, CrtBinding::TriangleAttributes, CrtBinding::InstanceMaterials, CrtBinding::TriangleLights, CrtBinding::ImageDistributions,
+				CrtBinding::BdptVertices, CrtBinding::SplatAccumulation, CrtBinding::FilterTable, CrtBinding::TraversalStats, CrtBinding::ChannelSums },
+			.traces = true,
+			.usesOutputs = true,
+			.laneDependent = true,
+			.readsCamera = true,
 		});
 
 		return v;
@@ -389,6 +527,15 @@ constexpr std::array<SlotInfo, (size_t)KernelSlot::Count> SLOT_INFO { {
 	{ "07", "Sample medium scattering", "Would scatter a path off a medium's phase function." },
 	{ "08", "Trace shadow rays", "Traces the shadow rays kernel 06 emitted, with the selected traversal, and adds the light that gets through." },
 	{ "09", "Update film", "Folds the frame's samples into each pixel's value: a running mean, or compensated weighted sums with a variance estimate. Runs once per frame." },
+	{ "10", "Sample subsurface", "Reserved for subsurface scattering." },
+	{ "11", "Emit light rays", "Starts a light path in each slot: picks a light by its power, samples a ray leaving it, and connects the light's own point to the camera. Runs once per frame." },
+	{ "12", "Connect to the camera", "At each surface a light path reaches, samples a point on the lens and evaluates the importance a connection to it carries, for kernel 14 to trace." },
+	{ "13", "Scatter light paths", "Samples the adjoint BSDF at each surface a light path reaches, and continues the path." },
+	{ "14", "Trace camera connections", "Traces the connections to the camera with the selected traversal, and splats the unoccluded ones onto the film." },
+	{ "15", "Handle emitters (light vertex cache)", "Camera paths that left the scene or hit a light collect it, weighed against every bidirectional strategy." },
+	{ "16", "Scatter and connect", "Samples a light and connects to vertices of the light vertex cache at each surface a camera path reaches, then scatters it." },
+	{ "17", "Store vertices and scatter", "Records each vertex of a camera or light subpath, and scatters it in its transport mode." },
+	{ "18", "Connect subpaths", "Evaluates every strategy joining a pixel sample's camera and light subpaths, with pbrt's MIS weights." },
 } };
 
 // The traversals, in the order the panel lists them. Each id is a CRT_TRAVERSAL_<ID> branch of
@@ -449,6 +596,58 @@ const std::vector<IntegratorInfo>& integratorRegistry()
 				KernelSlot::TraceShadowRays,
 				KernelSlot::UpdateFilm,
 			},
+		},
+		{
+			.id = IntegratorId::Light,
+			.key = "light",
+			.name = "Light tracing",
+			.description = "Paths from the lights only, each vertex connected to the camera and splatted onto the film (pbrt-v4's LightPathIntegrator). Renders caustics seen directly well and everything else poorly; lights seen directly come from their own points.",
+			.stages = {
+				KernelSlot::GenerateSamples,
+				KernelSlot::EmitLightRays,
+				KernelSlot::IntersectClosest,
+				KernelSlot::ConnectToCamera,
+				KernelSlot::ScatterLightPaths,
+				KernelSlot::TraceCameraConnections,
+				KernelSlot::UpdateFilm,
+			},
+			.bidirectional = true,
+		},
+		{
+			.id = IntegratorId::Lvc,
+			.key = "lvc",
+			.name = "Bidirectional (light vertex cache)",
+			.description = "Davidovic et al. 2014: the frame's light paths fill a cache of their vertices and splat onto the film, then every camera path vertex samples a light and connects to vertices picked from the cache, all weighed by Georgiev's recursive MIS.",
+			.stages = {
+				KernelSlot::GenerateSamples,
+				KernelSlot::EmitLightRays,
+				KernelSlot::IntersectClosest,
+				KernelSlot::ConnectToCamera,
+				KernelSlot::ScatterLightPaths,
+				KernelSlot::TraceCameraConnections,
+				KernelSlot::GenerateCameraRays,
+				KernelSlot::HandleEmittersBidirectional,
+				KernelSlot::ScatterAndConnect,
+				KernelSlot::TraceShadowRays,
+				KernelSlot::UpdateFilm,
+			},
+			.bidirectional = true,
+		},
+		{
+			.id = IntegratorId::Bdpt,
+			.key = "bdpt",
+			.name = "Bidirectional (pbrt 3)",
+			.description = "pbrt-v3's BDPT: each pixel sample traces a camera subpath and a light subpath and evaluates every strategy joining them, weighed by the balance heuristic over all of them. Renders the image in tiles the vertex budget holds; a sweep of the tiles is one sample per pixel.",
+			.stages = {
+				KernelSlot::GenerateSamples,
+				KernelSlot::EmitLightRays,
+				KernelSlot::IntersectClosest,
+				KernelSlot::StoreVertices,
+				KernelSlot::GenerateCameraRays,
+				KernelSlot::ConnectSubpaths,
+				KernelSlot::UpdateFilm,
+			},
+			.bidirectional = true,
 		},
 	};
 	return integrators;
@@ -543,7 +742,12 @@ std::span<const IntegratorInfo> integrators()
 const IntegratorInfo& integratorInfo(IntegratorId id)
 {
 	const std::vector<IntegratorInfo>& all = integratorRegistry();
-	return id < IntegratorId::Count ? all[(size_t)id] : all.front();
+	for (const IntegratorInfo& info : all) {
+		if (info.id == id) {
+			return info;
+		}
+	}
+	return all.front();
 }
 
 IntegratorId findIntegrator(std::string_view key)

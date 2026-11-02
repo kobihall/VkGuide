@@ -162,6 +162,18 @@ inline constexpr uint32_t AOV_PARAM_CAPTURE_THROUGH_SPECULAR = 1u << 31;
 // CrtPixelState::state: the path has recorded its surface. A path records at most one
 inline constexpr uint32_t AOV_STATE_HIT = 1u;
 
+// bdpt's strategy images: pbrt-v3's BufferIndex(), strategy (s, t) of depth s + t - 2 at s + depth (5 + depth) / 2, the slot
+// of (1, 1) unused; and how many slots the depths up to `maxDepth` take
+inline constexpr uint32_t bdptStrategyIndex(uint32_t s, uint32_t t)
+{
+	const uint32_t depth = s + t - 2;
+	return s + depth * (5 + depth) / 2;
+}
+inline constexpr uint32_t bdptStrategyCount(uint32_t maxDepth)
+{
+	return (maxDepth + 1) * (maxDepth + 6) / 2;
+}
+
 // What a render kept beside its picture, on the host (GpuRenderer::readOutputs()): the AOV layers and the light
 // groups' sums as the GPU holds them, and the samples taken of each pixel. src/render_export.h turns it into files
 struct RenderOutputsData {
@@ -176,6 +188,9 @@ struct RenderOutputsData {
 	// (ChannelSums as the GPU holds it)
 	uint32_t lightGroups { 0 };
 	std::vector<float> groupSums;
+	// bdpt's strategy images hold the groups' place when this is above 0: the depths 0 to strategyDepths - 1, strategy
+	// (s, t) in group bdptStrategyIndex(s, t). A strategy with t = 1 splats, and is its sums over the samples taken
+	uint32_t strategyDepths { 0 };
 	// the spectral images (docs/plans/completed/pbrt-spectral-rendering.md): the bucket count and each bucket's center
 	// in nm. A monochromatic render has none, and its one wavelength instead
 	uint32_t spectralBuckets { 0 };

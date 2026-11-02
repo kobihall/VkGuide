@@ -131,6 +131,9 @@ struct GpuRenderSnapshot {
 	// the environment map's sampling tables, when the map is the background and so a light kernel
 	// 06 can sample; compared by pointer, since one is built per map load. Null otherwise
 	std::shared_ptr<const EnvironmentDistribution> environment;
+	// the camera's aperture image's distribution, when its aperture is an image; compared by pointer, as one is built per
+	// image. Null otherwise
+	std::shared_ptr<const PiecewiseConstant2D> apertureTable;
 	// sample the engine's environment map on a miss; false falls back to the sky gradient
 	bool useEnvironmentMap { false };
 	float environmentIntensity { 1.f };
@@ -265,7 +268,10 @@ public:
 	// outputs it accumulates and where their layers are, and how many light groups it sums. Decided at start()
 	const AovSettings& aovSettings() const { return m_aov; }
 	const AovLayout& aovLayout() const { return m_aovLayout; }
-	uint32_t lightGroupCount() const { return m_lightGroupCount; }
+	// the light groups the render keeps; none while bdpt's strategy images take their sums
+	uint32_t lightGroupCount() const { return m_strategyDepths > 0 ? 0u : m_lightGroupCount; }
+	// bdpt's strategy images: the depths kept, 0 for none
+	uint32_t strategyDepths() const { return m_strategyDepths; }
 	// the memory the outputs take, 0 when the render keeps none
 	uint64_t aovBytes() const { return m_aovLayout.count > 0 ? aovImageBytes(m_aov, m_snapshot.width, m_snapshot.height) : 0; }
 	uint64_t lightGroupBytes() const { return lightGroupSumBytes(m_lightGroupCount, m_snapshot.width, m_snapshot.height, m_spectralBuckets); }
@@ -331,6 +337,8 @@ public:
 	// FOR SCHEDULES. The render being recorded, every binding's resource, and the wavefront pool
 	const GpuRenderSnapshot& snapshot() const { return m_snapshot; }
 	CrtResourceTable& resources() { return m_resources; }
+	// bindings 52 and 53 back to their stub, for a schedule that published its own and is giving it up
+	void publishBidirectionalStubs();
 	WavefrontPool& wavefrontPool() { return m_pool; }
 	// the pipeline of `variant`, built on first use. A kernel that traces is built for the
 	// snapshot's traversal, with the traversal's bindings added to its own; a kernel built per
@@ -365,6 +373,8 @@ private:
 	// binding 31: one CrtFilmPixel per pixel while the selected kernel 09 keeps a record, a stub otherwise.
 	// Reallocated (after a device-wide wait) when the size or the need changes
 	void ensureFilmRecords(VulkanEngine* engine, uint32_t width, uint32_t height, bool needed, bool cascade);
+	// binding 42, the splats of a bidirectional integrator: three floats a pixel while `needed`, a stub otherwise
+	void ensureSplats(VulkanEngine* engine, uint32_t width, uint32_t height, bool needed);
 	// binding 30: the pixel filter's sampling table, uploaded when the filter changes
 	void uploadFilterTable(VulkanEngine* engine, const PixelFilterSettings& filter);
 	void uploadScene(VulkanEngine* engine);
@@ -381,6 +391,9 @@ private:
 	void publishEngineImages(VulkanEngine* engine);
 	// the environment map's tables, device-local, once per map; a stub when there is none
 	void uploadEnvironment(VulkanEngine* engine, const std::shared_ptr<const EnvironmentDistribution>& environment);
+	// binding 65, the image distributions: the scene's punctual lights' word each and their emission tables (the light
+	// list's imageTables), then the camera's aperture image's table; a stub without either
+	void uploadImageDistributions(VulkanEngine* engine, const std::shared_ptr<const RaytraceSceneAccel>& scene, const std::shared_ptr<const PiecewiseConstant2D>& aperture);
 	// the push constants every integrator shares: the camera, the scene's counts, the flags
 	CrtParams baseParams(VulkanEngine* engine) const;
 	// the reference copy and its error measurement, inside record()
@@ -426,6 +439,9 @@ private:
 	AovSettings m_aov;
 	AovLayout m_aovLayout;
 	uint32_t m_lightGroupCount { 0 };
+	// bdpt's strategy images, in the light groups' place: the depths they cover (0 for none), which take
+	// bdptStrategyCount(depths - 1) of the sums' slots
+	uint32_t m_strategyDepths { 0 };
 	uint32_t m_spectralBuckets { 0 };
 	uint32_t m_outputFeatures { 0 };
 	// the uploaded geometry has second uv sets (binding 64, CRT_FLAG_UV1)
@@ -458,6 +474,14 @@ private:
 	uint32_t m_filmRecordPixels { 0 };
 	VkDeviceSize m_filmRecordBytes { 0 };
 	bool m_filmRecordsLive { false };
+	// bindings 52 and 53 while no schedule has published its own: a zeroed stub
+	AllocatedBuffer m_lightVertexCacheStub {};
+	// binding 42 (ensureSplats())
+	AllocatedBuffer m_splats {};
+	VkDeviceSize m_splatBytes { 0 };
+	bool m_splatsLive { false };
+	// the selected pixel filter's signed integral over its table, which a splat spread over it is divided by
+	float m_filterIntegral { 1.f };
 	// binding 62: the outlier film's cascade, OUTLIER_BUFFERS vec4s a pixel, or a one-pixel stub
 	AllocatedBuffer m_filmCascade {};
 	uint32_t m_filmCascadePixels { 0 };
@@ -511,6 +535,12 @@ private:
 	AllocatedBuffer m_environmentBuffer {};
 	std::shared_ptr<const EnvironmentDistribution> m_uploadedEnvironment;
 	bool m_hasEnvironmentBuffer { false };
+	// binding 65 (ImageDistributions), and the table of the aperture image it was built with
+	AllocatedBuffer m_imageDistributionBuffer {};
+	std::shared_ptr<const PiecewiseConstant2D> m_uploadedAperture;
+	std::shared_ptr<const RaytraceSceneAccel> m_uploadedImageScene;
+	bool m_hasImageDistributions { false };
+	uint32_t m_apertureTableBase { 0 };
 
 	// per frame slot: timestamps (two queries)
 	VkQueryPool m_queryPool { VK_NULL_HANDLE };

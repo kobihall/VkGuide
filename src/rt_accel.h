@@ -202,6 +202,8 @@ struct RaytraceSceneAccel {
 	std::shared_ptr<const RaytraceBlasSet> blases;
 	std::shared_ptr<const RaytraceGeometry> geometry;
 	Tlas tlas;
+	// what the TLAS was built over, by instance index, for the CPU's queries of the scene (traceScene())
+	std::vector<SceneInstance> sceneInstances;
 	// the first unboundedCount are the unbounded shapes; after them, TLAS slot order, so a tlas.bvh
 	// leaf's slot plus unboundedCount indexes this directly
 	std::vector<GpuInstance> instances;
@@ -217,6 +219,9 @@ struct RaytraceSceneAccel {
 	// every light next-event estimation can sample: the punctual lights, the emitting shapes and
 	// triangles, and the environment map when it is the background
 	RaytraceLightList lights;
+	// a sphere around the bounded geometry (center, radius; radius 1 at the origin for none): what a directional light and
+	// the environment are priced by, and where their emitted rays start (CrtParams::sceneSphere)
+	glm::vec4 sceneSphere { 0.f, 0.f, 0.f, 1.f };
 	// THE SPECTRAL SIDE (docs/plans/completed/pbrt-spectral-rendering.md): every spectrum the materials and lights use,
 	// and each material's record of them by slot (indices into `spectra`), parallel to `materials`. The light records
 	// name theirs in GpuLight::spectrum. Independent of the representation, which only the SpectralData packs for

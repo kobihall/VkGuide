@@ -27,6 +27,8 @@ struct RenderExportInfo {
 	// device coordinates, x right and y down over [0, 1]. glm's column-major form: the file gets them row-major
 	glm::mat4 cameraFromWorld { 1.f };
 	glm::mat4 ndcFromWorld { 1.f };
+	// a spherical camera has no projection, and pbrt then writes no NDCFromWorld
+	bool hasNdc { true };
 	// the mean squared error against the loaded reference, when there is one
 	bool hasMse { false };
 	float mse { 0.f };

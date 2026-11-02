@@ -37,6 +37,18 @@ if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
     target_compile_options(rt_light PRIVATE -O2)
 endif()
 
+# The camera models kernel 00 runs (perspective, orthographic, spherical, the apertures, tilt and shift), as plain C++:
+# the line-for-line mirror of shaders/rt/include/crt_camera.glsl. Built into the app and checked on its own by
+# tests/camera_test.cpp
+add_library(rt_camera STATIC
+    camera_model.cpp
+    camera_model.h)
+target_include_directories(rt_camera PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(rt_camera PUBLIC rt_light glm)
+if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
+    target_compile_options(rt_camera PRIVATE -O2)
+endif()
+
 # The sample generators kernel 01 runs, as plain C++: the line-for-line mirror of
 # shaders/rt/include/crt_sampler.glsl and the loader of pbrt's Sobol, PMJ02BN and blue-noise tables
 # (assets/sampler/). Built into the app and checked on its own by tests/sampler_test.cpp
@@ -162,7 +174,7 @@ add_library(rt_pbrt STATIC
     ply_mesh.h
     "${CMAKE_SOURCE_DIR}/../CPPLibraries/rply/rply.cpp")
 target_include_directories(rt_pbrt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(rt_pbrt PUBLIC rt_material rt_spectrum rt_film rt_light rt_bvh rt_aov rt_sampler rt_image glm ZLIB::ZLIB fmt::fmt)
+target_link_libraries(rt_pbrt PUBLIC rt_camera rt_material rt_spectrum rt_film rt_light rt_bvh rt_aov rt_sampler rt_image glm ZLIB::ZLIB fmt::fmt)
 set_source_files_properties("${CMAKE_SOURCE_DIR}/../CPPLibraries/rply/rply.cpp" PROPERTIES COMPILE_OPTIONS "-w")
 if (RT_BVH_ALWAYS_OPTIMIZE AND NOT MSVC)
     target_compile_options(rt_pbrt PRIVATE -O2)
@@ -266,6 +278,12 @@ add_executable(vulkan_guide
     rt_wavefront.h
     rt_schedule.cpp
     rt_schedule.h
+    rt_bdpt_schedule.cpp
+    rt_bdpt_schedule.h
+    rt_light_schedule.cpp
+    rt_light_schedule.h
+    rt_lvc_schedule.cpp
+    rt_lvc_schedule.h
     rt_path_schedule.cpp
     rt_path_schedule.h
     rt_accel.cpp
@@ -279,6 +297,7 @@ add_executable(vulkan_guide
     gpu_selftest.cpp
     gpu_selftest.h
     gpu_selftest_bsdf.cpp
+    gpu_selftest_camera.cpp
     gpu_selftest_film.cpp
     gpu_selftest_aov.cpp
     gpu_selftest_spectral.cpp
@@ -294,7 +313,7 @@ set_property(TARGET vulkan_guide PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGE
 
 target_include_directories(vulkan_guide PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # target_link_libraries(vulkan_guide vkbootstrap vma glm tinyobjloader imgui stb_image)
-target_link_libraries(vulkan_guide PUBLIC rt_optics rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_aov rt_image rt_material rt_spectrum rt_pbrt rt_optic_models vk-bootstrap glm imgui imguizmo implot stb_image glfw fmt::fmt fastgltf::fastgltf)
+target_link_libraries(vulkan_guide PUBLIC rt_camera rt_optics rt_bvh rt_light rt_sampler rt_film rt_bsdf rt_aov rt_image rt_material rt_spectrum rt_pbrt rt_optic_models vk-bootstrap glm imgui imguizmo implot stb_image glfw fmt::fmt fastgltf::fastgltf)
 
 target_link_libraries(vulkan_guide PRIVATE GPUOpen::VulkanMemoryAllocator)
 

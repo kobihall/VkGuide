@@ -72,6 +72,11 @@ inline constexpr uint32_t SAMPLE_CAMERA_DIMENSIONS = 6;
 inline constexpr uint32_t SAMPLE_BOUNCE_DIMENSIONS = 12;
 // the most dimensions a render of the deepest path (CRT_MAX_DEPTH bounces) can ask for
 inline constexpr uint32_t SAMPLE_MAX_DIMENSIONS = SAMPLE_CAMERA_DIMENSIONS + 16 * SAMPLE_BOUNCE_DIMENSIONS;
+// where a light path's dimensions start (docs/plans/completed/pbrt-bidirectional-path-tracing.md): after every dimension a
+// camera path can take, so the light path and the camera path one pixel sample traces never share a number. Its
+// emission takes the camera's six (the pixel's two for its point, the lens's for its direction, time for the light),
+// then its bounces as a camera path's do. The Halton tables hold twice SAMPLE_MAX_DIMENSIONS bases
+inline constexpr uint32_t SAMPLE_LIGHT_PATH_BASE = SAMPLE_MAX_DIMENSIONS;
 
 // Field indices into the record, shared by kernels 00, 01 and 06 (crt_samples.glsl CRT_SAMPLE_*).
 // A bounce's fields are its dimensions in order: the first is dimension 6 + 12 b
@@ -255,10 +260,11 @@ private:
 
 // The camera's six dimensions for sample `sampleIndex` of pixel (x, y), into record[12]: the pixel
 // and lens offsets in direct, time and wavelength in indirect.xy
-void sampleCameraRecord(const SamplerParams& params, const SamplerTables& tables, uint32_t x, uint32_t y, uint32_t sampleIndex, float record[SAMPLE_RECORD_FLOATS]);
+// `dimensionBase` is 0 for a camera path and SAMPLE_LIGHT_PATH_BASE for a light path (CrtParams::sampleDimensionBase)
+void sampleCameraRecord(const SamplerParams& params, const SamplerTables& tables, uint32_t x, uint32_t y, uint32_t sampleIndex, float record[SAMPLE_RECORD_FLOATS], uint32_t dimensionBase = 0);
 // Bounce `bounce`'s dimensions into record[12]. The medium fields are not generated yet (the
 // participating-media plan switches them on) and are zero, as is the spare in direct.w
-void sampleBounceRecord(const SamplerParams& params, const SamplerTables& tables, uint32_t x, uint32_t y, uint32_t sampleIndex, uint32_t bounce, float record[SAMPLE_RECORD_FLOATS]);
+void sampleBounceRecord(const SamplerParams& params, const SamplerTables& tables, uint32_t x, uint32_t y, uint32_t sampleIndex, uint32_t bounce, float record[SAMPLE_RECORD_FLOATS], uint32_t dimensionBase = 0);
 
 // PMJ02BN's building blocks: point `index` of set `set` (24 bits of its fixed-point value), and the
 // blue-noise texture value pbrt's BlueNoise() returns

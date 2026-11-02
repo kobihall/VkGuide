@@ -68,7 +68,7 @@ A **Color temperature** option replaces a light's color with a normalized blackb
 | Environment | uniform on a disk the size of the scene's bounding sphere | by the map's distribution, as `SampleLi()` already does |
 | Laser ([physoptics-laser-sources.md](../physoptics-laser-sources.md)) | Gaussian over the beam's waist, carried to the output aperture | Gaussian about the axis with the far-field divergence, the beam's Wigner distribution |
 
-The path tracer never calls them, and next-event estimation never samples a laser, whose emission is confined to a cone of milliradians: lasers stay out of the alias tables, and only light paths start at them. [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md), [pbrt-photon-mapping.md](../pbrt-photon-mapping.md) and [pbrt-metropolis-light-transport.md](../pbrt-metropolis-light-transport.md) do, and this plan gives them one tested implementation instead of three.
+The path tracer never calls them, and next-event estimation never samples a laser, whose emission is confined to a cone of milliradians: lasers stay out of the alias tables, and only light paths start at them. [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md), [pbrt-photon-mapping.md](../pbrt-photon-mapping.md) and [pbrt-metropolis-light-transport.md](../pbrt-metropolis-light-transport.md) do, and this plan gives them one tested implementation instead of three.
 
 The C++ mirrors go into `light_sampling.cpp`, and `bin/light_test` gains a check per kind: the emitted-ray densities integrate to 1, and the sampled power matches the light's `power`.
 
@@ -136,7 +136,7 @@ The C++ mirrors go into `light_sampling.cpp`, and `bin/light_test` gains a check
 
 ## Not built
 
-- **Emission sampling** (`SampleLe()` and `PDF_Le()`): the user chose on 2026-10-31 to leave it for [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md), the first integrator that calls it.
+- **Emission sampling** (`SampleLe()` and `PDF_Le()`): the user chose on 2026-10-31 to leave it for [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md), the first integrator that calls it.
 - **Illuminance for the environment** on an upward-facing surface.
 
 ## Sources

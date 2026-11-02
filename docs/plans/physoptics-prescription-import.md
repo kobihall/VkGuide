@@ -2,12 +2,12 @@
 
 Optical designs live in lens design files. A camera lens from a patent, a microscope objective from a vendor, a telescope from a textbook all arrive as a sequence of surfaces: radius, thickness, glass, semi-diameter, surface by surface. OpticStudio's `.zmx` format is the common one, and pbrt ships its own small format for the lenses of its realistic camera. This plan reads both into the renderer's own representation, interpreting a sequence of surfaces as a set of optical elements on an assembly, and refuses a file it cannot interpret faithfully rather than guessing. It is a one-way import: nothing is written back.
 
-*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-beam-axis.md](physoptics-beam-axis.md) (assemblies) and [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) (the AGF reader and glasses). [pbrt-cameras.md](pbrt-cameras.md)'s realistic camera uses what this plan imports. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-beam-axis.md](physoptics-beam-axis.md) (assemblies) and [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) (the AGF reader and glasses). [pbrt-cameras.md](completed/pbrt-cameras.md)'s realistic camera uses what this plan imports. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
 - Import is one-way, and an import may fail rather than be complicated by every corner of the format (the request).
-- The realistic camera of [pbrt-cameras.md](pbrt-cameras.md) traces through an assembly made by this importer, not through a separate lens table (the request, which asks that the cameras plan use the beam axis object and an interpreter for pbrt's lens files).
+- The realistic camera of [pbrt-cameras.md](completed/pbrt-cameras.md) traces through an assembly made by this importer, not through a separate lens table (the request, which asks that the cameras plan use the beam axis object and an interpreter for pbrt's lens files).
 
 ## What exists today
 
@@ -40,7 +40,7 @@ Anything else refuses the import, with the line and the keyword: other surface t
 
 ### Reading pbrt's `.dat`
 
-`src/optic_pbrt_lens.cpp` reads pbrt's four columns. A radius of 0 is the aperture stop (pbrt's convention), an index of 0 or 1 is air, and any other index is a glass of that constant index, since the format carries no dispersion: the importer names it `pbrt n=1.670` and the panel suggests the catalog glass with the nearest n_d, which the user may substitute. The last thickness is where pbrt places the film before focusing; the importer keeps it as the sensor's initial distance, and [pbrt-cameras.md](pbrt-cameras.md)'s focusing moves it.
+`src/optic_pbrt_lens.cpp` reads pbrt's four columns. A radius of 0 is the aperture stop (pbrt's convention), an index of 0 or 1 is air, and any other index is a glass of that constant index, since the format carries no dispersion: the importer names it `pbrt n=1.670` and the panel suggests the catalog glass with the nearest n_d, which the user may substitute. The last thickness is where pbrt places the film before focusing; the importer keeps it as the sensor's initial distance, and [pbrt-cameras.md](completed/pbrt-cameras.md)'s focusing moves it.
 
 ### Interpreting surfaces as elements
 
@@ -57,7 +57,7 @@ The elements are of the generic kind `prescription`, whose parameters are the bo
 
 ### Where an import goes
 
-**Optics** → **Import prescription...**, in the menu the **Optical bench** capability adds ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)), opens a file dialog for `.zmx` or `.dat` and creates the assembly, mounted at the bench's beam height on a single post by default, or free. **Use as camera lens** offers the assembly to a realistic camera ([pbrt-cameras.md](pbrt-cameras.md)). The import report lists what was read, every substitution (a pbrt constant-index glass, a mirror substrate thickness), and, when the import is refused, why.
+**Optics** → **Import prescription...**, in the menu the **Optical bench** capability adds ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)), opens a file dialog for `.zmx` or `.dat` and creates the assembly, mounted at the bench's beam height on a single post by default, or free. **Use as camera lens** offers the assembly to a realistic camera ([pbrt-cameras.md](completed/pbrt-cameras.md)). The import report lists what was read, every substitution (a pbrt constant-index glass, a mirror substrate thickness), and, when the import is refused, why.
 
 ### Checking an import
 

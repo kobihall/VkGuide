@@ -2,7 +2,7 @@
 
 A light path from a laser through a twenty-element setup meets twenty-odd surfaces, and at each the path tracer must find what it hits next and decide whether it reflects or refracts. The beam axis already says what it should hit and which way it should go. This plan lets the path tracer use that, in four modes chosen per beam axis: **Full** ignores the graph; **Seeded** uses it only to speed up the search, and gives the same result as **Full**; **Guided** also biases each reflect-or-refract choice toward the graph and reweights, which stays unbiased and still finds every ghost; **Sequential** traces the graph's surfaces alone, as a lens design program's sequential mode does, which is fast and ignores clipping by anything outside the graph and every ghost.
 
-*Not implemented. Depends on [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-laser-sources.md](physoptics-laser-sources.md), the light integrator of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md) and [physoptics-detectors.md](physoptics-detectors.md), which measures what the modes change. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-laser-sources.md](physoptics-laser-sources.md), the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md) and [physoptics-detectors.md](physoptics-detectors.md), which measures what the modes change. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
@@ -11,7 +11,7 @@ On 2026-10-18 the user chose all four modes. The request asks for a maximal mode
 ## What the renderer does today
 
 - Kernel 02 traces every ray with `traceScene()` over the full TLAS, through the selected traversal ([pbrt-roadmap.md](pbrt-roadmap.md), integrator layer).
-- [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md)'s light integrator runs stage 11 (emit), the shared 01 and 02, stage 13 (scatter light paths) and the camera connections; [physoptics-detectors.md](physoptics-detectors.md) adds stage 26, which deposits on detectors.
+- [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md)'s light integrator runs stage 11 (emit), the shared 01 and 02, stage 13 (scatter light paths) and the camera connections; [physoptics-detectors.md](physoptics-detectors.md) adds stage 26, which deposits on detectors.
 - A path carries no notion of where it is in an optical layout.
 
 ## What other simulators do
@@ -100,7 +100,7 @@ The light integrator's counters gain, per frame: paths on the graph and off it, 
 ## Open questions
 
 - Whether **Guided** should also guide the light integrator's choice of which laser to emit from when a scene has several, toward the lasers whose axes reach a selected detector. The light integrator picks by power today.
-- Whether camera paths, in a scene viewed through a realistic camera, should follow the camera's lens assembly in **Sequential** inside kernel 00 or as light-path-style graph state. [pbrt-cameras.md](pbrt-cameras.md) traces the assembly sequentially inside kernel 00, which needs none of this plan's state.
+- Whether camera paths, in a scene viewed through a realistic camera, should follow the camera's lens assembly in **Sequential** inside kernel 00 or as light-path-style graph state. [pbrt-cameras.md](completed/pbrt-cameras.md) traces the assembly sequentially inside kernel 00, which needs none of this plan's state.
 
 ## Sources
 

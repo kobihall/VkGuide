@@ -1,0 +1,43 @@
+#version 460
+
+// GPU SELF-TEST: generateCameraRay() of crt_camera.glsl on a batch of film and lens points, to be compared with its C++
+// mirror (generateCameraRay() in src/camera_model.cpp). The host pushes a camera in the push constants as a render
+// does, builds the shader with CRT_CAMERA_MODEL as the camera needs it, and publishes an aperture image's table as
+// binding 65. Not part of any render. src/gpu_selftest_camera.cpp.
+
+#extension GL_GOOGLE_include_directive : require
+#include "rt/include/crt_common.glsl"
+#include "rt/include/crt_random.glsl"
+#include "rt/include/crt_samples.glsl"
+#include "rt/include/crt_camera.glsl"
+
+layout (local_size_x = 64) in;
+
+// the film point of each case in xy, the lens sample in zw
+layout (std430, set = 0, binding = 90) readonly buffer CameraCaseBuffer { vec4 cameraCases[]; };
+// four per case: the origin, the direction, then for a camera that connects the importance of the ray and its film
+// point (We, u, v, pdfDir), and SampleWi() from a point 2.5 along it (pdf, We, u, v)
+layout (std430, set = 0, binding = 91) writeonly buffer CameraResultBuffer { vec4 cameraResults[]; };
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= cameraCases.length()) {
+		return;
+	}
+	vec3 origin;
+	vec3 direction;
+	generateCameraRay(cameraCases[index].xy, cameraCases[index].zw, origin, direction);
+	cameraResults[4u * index] = vec4(origin, 0.0);
+	cameraResults[4u * index + 1u] = vec4(direction, 0.0);
+	vec2 film;
+	const vec3 unit = normalize(direction);
+	const float we = cameraWe(origin, unit, film);
+	float pdfPos;
+	float pdfDir;
+	cameraPdfWe(origin, unit, pdfPos, pdfDir);
+	cameraResults[4u * index + 2u] = vec4(we, film, pdfDir);
+	CameraWiSample s;
+	cameraSampleWi(origin + 2.5 * unit, cameraCases[index].zw, s);
+	cameraResults[4u * index + 3u] = vec4(s.pdf, s.we, s.film);
+}

@@ -23,3 +23,4 @@
 #include "include/crt_samples.glsl"
 #include "include/crt_aov.glsl"
 #include "include/crt_camera.glsl"
+#include "include/crt_camera_rays.glsl"

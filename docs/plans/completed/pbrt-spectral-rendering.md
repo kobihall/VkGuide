@@ -59,7 +59,7 @@ Hero wavelengths follow pbrt-v4 (PBR 4ed §4.5.4): one uniform sample `u` choose
 - **Uniform** over the range.
 - **Emitters' spectra**, the addition for narrow sources. A mixture of the base density (visible or uniform, the share set by **Emitters' share**, 0.5 by default) and the scene's emitters: a 512-bin table of every smooth emitter spectrum weighed by its power, and up to eight truncated Cauchy components, one per line emitter, at the line's center and width. A 0.01 nm laser line in a white scene is found by most paths instead of almost none.
 
-Light paths that start at an emitter, which [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md)'s light integrator needs, are not built. The mixture above is what they draw from when that plan lands.
+Light paths that start at an emitter, which [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md)'s light integrator needs, are not built. The mixture above is what they draw from when that plan lands.
 
 ## Path state and memory
 
@@ -185,7 +185,7 @@ The report lines that remain point to the plans that add what is missing, chiefl
 ## Not built
 
 - Sensor response curves in place of the CIE functions (`"matching"` accepts only `cie1931`), and white balance: [pbrt-display-and-color.md](../pbrt-display-and-color.md).
-- Light paths that draw their wavelengths from the emitter, for [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md).
+- Light paths that draw their wavelengths from the emitter, for [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md).
 - The **Design wavelength** following a scene's single laser: [physoptics-laser-sources.md](../physoptics-laser-sources.md) sets it when lasers exist.
 - AGF catalogs, the Henke tables and coatings: [physoptics-optical-materials.md](physoptics-optical-materials.md) and [physoptics-gratings-and-xuv.md](../physoptics-gratings-and-xuv.md). The `Dispersion` kind and the line kind are what they fill in.
 - The rest of [pbrt-bsdf-library.md](pbrt-bsdf-library.md).

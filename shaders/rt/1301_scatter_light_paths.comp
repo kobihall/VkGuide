@@ -1,0 +1,114 @@
+#version 460
+
+// 13 SCATTER LIGHT PATHS (docs/plans/completed/pbrt-bidirectional-path-tracing.md). At each surface a light path reaches,
+// a direction drawn as kernel 06 draws one, weighed in importance mode (crt_transport.glsl transportSample()): no
+// 1 / eta^2 on a refraction, the adjoint of the materials that are not reciprocal, pbrt's shading-normal correction.
+// Russian roulette and the depth limit end paths as they end camera paths. Kernel 12 has already connected this
+// vertex to the camera, from the same rebuilt surface (crt_light_path.glsl). Serving the light vertex cache
+// (CRT_LIGHT_VERTEX_CACHE), it also stores the vertex with the path's MIS sums, and carries them past the scatter.
+// Built once per material class.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
+#include "include/crt_material_class.glsl"
+#include "include/crt_interaction.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_samples.glsl"
+#include "equirect.glsl"
+#include "include/crt_transport.glsl"
+#include "include/crt_scatter.glsl"
+#include "include/crt_light.glsl"
+#include "include/crt_light_path.glsl"
+#include "include/crt_transport.glsl"
+#include "include/crt_light_emission.glsl"
+#include "include/crt_light_vertex_cache.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+	const uint nextQueue = rayQueueFor(pc.bounce + 1u);
+	const uint index = gl_GlobalInvocationID.x;
+	// no early return: queueAppend() below has barriers every invocation must reach
+	const bool isActive = index < headers[CRT_SURFACE_QUEUE].rayCount;
+	bool survives = false;
+	uint pathIndex = 0u;
+
+	if (isActive) {
+		SurfaceMaterial material;
+		const LightVertex v = lightVertexAt(index, material);
+		pathIndex = v.pathIndex;
+		g_transportMode = CRT_TRANSPORT_IMPORTANCE;
+		PathState path = v.path;
+		// serving the light vertex cache: the path's partial sums here, and the vertex itself while a camera vertex can
+		// still connect to it within the render's depth
+		float dVCM = 0.0;
+		float dVC = 0.0;
+		if (CRT_LIGHT_VERTEX_CACHE) {
+			lvcLightPartials(pathIndex, path.bounce, path.origin, v.si.p, v.hit.t, abs(dot(v.normal, v.inDir)), dVCM, dVC);
+			if (!isSpecularMaterial(material) && path.bounce + 3u <= pc.rayDepth) {
+				const uint slot = atomicAdd(lvcCount, 1u);
+				if (slot < lvcCapacity) {
+					CachedVertex cached;
+					cached.hit = v.hit;
+					cached.rayOrigin = path.origin;
+					cached.rayDirection = path.direction;
+					cached.pathLength = path.bounce + 1u;
+					cached.dVCM = dVCM;
+					cached.dVC = dVC;
+					cached.laneMask = v.laneMask;
+					cached.throughput = v.throughput;
+					lvcStoreVertex(slot, cached);
+				}
+			}
+		}
+		uint rng = path.rngState;
+		Spectrum weight;
+		vec3 outDir;
+		bool delta;
+		bool alive = transportSample(material, v.inDir, v.normal, v.frontFace, pathIndex, rng, weight, outDir, delta);
+		outDir = normalize(outDir);
+		Spectrum throughput = spectrumScale(spectrumMul(v.throughput, weight), shadingNormalCorrection(-v.inDir, outDir, v.normal, v.si.n));
+		const uint nextBounce = path.bounce + 1u;
+		if (nextBounce >= pc.rayDepth || !(spectrumMaxValue(throughput) > 0.0)) {
+			alive = false;
+		}
+		if (alive && (pc.flags & CRT_FLAG_ROULETTE) != 0u && nextBounce > pc.minBouncesBeforeRoulette) {
+			const float survival = clamp(spectrumMaxValue(throughput), 0.05, 1.0);
+			if (sampleDimension(pathIndex, rng, CRT_SAMPLE_INDIRECT_ROULETTE) >= survival) {
+				alive = false;
+			} else {
+				throughput = spectrumDivide(throughput, survival);
+			}
+		}
+		if (alive) {
+			path.origin = (pc.flags & CRT_FLAG_ERROR_BOUNDS) != 0u ? offsetRayOrigin(v.si.p, v.si.pError, v.si.n, outDir) : v.si.p;
+			path.direction = outDir;
+			path.rngState = rng;
+#ifndef CRT_SPECTRAL
+			path.throughput = throughput;
+#else
+			pathSpectra[pathIndex] = throughput;
+			path.laneMask = v.laneMask;
+#endif
+			path.bounce = nextBounce;
+			// the range window belongs to the first segment alone
+			path.misPdf = 0.0;
+			if (CRT_LIGHT_VERTEX_CACHE) {
+				const vec3 wo = -v.inDir;
+				lvcScatter(dVCM, dVC, delta, abs(dot(v.normal, outDir)), delta ? 1.0 : transportPdf(material, wo, v.normal, outDir), delta ? 1.0 : transportPdf(material, outDir, v.normal, wo));
+				lvcWords[pathIndex] = uvec4(floatBitsToUint(dVCM), floatBitsToUint(dVC), 0u, 0u);
+			}
+			if (CRT_RAY_CONES) {
+				const vec2 cone = continuedRayCone(v.si, path.coneWidth, path.coneSpread, delta ? 0.0 : surfaceConeRoughness(material));
+				path.coneWidth = cone.x;
+				path.coneSpread = cone.y;
+			}
+			paths[pathIndex] = path;
+			survives = true;
+		}
+	}
+
+	queueAppend(nextQueue, survives, pathIndex);
+}

@@ -124,7 +124,27 @@ ChannelImage buildExportImage(const Image& beauty, const RenderOutputsData& outp
 
 	//each light group's share of the picture: its sums over the weight sum they were taken under
 	const size_t stride = 3 * (size_t)outputs.lightGroups + 1 + outputs.spectralBuckets;
-	if (sized && outputs.lightGroups > 0) {
+	//or bdpt's strategy images, named as pbrt names their files: a strategy that splats is its sums over the samples taken
+	if (sized && outputs.strategyDepths > 0 && outputs.groupSums.size() == pixels * stride) {
+		for (uint32_t depth = 0; depth < outputs.strategyDepths; depth++) {
+			for (uint32_t s = 0; s <= depth + 1; s++) {
+				const uint32_t t = depth + 2 - s;
+				const uint32_t g = bdptStrategyIndex(s, t);
+				if ((s == 1 && t == 1) || g >= outputs.lightGroups) {
+					continue;
+				}
+				for (size_t c = 0; c < 3; c++) {
+					std::vector<float> values(pixels);
+					for (size_t i = 0; i < pixels; i++) {
+						const float sum = outputs.groupSums[i * stride + 3 * (size_t)g + c];
+						const float weight = t == 1 ? (i < outputs.samplesTaken.size() ? (float)outputs.samplesTaken[i] : 0.f) : outputs.groupSums[i * stride + 3 * (size_t)outputs.lightGroups];
+						values[i] = weight != 0.f ? sum / weight : 0.f;
+					}
+					addChannel(image, fmt::format("bdpt_d{:02}_s{:02}_t{:02}.{}", depth, s, t, "RGB"[c]), std::move(values));
+				}
+			}
+		}
+	} else if (sized && outputs.lightGroups > 0) {
 		for (uint32_t g = 0; g < outputs.lightGroups; g++) {
 			const std::string name = g < info.lightGroupNames.size() ? exportChannelName(info.lightGroupNames[g]) : fmt::format("group{}", g);
 			for (size_t c = 0; c < 3; c++) {
@@ -177,7 +197,9 @@ ChannelImage buildExportImage(const Image& beauty, const RenderOutputsData& outp
 		std::copy(cameraFromWorld.begin(), cameraFromWorld.end(), a);
 		std::copy(ndcFromWorld.begin(), ndcFromWorld.end(), b);
 		image.attributes.push_back(ImageAttribute::matrix("cameraFromWorld", a));
-		image.attributes.push_back(ImageAttribute::matrix("NDCFromWorld", b));
+		if (info.hasNdc) {
+			image.attributes.push_back(ImageAttribute::matrix("NDCFromWorld", b));
+		}
 	}
 	if (info.hasMse) {
 		image.attributes.push_back(ImageAttribute::real("MSE", info.mse));

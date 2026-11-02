@@ -1,6 +1,7 @@
 #include <light_sampling.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <numeric>
 
@@ -199,40 +200,6 @@ bool sampleSphericalTriangle(const glm::vec3& v0, const glm::vec3& v1, const glm
 	return true;
 }
 
-// pbrt-v4's SampleUniformTriangle(): barycentrics uniform over the triangle's area
-glm::vec3 sampleUniformTriangle(const glm::vec2& u)
-{
-	float b0;
-	float b1;
-	if (u.x < u.y) {
-		b0 = u.x / 2.f;
-		b1 = u.y - b0;
-	} else {
-		b1 = u.y / 2.f;
-		b0 = u.x - b1;
-	}
-	return glm::vec3(b0, b1, 1.f - b0 - b1);
-}
-
-// pbrt-v4's SampleUniformDiskConcentric(): Shirley and Chiu's low-distortion square-to-disk map
-glm::vec2 sampleUniformDiskConcentric(const glm::vec2& u)
-{
-	const glm::vec2 offset = 2.f * u - 1.f;
-	if (offset.x == 0.f && offset.y == 0.f) {
-		return glm::vec2(0.f);
-	}
-	float r;
-	float theta;
-	if (std::abs(offset.x) > std::abs(offset.y)) {
-		r = offset.x;
-		theta = (LIGHT_PI / 4.f) * (offset.y / offset.x);
-	} else {
-		r = offset.y;
-		theta = LIGHT_PI / 2.f - (LIGHT_PI / 4.f) * (offset.x / offset.y);
-	}
-	return r * glm::vec2(std::cos(theta), std::sin(theta));
-}
-
 // pbrt's FindInterval(): the largest index i in [0, size - 2] with cdf[i] <= u, by bisection
 uint32_t findInterval(const float* cdf, uint32_t size, float u)
 {
@@ -270,6 +237,41 @@ float luminanceOf(float r, float g, float b)
 }
 
 //---------------------------------------------------------------- shared
+
+// pbrt-v4's SampleUniformTriangle(): barycentrics uniform over the triangle's area
+glm::vec3 sampleUniformTriangle(const glm::vec2& u)
+{
+	float b0;
+	float b1;
+	if (u.x < u.y) {
+		b0 = u.x / 2.f;
+		b1 = u.y - b0;
+	} else {
+		b1 = u.y / 2.f;
+		b0 = u.x - b1;
+	}
+	return glm::vec3(b0, b1, 1.f - b0 - b1);
+}
+
+// pbrt-v4's SampleUniformDiskConcentric(): Shirley and Chiu's low-distortion square-to-disk map
+glm::vec2 sampleUniformDiskConcentric(const glm::vec2& u)
+{
+	const glm::vec2 offset = 2.f * u - 1.f;
+	if (offset.x == 0.f && offset.y == 0.f) {
+		return glm::vec2(0.f);
+	}
+	float r;
+	float theta;
+	if (std::abs(offset.x) > std::abs(offset.y)) {
+		r = offset.x;
+		theta = (LIGHT_PI / 4.f) * (offset.y / offset.x);
+	} else {
+		r = offset.y;
+		theta = LIGHT_PI / 2.f - (LIGHT_PI / 4.f) * (offset.x / offset.y);
+	}
+	return r * glm::vec2(std::cos(theta), std::sin(theta));
+}
+
 
 float lightAngleBetween(const glm::vec3& a, const glm::vec3& b)
 {
@@ -790,6 +792,194 @@ float rangeWindow(float distance, float range)
 	return std::clamp(1.f - ratio2 * ratio2, 0.f, 1.f);
 }
 
+//---------------------------------------------------------------- emitted rays
+
+glm::vec3 sampleCosineHemisphere(const glm::vec2& u)
+{
+	const glm::vec2 d = sampleUniformDiskConcentric(u);
+	const float z = safeSqrt(1.f - d.x * d.x - d.y * d.y);
+	return glm::vec3(d.x, d.y, z);
+}
+
+glm::vec3 sampleUniformSphere(const glm::vec2& u)
+{
+	const float z = 1.f - 2.f * u.x;
+	const float r = safeSqrt(1.f - z * z);
+	const float phi = 2.f * LIGHT_PI * u.y;
+	return glm::vec3(r * std::cos(phi), r * std::sin(phi), z);
+}
+
+glm::vec3 sampleUniformCone(const glm::vec2& u, float cosMax)
+{
+	const float cosTheta = (1.f - u.x) + u.x * cosMax;
+	const float sinTheta = safeSqrt(1.f - cosTheta * cosTheta);
+	const float phi = u.y * 2.f * LIGHT_PI;
+	return glm::vec3(std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, cosTheta);
+}
+
+float areaLightArea(const AreaLightGeometry& light)
+{
+	switch (light.kind) {
+	case AreaLightKind::Sphere:
+		return 4.f * LIGHT_PI * light.radius * light.radius;
+	case AreaLightKind::Rectangle:
+		return glm::length(glm::cross(light.b, light.c));
+	case AreaLightKind::Cylinder:
+		return 2.f * LIGHT_PI * light.radius * light.height + 2.f * LIGHT_PI * light.radius * light.radius;
+	case AreaLightKind::Triangle:
+		return 0.5f * glm::length(glm::cross(light.b - light.a, light.c - light.a));
+	}
+	return 0.f;
+}
+
+bool sampleAreaLe(const AreaLightGeometry& light, EmitSides sides, const glm::vec2& uPos, const glm::vec2& uDir, LightLeSample& out)
+{
+	out = LightLeSample {};
+	const float area = areaLightArea(light);
+	if (!(area > 0.f)) {
+		return false;
+	}
+	//the point, uniform by area, as each kind's light sampler takes it when it samples by area
+	switch (light.kind) {
+	case AreaLightKind::Sphere: {
+		const glm::vec3 normal = sampleUniformSphere(uPos);
+		out.origin = light.a + light.radius * normal;
+		out.normal = normal;
+		break;
+	}
+	case AreaLightKind::Rectangle:
+		out.origin = light.a + uPos.x * light.b + uPos.y * light.c;
+		out.normal = glm::normalize(glm::cross(light.b, light.c));
+		break;
+	case AreaLightKind::Cylinder: {
+		const glm::vec3 axisZ = glm::cross(light.b, light.c);
+		const float sideArea = 2.f * LIGHT_PI * light.radius * light.height;
+		const float capArea = LIGHT_PI * light.radius * light.radius;
+		const float t = uPos.x * area;
+		if (t < sideArea) {
+			const float phi = 2.f * LIGHT_PI * std::min(t / sideArea, ONE_MINUS_EPSILON);
+			const glm::vec3 radial = std::cos(phi) * light.b + std::sin(phi) * axisZ;
+			out.origin = light.a + light.radius * radial + light.height * (uPos.y - 0.5f) * light.c;
+			out.normal = radial;
+		} else {
+			const float capU = (t - sideArea) / capArea;
+			const bool top = capU < 1.f;
+			const glm::vec2 disk = sampleUniformDiskConcentric(glm::vec2(std::min(top ? capU : capU - 1.f, ONE_MINUS_EPSILON), uPos.y));
+			out.origin = light.a + light.radius * (disk.x * light.b + disk.y * axisZ) + light.height * (top ? 0.5f : -0.5f) * light.c;
+			out.normal = top ? light.c : -light.c;
+		}
+		break;
+	}
+	case AreaLightKind::Triangle:
+		out.barycentrics = sampleUniformTriangle(uPos);
+		out.origin = out.barycentrics.x * light.a + out.barycentrics.y * light.b + out.barycentrics.z * light.c;
+		out.normal = glm::normalize(glm::cross(light.b - light.a, light.c - light.a));
+		break;
+	}
+	//the side it leaves from: a two-sided light's by the first number, stretched back over [0, 1)
+	glm::vec2 u = uDir;
+	float side = sides == EmitSides::Back ? -1.f : 1.f;
+	float sideChance = 1.f;
+	if (sides == EmitSides::Both) {
+		sideChance = 0.5f;
+		if (u.x < 0.5f) {
+			u.x = std::min(u.x * 2.f, ONE_MINUS_EPSILON);
+		} else {
+			u.x = std::min((u.x - 0.5f) * 2.f, ONE_MINUS_EPSILON);
+			side = -1.f;
+		}
+	}
+	const glm::vec3 local = sampleCosineHemisphere(u);
+	const glm::vec3 z = side * out.normal;
+	glm::vec3 x;
+	glm::vec3 y;
+	lightFrameFromZ(z, x, y);
+	out.direction = local.x * x + local.y * y + local.z * z;
+	out.pdfPos = 1.f / area;
+	out.pdfDir = sideChance * local.z / LIGHT_PI;
+	return out.pdfDir > 0.f;
+}
+
+void areaPdfLe(const AreaLightGeometry& light, EmitSides sides, const glm::vec3& normal, const glm::vec3& direction, float& pdfPos, float& pdfDir)
+{
+	const float area = areaLightArea(light);
+	pdfPos = area > 0.f ? 1.f / area : 0.f;
+	const float cosine = glm::dot(normal, direction);
+	switch (sides) {
+	case EmitSides::Both:
+		pdfDir = 0.5f * std::abs(cosine) / LIGHT_PI;
+		break;
+	case EmitSides::Front:
+		pdfDir = std::max(cosine, 0.f) / LIGHT_PI;
+		break;
+	case EmitSides::Back:
+		pdfDir = std::max(-cosine, 0.f) / LIGHT_PI;
+		break;
+	}
+}
+
+bool samplePointLe(const glm::vec3& position, const glm::vec2& uDir, LightLeSample& out)
+{
+	out = LightLeSample {};
+	out.origin = position;
+	out.direction = sampleUniformSphere(uDir);
+	out.pdfPos = 1.f;
+	out.pdfDir = 1.f / (4.f * LIGHT_PI);
+	return true;
+}
+
+bool sampleSpotLe(const glm::vec3& position, const glm::vec3& axis, float cosOuter, const glm::vec2& uDir, LightLeSample& out)
+{
+	out = LightLeSample {};
+	out.origin = position;
+	const glm::vec3 local = sampleUniformCone(uDir, cosOuter);
+	glm::vec3 x;
+	glm::vec3 y;
+	lightFrameFromZ(axis, x, y);
+	out.direction = local.x * x + local.y * y + local.z * axis;
+	out.pdfPos = 1.f;
+	out.pdfDir = spotPdfDir(axis, cosOuter, out.direction);
+	return out.pdfDir > 0.f;
+}
+
+float spotPdfDir(const glm::vec3& axis, float cosOuter, const glm::vec3& direction)
+{
+	return glm::dot(axis, direction) >= cosOuter && cosOuter < 1.f ? 1.f / (2.f * LIGHT_PI * (1.f - cosOuter)) : 0.f;
+}
+
+glm::vec3 infiniteLightOrigin(const glm::vec4& sceneSphere, const glm::vec3& towardLight, const glm::vec2& uPos)
+{
+	glm::vec3 x;
+	glm::vec3 y;
+	lightFrameFromZ(towardLight, x, y);
+	const glm::vec2 disk = sampleUniformDiskConcentric(uPos);
+	const glm::vec3 center(sceneSphere);
+	return center + sceneSphere.w * (disk.x * x + disk.y * y) + sceneSphere.w * towardLight;
+}
+
+float infiniteLightPdfPos(const glm::vec4& sceneSphere)
+{
+	return sceneSphere.w > 0.f ? 1.f / (LIGHT_PI * sceneSphere.w * sceneSphere.w) : 0.f;
+}
+
+PiecewiseConstant2D buildLightImageDistribution(bool projection, const glm::vec2& extents, uint32_t width, uint32_t height, const float* values)
+{
+	std::vector<float> weights((size_t)width * height);
+	for (uint32_t y = 0; y < height; y++) {
+		for (uint32_t x = 0; x < width; x++) {
+			float weight = std::max(values[(size_t)y * width + x], 0.f);
+			if (projection) {
+				const float px = (2.f * ((float)x + 0.5f) / (float)width - 1.f) * extents.x;
+				const float py = (1.f - 2.f * ((float)y + 0.5f) / (float)height) * extents.y;
+				const float r2 = 1.f + px * px + py * py;
+				weight /= r2 * std::sqrt(r2);
+			}
+			weights[(size_t)y * width + x] = weight;
+		}
+	}
+	return buildPiecewiseConstant2D(weights, width, height);
+}
+
 //---------------------------------------------------------------- alias table
 
 std::vector<AliasEntry> buildAliasTable(std::span<const float> weights)
@@ -902,6 +1092,19 @@ float piecewiseConstant2DPdf(const PiecewiseConstant2D& table, const glm::vec2& 
 	const uint32_t column = (uint32_t)std::clamp((int32_t)(uv.x * (float)table.width), 0, (int32_t)table.width - 1);
 	const uint32_t row = (uint32_t)std::clamp((int32_t)(uv.y * (float)table.height), 0, (int32_t)table.height - 1);
 	return table.integral > 0.f ? table.func[(size_t)row * table.width + column] / table.integral : 0.f;
+}
+
+uint32_t packPiecewiseConstant2D(const PiecewiseConstant2D& table, std::vector<float>& out)
+{
+	const uint32_t base = (uint32_t)out.size();
+	out.push_back(std::bit_cast<float>(table.width));
+	out.push_back(std::bit_cast<float>(table.height));
+	out.push_back(table.integral);
+	out.push_back(0.f);
+	out.insert(out.end(), table.marginalCdf.begin(), table.marginalCdf.end());
+	out.insert(out.end(), table.rowCdf.begin(), table.rowCdf.end());
+	out.insert(out.end(), table.func.begin(), table.func.end());
+	return base;
 }
 
 glm::vec2 equirectUvOf(const glm::vec3& direction)

@@ -108,6 +108,10 @@ struct RaytraceLightList {
 	// per emitting mesh instance, one entry per triangle of its mesh (by the triangle's index in the
 	// mesh): its record in `lights`, or GPU_NO_LIGHT. GpuInstance::lightBase finds an instance's run
 	std::vector<uint32_t> triangleLights;
+	// THE START OF BINDING 65 (ImageDistributions): for each punctual light, lights[0, deltaCount), where its image's
+	// emission table starts (as uint bits), or GPU_NO_LIGHT; then the tables (packPiecewiseConstant2D()). What
+	// emitted rays of a projection or goniometric light are drawn by (crt_light_emission.glsl)
+	std::vector<float> imageTables;
 
 	// for the panel
 	uint32_t punctualLights { 0 };
@@ -131,6 +135,9 @@ struct LightImage {
 	float peak { 0.f };
 	// width over height
 	float aspect { 1.f };
+	// the library's luminance copy it was measured from, which emitted rays are drawn by (null for none)
+	const float* luminance { nullptr };
+	glm::uvec2 luminanceSize { 0 };
 };
 
 // a projection's or goniometric light's image of `width` x `height` linear luminances measured for its power
@@ -191,4 +198,6 @@ private:
 	// per record: power already known, or a power per unit of scene cross-section (pi r^2) for the
 	// directional lights and the environment
 	std::vector<float> m_crossSectionPower;
+	// the punctual lights' emission tables, by light
+	std::vector<std::pair<uint32_t, PiecewiseConstant2D>> m_imageDistributions;
 };

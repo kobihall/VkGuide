@@ -35,6 +35,12 @@
 #ifndef CRT_OPTIC_MATERIAL_GLSL
 #define CRT_OPTIC_MATERIAL_GLSL
 
+// What transmission scales radiance by, (n_t / n_i)^2 inverted, as pbrt's dielectric divides it: radiance mode, which
+// every path tracer kernel is. A bidirectional kernel's importance mode scales nothing (crt_transport.glsl)
+#ifndef CRT_OPTIC_RADIANCE_SCALE
+#define CRT_OPTIC_RADIANCE_SCALE(eta) ((eta) * (eta))
+#endif
+
 // src/rt_material_record.h CRT_OPTIC_FINISH_*
 #define CRT_OPTIC_FINISH_POLISHED 0u
 #define CRT_OPTIC_FINISH_GROUND 1u
@@ -272,7 +278,7 @@ void opticLobe(OpticInterface o, vec3 inDir, vec3 n, vec3 wi, out Spectrum value
 		pdf = pr * density * cosOut;
 	} else {
 		const float density = opticAbgDensity(o, beta, eta * tangential) * o.tis;
-		value = spectrumScale(T, eta * eta * density * -cosOut);
+		value = spectrumScale(T, CRT_OPTIC_RADIANCE_SCALE(eta) * density * -cosOut);
 		pdf = (1.0 - pr) * density * -cosOut;
 	}
 }
@@ -350,7 +356,7 @@ bool scatterOpticInterface(OpticInterface o, vec3 inDir, vec3 n, uint pathIndex,
 	}
 	const float cosT = sqrt(1.0 - sin2T);
 	// radiance is divided by (n_t / n_i)^2 on the way in, as pbrt's dielectric divides it
-	attenuation = spectrumScale(T, eta * eta / (1.0 - pr));
+	attenuation = spectrumScale(T, CRT_OPTIC_RADIANCE_SCALE(eta) / (1.0 - pr));
 	if (scatters && (u - pr) / (1.0 - pr) < o.tis) {
 		g_opticSampledDelta = false;
 		return opticSampleLobe(o, eta * tangential, facing, true, lobeSample, rng, outDir);

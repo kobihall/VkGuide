@@ -1,0 +1,125 @@
+#version 460
+
+// 15 HANDLE EMITTERS (docs/plans/completed/pbrt-bidirectional-path-tracing.md): the light vertex cache's kernels 03 and 04,
+// launched twice a bounce, over the escaped queue and then the emissive one (CRT_BIDIR_FLAG_EMISSIVE_PASS). A camera path
+// that leaves the scene collects the background, and one that hits a surface emitting towards it collects the emission,
+// as there; each weighed against every strategy that could have made the same path (crt_light_vertex_cache.glsl), not
+// against the light sample alone: wCamera = pdf_light dVCM + pdf_emission dVC, with the light sample's and the emitted
+// ray's densities of the light found. A light seen straight from the camera, a background that is not the environment
+// map (the sky, a solid color) and an emitter the light list does not hold have no other strategy and count in full.
+// In a spectral build with hero wavelengths, a path takes the frame's wavelengths at its first vertex, which the cache's
+// light paths share. The debug views and the auxiliary outputs follow kernels 03 and 04.
+
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_atomic_float : require
+#include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
+#include "include/crt_interaction.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_samples.glsl"
+#include "equirect.glsl"
+#include "sky_gradient.glsl"
+#include "include/crt_background.glsl"
+#include "include/crt_light.glsl"
+#include "include/crt_debug.glsl"
+#include "include/crt_aov.glsl"
+#include "include/crt_camera.glsl"
+#include "include/crt_light_vertex_cache.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+#include "include/crt_emitter.glsl"
+
+void main()
+{
+	const bool emissivePass = (pc.bidirFlags & CRT_BIDIR_FLAG_EMISSIVE_PASS) != 0u;
+	const uint queue = emissivePass ? CRT_QUEUE_EMISSIVE : CRT_QUEUE_ESCAPED;
+	const uint index = gl_GlobalInvocationID.x;
+	if (index >= headers[queue].rayCount) {
+		return;
+	}
+
+	const uint entry = queues[queueSlot(queue, index)];
+	const uint pathIndex = queues[queueSlot(rayQueueFor(pc.bounce), entry)];
+	const PathState path = paths[pathIndex];
+	const HitRecord hit = hits[entry];
+	const vec3 inDir = normalize(path.direction);
+#ifndef CRT_SPECTRAL
+	const Spectrum throughput = path.throughput;
+#else
+	const bool frameWavelengths = path.bounce == 0u && (pc.bidirFlags & CRT_BIDIR_FLAG_FRAME_WAVELENGTHS) != 0u;
+	spectralBegin(frameWavelengths ? pc.frameLambdaU : path.lambdaU);
+	const Spectrum throughput = pathSpectra[pathIndex];
+#endif
+	// the MIS weights view weighs the path tracer's two strategies, which this integrator does not have
+	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS) {
+		return;
+	}
+	float dVCM;
+	float dVC;
+	lvcCameraPartials(pathIndex, path, dVCM, dVC);
+
+	if (!emissivePass) {
+		vec3 value;
+		if (debugTerminalValue(vec3(0.0), vec3(0.0), hit.traversalCost, inDir, false, value)) {
+			radiance[path.radianceSlot] = vec4(value, 1.0);
+			return;
+		}
+		if (pc.debugView == CRT_DEBUG_BOUNCE_HEAT) {
+			radiance[path.radianceSlot] = vec4(bounceHeat(path.bounce), 1.0);
+			return;
+		}
+		float weight = 1.0;
+		if (path.bounce > 0u && lightHeader.environment != CRT_NO_LIGHT) {
+			const float pmf = lightPmf(lightHeader.environment);
+			const float directPdf = pmf * environmentPdf(0u, inDir, environmentRotation());
+			const float emissionPdf = directPdf * infiniteLightPdfPos();
+			weight = 1.0 / (1.0 + lvcMis(directPdf) * dVCM + lvcMis(emissionPdf) * dVC);
+		}
+		filmAdd(path.radianceSlot, spectrumScale(spectrumMul(throughput, backgroundSpectrum(inDir)), weight));
+		return;
+	}
+
+	const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
+	const ClassicMaterial light = classicMaterial(si.material);
+	const TextureSite site = surfaceTextureSite(si, hit, inDir, path.coneWidth, path.coneSpread);
+	const bool emits = emitsTowardsRay(si.material, si);
+	// a surface that also scatters is not where its path ends: its debug views are stage 16's
+	if (light.type == CRT_MATERIAL_PBR && pc.debugView != CRT_DEBUG_NONE) {
+		return;
+	}
+	bool frontFace;
+	const vec3 normal = facingShadingNormal(si, inDir, frontFace);
+	vec3 value;
+	if (debugTerminalValue(normal, si.frontFace ? si.n : -si.n, hit.traversalCost, inDir, true, value)) {
+		radiance[path.radianceSlot] = vec4(value, 1.0);
+		return;
+	}
+	if (pc.debugView == CRT_DEBUG_BOUNCE_HEAT) {
+		radiance[path.radianceSlot] = vec4(bounceHeat(path.bounce), 1.0);
+		return;
+	}
+	if (CRT_AOV && (materials[si.material].flags & CRT_MATERIAL_FLAG_SCATTERS) == 0u && aovWantsSurface(path.radianceSlot, false)) {
+		const vec3 shadingNormal = dot(normal, si.n) < 0.0 ? -normal : normal;
+		aovRecord(path.radianceSlot, si.p, si.n, shadingNormal, si.uv, vec3(0.0), hit.instance, si.material);
+	}
+	if (!emits) {
+		return;
+	}
+	float weight = 1.0;
+	if (path.bounce > 0u && si.lightIndex != CRT_NO_LIGHT) {
+		// the update at the light's point, by the cosine the light sample's density converts by too, so the two cancel
+		// the hit's t is the distance: the traversal measures it along the normalized direction
+		const float distance = hit.t;
+		const float cosLight = abs(dot(si.n, inDir));
+		lvcUpdateAtHit(dVCM, dVC, distance * distance, false, cosLight);
+		const float pmf = lightPmf(si.lightIndex);
+		const float directPdfA = pmf * areaLightPdf(si.lightIndex, path.origin, si.p) * cosLight / max(distance * distance, 1e-20);
+		float pdfPos;
+		float pdfDir;
+		lightPdfLe(si.lightIndex, si.n, -inDir, pdfPos, pdfDir);
+		const float emissionPdf = pmf * pdfPos * pdfDir;
+		weight = 1.0 / (1.0 + lvcMis(directPdfA) * dVCM + lvcMis(emissionPdf) * dVC);
+	}
+	filmAdd(path.radianceSlot, spectrumScale(spectrumMul(throughput, emittedSpectrum(light, si.material, si, site)), weight));
+}

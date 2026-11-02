@@ -363,10 +363,20 @@ void GpuRenderer::init(VulkanEngine* engine)
 	//(a stub until a render keeps one)
 	uploadFilterTable(engine, PixelFilterSettings {});
 	ensureFilmRecords(engine, 1, 1, false, false);
+	ensureSplats(engine, 1, 1, false);
+	//binding 52, which the light path kernels declare under light tracing too: a stub the lvc schedule replaces
+	{
+		m_lightVertexCacheStub = engine->createBuffer(64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+		engine->immediateSubmit([&](VkCommandBuffer cmd) {
+			vkCmdFillBuffer(cmd, m_lightVertexCacheStub.buffer, 0, VK_WHOLE_SIZE, 0);
+		});
+		publishBidirectionalStubs();
+	}
 	//and the outputs' bindings: stubs until a render keeps any
 	ensureOutputs(engine, 1, 1);
 	//the environment tables' binding must always name a buffer, a map or no map
 	uploadEnvironment(engine, nullptr);
+	uploadImageDistributions(engine, nullptr, nullptr);
 	uploadSamplerTables(engine);
 
 	//what a new scene renders with, so its first render does not stall on pipeline creation
@@ -408,6 +418,13 @@ void GpuRenderer::destroy(VulkanEngine* engine)
 	}
 	m_uploadedEnvironment.reset();
 	m_hasEnvironmentBuffer = false;
+	if (m_imageDistributionBuffer.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_imageDistributionBuffer);
+		m_imageDistributionBuffer = {};
+	}
+	m_uploadedAperture.reset();
+	m_uploadedImageScene.reset();
+	m_hasImageDistributions = false;
 	if (m_samplerTableBuffer.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_samplerTableBuffer);
 		m_samplerTableBuffer = {};
@@ -417,6 +434,15 @@ void GpuRenderer::destroy(VulkanEngine* engine)
 		engine->destroyBuffer(m_filmCascade);
 		m_filmRecords = {};
 		m_filmCascade = {};
+	}
+	if (m_lightVertexCacheStub.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_lightVertexCacheStub);
+		m_lightVertexCacheStub = {};
+	}
+	if (m_splats.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_splats);
+		m_splats = {};
+		m_splatsLive = false;
 	}
 	if (m_filterBuffer.buffer != VK_NULL_HANDLE) {
 		engine->destroyBuffer(m_filterBuffer);
@@ -511,7 +537,7 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 	const bool readsInstances = std::find(declared.begin(), declared.end(), CrtBinding::Instances) != declared.end();
 	const bool readsTextures = std::find(declared.begin(), declared.end(), CrtBinding::Textures) != declared.end();
 	const uint32_t recordKey = (variant.readsRecord ? (features & 1u) : 0u) | (variant.usesOutputs ? (features & 14u) : 0u) | (family << 8u)
-		| (family != 0 ? features & 0xFF0000u : 0u) | (readsInstances ? (features & 16u) : 0u) | (readsTextures ? (features & 32u) : 0u) | (features & 64u);
+		| (family != 0 ? features & 0xFF0000u : 0u) | (readsInstances ? (features & 16u) : 0u) | (readsTextures ? (features & 32u) : 0u) | (features & 64u) | (variant.readsCamera ? (features & 128u) : 0u) | (variant.foldsSplats ? (features & CRT_FEATURE_SPLATS) : 0u) | (variant.servesLightVertexCache ? (features & CRT_FEATURE_LIGHT_VERTEX_CACHE) : 0u) | (variant.storesBdptVertices ? (features & CRT_FEATURE_BDPT) : 0u);
 	const auto found = m_passes.find({ &variant, key, classKey, recordKey });
 	if (found != m_passes.end()) {
 		return found->second;
@@ -567,6 +593,22 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 		builder.addSpecialization(8, (recordKey >> 5) & 1u);
 	}
 	builder.addSpecialization(9, (recordKey >> 6) & 1u);
+	//a kernel that reads the camera for whether it is more than Ray Tracing in One Weekend's (CRT_CAMERA_MODEL)
+	if (variant.readsCamera) {
+		builder.addSpecialization(7, (recordKey >> 7) & 1u);
+	}
+	//a light path kernel for whether it serves the light vertex cache (CRT_LIGHT_VERTEX_CACHE)
+	if (variant.servesLightVertexCache) {
+		builder.addSpecialization(11, (recordKey & CRT_FEATURE_LIGHT_VERTEX_CACHE) != 0u ? 1u : 0u);
+	}
+	//kernel 11 for whether it stores pbrt 3's BDPT's light vertices (CRT_BDPT)
+	if (variant.storesBdptVertices) {
+		builder.addSpecialization(12, (recordKey & CRT_FEATURE_BDPT) != 0u ? 1u : 0u);
+	}
+	//a film for whether the integrator splats (CRT_SPLATS)
+	if (variant.foldsSplats) {
+		builder.addSpecialization(10, (recordKey & CRT_FEATURE_SPLATS) != 0u ? 1u : 0u);
+	}
 	//a spectral build, for its representation (CRT_REPRESENTATION_SPEC) and wavelength sampling (CRT_SAMPLING_SPEC),
 	//so it carries one representation's code (crt_spectrum.glsl)
 	if (family != 0) {
@@ -604,7 +646,12 @@ uint32_t GpuRenderer::pipelineFeatures(const KernelSelection& selection) const
 	const uint32_t textures = textured ? 32u : 0u;
 	const TextureFilter filter = m_snapshot.settings.textureFilter;
 	const uint32_t cones = textured && (filter == TextureFilter::Trilinear || filter == TextureFilter::Anisotropic) ? 64u : 0u;
-	return (samplerWritesRecord(selection) ? 1u : 0u) | m_outputFeatures | optics | textures | cones | (family << 8u) | spectralBits;
+	//bit 7 a camera beyond Ray Tracing in One Weekend's
+	const uint32_t cameraModel = buildCameraFrame(m_snapshot.camera, m_snapshot.width, m_snapshot.height).needsModel() ? 128u : 0u;
+	//bit 24 an integrator whose light paths splat, 25 the light vertex cache, 26 pbrt 3's BDPT
+	const uint32_t splats = (selection.selectedIntegrator().bidirectional ? CRT_FEATURE_SPLATS : 0u) | (selection.integrator == IntegratorId::Lvc ? CRT_FEATURE_LIGHT_VERTEX_CACHE : 0u)
+		| (selection.integrator == IntegratorId::Bdpt ? CRT_FEATURE_BDPT : 0u);
+	return (samplerWritesRecord(selection) ? 1u : 0u) | m_outputFeatures | optics | textures | cones | cameraModel | (family << 8u) | spectralBits | splats;
 }
 
 void GpuRenderer::preparePipelines(VulkanEngine* engine, const KernelSelection& selection)
@@ -811,6 +858,32 @@ void GpuRenderer::ensureFilmRecords(VulkanEngine* engine, uint32_t width, uint32
 	}
 }
 
+void GpuRenderer::publishBidirectionalStubs()
+{
+	m_resources.setBuffer(CrtBinding::LightVertexCache, m_lightVertexCacheStub.buffer, 64);
+	m_resources.setBuffer(CrtBinding::BdptVertices, m_lightVertexCacheStub.buffer, 64);
+}
+
+void GpuRenderer::ensureSplats(VulkanEngine* engine, uint32_t width, uint32_t height, bool needed)
+{
+	const VkDeviceSize bytes = needed ? 3 * sizeof(float) * (VkDeviceSize)width * height : 16;
+	if (m_splats.buffer != VK_NULL_HANDLE && m_splatBytes == bytes && m_splatsLive == needed) {
+		return;
+	}
+	//the previous render's frames may still be writing the old one
+	vkDeviceWaitIdle(engine->m_device);
+	if (m_splats.buffer != VK_NULL_HANDLE) {
+		engine->destroyBuffer(m_splats);
+	}
+	m_splats = engine->createBuffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	engine->immediateSubmit([&](VkCommandBuffer cmd) {
+		vkCmdFillBuffer(cmd, m_splats.buffer, 0, VK_WHOLE_SIZE, 0);
+	});
+	m_resources.setBuffer(CrtBinding::SplatAccumulation, m_splats.buffer, bytes);
+	m_splatBytes = bytes;
+	m_splatsLive = needed;
+}
+
 //---------------------------------------------------------------- the outputs
 
 void GpuRenderer::ensureOutputs(VulkanEngine* engine, uint32_t width, uint32_t height)
@@ -930,7 +1003,7 @@ void GpuRenderer::syncAovViews(VulkanEngine* engine)
 		AovViewImage entry;
 		entry.view = view;
 		entry.name = crtAovViewName(view);
-		entry.image = engine->createImage({ m_snapshot.width, m_snapshot.height, 1 }, TonemapPass::DISPLAY_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		entry.image = engine->createImage({ m_snapshot.width, m_snapshot.height, 1 }, TonemapPass::DISPLAY_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 		//black until the first pass writes it, and in the layout the registry reads it in
 		AllocatedImage image = entry.image;
 		engine->immediateSubmit([&](VkCommandBuffer cmd) {
@@ -1016,6 +1089,7 @@ bool GpuRenderer::readOutputs(VulkanEngine* engine, RenderOutputsData& data)
 			return false;
 		}
 		data.lightGroups = m_lightGroupCount;
+		data.strategyDepths = m_strategyDepths;
 		data.spectralBuckets = m_spectralBuckets;
 		for (uint32_t b = 0; b < m_spectralBuckets; b++) {
 			const glm::vec2 range = spectralBucketRange(m_snapshot.settings.spectral, b);
@@ -1037,7 +1111,15 @@ void GpuRenderer::uploadFilterTable(VulkanEngine* engine, const PixelFilterSetti
 	if (m_hasFilterBuffer && m_uploadedFilter == filter) {
 		return;
 	}
-	const std::vector<uint32_t> words = packFilterTable(buildFilterTable(filter));
+	const FilterTable table = buildFilterTable(filter);
+	const std::vector<uint32_t> words = packFilterTable(table);
+	//the signed integral over the table's cells, which pbrt divides a splat by (RGBFilm::GetPixelRGB())
+	double integral = 0.0;
+	for (const float value : table.values) {
+		integral += value;
+	}
+	const double cellArea = (2.0 * table.radius / std::max(table.width, 1u)) * (2.0 * table.radius / std::max(table.height, 1u));
+	m_filterIntegral = integral * cellArea > 0.0 ? (float)(integral * cellArea) : 1.f;
 	const VkDeviceSize bytes = sizeof(uint32_t) * words.size();
 
 	AllocatedBuffer staging = engine->createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
@@ -1307,6 +1389,33 @@ void GpuRenderer::uploadEnvironment(VulkanEngine* engine, const std::shared_ptr<
 	}
 }
 
+void GpuRenderer::uploadImageDistributions(VulkanEngine* engine, const std::shared_ptr<const RaytraceSceneAccel>& scene, const std::shared_ptr<const PiecewiseConstant2D>& aperture)
+{
+	if (m_hasImageDistributions && m_uploadedAperture == aperture && m_uploadedImageScene == scene) {
+		return;
+	}
+	//crt_image_table.glsl: the punctual lights' words and tables, then the aperture's. Without any it is a single zero,
+	//which nothing reads
+	std::vector<float> data;
+	if (scene != nullptr) {
+		data = scene->lights.imageTables;
+	}
+	m_apertureTableBase = 0;
+	if (aperture != nullptr && aperture->integral > 0.f) {
+		m_apertureTableBase = packPiecewiseConstant2D(*aperture, data);
+	}
+	data.resize(std::max<size_t>(data.size(), 1), 0.f);
+	const VkDeviceSize bytes = sizeof(float) * data.size();
+	retireBuffer(engine, m_imageDistributionBuffer);
+	m_imageDistributionBuffer = engine->createBuffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+	memcpy(m_imageDistributionBuffer.info.pMappedData, data.data(), bytes);
+	vmaFlushAllocation(engine->m_memAllocator, m_imageDistributionBuffer.allocation, 0, bytes); //flush vma on MoltenVK
+	m_resources.setBuffer(CrtBinding::ImageDistributions, m_imageDistributionBuffer.buffer, bytes);
+	m_uploadedAperture = aperture;
+	m_uploadedImageScene = scene;
+	m_hasImageDistributions = true;
+}
+
 void GpuRenderer::uploadSamplerTables(VulkanEngine* engine)
 {
 	std::string error;
@@ -1423,9 +1532,15 @@ FilmFallback filmFallback(const KernelSelection& kernels, const RenderSettings& 
 	if (film == nullptr || !film->implemented) {
 		return {};
 	}
+	//a bidirectional integrator's splats join the film in its resolve, which only a film with a record has
+	const bool splats = kernels.selectedIntegrator().bidirectional;
+	if (splats && !film->foldsSplats) {
+		return { fmt::format("{} splats its light paths onto the film, which the {} film cannot fold in, so renders run the compensated mean.",
+			kernels.selectedIntegrator().name, film->name), "compensated_mean" };
+	}
 	if (film->keepsFilmRecord) {
 		const uint64_t bytesPerPixel = sizeof(CrtFilmPixel) + (film->keepsFilmCascade ? FILM_CASCADE_BYTES_PER_PIXEL : 0);
-		if ((uint64_t)width * height * bytesPerPixel > FILM_RECORD_BYTES_LIMIT) {
+		if (!splats && (uint64_t)width * height * bytesPerPixel > FILM_RECORD_BYTES_LIMIT) {
 			return { fmt::format("The {} film keeps {} bytes a pixel, more than {} MB at {} x {}, so this size renders with the running mean.",
 				film->name, bytesPerPixel, FILM_RECORD_BYTES_LIMIT >> 20, width, height), "running_mean" };
 		}
@@ -1489,6 +1604,16 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 		const OutputsFallback fallback = outputsFallback(m_snapshot.settings.aov, m_snapshot.lightGroupCount, m_snapshot.width, m_snapshot.height);
 		m_aov = m_snapshot.settings.aov;
 		m_lightGroupCount = m_snapshot.lightGroupCount;
+		//the bidirectional integrators keep no light groups and no spectral images (the user's choice on 2026-11-01), and
+		//light tracing, whose paths never start at the camera, no auxiliary output but the sample count
+		const IntegratorInfo& integratorRow = m_snapshot.kernels.selectedIntegrator();
+		if (integratorRow.bidirectional) {
+			m_lightGroupCount = 0;
+			if (integratorRow.id == IntegratorId::Light) {
+				m_aov.outputs &= 1u << (uint32_t)AovOutput::SampleCount;
+				m_aov.captureThroughSpecular = false;
+			}
+		}
 		if (!fallback.aov) {
 			m_aov.outputs &= 1u << (uint32_t)AovOutput::SampleCount;
 			m_aov.captureThroughSpecular = false;
@@ -1500,8 +1625,24 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 		if (!fallback.reason.empty()) {
 			fmt::println("GpuRenderer: {}", fallback.reason);
 		}
+		//bdpt's strategy images take the light groups' sums: every depth the render reaches that fits the limit
+		m_strategyDepths = 0;
+		if (integratorRow.id == IntegratorId::Bdpt && m_snapshot.settings.bidirectional.visualizeStrategies) {
+			const uint32_t depths = (uint32_t)std::clamp(m_snapshot.settings.rayDepth, 1, CRT_MAX_DEPTH);
+			uint32_t kept = depths;
+			while (kept > 0 && lightGroupSumBytes(bdptStrategyCount(kept - 1), m_snapshot.width, m_snapshot.height) > OUTPUT_BYTES_LIMIT) {
+				kept--;
+			}
+			if (kept < depths) {
+				m_outputsNote += fmt::format("{}The strategy images of every depth take {:.0f} MB at {} x {}, more than {} MB, so this size keeps depths 0 to {}.",
+					m_outputsNote.empty() ? "" : " ", double(lightGroupSumBytes(bdptStrategyCount(depths - 1), m_snapshot.width, m_snapshot.height)) / (1024.0 * 1024.0),
+					m_snapshot.width, m_snapshot.height, OUTPUT_BYTES_LIMIT >> 20, (int)kept - 1);
+			}
+			m_strategyDepths = kept;
+			m_lightGroupCount = kept > 0 ? bdptStrategyCount(kept - 1) : 0u;
+		}
 		m_aovLayout = makeAovLayout(m_aov);
-		m_spectralBuckets = spectralImageBuckets(m_snapshot.settings.spectral);
+		m_spectralBuckets = integratorRow.bidirectional ? 0u : spectralImageBuckets(m_snapshot.settings.spectral);
 		if (lightGroupSumBytes(m_lightGroupCount, m_snapshot.width, m_snapshot.height, m_spectralBuckets) > OUTPUT_BYTES_LIMIT && m_spectralBuckets > 0) {
 			m_outputsNote += fmt::format("{}The spectral images take {:.0f} MB at {} x {}, more than {} MB, so this size renders without them.", m_outputsNote.empty() ? "" : " ",
 				double(lightGroupSumBytes(m_lightGroupCount, m_snapshot.width, m_snapshot.height, m_spectralBuckets)) / (1024.0 * 1024.0), m_snapshot.width, m_snapshot.height,
@@ -1529,9 +1670,11 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 	const KernelVariant* filmVariant = m_snapshot.kernels.selected(KernelSlot::UpdateFilm);
 	ensureFilmRecords(engine, m_snapshot.width, m_snapshot.height, filmVariant != nullptr && filmVariant->implemented && filmVariant->keepsFilmRecord,
 		filmVariant != nullptr && filmVariant->implemented && filmVariant->keepsFilmCascade);
+	ensureSplats(engine, m_snapshot.width, m_snapshot.height, m_snapshot.kernels.selectedIntegrator().bidirectional);
 	uploadFilterTable(engine, m_snapshot.settings.pixelFilter);
 	uploadScene(engine);
 	uploadEnvironment(engine, m_snapshot.environment);
+	uploadImageDistributions(engine, m_snapshot.scene, m_snapshot.camera.apertureShape == ApertureShape::Image ? m_snapshot.apertureTable : nullptr);
 	uploadSpectral(engine);
 	preparePipelines(engine, m_snapshot.kernels);
 	m_schedules[(size_t)m_activeIntegrator]->start(*this, engine);
@@ -1819,28 +1962,26 @@ void GpuRenderer::collectReadbacks(VulkanEngine* engine, uint32_t slot)
 
 CrtParams GpuRenderer::baseParams(VulkanEngine* engine) const
 {
-	//the RTIOW camera: origin, lower-left corner of the image plane, its two edges, and the lens basis
-	const RTCameraSnapshot& camera = m_snapshot.camera;
-	const float aspect = (float)m_snapshot.width / (float)m_snapshot.height;
-	const float theta = glm::radians(camera.vfovDegrees);
-	const float h = glm::tan(theta / 2.f);
-	const float viewportHeight = 2.f * h;
-	const float viewportWidth = aspect * viewportHeight;
-	const glm::vec3 t = glm::normalize(camera.lookFrom - camera.lookAt);
-	const glm::vec3 n = glm::normalize(glm::cross(camera.vUp, t));
-	const glm::vec3 b = glm::cross(t, n);
-	const glm::vec3 horizontal = camera.focusDistance * viewportWidth * n;
-	const glm::vec3 vertical = camera.focusDistance * viewportHeight * b;
-	const glm::vec3 lowerLeft = camera.lookFrom - horizontal / 2.f - vertical / 2.f - camera.focusDistance * t;
+	//the camera (src/camera_model.h): Ray Tracing in One Weekend's origin, lower-left corner of the image plane, its two
+	//edges and the lens basis, and what the other kinds, the apertures and the tilt add to them
+	const CameraFrame camera = buildCameraFrame(m_snapshot.camera, m_snapshot.width, m_snapshot.height, m_apertureTableBase);
 
 	const RenderSettings& settings = m_snapshot.settings;
 	CrtParams params {};
-	params.origin = glm::vec4(camera.lookFrom, 0.f);
-	params.lowerLeft = glm::vec4(lowerLeft, 0.f);
-	params.horizontal = glm::vec4(horizontal, 0.f);
-	params.vertical = glm::vec4(vertical, 0.f);
-	params.lensU = glm::vec4(n, camera.aperture / 2.f);
-	params.lensV = glm::vec4(b, 0.f);
+	packCameraParams(camera, params);
+	//what the bidirectional integrators read: their schedules set the light paths' count and scale
+	params.sceneSphere = m_snapshot.scene != nullptr ? m_snapshot.scene->sceneSphere : glm::vec4(0.f, 0.f, 0.f, 1.f);
+	params.lightPathScale = 1.f;
+	params.lightPathCount = 0;
+	if (m_snapshot.kernels.selectedIntegrator().bidirectional) {
+		const KernelVariant* cameraRays = m_snapshot.kernels.selected(KernelSlot::GenerateCameraRays);
+		const bool filtered = cameraRays != nullptr && cameraRays->settings == KernelSettings::PixelFilter && m_snapshot.settings.antialiasing;
+		params.bidirFlags = CRT_BIDIR_FLAG_SPLATS | (filtered ? CRT_BIDIR_FLAG_FILTERED_SPLATS : 0u);
+		params.splatNormalization = filtered ? 1.f / m_filterIntegral : 1.f;
+		if (m_strategyDepths > 0) {
+			params.bidirFlags |= CRT_BIDIR_FLAG_STRATEGY_IMAGES | (m_snapshot.settings.bidirectional.visualizeWeights ? CRT_BIDIR_FLAG_STRATEGY_WEIGHTED : 0u);
+		}
+	}
 	params.width = m_snapshot.width;
 	params.height = m_snapshot.height;
 	params.seed = m_snapshot.seed;
@@ -1858,8 +1999,6 @@ CrtParams GpuRenderer::baseParams(VulkanEngine* engine) const
 		| (settings.optics.exactCoatings ? CRT_FLAG_EXACT_COATINGS : 0u)
 		| ((uint32_t)settings.textureFilter << CRT_TEXTURE_FILTER_SHIFT)
 		| (m_hasUv1 ? CRT_FLAG_UV1 : 0u);
-	//the angle one pixel subtends, a ray cone's spread at the eye
-	params.pixelSpread = std::atan(2.f * h / (float)std::max(m_snapshot.height, 1u));
 	params.background = glm::vec4(m_snapshot.backgroundColor, 0.f);
 	params.minBouncesBeforeRoulette = (uint32_t)std::max(settings.minBouncesBeforeRoulette, 0);
 	params.debugView = (uint32_t)debugView;
@@ -1921,6 +2060,9 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 			if (m_filmCascadeLive) {
 				vkCmdFillBuffer(cmd, m_filmCascade.buffer, 0, VK_WHOLE_SIZE, 0);
 			}
+			if (m_splatsLive) {
+				vkCmdFillBuffer(cmd, m_splats.buffer, 0, VK_WHOLE_SIZE, 0);
+			}
 			//the outputs accumulate from the first sample, like the film
 			if (m_aovLayout.count > 0) {
 				vkCmdClearColorImage(cmd, m_aovImage.image, VK_IMAGE_LAYOUT_GENERAL, &zeroFloat, 1, &range);
@@ -1970,7 +2112,7 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 	if (m_hasImage) {
 		recordReference(cmd, engine, slot);
 		//Relight shows the picture the light groups' sums make, each times its gain, in place of the film's
-		const bool relit = relight && m_lightGroupCount > 0;
+		const bool relit = relight && lightGroupCount() > 0;
 		if (relit) {
 			ensureRelitImage(engine);
 			recordRelight(cmd, engine);

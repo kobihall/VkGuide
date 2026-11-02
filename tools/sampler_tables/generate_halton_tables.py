@@ -2,7 +2,7 @@
 """Writes the Halton sampler's constant tables, once for C++ and once for GLSL, so both read the
 same numbers:  python3 tools/sampler_tables/generate_halton_tables.py
 
-For each of the first 200 primes (a sample dimension's base): the prime, its reciprocal as a float
+For each of the first 400 primes (a sample dimension's base: a camera path's 198 dimensions, then a light path's, src/sampler.h): the prime, its reciprocal as a float
 (a GPU's division is not IEEE, so a shader must not compute 1 / base itself), and how many digits
 pbrt-v4's ScrambledRadicalInverse() and OwenScrambledRadicalInverse() loop over. Both loops stop
 when the float 1 - (base - 1) * base^-m (or 1 - base^-m) stops being below 1, a float comparison
@@ -12,7 +12,7 @@ instead of being re-evaluated in a shader.
 import numpy as np
 from pathlib import Path
 
-COUNT = 200
+COUNT = 400
 primes = []
 n = 2
 while len(primes) < COUNT:

@@ -6,6 +6,14 @@
 
 layout (local_size_x = CRT_WORKGROUP) in;
 
+// what the splats add to the pixel: their sum over its `samples` (one light path each, CrtParams::lightPathScale having
+// scaled a light path that stood for more), divided by the pixel filter's integral (CrtParams::splatNormalization)
+vec3 splatValue(uint pixel, uint samples)
+{
+	const vec3 sum = vec3(splats[3u * pixel], splats[3u * pixel + 1u], splats[3u * pixel + 2u]);
+	return samples > 0u ? sum * (pc.splatNormalization / float(samples)) : vec3(0.0);
+}
+
 void main()
 {
 	const uint pixel = gl_GlobalInvocationID.x;
@@ -24,7 +32,11 @@ void main()
 		if (record.accepted == 0u) {
 			return;
 		}
-		imageStore(accumulation, coord, vec4(outlierResolve(pixel, coord, record.accepted, record.sum.w + record.compensation.w, pc.outlierKappa), 1.0));
+		vec3 value = outlierResolve(pixel, coord, record.accepted, record.sum.w + record.compensation.w, pc.outlierKappa);
+		if (CRT_SPLATS) {
+			value += splatValue(pixel, imageLoad(samplesTaken, coord).r);
+		}
+		imageStore(accumulation, coord, vec4(value, 1.0));
 		return;
 	}
 #endif
@@ -60,6 +72,10 @@ void main()
 		aovFoldPixel(pixel, coord);
 	}
 	if (spawned == 0u) {
+		// a bidirectional integrator's splats land on pixels that took no sample this frame: their value moves still
+		if (CRT_SPLATS && film.accepted > 0u && pc.debugView != CRT_DEBUG_SAMPLE_COUNT_HEAT) {
+			imageStore(accumulation, coord, vec4(filmResolve(film) + splatValue(pixel, imageLoad(samplesTaken, coord).r), 1.0));
+		}
 		return;
 	}
 
@@ -77,9 +93,13 @@ void main()
 	}
 	filmPixels[pixel] = film;
 #ifndef CRT_FILM_CASCADE
-	// THE SPLAT HOOK: light tracing and the bidirectional methods add contributions to arbitrary pixels
-	// (docs/plans/pbrt-bidirectional-path-tracing.md). Their splats go in a buffer of their own, and this is
-	// where the resolve adds splatSum / samplesPerPixel to the weighted mean, as pbrt's RGBFilm::GetPixelRGB() does
-	imageStore(accumulation, coord, vec4(filmResolve(film), 1.0));
+	// THE SPLATS of light tracing and the bidirectional integrators (docs/plans/completed/pbrt-bidirectional-path-
+	// tracing.md) join the weighted mean here, their sum over the pixel's samples, as pbrt's RGBFilm::GetPixelRGB() adds
+	// them. CRT_SPLATS off, the resolve is the code it always was
+	if (CRT_SPLATS) {
+		imageStore(accumulation, coord, vec4(filmResolve(film) + splatValue(pixel, total), 1.0));
+	} else {
+		imageStore(accumulation, coord, vec4(filmResolve(film), 1.0));
+	}
 #endif
 }

@@ -20,11 +20,15 @@ a file with an "rgb" film renders in exact RGB, which reads a measured spectrum 
 wavelengths, and `--spectral hero` integrates it as pbrt does.
 
 `--cornell` compares the Cornell box of tools/verify/cornell.py, written as a .pbrt file by pbrt_cornell.py, which
-needs no substitution. pbrt is the user's build: set PBRT and IMGTOOL, or they are looked for beside this repository.
+needs no substitution. `--integrator` writes another of pbrt's integrators into it, which the importer maps to its own
+(`bdpt` and `lightpath`), and `--max-depth` the depth; `--visualize-strategies` (with `bdpt`) also compares each strategy
+image of pbrt's visualizestrategies, which pbrt writes as bdpt_dDD_sSS_tTT.exr, with this renderer's channel of the
+same name. pbrt is the user's build: set PBRT and IMGTOOL, or they are looked for beside this repository.
 
 Run:  python3 tools/verify/pbrt_compare.py SCENE.pbrt [--spp 256] [--pbrt-spp N] [--out DIR] [--max-mean-error 0.005]
                                             [--spectral hero|bands|gaussians] [--lanes N]
-      python3 tools/verify/pbrt_compare.py --cornell [--spp 4096]
+      python3 tools/verify/pbrt_compare.py --cornell [--spp 4096] [--integrator bdpt|lightpath] [--max-depth N]
+                                            [--visualize-strategies]
 """
 
 import argparse
@@ -36,6 +40,7 @@ from pathlib import Path
 import numpy as np
 
 import pbrt_cornell
+from aov_check import read_exr
 from vkscene import read_pfm, run_render, save_png
 
 
@@ -63,6 +68,25 @@ def relative_mse(a, b, reference):
     return float(np.mean((a - b) ** 2 / (reference ** 2 + 0.01)))
 
 
+def compare_strategies(scene, args, workdir, extra_args, ratio):
+    """pbrt's bdpt_dDD_sSS_tTT.exr strategy images, left in the scene's folder by its last render, against this
+    renderer's channels of the same names: each image's mean, which a single seed measures well enough."""
+    exr, _ = run_render(scene, args.spp, seed=2, workdir=workdir, out_name="here_strategies.exr", timeout=3000, extra_args=extra_args)
+    channels, _ = read_exr(exr, workdir)
+    print("  strategy images, mean radiance here and in pbrt:")
+    for path in sorted(scene.parent.glob("bdpt_d*_s*_t*.exr")):
+        pfm = workdir / (path.stem + ".pfm")
+        subprocess.run([pbrt_cornell.tool("imgtool", "IMGTOOL"), "convert", "--outfile", str(pfm), str(path)], check=True, capture_output=True)
+        there = read_pfm(pfm) / ratio
+        if path.stem + ".R" not in channels:
+            print(f"    {path.stem}: not kept here")
+            continue
+        here = np.stack([channels[f"{path.stem}.{c}"] for c in "RGB"], axis=-1)
+        a = float(here.mean())
+        b = float(there.mean())
+        print(f"    {path.stem}: here {a:.5f}, pbrt {b:.5f}, ratio {a / b if b > 0 else float('nan'):.4f}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("scene", nargs="?", type=Path)
@@ -74,6 +98,9 @@ def main():
     parser.add_argument("--max-mean-error", type=float, default=None, help="fail when a channel's mean ratio is further than this from 1")
     parser.add_argument("--spectral", default=None, help="render here in this representation (hero, bands, gaussians, rgb)")
     parser.add_argument("--lanes", type=int, default=None, help="with --spectral: the lane count")
+    parser.add_argument("--integrator", default="path", help="--cornell only: pbrt's integrator (path, bdpt, lightpath)")
+    parser.add_argument("--max-depth", type=int, default=60, help="--cornell only: the integrator's maxdepth")
+    parser.add_argument("--visualize-strategies", action="store_true", help="--cornell --integrator bdpt only: compare the strategy images too")
     args = parser.parse_args()
     if args.scene is None and not args.cornell:
         parser.error("give a .pbrt scene or --cornell")
@@ -82,7 +109,9 @@ def main():
     workdir.mkdir(parents=True, exist_ok=True)
     scene = args.scene.resolve() if args.scene else workdir / "cornell.pbrt"
     if args.cornell:
-        scene.write_text(pbrt_cornell.scene_text(True, args.size, args.size, args.spp, "pbrt_out.exr"))
+        params = ' "bool visualizestrategies" true' if args.visualize_strategies else ""
+        scene.write_text(pbrt_cornell.scene_text(True, args.size, args.size, args.spp, "pbrt_out.exr", max_depth=args.max_depth,
+                                                 integrator=args.integrator, integrator_params=params))
     pbrt_spp = args.pbrt_spp or args.spp
     extra_args = (["--spectral", args.spectral] if args.spectral else []) + (["--lanes", str(args.lanes)] if args.lanes else [])
 
@@ -118,6 +147,8 @@ def main():
         diff = np.abs(a - b).mean(axis=2, keepdims=True) / np.maximum(b.mean(axis=2, keepdims=True), 0.05)
         save_png(workdir / "difference.png", np.repeat(np.clip(diff, 0, 1), 3, axis=2))
         print(f"  images in {workdir}")
+    if args.visualize_strategies:
+        compare_strategies(scene, args, workdir, extra_args, ratio)
     if args.max_mean_error is not None and np.any(np.abs(ratio_rgb - 1) > args.max_mean_error):
         print(f"FAILED: a channel's mean is more than {args.max_mean_error:.2%} from pbrt's")
         return 1

@@ -61,7 +61,7 @@ def box_mesh(center, size, yaw_degrees):
     return f'Shape "trianglemesh" "integer indices" [{i}] "point3 P" [{p}]\n'
 
 
-def scene_text(with_boxes, width, height, samples, exr_name, light_height=55.4, max_depth=60):
+def scene_text(with_boxes, width, height, samples, exr_name, light_height=55.4, max_depth=60, integrator="path", integrator_params=""):
     out = []
     out.append("Scale -1 1 1\n")
     px, py, pz = cornell.CAMERA_POSITION
@@ -71,7 +71,7 @@ def scene_text(with_boxes, width, height, samples, exr_name, light_height=55.4, 
     out.append(f'Film "rgb" "integer xresolution" {width} "integer yresolution" {height} "string filename" "{exr_name}" "bool savefp16" false\n')
     out.append(f'Sampler "zsobol" "integer pixelsamples" {samples}\n')
     out.append('PixelFilter "box" "float xradius" 0.5 "float yradius" 0.5\n')
-    out.append(f'Integrator "path" "integer maxdepth" {max_depth}\n')
+    out.append(f'Integrator "{integrator}" "integer maxdepth" {max_depth}{integrator_params}\n')
     out.append("WorldBegin\n")
     for name, center, u, v, w, length, rho in cornell.WALLS:
         out.append("AttributeBegin\n")

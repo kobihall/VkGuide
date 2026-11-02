@@ -1,0 +1,28 @@
+LookAt 0 2 5  0 0.8 -0.5  0 1 0
+Camera "perspective" "float fov" 45 "float screenwindow" [-1.0 1.6667 -0.8 1.2]
+Sampler "zsobol" "integer pixelsamples" 64
+Integrator "volpath" "integer maxdepth" 5
+Film "rgb" "integer xresolution" 320 "integer yresolution" 240 "string filename" "shifted.exr"
+PixelFilter "gaussian"
+WorldBegin
+AttributeBegin
+  Material "diffuse" "rgb reflectance" [0.7 0.7 0.7]
+  Shape "trianglemesh" "integer indices" [0 1 2 0 2 3] "point3 P" [-4 0 -4  4 0 -4  4 0 4  -4 0 4]
+  Shape "trianglemesh" "integer indices" [0 1 2 0 2 3] "point3 P" [-4 0 -2  4 0 -2  4 4 -2  -4 4 -2]
+AttributeEnd
+AttributeBegin
+  Material "diffuse" "rgb reflectance" [0.7 0.1 0.08]
+  Translate -1.1 0.5 -0.6
+  Rotate 25 0 1 0
+  Shape "trianglemesh" "integer indices" [0 1 2 0 2 3  4 6 5 4 7 6  0 4 5 0 5 1  1 5 6 1 6 2  2 6 7 2 7 3  3 7 4 3 4 0]
+    "point3 P" [-0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 -0.5 0.5  -0.5 -0.5 0.5  -0.5 0.5 -0.5  0.5 0.5 -0.5  0.5 0.5 0.5  -0.5 0.5 0.5]
+AttributeEnd
+AttributeBegin
+  Material "diffuse" "rgb reflectance" [0.1 0.6 0.15]
+  Translate 1.0 0.6 0.2
+  Shape "sphere" "float radius" 0.6
+AttributeEnd
+AttributeBegin
+  AreaLightSource "diffuse" "rgb L" [12 11 10]
+  Shape "trianglemesh" "integer indices" [0 2 1 0 3 2] "point3 P" [-0.6 3 -0.8  0.6 3 -0.8  0.6 3 0.2  -0.6 3 0.2]
+AttributeEnd

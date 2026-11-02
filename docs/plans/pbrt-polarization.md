@@ -18,7 +18,7 @@ A Stokes vector `s = (s0, s1, s2, s3)` describes intensity, linear polarization 
 
 A camera path is traced backward from the sensor, so the light's Stokes vector is only known at the end. The measured intensity is `d · M₁ M₂ ⋯ Mₖ · s_light`, where `d` is the sensor's analyzer row: `(1, 0, 0, 0)` for a plain sensor. The path therefore carries the row vector `r = d M₁ ⋯ Mᵥ`, an adjoint Stokes vector, instead of the full matrix product. That is 4 values per lane rather than 16, and the lanes stay independent.
 
-- Light paths, which the light integrator of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md) traces from the lights, know the light's polarization from the start. In the polarized family they carry the forward Stokes vector itself per lane, multiplied by each Mueller matrix in order, in the same four floats per lane; a connection to the camera applies the camera's analyzer row there. [physoptics-polarization-optics.md](physoptics-polarization-optics.md) adds this, and polarimeter detectors that record all four components.
+- Light paths, which the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md) traces from the lights, know the light's polarization from the start. In the polarized family they carry the forward Stokes vector itself per lane, multiplied by each Mueller matrix in order, in the same four floats per lane; a connection to the camera applies the camera's analyzer row there. [physoptics-polarization-optics.md](physoptics-polarization-optics.md) adds this, and polarimeter detectors that record all four components.
 - A polarized family (`CRT_POLARIZED`, beside `CRT_LANES`) makes `PathState.throughput` a `PolarizedSpectrum`: `CRT_LANES` rows of 4 floats. With 4 lanes that is 64 bytes instead of 16, and the path state grows from 96 to 144 bytes, in that family only.
 - Only the 4- and 8-lane families get a polarized build. A Mueller matrix per lane is 16 floats in registers, and 32 lanes of them would spill.
 - Next-event estimation computes `r · M_bsdf · s_light` per lane, a scalar, so shadow rays and everything after them are unchanged. Kernels 03 and 04 compute `r · s_emitted`, which for an unpolarized emitter is `r₀ Le`.
@@ -48,7 +48,7 @@ Legacy materials as depolarizers are an approximation. It has one useful propert
 
 ### The sensor
 
-A **Polarizing filter** setting on the camera ([pbrt-cameras.md](pbrt-cameras.md)): none, or a linear polarizer at an angle to the camera's up vector. Kernel 00 sets `d` to the filter's first row, rotated into each camera ray's canonical frame. Rotating the filter dims reflections off water and glass as a real filter does, and darkens a polarized sky once there is one.
+A **Polarizing filter** setting on the camera ([pbrt-cameras.md](completed/pbrt-cameras.md)): none, or a linear polarizer at an angle to the camera's up vector. Kernel 00 sets `d` to the filter's first row, rotated into each camera ray's canonical frame. Rotating the filter dims reflections off water and glass as a real filter does, and darkens a polarized sky once there is one.
 
 A polarimetric camera, which outputs the four Stokes images `s0` to `s3` as auxiliary outputs ([pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md)), needs all four rows of the product instead of one. That is a later `CRT_POLARIZED = 2` family carrying 16 floats per lane.
 

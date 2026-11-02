@@ -16,6 +16,7 @@ SelfTestResult runAovViewTest(VulkanEngine* engine);
 SelfTestResult runBxdfParityTest(VulkanEngine* engine);
 SelfTestResult runSpectrumParityTest(VulkanEngine* engine);
 SelfTestResult runOpticParityTest(VulkanEngine* engine);
+SelfTestResult runCameraParityTest(VulkanEngine* engine);
 
 std::span<const SelfTest> gpuSelfTests()
 {
@@ -30,6 +31,7 @@ std::span<const SelfTest> gpuSelfTests()
 		{ "BxDF parity (crt_bxdf.glsl's glass and conductor against src/bxdf.cpp)", runBxdfParityTest },
 		{ "Spectrum parity (crt_spectrum.glsl's wavelengths, spectra and film against src/spectral.cpp)", runSpectrumParityTest },
 		{ "Optic parity (crt_optic.glsl and crt_coating.glsl against src/optic_surface.cpp and src/optic_coating.cpp)", runOpticParityTest },
+		{ "Camera parity (crt_camera.glsl against src/camera_model.cpp)", runCameraParityTest },
 	};
 	return tests;
 }

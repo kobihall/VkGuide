@@ -1,0 +1,337 @@
+#version 460
+
+// 16 SCATTER AND CONNECT (docs/plans/completed/pbrt-bidirectional-path-tracing.md; Davidovic et al. 2014): the light vertex
+// cache's kernel 06. At each surface a camera path reaches, with the weights of Georgiev's recursive MIS
+// (crt_light_vertex_cache.glsl) in place of the path tracer's two-strategy ones, it
+//
+//  - samples a light, as kernel 06 does, and sends the shadow ray to kernel 08, its contribution weighed against the BSDF
+//    finding the light, light tracing and every connection that could make the same path (SmallVCM's
+//    DirectIllumination)
+//  - connects to CrtParams::cacheConnections vertices picked uniformly from the cache the frame's light paths filled,
+//    each weighed by the cache's size over the connections times the light paths, so that the connections stand for
+//    one whole light path's vertices; tests each connection for occlusion itself, with the selected traversal, since
+//    queueing them would take a shadow ray per connection (SmallVCM's ConnectVertices)
+//  - scatters the path as kernel 06 does, and carries its partial sums past the scatter
+//
+// The camera vertex is evaluated in radiance mode and a cached light vertex in importance mode, in one kernel
+// (crt_transport.glsl). A cached vertex can have any material, so both builds of this kernel evaluate every type, as
+// the complex class's does; the basic build drains the basic surface queue. The debug views, the ambient occlusion view
+// and the auxiliary outputs follow kernel 06. Built once per traversal, material class and lane family.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
+#include "include/crt_material_class.glsl"
+// every material a cached light vertex can have
+#undef CRT_MATERIAL_CLASS_EVALUATES_COMPLEX
+#define CRT_MATERIAL_CLASS_EVALUATES_COMPLEX 1
+#include "include/crt_interaction.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_samples.glsl"
+#include "equirect.glsl"
+#include "include/crt_transport.glsl"
+#include "include/crt_scatter.glsl"
+#include "include/crt_light.glsl"
+#include "include/crt_debug.glsl"
+#define SurfaceMaterial ComplexMaterial
+#include "include/crt_transport.glsl"
+#include "include/crt_aov.glsl"
+#include "include/crt_spawn.glsl"
+#include "include/crt_surface_views.glsl"
+#include "include/crt_trace.glsl"
+#include "include/crt_camera.glsl"
+#include "include/crt_light_vertex_cache.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+// the cache's picks draw from their own copy of the path's stream, so the BSDF sample is not the same numbers
+#define CRT_CACHE_STREAM_SALT 0x4cf5ad43u
+
+shared uint s_nodesVisited;
+shared uint s_primitivesTested;
+
+// The light sample at the camera vertex: one light, its MIS weight against every other strategy, and the shadow ray in
+// shadowRays[entry]. `wo` points back along the camera path
+bool nextEvent(ComplexMaterial material, vec3 wo, SurfaceInteraction si, vec3 normal, PathState path, Spectrum throughput, uint laneMask, float dVCM, float dVC,
+	uint pathIndex, inout uint rng, uint entry)
+{
+	if (lightHeader.count == 0u) {
+		return false;
+	}
+	const uint index = sampleLightIndex(sampleDimension(pathIndex, rng, CRT_SAMPLE_DIRECT_LIGHT));
+	const vec2 u = sampleDimension2D(pathIndex, rng, CRT_SAMPLE_DIRECT_POINT);
+	vec3 direction;
+	float distance;
+	Spectrum emitted;
+	float directPdfW;
+	vec3 lightNormal;
+	// the full environment table, which the escaped paths' weights read too (stage 15)
+	if (!sampleLight(index, si.p, u, 0u, direction, distance, emitted, directPdfW, lightNormal)) {
+		return false;
+	}
+	const float pmf = lightPmf(index);
+	if (!(directPdfW > 0.0) || !(pmf > 0.0)) {
+		return false;
+	}
+	g_transportMode = CRT_TRANSPORT_RADIANCE;
+	const Spectrum f = transportEval(material, wo, normal, direction);
+	const bool deltaLight = isDeltaLight(lights[index].kind);
+	const float forwardPdf = deltaLight ? 0.0 : transportPdf(material, wo, normal, direction);
+	const float reversePdf = transportPdf(material, direction, normal, wo);
+	float pdfPos;
+	float pdfDir;
+	lightPdfLe(index, lightNormal, -direction, pdfPos, pdfDir);
+	const bool area = dot(lightNormal, lightNormal) > 0.0;
+	const float cosAtLight = area ? abs(dot(lightNormal, direction)) : 1.0;
+	const float cosToLight = abs(dot(normal, direction));
+	// a light at a point is sampled with certainty by area, which is d^2 by solid angle (SmallVCM's PointLight); the
+	// sample reports 1, and has divided its radiance by d^2 instead, which the contribution keeps
+	const float misDirectPdfW = deltaLight && lightKindOf(lights[index]) != CRT_LIGHT_DIRECTIONAL ? distance * distance : directPdfW;
+	const float wLight = lvcMis(forwardPdf / (pmf * directPdfW));
+	const float wCamera = lvcMis(pdfPos * pdfDir * cosToLight / (misDirectPdfW * max(cosAtLight, 1e-8))) * (dVCM + dVC * lvcMis(reversePdf));
+	const float weight = 1.0 / (wLight + 1.0 + wCamera);
+	const Spectrum contribution = spectrumScale(spectrumMul(spectrumMul(throughput, f), emitted), weight / (pmf * directPdfW));
+	if (!(spectrumMaxValue(contribution) > 0.0)) {
+		return false;
+	}
+	ShadowRay ray;
+	if (!spawnShadowRay(si, direction, distance, lightNormal, ray)) {
+		return false;
+	}
+	ray.contribution = contribution;
+	ray.radianceSlot = path.radianceSlot;
+#ifdef CRT_SPECTRAL
+	ray.lambdaU = path.lambdaU;
+	ray.laneMask = laneMask;
+#endif
+	shadowRays[entry] = ray;
+	return true;
+}
+
+// The connections to the cache's vertices: each picked uniformly, its surface rebuilt and its material evaluated in
+// importance mode, weighed against every other strategy, tested for occlusion and added to the path's radiance slot
+void connectToCache(ComplexMaterial material, vec3 wo, SurfaceInteraction si, vec3 normal, PathState path, Spectrum throughput, uint laneMask, float dVCM, float dVC)
+{
+	const uint cached = min(lvcCount, lvcCapacity);
+	if (cached == 0u || pc.cacheConnections == 0u || pc.lightPathCount == 0u) {
+		return;
+	}
+	const uint cameraLength = path.bounce + 1u;
+	// the connections stand for one light path's vertices: each weighed by the cache's size over the connections times
+	// the light paths that filled it
+	const float share = float(cached) / (float(pc.cacheConnections) * float(pc.lightPathCount));
+	uint rng = pcgHash(path.rngState ^ CRT_CACHE_STREAM_SALT);
+	for (uint k = 0u; k < pc.cacheConnections; k++) {
+		const uint pick = min(uint(randomFloat(rng) * float(cached)), cached - 1u);
+		const CachedVertex lv = lvcLoadVertex(pick);
+		if (lv.pathLength + 1u + cameraLength > pc.rayDepth) {
+			continue;
+		}
+		// the light vertex, rebuilt as its light path met it
+		const vec3 lightDir = normalize(lv.rayDirection);
+		const SurfaceInteraction lsi = surfaceInteraction(lv.hit, lv.rayOrigin, lightDir);
+		const TextureSite lsite = surfaceTextureSite(lsi, lv.hit, lightDir, 0.0, 0.0);
+		const uint lightMaterialIndex = resolveMixMaterial(lsi.material, lsi.p, -lightDir, lsite);
+		bool lightFront;
+		const vec3 lightNormal = materialShadingNormal(classicMaterial(lightMaterialIndex), lv.hit, lsi, lightDir, lightFront, lightMaterialIndex, lsite);
+		ComplexMaterial lightMaterial = resolveComplexMaterial(lightMaterialIndex, lsi, lsite);
+		lightMaterial.frontFace = lightFront;
+#ifdef CRT_SPECTRAL
+		// a dispersive glass reads its index at the lane its light path kept
+		if (lightMaterial.isBxdf && (lightMaterial.bxdfFlags & CRT_BXDF_FLAG_DISPERSIVE) != 0u && lv.laneMask != spectrumFullLaneMask()) {
+			lightMaterial.bxdf.eta = scalarFromRef(materialSpectrumRef(lightMaterialIndex, CRT_SLOT_AUX0), uint(findLSB(lv.laneMask)));
+		}
+#endif
+		const vec3 toLight = lsi.p - si.p;
+		const float distanceSquared = dot(toLight, toLight);
+		if (!(distanceSquared > 0.0)) {
+			continue;
+		}
+		const float distance = sqrt(distanceSquared);
+		const vec3 direction = toLight / distance;
+		const vec3 lightWo = -lightDir;
+
+		g_transportMode = CRT_TRANSPORT_RADIANCE;
+		const Spectrum cameraF = transportEval(material, wo, normal, direction);
+		if (!(spectrumMaxValue(cameraF) > 0.0)) {
+			continue;
+		}
+		const float cameraForward = transportPdf(material, wo, normal, direction);
+		const float cameraReverse = transportPdf(material, direction, normal, wo);
+		g_transportMode = CRT_TRANSPORT_IMPORTANCE;
+		const Spectrum lightF = spectrumScale(transportEval(lightMaterial, lightWo, lightNormal, -direction), shadingNormalCorrection(lightWo, -direction, lightNormal, lsi.n));
+		if (!(spectrumMaxValue(lightF) > 0.0)) {
+			continue;
+		}
+		const float lightForward = transportPdf(lightMaterial, lightWo, lightNormal, -direction);
+		const float lightReverse = transportPdf(lightMaterial, -direction, lightNormal, lightWo);
+
+		// the densities of each side's draw at the other's point, by area
+		const float cameraForwardA = cameraForward * abs(dot(lightNormal, direction)) / distanceSquared;
+		const float lightForwardA = lightForward * abs(dot(normal, direction)) / distanceSquared;
+		const float wLight = lvcMis(cameraForwardA) * (lv.dVCM + lv.dVC * lvcMis(lightReverse));
+		const float wCamera = lvcMis(lightForwardA) * (dVCM + dVC * lvcMis(cameraReverse));
+		const float weight = share / (wLight + 1.0 + wCamera);
+		Spectrum contribution = spectrumScale(spectrumMul(spectrumMul(throughput, cameraF), spectrumMul(lv.throughput, lightF)), weight / distanceSquared);
+		if (!(spectrumMaxValue(contribution) > 0.0)) {
+			continue;
+		}
+		ShadowRay ray;
+		if (!spawnShadowRay(si, direction, distance, lsi.n, ray)) {
+			continue;
+		}
+		if (occluded(ray.origin, ray.direction, traceTMin(), ray.tMax)) {
+			continue;
+		}
+		filmAdd(path.radianceSlot, contribution);
+	}
+}
+
+void main()
+{
+	const uint nextQueue = rayQueueFor(pc.bounce + 1u);
+	const uint index = gl_GlobalInvocationID.x;
+	// no early return: the barriers below and in queueAppend() need every invocation
+	const bool isActive = index < headers[CRT_SURFACE_QUEUE].rayCount;
+	if (gl_LocalInvocationID.x == 0u) {
+		s_nodesVisited = 0u;
+		s_primitivesTested = 0u;
+	}
+	memoryBarrierShared();
+	barrier();
+	g_nodesVisited = 0u;
+	g_primitivesTested = 0u;
+
+	bool survives = false;
+	bool shadow = false;
+	uint pathIndex = 0u;
+	uint entry = 0u;
+
+	if (isActive) {
+		entry = queues[queueSlot(CRT_SURFACE_QUEUE, index)];
+		pathIndex = queues[queueSlot(rayQueueFor(pc.bounce), entry)];
+		PathState path = paths[pathIndex];
+		const HitRecord hit = hits[entry];
+		const vec3 inDir = normalize(path.direction);
+#ifndef CRT_SPECTRAL
+		Spectrum pathThroughput = path.throughput;
+		uint laneMask = 0u;
+#else
+		// the frame's wavelengths, which the cache's light paths carry, from the path's first vertex on
+		if (path.bounce == 0u && (pc.bidirFlags & CRT_BIDIR_FLAG_FRAME_WAVELENGTHS) != 0u) {
+			path.lambdaU = pc.frameLambdaU;
+		}
+		spectralBegin(path.lambdaU);
+		Spectrum pathThroughput = pathSpectra[pathIndex];
+		uint laneMask = path.laneMask;
+#endif
+		const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
+		const TextureSite site = surfaceTextureSite(si, hit, inDir, path.coneWidth, path.coneSpread);
+		const uint materialIndex = resolveMixMaterial(si.material, si.p, -inDir, site);
+		bool frontFace;
+		const vec3 normal = materialShadingNormal(classicMaterial(materialIndex), hit, si, inDir, frontFace, materialIndex, site);
+
+		vec3 debugValue;
+		if (pc.debugView == CRT_DEBUG_AMBIENT_OCCLUSION) {
+			shadow = ambientOcclusionRay(si, normal, pathIndex, path, entry);
+		} else if (debugTerminalValue(normal, si.frontFace ? si.n : -si.n, hit.traversalCost, inDir, true, debugValue)) {
+			radiance[path.radianceSlot] = vec4(debugValue, 1.0);
+		} else if (pc.debugView != CRT_DEBUG_MIS_WEIGHTS) {
+			ComplexMaterial material = resolveComplexMaterial(materialIndex, si, site);
+			material.frontFace = frontFace;
+			if (CRT_AOV) {
+				aovCapture(path.radianceSlot, hit, si, material, inDir, normal, frontFace);
+			}
+			uint rng = path.rngState;
+#ifdef CRT_SPECTRAL
+			if (material.isBxdf && (material.bxdfFlags & CRT_BXDF_FLAG_DISPERSIVE) != 0u) {
+				const float pick = spectralBanded() ? randomFloat(rng) : 0.0;
+				const uint lane = terminateSecondary(pathThroughput, laneMask, pick);
+				material.bxdf.eta = scalarFromRef(materialSpectrumRef(materialIndex, CRT_SLOT_AUX0), lane);
+			}
+#endif
+			if (CRT_OPTICS && material.isOptic) {
+				pathThroughput = spectrumMul(pathThroughput, opticAbsorption(material.optic));
+#ifdef CRT_SPECTRAL
+				if (opticDisperses(material.optic)) {
+					const float pick = spectralBanded() ? randomFloat(rng) : 0.0;
+					material.optic.lane = terminateSecondary(pathThroughput, laneMask, pick);
+					if (material.isBxdf) {
+						const uint lane = material.optic.lane;
+						const float nPlus = opticIndex(material.optic.fromPlus ? material.optic.incident : material.optic.other, lane);
+						const float nMinus = opticIndex(material.optic.fromPlus ? material.optic.other : material.optic.incident, lane);
+						material.bxdf.eta = nMinus / nPlus;
+					}
+				}
+#endif
+			}
+
+			// the partial sums here, after the hit's update
+			float dVCM;
+			float dVC;
+			lvcCameraPartials(pathIndex, path, dVCM, dVC);
+			// the hit's t is the distance: the traversal measures it along the normalized direction
+			lvcUpdateAtHit(dVCM, dVC, hit.t * hit.t, false, abs(dot(normal, inDir)));
+			const vec3 wo = -inDir;
+			const bool specular = isSpecularMaterial(material);
+			const uint nextBounce = path.bounce + 1u;
+			if (!specular && nextBounce < pc.rayDepth) {
+				shadow = nextEvent(material, wo, si, normal, path, pathThroughput, laneMask, dVCM, dVC, pathIndex, rng, entry);
+				connectToCache(material, wo, si, normal, path, pathThroughput, laneMask, dVCM, dVC);
+			}
+
+			g_transportMode = CRT_TRANSPORT_RADIANCE;
+			Spectrum attenuation;
+			vec3 outDir;
+			bool delta;
+			bool alive = transportSample(material, inDir, normal, frontFace, pathIndex, rng, attenuation, outDir, delta);
+			outDir = normalize(outDir);
+			Spectrum throughput = spectrumMul(pathThroughput, attenuation);
+			if (nextBounce >= pc.rayDepth || !(spectrumMaxValue(throughput) > 0.0)) {
+				alive = false;
+			}
+			if (alive && (pc.flags & CRT_FLAG_ROULETTE) != 0u && nextBounce > pc.minBouncesBeforeRoulette) {
+				const float survival = clamp(spectrumMaxValue(throughput), 0.05, 1.0);
+				if (sampleDimension(pathIndex, rng, CRT_SAMPLE_INDIRECT_ROULETTE) >= survival) {
+					alive = false;
+				} else {
+					throughput = spectrumDivide(throughput, survival);
+				}
+			}
+			if (alive) {
+				lvcScatter(dVCM, dVC, delta, abs(dot(normal, outDir)), delta ? 1.0 : transportPdf(material, wo, normal, outDir), delta ? 1.0 : transportPdf(material, outDir, normal, wo));
+				lvcWords[pathIndex] = uvec4(floatBitsToUint(dVCM), floatBitsToUint(dVC), 0u, 0u);
+				path.origin = (pc.flags & CRT_FLAG_ERROR_BOUNDS) != 0u ? offsetRayOrigin(si.p, si.pError, si.n, outDir) : si.p;
+				path.direction = outDir;
+				path.rngState = rng;
+#ifndef CRT_SPECTRAL
+				path.throughput = throughput;
+#else
+				pathSpectra[pathIndex] = throughput;
+				path.laneMask = laneMask;
+#endif
+				path.bounce = nextBounce;
+				if (CRT_RAY_CONES) {
+					const vec2 cone = continuedRayCone(si, path.coneWidth, path.coneSpread, delta ? 0.0 : surfaceConeRoughness(material));
+					path.coneWidth = cone.x;
+					path.coneSpread = cone.y;
+				}
+				paths[pathIndex] = path;
+				survives = true;
+			} else if (pc.debugView == CRT_DEBUG_BOUNCE_HEAT) {
+				radiance[path.radianceSlot] = vec4(bounceHeat(nextBounce), 1.0);
+			}
+		}
+		atomicAdd(s_nodesVisited, g_nodesVisited);
+		atomicAdd(s_primitivesTested, g_primitivesTested);
+	}
+	memoryBarrierShared();
+	barrier();
+	if (gl_LocalInvocationID.x == 0u) {
+		atomicAdd(traversalStats[2u * CRT_MAX_DEPTH + 2u * pc.bounce], s_nodesVisited);
+		atomicAdd(traversalStats[2u * CRT_MAX_DEPTH + 2u * pc.bounce + 1u], s_primitivesTested);
+	}
+
+	queueAppend(nextQueue, survives, pathIndex);
+	queueAppend(CRT_QUEUE_SHADOW, shadow, entry);
+}

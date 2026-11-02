@@ -104,7 +104,17 @@ namespace {
 //   "textureFilter". A light adds the types "projection" and "goniometric" with an "image" and a projection's "fov",
 //   a spot's "falloff" ("smoothstep"), and the "unit" the panel shows. An older file has no texture storage, and reads
 //   as the legacy array, so it renders as it did
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 25;
+//26: a camera gains its projection (docs/plans/completed/pbrt-cameras.md): its "kind" ("perspective", "orthographic",
+//   "spherical"), an orthographic camera's "viewHeight", a spherical one's "mapping" ("equirect", "equalarea"), the
+//   "lensMapping" ("polar", "concentric"), the "aperture" shape's "apertureShape" ("circle", "polygon", "image"),
+//   "apertureBlades", "apertureRotation" and "apertureImage", the plane of focus's "tilt" and the film's "shift", each
+//   [x, y]. An older camera is a perspective one with a circular aperture and the polar lens mapping, which renders as
+//   it did
+//27: the integrators "light", "lvc" and "bdpt" (docs/plans/completed/pbrt-bidirectional-path-tracing.md), whose stages 11 to 18
+//   appear in "kernels", and "render" gains "bidirectional" when it differs from the defaults: the light vertex cache's
+//   "connections" and "cacheBudget" (MB), and bdpt's "visualizeStrategies" and "visualizeWeights". An older file renders
+//   with the path tracer it names, as it did
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 27;
 
 //---------------------------------------------------------------- writing
 
@@ -519,6 +529,12 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		json.pop_back();
 		json += fmt::format(R"(,"optics":{{"surrounding":"{}","exactCoatings":{}}}}})", r.optics.surrounding == SurroundingMedium::Vacuum ? "vacuum" : "air", r.optics.exactCoatings);
 	}
+	//version 27: the bidirectional integrators' settings, still inside "render", only when they differ from the defaults
+	if (r.bidirectional != BidirectionalSettings {}) {
+		json.pop_back();
+		json += fmt::format(R"(,"bidirectional":{{"connections":{},"cacheBudget":{},"visualizeStrategies":{},"visualizeWeights":{}}}}})", r.bidirectional.connections,
+			r.bidirectional.cacheBudgetMB, r.bidirectional.visualizeStrategies, r.bidirectional.visualizeWeights);
+	}
 	//version 18: how a monochromatic render is shown
 	{
 		const SpectralDisplay& d = scene.spectralDisplay;
@@ -564,6 +580,19 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		json += fmt::format(R"({{"name":{},"position":{},"orientation":{},"fov":{},"aperture":{},"focusDistance":{},"exposure":{})",
 			jsonString(c.name), jsonVec3(c.position), jsonQuat(c.orientation),
 			jsonNumber(c.vfovDegrees), jsonNumber(c.aperture), jsonNumber(c.focusDistance), jsonNumber(c.exposure));
+		//version 26: the projection, and the lens's mapping, shape, tilt and shift
+		json += fmt::format(R"(,"kind":{},"lensMapping":{},"apertureShape":{},"apertureBlades":{},"apertureRotation":{},"tilt":[{},{}],"shift":[{},{}])",
+			jsonString(cameraKindId(c.kind)), jsonString(lensMappingId(c.lensMapping)), jsonString(apertureShapeId(c.apertureShape)), c.apertureBlades,
+			jsonNumber(c.apertureRotationDegrees), jsonNumber(c.tiltDegrees.x), jsonNumber(c.tiltDegrees.y), jsonNumber(c.shift.x), jsonNumber(c.shift.y));
+		if (cameraTraits(c.kind).viewHeight) {
+			json += fmt::format(R"(,"viewHeight":{})", jsonNumber(c.orthoHeight));
+		}
+		if (cameraTraits(c.kind).sphericalMapping) {
+			json += fmt::format(R"(,"mapping":{})", jsonString(sphericalMappingId(c.mapping)));
+		}
+		if (!c.apertureImage.empty()) {
+			json += fmt::format(R"(,"apertureImage":{})", jsonString(portablePath(std::filesystem::path(c.apertureImage), sceneDirectory)));
+		}
 		//version 16: what Relight multiplies each light group by, display only like the exposure; omitted at the default
 		if (c.relight != SceneCamera {}.relight) {
 			json += R"(,"relight":[)";
@@ -1128,6 +1157,23 @@ void readAccelSettings(JsonElement element, AccelSettings& out)
 	readOptionalFloat(object["spatialBudget"], blas.spatialBudget);
 }
 
+void readBidirectionalSettings(JsonElement element, BidirectionalSettings& out)
+{
+	simdjson::dom::object object;
+	if (element.get_object().get(object) != simdjson::SUCCESS) {
+		return;
+	}
+	int64_t value = 0;
+	if (object["connections"].get_int64().get(value) == simdjson::SUCCESS) {
+		out.connections = (int)std::clamp<int64_t>(value, MIN_CACHE_CONNECTIONS, MAX_CACHE_CONNECTIONS);
+	}
+	if (object["cacheBudget"].get_int64().get(value) == simdjson::SUCCESS) {
+		out.cacheBudgetMB = (int)std::clamp<int64_t>(value, MIN_CACHE_BUDGET_MB, MAX_CACHE_BUDGET_MB);
+	}
+	readOptionalBool(object["visualizeStrategies"], out.visualizeStrategies);
+	readOptionalBool(object["visualizeWeights"], out.visualizeWeights);
+}
+
 void readOpticsSettings(JsonElement element, OpticsSettings& out)
 {
 	simdjson::dom::object object;
@@ -1222,6 +1268,7 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 	}
 	readOptionalBool(object["lightGroups"], out.lightGroups);
 	readOpticsSettings(object["optics"], out.optics);
+	readBidirectionalSettings(object["bidirectional"], out.bidirectional);
 	//version 18: the spectral settings; an older file renders in exact RGB with sRGB colors
 	simdjson::dom::object spectral;
 	if (object["spectral"].get_object().get(spectral) == simdjson::SUCCESS) {
@@ -1302,8 +1349,33 @@ void readLegacyCameraSettings(JsonElement element, SceneCamera& out)
 	readOptionalFloat(object["exposure"], out.exposure);
 }
 
-bool readCamera(simdjson::dom::object object, SceneCamera& out, std::string& error)
+std::filesystem::path resolvePath(std::string_view text, const std::filesystem::path& sceneDirectory);
+
+// [x, y]; false, and `out` untouched, for anything else
+bool readVec2(JsonElement element, glm::vec2& out)
 {
+	simdjson::dom::array array;
+	if (element.get_array().get(array) != simdjson::SUCCESS || array.size() != 2) {
+		return false;
+	}
+	glm::vec2 value(0.f);
+	size_t i = 0;
+	for (simdjson::dom::element component : array) {
+		double number = 0.0;
+		if (!readDouble(component, number)) {
+			return false;
+		}
+		value[(glm::length_t)i++] = (float)number;
+	}
+	out = value;
+	return true;
+}
+
+bool readCamera(simdjson::dom::object object, const std::filesystem::path& sceneDirectory, SceneCamera& out, std::string& error, std::vector<std::string>& warnings)
+{
+	//a camera from before version 26 is a perspective one whose lens maps its samples as Ray Tracing in One Weekend's
+	//does, which is how it rendered
+	out.lensMapping = LensMapping::Polar;
 	std::string_view name;
 	if (object["name"].get_string().get(name) == simdjson::SUCCESS) {
 		out.name = std::string(name);
@@ -1322,6 +1394,41 @@ bool readCamera(simdjson::dom::object object, SceneCamera& out, std::string& err
 	readOptionalFloat(object["aperture"], out.aperture);
 	readOptionalFloat(object["focusDistance"], out.focusDistance);
 	readOptionalFloat(object["exposure"], out.exposure);
+	//version 26: the projection and the rest of the lens
+	std::string_view text;
+	if (object["kind"].get_string().get(text) == simdjson::SUCCESS) {
+		const CameraKind kind = cameraKindFromId(text);
+		if (kind == CameraKind::Count) {
+			warnings.push_back(fmt::format("camera \"{}\" has kind '{}', which this build does not know; it is a perspective camera", out.name, text));
+		} else {
+			out.kind = kind;
+		}
+	}
+	readOptionalFloat(object["viewHeight"], out.orthoHeight);
+	if (object["mapping"].get_string().get(text) == simdjson::SUCCESS && sphericalMappingFromId(text) != SphericalMapping::Count) {
+		out.mapping = sphericalMappingFromId(text);
+	}
+	if (object["lensMapping"].get_string().get(text) == simdjson::SUCCESS && lensMappingFromId(text) != LensMapping::Count) {
+		out.lensMapping = lensMappingFromId(text);
+	}
+	if (object["apertureShape"].get_string().get(text) == simdjson::SUCCESS) {
+		const ApertureShape shape = apertureShapeFromId(text);
+		if (shape == ApertureShape::Count) {
+			warnings.push_back(fmt::format("camera \"{}\" has aperture shape '{}', which this build does not know; it is a circle", out.name, text));
+		} else {
+			out.apertureShape = shape;
+		}
+	}
+	readOptionalUint(object["apertureBlades"], out.apertureBlades);
+	readOptionalFloat(object["apertureRotation"], out.apertureRotationDegrees);
+	if (object["apertureImage"].get_string().get(text) == simdjson::SUCCESS && !text.empty()) {
+		out.apertureImage = resolvePath(text, sceneDirectory).string();
+	}
+	readVec2(object["tilt"], out.tiltDegrees);
+	readVec2(object["shift"], out.shift);
+	out.orthoHeight = std::max(out.orthoHeight, 1e-4f);
+	out.apertureBlades = std::clamp(out.apertureBlades, MIN_APERTURE_BLADES, MAX_APERTURE_BLADES);
+	out.tiltDegrees = glm::clamp(out.tiltDegrees, glm::vec2(-MAX_CAMERA_TILT), glm::vec2(MAX_CAMERA_TILT));
 	//version 16: Relight's gain for each light group, display only
 	simdjson::dom::array relight;
 	if (object["relight"].get_array().get(relight) == simdjson::SUCCESS) {
@@ -1346,8 +1453,6 @@ bool readCamera(simdjson::dom::object object, SceneCamera& out, std::string& err
 
 //One "lights" record. The type, the position and a non-negative intensity must be there; the rest
 //keeps SceneLight's defaults when missing
-std::filesystem::path resolvePath(std::string_view text, const std::filesystem::path& sceneDirectory);
-
 bool readLight(simdjson::dom::object object, size_t index, size_t modelCount, const std::filesystem::path& sceneDirectory, SceneLightRecord& out, std::string& error)
 {
 	std::string_view typeName;
@@ -2144,7 +2249,7 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			}
 			SceneCamera camera;
 			std::string cameraError;
-			if (!readCamera(cameraObject, camera, cameraError)) {
+			if (!readCamera(cameraObject, ctx.sceneDirectory, camera, cameraError, ctx.scene.kernelWarnings)) {
 				ctx.error = fmt::format("camera {}: {}", cameraIndex, cameraError);
 				return;
 			}
@@ -2158,6 +2263,7 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 	} else {
 		SceneCamera camera;
 		camera.name = "render_camera";
+		camera.lensMapping = LensMapping::Polar;
 		readLegacyCameraSettings(root["render"], camera);
 		ctx.scene.cameras.push_back(std::move(camera));
 		ctx.scene.renderCamera = 0;

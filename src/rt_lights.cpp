@@ -163,6 +163,9 @@ void LightListBuilder::addPunctual(const SceneLight& light, const LightImage& im
 		//the image's texels times the intensity, over the directions they cover (pbrt-v4's ProjectionLight::Phi and
 		//GoniometricLight::Phi)
 		record.power = luminance * image.solidAngle;
+		if (image.luminance != nullptr && image.luminanceSize.x > 0 && image.luminanceSize.y > 0) {
+			m_imageDistributions.emplace_back((uint32_t)m_list.lights.size(), buildLightImageDistribution(projection, extents, image.luminanceSize.x, image.luminanceSize.y, image.luminance));
+		}
 		break;
 	}
 	}
@@ -301,6 +304,14 @@ void LightListBuilder::setTriangleLight(uint32_t runBase, uint32_t triangle, uin
 RaytraceLightList LightListBuilder::finish(float sceneRadius)
 {
 	RaytraceLightList list = std::move(m_list);
+
+	//binding 65's start: a word per punctual light naming its table, then the tables
+	list.imageTables.assign(list.header.deltaCount, std::bit_cast<float>(GPU_NO_LIGHT));
+	for (const auto& [light, table] : m_imageDistributions) {
+		if (table.integral > 0.f) {
+			list.imageTables[light] = std::bit_cast<float>(packPiecewiseConstant2D(table, list.imageTables));
+		}
+	}
 
 	//a directional light and the environment deliver their power over the scene's cross-section
 	//(pbrt-v4's DistantLight::Phi, ImageInfiniteLight::Phi)

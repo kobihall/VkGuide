@@ -1,0 +1,235 @@
+#version 460
+
+// 17 STORE VERTICES AND SCATTER (docs/plans/completed/pbrt-bidirectional-path-tracing.md; pbrt-v3's RandomWalk()). Each
+// surface a subpath of pbrt 3's BDPT reaches becomes a Vertex in binding 53 (crt_bdpt.glsl): its beta, its pdfFwd (the
+// density of the direction that led here, by area here), and its hit record; then the BSDF is sampled in the subpath's
+// transport mode (crt_transport.glsl: importance for a light subpath, CRT_BIDIR_FLAG_LIGHT_PASS) and the previous
+// vertex's pdfRev set from the density of sampling the way back. A delta lobe marks the vertex delta, its densities 0,
+// as pbrt does. pbrt's BDPT has no Russian roulette, and this has none.
+//
+// Launched over the surface queues (once per material class), and in the camera pass also over the emissive queue,
+// for a surface that glows and does not scatter, which ends the subpath, and the escaped queue, where a camera subpath
+// ends on pbrt's vertex at the lights at infinity (CRT_BIDIR_FLAG_EMISSIVE_PASS, CRT_BIDIR_FLAG_ESCAPED_PASS). A camera
+// subpath's first launch also stores its camera vertex. In a spectral build both subpaths of a pixel sample take its
+// own hero wavelength sample (bdptLambdaU()). The camera subpath records the auxiliary outputs, at the surface the path
+// tracer's camera path would.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
+#include "include/crt_material_class.glsl"
+#include "include/crt_interaction.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_samples.glsl"
+#include "equirect.glsl"
+#include "include/crt_transport.glsl"
+#include "include/crt_scatter.glsl"
+#include "include/crt_light.glsl"
+#include "include/crt_light_path.glsl"
+#include "include/crt_transport.glsl"
+#include "include/crt_camera.glsl"
+#include "include/crt_bdpt.glsl"
+#include "include/crt_aov.glsl"
+#include "include/crt_spawn.glsl"
+#include "include/crt_surface_views.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+BdptVertex emptyVertex()
+{
+	BdptVertex v;
+	v.flags = 0u;
+	v.p = vec3(0.0);
+	v.n = vec3(0.0);
+	v.pdfFwd = 0.0;
+	v.pdfRev = 0.0;
+	v.hit.t = 0.0;
+	v.hit.instance = 0u;
+	v.hit.barycentrics = vec2(0.0);
+	v.hit.primitive = 0u;
+	v.hit.traversalCost = 0.0;
+	v.rayOrigin = vec3(0.0);
+	v.rayDirection = vec3(0.0);
+	v.beta = spectrumConst(0.0);
+	return v;
+}
+
+// the camera subpath's first vertex: the lens point the ray left, which is on no surface (pbrt's CreateCamera())
+void storeCameraVertex(uint slot, PathState path)
+{
+	BdptVertex v = emptyVertex();
+	v.flags = CRT_BDPT_CAMERA | CRT_BDPT_CONNECTIBLE;
+	v.p = path.origin;
+	v.beta = spectrumConst(1.0);
+	bdptStoreVertex(slot, false, 0u, v);
+}
+
+// the density of the direction that brought the path here, by solid angle at the previous vertex: the camera's (PDF_We())
+// for a camera ray, the emitted ray's or the last BSDF sample's, which kernel 11 and this kernel keep in misExponent
+float incomingPdf(PathState path, bool light)
+{
+	if (!light && path.bounce == 0u) {
+		float pdfPos;
+		float pdfDir;
+		cameraPdfWe(path.origin, normalize(path.direction), pdfPos, pdfDir);
+		return pdfDir;
+	}
+	return path.misExponent;
+}
+
+void main()
+{
+	const bool lightPass = (pc.bidirFlags & CRT_BIDIR_FLAG_LIGHT_PASS) != 0u;
+	const bool emissivePass = (pc.bidirFlags & CRT_BIDIR_FLAG_EMISSIVE_PASS) != 0u;
+	const bool escapedPass = (pc.bidirFlags & CRT_BIDIR_FLAG_ESCAPED_PASS) != 0u;
+	const uint queue = emissivePass ? CRT_QUEUE_EMISSIVE : escapedPass ? CRT_QUEUE_ESCAPED : CRT_SURFACE_QUEUE;
+	const uint nextQueue = rayQueueFor(pc.bounce + 1u);
+	const uint index = gl_GlobalInvocationID.x;
+	// no early return: queueAppend() below has barriers every invocation must reach
+	const bool isActive = index < headers[queue].rayCount;
+	bool survives = false;
+	uint pathIndex = 0u;
+
+	if (isActive) {
+		const uint entry = queues[queueSlot(queue, index)];
+		pathIndex = queues[queueSlot(rayQueueFor(pc.bounce), entry)];
+		PathState path = paths[pathIndex];
+		const HitRecord hit = hits[entry];
+		const vec3 inDir = normalize(path.direction);
+		const uint slot = bdptSlotOf(pathIndex);
+		const uint vertexIndex = path.bounce + 1u;
+#ifdef CRT_SPECTRAL
+		// the pixel sample's own wavelengths, from the camera subpath's first vertex on
+		if (!lightPass && path.bounce == 0u && spectralRepresentation() == CRT_REPRESENTATION_HERO) {
+			const uint pixel = pathIndex / pc.samplesPerFrame;
+			const uint sampleIndex = imageLoad(samplesTaken, ivec2(pixel % pc.width, pixel / pc.width)).r + (pathIndex - pixel * pc.samplesPerFrame);
+			path.lambdaU = bdptLambdaU(pixel, sampleIndex);
+			// lightVertexAt() reads the path from memory
+			paths[pathIndex].lambdaU = path.lambdaU;
+		}
+		spectralBegin(path.lambdaU);
+		Spectrum throughput = pathSpectra[pathIndex];
+		uint laneMask = path.laneMask;
+#else
+		Spectrum throughput = path.throughput;
+		uint laneMask = 0u;
+#endif
+		if (!lightPass && path.bounce == 0u) {
+			storeCameraVertex(slot, path);
+		}
+		const BdptVertex prev = bdptLoadVertex(slot, lightPass, vertexIndex - 1u);
+		const float pdfIn = incomingPdf(path, lightPass);
+		const bool fromInfinity = lightPass && path.bounce == 0u && path.misPdf == CRT_BDPT_FROM_INFINITY;
+
+		if (escapedPass) {
+			// pbrt's endpoint on the lights at infinity: its density by solid angle, unconverted
+			BdptVertex v = emptyVertex();
+			v.flags = CRT_BDPT_ESCAPED | CRT_BDPT_INFINITE | bdptLightBits(lightHeader.environment);
+			v.p = path.origin;
+			v.n = inDir;
+			v.pdfFwd = pdfIn;
+			v.beta = throughput;
+			bdptStoreVertex(slot, false, vertexIndex, v);
+			bdptSetCount(slot, false, vertexIndex + 1u);
+		} else {
+			const SurfaceInteraction si = surfaceInteraction(hit, path.origin, inDir);
+			BdptVertex v = emptyVertex();
+			v.p = si.p;
+			v.n = si.n;
+			v.hit = hit;
+			v.rayOrigin = path.origin;
+			v.rayDirection = inDir;
+			// on a surface before the density is converted to it
+			v.flags = CRT_BDPT_ON_SURFACE;
+			if (fromInfinity) {
+				// pbrt's correction for a light at infinity: the next vertex's density is the disk's, by its cosine
+				v.pdfFwd = pdfIn * abs(dot(si.n, inDir));
+			} else {
+				v.pdfFwd = bdptConvertDensity(pdfIn, prev.p, v);
+			}
+			if (emissivePass) {
+				// a surface that glows and does not scatter ends the camera subpath: the vertex for the strategy that found
+				// a light, connectible to nothing
+				v.flags = CRT_BDPT_SURFACE | CRT_BDPT_ON_SURFACE | CRT_BDPT_EMITS | bdptLightBits(si.lightIndex);
+				v.beta = throughput;
+				if ((materials[si.material].flags & CRT_MATERIAL_FLAG_SCATTERS) == 0u) {
+					bdptStoreVertex(slot, false, vertexIndex, v);
+					bdptSetCount(slot, false, vertexIndex + 1u);
+					if (CRT_AOV && aovWantsSurface(path.radianceSlot, false)) {
+						bool frontFace;
+						const vec3 normal = materialShadingNormal(classicMaterial(si.material), hit, si, inDir, frontFace, si.material, surfaceTextureSite(si, hit, inDir, 0.0, 0.0));
+						aovRecord(path.radianceSlot, si.p, si.n, dot(normal, si.n) < 0.0 ? -normal : normal, si.uv, vec3(0.0), hit.instance, si.material);
+					}
+				}
+			} else {
+				g_transportMode = lightPass ? CRT_TRANSPORT_IMPORTANCE : CRT_TRANSPORT_RADIANCE;
+				SurfaceMaterial material;
+				// the surface rebuilt as a light path's (the range window, an optical body's absorption, a dispersive
+				// lane), which serves a camera subpath as well: neither has used its stream at this vertex yet
+				const LightVertex lv = lightVertexAt(index, material);
+				throughput = lv.throughput;
+				laneMask = lv.laneMask;
+				// the auxiliary outputs come from the camera subpath, as the path tracer's from its camera path
+				if (CRT_AOV && !lightPass) {
+					aovCapture(path.radianceSlot, hit, si, material, inDir, lv.normal, lv.frontFace);
+				}
+				const bool emits = (materials[si.material].flags & CRT_MATERIAL_FLAG_EMITS) != 0u;
+				const bool specular = isSpecularMaterial(material);
+				v.flags = CRT_BDPT_SURFACE | CRT_BDPT_ON_SURFACE | (specular ? 0u : CRT_BDPT_CONNECTIBLE) | (emits ? CRT_BDPT_EMITS | bdptLightBits(si.lightIndex) : 0u);
+				v.beta = throughput;
+				bdptStoreVertex(slot, lightPass, vertexIndex, v);
+				bdptSetCount(slot, lightPass, vertexIndex + 1u);
+
+				// the light subpath keeps rayDepth vertices, the camera subpath rayDepth + 1
+				const uint nextBounce = path.bounce + 1u;
+				const uint lastBounce = lightPass ? pc.rayDepth - 1u : pc.rayDepth;
+				uint rng = path.rngState;
+				Spectrum weight;
+				vec3 outDir;
+				bool delta;
+				bool alive = transportSample(material, inDir, lv.normal, lv.frontFace, pathIndex, rng, weight, outDir, delta);
+				outDir = normalize(outDir);
+				const vec3 wo = -inDir;
+				float pdfFwd = 0.0;
+				float pdfRev = 0.0;
+				if (delta) {
+					bdptSetFlags(slot, lightPass, vertexIndex, v.flags | CRT_BDPT_DELTA);
+				} else {
+					pdfFwd = transportPdf(material, wo, lv.normal, outDir);
+					pdfRev = transportPdf(material, outDir, lv.normal, wo);
+				}
+				// the previous vertex's density of being reached back from here, by area there
+				if (alive) {
+					bdptSetPdfRev(slot, lightPass, vertexIndex - 1u, bdptConvertDensity(pdfRev, si.p, prev));
+				}
+				throughput = spectrumScale(spectrumMul(throughput, weight), shadingNormalCorrection(wo, outDir, lv.normal, si.n));
+				if (nextBounce >= lastBounce || !(spectrumMaxValue(throughput) > 0.0) || !(delta || pdfFwd > 0.0)) {
+					alive = false;
+				}
+				if (alive) {
+					path.origin = (pc.flags & CRT_FLAG_ERROR_BOUNDS) != 0u ? offsetRayOrigin(si.p, si.pError, si.n, outDir) : si.p;
+					path.direction = outDir;
+					path.rngState = rng;
+#ifndef CRT_SPECTRAL
+					path.throughput = throughput;
+#else
+					pathSpectra[pathIndex] = throughput;
+					path.laneMask = laneMask;
+#endif
+					path.bounce = nextBounce;
+					path.misPdf = 0.0;
+					path.misExponent = pdfFwd;
+					if (CRT_RAY_CONES) {
+						const vec2 cone = continuedRayCone(si, path.coneWidth, path.coneSpread, delta ? 0.0 : surfaceConeRoughness(material));
+						path.coneWidth = cone.x;
+						path.coneSpread = cone.y;
+					}
+					paths[pathIndex] = path;
+					survives = true;
+				}
+			}
+		}
+	}
+
+	queueAppend(nextQueue, survives, pathIndex);
+}

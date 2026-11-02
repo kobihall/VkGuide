@@ -41,10 +41,28 @@ const SceneCamera* RaytraceRenderer::resolveCamera(const RaytraceSceneEditor& ed
 	return camera;
 }
 
-RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const SceneCamera& camera) const
+std::shared_ptr<const PiecewiseConstant2D> RaytraceRenderer::apertureTable(VulkanEngine* engine, const SceneCamera& camera)
+{
+	if (camera.apertureShape != ApertureShape::Image || camera.apertureImage.empty()) {
+		return nullptr;
+	}
+	const LightImageRequest request = lightImageRequest(camera.apertureImage);
+	const TextureEntry* entry = engine->m_textureLibrary.find(request.source, request.colorSpace, request.sampling);
+	if (entry == nullptr || entry->luminance.empty()) {
+		return nullptr;
+	}
+	std::shared_ptr<const PiecewiseConstant2D>& table = m_apertureTables[entry->id];
+	if (table == nullptr) {
+		table = std::make_shared<const PiecewiseConstant2D>(buildPiecewiseConstant2D(entry->luminance, entry->luminanceSize.x, entry->luminanceSize.y));
+	}
+	return table;
+}
+
+RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const SceneCamera& camera)
 {
 	RenderKey key;
 	key.camera = cameraSnapshot(camera);
+	key.aperture = apertureTable(engine, camera).get();
 	key.settings = m_settings;
 	//toggling the watch itself is not a reason to start over
 	key.settings.restartOnChange = false;
@@ -306,6 +324,9 @@ void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEdit
 		return;
 	}
 
+	if (const SceneCamera* camera = resolveCamera(editor)) {
+		m_cameraConnects = cameraConnects(buildCameraFrame(cameraSnapshot(*camera), (uint32_t)m_settings.width, (uint32_t)m_settings.height));
+	}
 	drawIntegratorCombo();
 	drawCameraCombo(editor);
 	drawSettings(engine);
@@ -316,6 +337,12 @@ void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEdit
 	if (integratorRunsStage(m_kernels.integrator, KernelSlot::SurfaceScattering)) {
 		ImGui::SeparatorText("Direct lighting");
 		drawLightingSettings(engine);
+		ImGui::Separator();
+	}
+
+	if (m_kernels.selectedIntegrator().bidirectional) {
+		ImGui::SeparatorText("Bidirectional");
+		drawBidirectionalSettings();
 		ImGui::Separator();
 	}
 
@@ -527,6 +554,17 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	//the settings as this render will use them
 	const RenderSettings settings = renderSettings(engine);
 
+	//light paths reach the camera through its importance, which only a perspective camera without a tilt has, as only
+	//pbrt's perspective camera has (src/camera_model.h cameraConnects())
+	const IntegratorInfo& integrator = m_kernels.selectedIntegrator();
+	if (integrator.bidirectional && !cameraConnects(buildCameraFrame(cameraSnapshot(*camera), (uint32_t)settings.width, (uint32_t)settings.height))) {
+		m_blockedReason = fmt::format("{} connects light paths to the camera, which needs a perspective camera without a tilt. Choose another camera or integrator",
+			integrator.name);
+		fmt::println("RaytraceRenderer: render refused - {}", m_blockedReason);
+		m_gpu.stop();
+		return;
+	}
+
 	//the scene first: the budget check below needs its cost per ray
 	ensureSceneAccel(engine, editor);
 	const double costPerRay = sceneCostPerRay();
@@ -564,6 +602,7 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	snapshot.width = (uint32_t)settings.width;
 	snapshot.height = (uint32_t)settings.height;
 	snapshot.camera = cameraSnapshot(*camera);
+	snapshot.apertureTable = apertureTable(engine, *camera);
 	//shared, not copied: the tracer compares it by pointer to decide whether it needs re-uploading
 	snapshot.scene = m_sceneAccel;
 	snapshot.settings = settings;
@@ -630,6 +669,30 @@ void RaytraceRenderer::prepareGeometry(VulkanEngine* engine)
 	m_accelRevision++;
 	//the instances name BLASes by their place in the set, so the top level has to follow
 	m_hasSceneAccel = false;
+}
+
+std::optional<float> RaytraceRenderer::pickDistance(VulkanEngine* engine, const RaytraceSceneEditor& editor, const glm::vec3& origin, const glm::vec3& direction)
+{
+	ensureSceneAccel(engine, editor);
+	if (m_sceneAccel == nullptr) {
+		return std::nullopt;
+	}
+	std::vector<const Blas*> blases;
+	if (m_sceneAccel->blases != nullptr) {
+		for (const std::shared_ptr<const RaytraceBlas>& entry : m_sceneAccel->blases->blases) {
+			blases.push_back(entry != nullptr ? &entry->blas : nullptr);
+		}
+	}
+	BvhRay ray;
+	ray.origin = origin;
+	ray.direction = direction;
+	ray.tMin = 1e-4f;
+	ray.tMax = 1e30f;
+	const SceneHit hit = traceScene(m_sceneAccel->tlas, blases, m_sceneAccel->sceneInstances, ray);
+	if (!hit.hit) {
+		return std::nullopt;
+	}
+	return hit.t;
 }
 
 void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceSceneEditor& editor)
@@ -871,7 +934,17 @@ IoResult RaytraceRenderer::exportRender(VulkanEngine* engine, const RaytraceScen
 		const RTCameraSnapshot& camera = m_renderKey.camera;
 		info.cameraFromWorld = glm::lookAt(camera.lookFrom, camera.lookAt, camera.vUp);
 		const float aspect = (float)beauty.width / (float)beauty.height;
-		const glm::mat4 projection = glm::perspective(glm::radians(camera.vfovDegrees), aspect, 0.01f, 1000.f);
+		//the film's window on the near plane, moved by the shift; an orthographic camera's is its view volume
+		const float nearPlane = 0.01f;
+		const float halfHeight = camera.kind == CameraKind::Orthographic ? 0.5f * camera.orthoHeight : nearPlane * glm::tan(glm::radians(camera.vfovDegrees) * 0.5f);
+		const glm::vec2 center = 2.f * halfHeight * camera.shift;
+		const float left = center.x - halfHeight * aspect;
+		const float right = center.x + halfHeight * aspect;
+		const float bottom = center.y - halfHeight;
+		const float top = center.y + halfHeight;
+		const glm::mat4 projection = camera.kind == CameraKind::Orthographic ? glm::ortho(left, right, bottom, top, nearPlane, 1000.f)
+		                                                                     : glm::frustum(left, right, bottom, top, nearPlane, 1000.f);
+		info.hasNdc = camera.kind != CameraKind::Spherical;
 		//clip space to normalized device coordinates, x right and y down over [0, 1] as pbrt's NDC is
 		const glm::mat4 toNdc(0.5f, 0.f, 0.f, 0.f, 0.f, -0.5f, 0.f, 0.f, 0.f, 0.f, 0.5f, 0.f, 0.5f, 0.5f, 0.5f, 1.f);
 		info.ndcFromWorld = toNdc * projection * info.cameraFromWorld;
@@ -1079,12 +1152,16 @@ bool RaytraceRenderer::drawIntegratorCombo()
 	const IntegratorInfo& selected = m_kernels.selectedIntegrator();
 	if (ImGui::BeginCombo("Integrator", selected.name)) {
 		for (const IntegratorInfo& info : integrators()) {
+			//a light path reaches the camera only through a perspective one without a tilt
+			const bool blocked = info.bidirectional && !m_cameraConnects;
+			ImGui::BeginDisabled(blocked && info.id != m_kernels.integrator);
 			if (ImGui::Selectable(info.name, info.id == m_kernels.integrator)) {
 				changed = info.id != m_kernels.integrator;
 				m_kernels.integrator = info.id;
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("%s", info.description);
+			ImGui::EndDisabled();
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+				ImGui::SetTooltip("%s%s", info.description, blocked ? "\n\nConnects light paths to the camera, which needs a perspective camera without a tilt: the render camera is not one." : "");
 			}
 		}
 		ImGui::EndCombo();
@@ -1281,6 +1358,34 @@ void RaytraceRenderer::drawAccelSettings(VulkanEngine* engine)
 			ImGui::TextWrapped("Not traced: %s", error.c_str());
 			ImGui::PopStyleColor();
 		}
+	}
+}
+
+void RaytraceRenderer::drawBidirectionalSettings()
+{
+	BidirectionalSettings& bidirectional = m_settings.bidirectional;
+	switch (m_kernels.integrator) {
+	case IntegratorId::Lvc:
+		ImGui::SliderInt("Connections", &bidirectional.connections, MIN_CACHE_CONNECTIONS, MAX_CACHE_CONNECTIONS);
+		ImGui::SetItemTooltip("The light vertices each camera path vertex connects to, picked uniformly from the frame's cache.\nMore connections cost a shadow ray each and lower the noise of indirect light.");
+		ImGui::SliderInt("Light vertex cache", &bidirectional.cacheBudgetMB, MIN_CACHE_BUDGET_MB, MAX_CACHE_BUDGET_MB, "%d MB", ImGuiSliderFlags_Logarithmic);
+		ImGui::SetItemTooltip("The memory of the cache the frame's light paths store their vertices in. It sets how many light paths a frame traces,\nat most one per pixel sample.");
+		break;
+	case IntegratorId::Bdpt:
+		ImGui::SliderInt("Vertex memory", &bidirectional.cacheBudgetMB, MIN_CACHE_BUDGET_MB, MAX_CACHE_BUDGET_MB, "%d MB", ImGuiSliderFlags_Logarithmic);
+		ImGui::SetItemTooltip("The memory the subpaths' vertices take. A frame traces the pixels whose vertices fit, and the frames sweep the image\nin tiles: a sweep is one sample per pixel. More memory, fewer frames a sweep.");
+		ImGui::Checkbox("Visualize strategies", &bidirectional.visualizeStrategies);
+		ImGui::SetItemTooltip("Keeps each strategy (s, t), s light vertices joined to t camera vertices, in an image of its own, written to an EXR\nexport as bdpt_dDD_sSS_tTT (pbrt's visualizestrategies and visualizeweights). Depths beyond the outputs' memory limit\nare left out.");
+		if (bidirectional.visualizeStrategies) {
+			ImGui::Indent();
+			ImGui::Checkbox("Weighted", &bidirectional.visualizeWeights);
+			ImGui::SetItemTooltip("Each strategy's contribution times its MIS weight, so the images sum to the picture (pbrt's visualizeweights);\noff, each alone, an estimate of all the light of its depth (visualizestrategies).");
+			ImGui::Unindent();
+		}
+		break;
+	default:
+		ImGui::TextDisabled("Light tracing has no settings of its own.");
+		break;
 	}
 }
 

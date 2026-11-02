@@ -61,6 +61,19 @@ enum class KernelSlot : uint32_t {
 	SampleMediumScattering = 7,
 	TraceShadowRays = 8,
 	UpdateFilm = 9,
+	// reserved by docs/plans/pbrt-roadmap.md for subsurface scattering: no variant yet
+	SampleSubsurface = 10,
+	// the bidirectional integrators' (docs/plans/completed/pbrt-bidirectional-path-tracing.md): light paths start at 11, meet
+	// the camera at 12 and 14 and scatter at 13; 15 and 16 are the light vertex cache's camera pass, 17 and 18 pbrt 3's
+	// BDPT's subpaths and connections
+	EmitLightRays = 11,
+	ConnectToCamera = 12,
+	ScatterLightPaths = 13,
+	TraceCameraConnections = 14,
+	HandleEmittersBidirectional = 15,
+	ScatterAndConnect = 16,
+	StoreVertices = 17,
+	ConnectSubpaths = 18,
 	Count
 };
 
@@ -135,6 +148,15 @@ enum class CrtBinding : uint32_t {
 	// each mesh triangle's three TEXCOORD_1 uvs (docs/plans/completed/pbrt-textures.md), six floats, by global attribute record;
 	// a stub while no loaded mesh has a second uv set
 	TriangleUv1 = 64,
+	// the splats of light tracing and the bidirectional integrators (docs/plans/completed/pbrt-bidirectional-path-tracing.md):
+	// three floats a pixel, added to with float atomics and folded into the film's resolve; a stub for the path tracer
+	SplatAccumulation = 42,
+	// the light vertex cache of lvc, and the vertices of bdpt's subpaths
+	LightVertexCache = 52,
+	BdptVertices = 53,
+	// piecewise-constant 2D distributions over images (src/light_sampling.h packPiecewiseConstant2D()): the punctual lights'
+	// words and emission tables, then the camera's aperture image's (docs/plans/completed/pbrt-cameras.md); a stub without any
+	ImageDistributions = 65,
 	Count
 };
 
@@ -275,6 +297,20 @@ struct KernelVariant {
 	// with the specialization constants CRT_AOV (constant_id 1) and CRT_LIGHT_GROUPS (constant_id 2) set to
 	// whether the render keeps auxiliary outputs and light groups. Off, it is the code it always was
 	bool usesOutputs { false };
+	// kernel 09: the kernel folds the splats of binding 42 into its resolve, and is built with the specialization constant
+	// CRT_SPLATS (constant_id 10) set to whether the integrator is bidirectional. Off, it is the code it always was
+	bool foldsSplats { false };
+	// kernels 11, 12 and 13: the kernel serves the light vertex cache when lvc runs it, and is built with the specialization
+	// constant CRT_LIGHT_VERTEX_CACHE (constant_id 11) set to whether the integrator is lvc. Off, under light tracing, it
+	// is the code it would be without the cache
+	bool servesLightVertexCache { false };
+	// kernel 11: the kernel stores each light subpath's first vertex for pbrt 3's BDPT when bdpt runs it, and is built
+	// with the specialization constant CRT_BDPT (constant_id 12) set to whether the integrator is bdpt
+	bool storesBdptVertices { false };
+	// kernel 00 (and the bidirectional stages): the kernel generates or connects to camera rays through crt_camera.glsl, and is built with the
+	// specialization constant CRT_CAMERA_MODEL (constant_id 7) set to whether the camera is more than Ray Tracing in One
+	// Weekend's (src/camera_model.h CameraFrame::needsModel()). Off, it is the code it always was
+	bool readsCamera { false };
 	// kernels 00, 03, 04, 06 and 08: the kernel carries radiance, includes crt_spectrum.glsl and is built once per
 	// lane family (docs/plans/completed/pbrt-spectral-rendering.md): the exact RGB build at <shader>[...].spv, and a
 	// spectral one at <shader>[...].lanes<N>.spv, which also binds SpectralData, SpectralUplift and PathSpectra
@@ -306,6 +342,11 @@ struct TraversalVariant {
 // schedule that records them. Append only; the value is not saved, the key is.
 enum class IntegratorId : uint32_t {
 	Path,
+	// light tracing, bidirectional path tracing with a light vertex cache, and pbrt 3's (docs/plans/completed/
+	// pbrt-bidirectional-path-tracing.md)
+	Light,
+	Lvc,
+	Bdpt,
 	Count
 };
 
@@ -317,6 +358,9 @@ struct IntegratorInfo {
 	const char* description { "" };
 	// the stages it runs, in dispatch order: what the Raytracer Shaders window lists for it
 	std::vector<KernelSlot> stages;
+	// light paths reach the camera through it: the camera must have importance (src/camera_model.h cameraConnects()), and
+	// their splats are folded into the film's resolve (binding 42), which only a film variant that keeps a record does
+	bool bidirectional { false };
 };
 
 // 00, 01, ... as a two-character string, and the human name of the slot

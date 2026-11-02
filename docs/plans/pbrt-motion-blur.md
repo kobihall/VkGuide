@@ -21,7 +21,7 @@ On 2026-09-26 the user chose two poses per object and camera, at shutter open an
 - `SceneCamera` gains **Shutter open** and **Shutter close**, 0 and 1 by default, as pbrt's cameras have. When they are equal, nothing moves and no time sample is drawn.
 - Kernel 00 takes time dimension 4 of the sample record and sets `t = lerp(u, open, close)` (pbrt's `SampleTime()`), stored in `PathState.time` (roadmap).
 - Every ray the path spawns carries that time, and so does every shadow ray: the shadow-ray table's spare word becomes `time`.
-- **Rolling shutter** (PBR 4ed exercise 5.1): an optional readout time. Each row's exposure starts `readout × row / height` after the previous row's, so a fast pan skews verticals as a phone camera does. [pbrt-cameras.md](pbrt-cameras.md) deferred this here.
+- **Rolling shutter** (PBR 4ed exercise 5.1): an optional readout time. Each row's exposure starts `readout × row / height` after the previous row's, so a fast pan skews verticals as a phone camera does. [pbrt-cameras.md](completed/pbrt-cameras.md) deferred this here.
 
 When nothing in the scene moves and the camera has no second pose, kernel 00 draws no time sample and `PathState.time` stays 0. Scenes without motion keep their random-number sequence, and so their image.
 

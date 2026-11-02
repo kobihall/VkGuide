@@ -16,6 +16,7 @@
 #include <glm/glm.hpp>
 
 #include <aov.h>
+#include <camera_model.h>
 #include <rt_kernels.h>
 #include <rt_material_record.h>
 #include <vk_types.h>
@@ -126,8 +127,87 @@ struct CrtParams {
 	float environmentSin;
 	// the angle one pixel subtends at the camera: a ray cone's spread at the eye (CRT_RAY_CONES)
 	float pixelSpread;
+	// THE CAMERA beyond the RTIOW camera above (src/camera_model.h CameraFrame, shaders/rt/include/crt_camera.glsl): camera
+	// z, which points back from the view, with the focus distance in w; the tilted plane of focus; the kind, the
+	// CAMERA_FLAG_* bits, the polygon's blades and where the aperture image's table starts in binding 65
+	glm::vec4 cameraBackward;
+	glm::vec4 focusPlane;
+	uint32_t cameraKind;
+	uint32_t cameraFlags;
+	uint32_t apertureBlades;
+	uint32_t apertureTable;
+	// the aperture's rotation (cosine, sine), the area its density is measured over, the film's area at unit distance
+	float apertureCos;
+	float apertureSin;
+	float lensArea;
+	float filmArea;
+	// an orthographic camera's pixel height in scene units, which a ray cone starts as wide as
+	float pixelWidth;
+	// THE BIDIRECTIONAL INTEGRATORS (docs/plans/completed/pbrt-bidirectional-path-tracing.md). Kernel 01's first dimension:
+	// 0 for a camera path, SAMPLE_LIGHT_PATH_BASE for a light path (src/sampler.h)
+	uint32_t sampleDimensionBase;
+	// what a light path's splat is multiplied by: the frame's pixel samples over its light paths (1 for light tracing)
+	float lightPathScale;
+	// the inverse of the pixel filter's integral, which a splat spread over the filter's footprint is divided by
+	float splatNormalization;
+	// the scene's bounding sphere, center and radius: where an infinite light's emitted rays start
+	glm::vec4 sceneSphere;
+	// the frame's light paths: kernel 11 spawns a light path in each slot below it
+	uint32_t lightPathCount;
+	// the light vertex cache's connections per camera vertex (lvc)
+	uint32_t cacheConnections;
+	// the one sample every path's hero wavelengths derive from, in a frame of the light vertex cache (lvc)
+	float frameLambdaU;
+	// CRT_BIDIR_FLAG_* (crt_common.glsl)
+	uint32_t bidirFlags;
 };
-static_assert(sizeof(CrtParams) == 240);
+static_assert(sizeof(CrtParams) == 352);
+
+// CrtParams::bidirFlags: the film adds the splats (binding 42) to its resolve; the frame's paths share one hero
+// wavelength sample (CrtParams::frameLambdaU)
+inline constexpr uint32_t CRT_BIDIR_FLAG_SPLATS = 1u << 0;
+inline constexpr uint32_t CRT_BIDIR_FLAG_FRAME_WAVELENGTHS = 1u << 1;
+// a splat is spread over the pixel filter's footprint, by binding 30's table: the camera rays are filtered too
+inline constexpr uint32_t CRT_BIDIR_FLAG_FILTERED_SPLATS = 1u << 2;
+// stage 15's second launch of a frame's bounce, over the emissive queue rather than the escaped one
+inline constexpr uint32_t CRT_BIDIR_FLAG_EMISSIVE_PASS = 1u << 3;
+// stage 17's launches: over a light subpath (importance mode), and over the escaped queue
+inline constexpr uint32_t CRT_BIDIR_FLAG_LIGHT_PASS = 1u << 4;
+inline constexpr uint32_t CRT_BIDIR_FLAG_ESCAPED_PASS = 1u << 5;
+// bdpt's strategy images (BidirectionalSettings::visualizeStrategies) in the light groups' sums, each strategy's contribution
+// weighed by its MIS weight or not
+inline constexpr uint32_t CRT_BIDIR_FLAG_STRATEGY_IMAGES = 1u << 6;
+inline constexpr uint32_t CRT_BIDIR_FLAG_STRATEGY_WEIGHTED = 1u << 7;
+// GpuRenderer::pipelineFeatures(): the integrator splats, which a kernel 09 variant that folds splats is specialized for
+inline constexpr uint32_t CRT_FEATURE_SPLATS = 1u << 24;
+// the integrator is lvc, whose light paths the light path kernels serve the cache for
+inline constexpr uint32_t CRT_FEATURE_LIGHT_VERTEX_CACHE = 1u << 25;
+// pbrt 3's BDPT, for kernel 11 (CRT_BDPT)
+inline constexpr uint32_t CRT_FEATURE_BDPT = 1u << 26;
+
+// the camera's fields of the push constants, from its frame (src/camera_model.h): what GpuRenderer::baseParams() and the
+// camera self-test both write
+inline void packCameraParams(const CameraFrame& camera, CrtParams& params)
+{
+	params.origin = glm::vec4(camera.origin, 0.f);
+	params.lowerLeft = glm::vec4(camera.lowerLeft, 0.f);
+	params.horizontal = glm::vec4(camera.horizontal, 0.f);
+	params.vertical = glm::vec4(camera.vertical, 0.f);
+	params.lensU = glm::vec4(camera.lensU, camera.lensRadius);
+	params.lensV = glm::vec4(camera.lensV, 0.f);
+	params.cameraBackward = glm::vec4(camera.backward, camera.focusDistance);
+	params.focusPlane = camera.focusPlane;
+	params.cameraKind = (uint32_t)camera.kind;
+	params.cameraFlags = camera.flags;
+	params.apertureBlades = camera.blades;
+	params.apertureTable = camera.apertureTable;
+	params.apertureCos = camera.apertureRotation.x;
+	params.apertureSin = camera.apertureRotation.y;
+	params.lensArea = camera.lensArea;
+	params.filmArea = camera.filmArea;
+	params.pixelWidth = camera.pixelWidth;
+	params.pixelSpread = camera.pixelSpread;
+}
 
 inline constexpr uint32_t CRT_FLAG_JITTER = 1u << 0;
 inline constexpr uint32_t CRT_FLAG_ROULETTE = 1u << 1;

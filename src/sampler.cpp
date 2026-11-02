@@ -839,29 +839,31 @@ glm::vec2 SampleGenerator::get2D(uint32_t dimension)
 
 //---------------------------------------------------------------- the record
 
-void sampleCameraRecord(const SamplerParams& params, const SamplerTables& tables, uint32_t x, uint32_t y, uint32_t sampleIndex, float record[SAMPLE_RECORD_FLOATS])
+void sampleCameraRecord(const SamplerParams& params, const SamplerTables& tables, uint32_t x, uint32_t y, uint32_t sampleIndex, float record[SAMPLE_RECORD_FLOATS], uint32_t dimensionBase)
 {
 	SampleGenerator generator(params, tables, x, y, sampleIndex);
 	for (uint32_t i = 0; i < SAMPLE_RECORD_FLOATS; i++) {
 		record[i] = 0.f;
 	}
-	const glm::vec2 pixel = generator.pixel2D();
-	const glm::vec2 lens = generator.get2D(2);
+	//a light path's emission takes the camera's six dimensions after the camera path's; only a camera's pixel is stratified
+	//as the pixel's own
+	const glm::vec2 pixel = dimensionBase == 0 ? generator.pixel2D() : generator.get2D(dimensionBase);
+	const glm::vec2 lens = generator.get2D(dimensionBase + 2);
 	record[SAMPLE_CAMERA_PIXEL] = pixel.x;
 	record[SAMPLE_CAMERA_PIXEL + 1] = pixel.y;
 	record[SAMPLE_CAMERA_LENS] = lens.x;
 	record[SAMPLE_CAMERA_LENS + 1] = lens.y;
-	record[SAMPLE_CAMERA_TIME] = generator.get1D(4);
-	record[SAMPLE_CAMERA_WAVELENGTH] = generator.get1D(5);
+	record[SAMPLE_CAMERA_TIME] = generator.get1D(dimensionBase + 4);
+	record[SAMPLE_CAMERA_WAVELENGTH] = generator.get1D(dimensionBase + 5);
 }
 
-void sampleBounceRecord(const SamplerParams& params, const SamplerTables& tables, uint32_t x, uint32_t y, uint32_t sampleIndex, uint32_t bounce, float record[SAMPLE_RECORD_FLOATS])
+void sampleBounceRecord(const SamplerParams& params, const SamplerTables& tables, uint32_t x, uint32_t y, uint32_t sampleIndex, uint32_t bounce, float record[SAMPLE_RECORD_FLOATS], uint32_t dimensionBase)
 {
 	SampleGenerator generator(params, tables, x, y, sampleIndex);
 	for (uint32_t i = 0; i < SAMPLE_RECORD_FLOATS; i++) {
 		record[i] = 0.f;
 	}
-	const uint32_t base = SAMPLE_CAMERA_DIMENSIONS + SAMPLE_BOUNCE_DIMENSIONS * bounce;
+	const uint32_t base = dimensionBase + SAMPLE_CAMERA_DIMENSIONS + SAMPLE_BOUNCE_DIMENSIONS * bounce;
 	record[SAMPLE_DIRECT_LIGHT] = generator.get1D(base + SAMPLE_DIRECT_LIGHT);
 	const glm::vec2 point = generator.get2D(base + SAMPLE_DIRECT_POINT);
 	record[SAMPLE_DIRECT_POINT] = point.x;

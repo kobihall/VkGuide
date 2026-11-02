@@ -117,7 +117,7 @@ On the Cornell box and the Veach scene, which have next-event estimation and no 
 
 ## Splats
 
-Light tracing and the bidirectional methods add contributions to arbitrary pixels ([pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md)). Their splats go in a buffer of their own, and the compensated variants' resolve is where `splatSum / samplesPerPixel` joins the weighted mean, as pbrt's `RGBFilm::GetPixelRGB()` does. `crt_film_update.glsl` marks the place with a comment. No splat buffer exists yet.
+Light tracing and the bidirectional methods add contributions to arbitrary pixels ([pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md)). Their splats go in a buffer of their own, and the compensated variants' resolve is where `splatSum / samplesPerPixel` joins the weighted mean, as pbrt's `RGBFilm::GetPixelRGB()` does. `crt_film_update.glsl` marks the place with a comment. No splat buffer exists yet.
 
 ## Registry, bindings and data
 
@@ -147,7 +147,7 @@ GPU time of a 640 × 360, 64-sample render of the Cornell box with ZSobol on the
 ## Where it departs from the plan and from pbrt
 
 - A sample's weight is its sign, not pbrt's `f / pdf`. The two differ by the integral of `|f|`, which the weighted mean divides out, and the sign keeps the products exact.
-- `PixelState` is not allocated. The camera's ray weight ([pbrt-cameras.md](../pbrt-cameras.md)) can start as the path's throughput, since pbrt multiplies it into the radiance before the film sees it and not into the film weight.
+- `PixelState` is not allocated. The camera's ray weight ([pbrt-cameras.md](pbrt-cameras.md)) can start as the path's throughput, since pbrt multiplies it into the radiance before the film sees it and not into the film weight.
 - The plan expected a convergence plot to bend for the running mean within 16384 samples. It does not on these scenes; see the table above.
 - The plan gave the record as 32 bytes in one place and 48 in another. It is 48, with the variance and the accepted count in it.
 - `0903` needs two passes, which the plan did not foresee, because the neighborhood criterion reads other pixels' cascades.

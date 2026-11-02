@@ -325,6 +325,11 @@ public:
 	// the scene camera the viewport is currently flying (first-person edit): every frame the
 	// viewport's pose is written into it. 0 = none, the viewport is a free camera
 	uint64_t m_firstPersonCameraId { 0 };
+	// Focus on (docs/plans/completed/pbrt-cameras.md): the camera whose focus distance the next click in the viewport
+	// sets, 0 for none; and the camera whose plane of focus the viewport shows, until when
+	uint64_t m_focusPickCameraId { 0 };
+	uint64_t m_focusFlashCameraId { 0 };
+	std::chrono::steady_clock::time_point m_focusFlashUntil {};
 	GPUSceneData m_sceneData;
 	VkDescriptorSetLayout m_gpuSceneDataDescriptorLayout;
 	DrawContext m_mainDrawContext;
@@ -606,6 +611,9 @@ public:
 	// and drives the camera until endFirstPersonEdit(); deleting the camera ends it too
 	void beginFirstPersonEdit(uint64_t cameraId);
 	void endFirstPersonEdit();
+	// the next click in the viewport focuses the camera on the surface under it: its focus distance becomes the hit's
+	// depth along the camera's axis. Escape, or a second call, cancels
+	void beginFocusPick(uint64_t cameraId);
 
 	// the scene's parts. importModel() adds a model, a glTF file or a pbrt-v4 scene (.pbrt, .pbrt.gz) by its name
 	// (models are keyed uniquely, so the same file can be imported twice); loadEnvironmentMap() takes a Radiance
@@ -687,8 +695,9 @@ private:
 	// a model's library entry gets its textures from the texture library: a glTF material's four, or the references a
 	// pbrt import made by image index (TextureBinding::importImage), each added to the library
 	void resolveModelTextures(MaterialDef& material, const std::string& key, const LoadedModel& model, uint32_t index);
-	// every projection and goniometric light's image in the texture library (an IES file as its equal-area image)
-	void syncLightImages();
+	// every projection and goniometric light's image (an IES file as its equal-area image) and every camera's aperture
+	// image in the texture library
+	void syncSceneImages();
 public:
 	// opens a file dialog once the imgui frame is finished, and calls `chosen` with the file picked (never on a cancel).
 	// For a panel's Load... button, which cannot run a dialog in the middle of a frame
@@ -725,6 +734,9 @@ private:
 	// wireframe frustums for the scene's cameras, drawn over the viewport into its window's draw
 	// list; the render camera brighter, the flown one not at all
 	void drawCameraOverlays(const ViewportView& view);
+	// the click of a focus pick, over the preview this frame; and the plane of focus it set, shown for a moment
+	void updateFocusPick(const ViewportView& view);
+	void drawFocusPlane(const ViewportView& view);
 	// markers for the punctual lights over the viewport, the same way: a point light's star, a spot
 	// light's cone, a directional light's arrow
 	void drawLightOverlays(const ViewportView& view);

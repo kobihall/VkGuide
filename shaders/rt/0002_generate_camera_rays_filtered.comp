@@ -21,3 +21,4 @@
 #define CRT_PIXEL_FILTER
 #include "include/crt_filter.glsl"
 #include "include/crt_camera.glsl"
+#include "include/crt_camera_rays.glsl"

@@ -81,15 +81,23 @@ def sphere(name, center, radius, material):
     return {"type": "sphere", "name": name, "position": [float(c) for c in center], "radius": radius, "material": material}
 
 
-def camera(position, look_at, fov=40.0):
-    """A camera at `position` looking at `look_at` with +y up (the identity orientation looks down -z)."""
+def camera(position, look_at, fov=40.0, **projection):
+    """A camera at `position` looking at `look_at` with +y up (the identity orientation looks down -z).
+
+    `projection` adds the version 26 camera keys (docs/plans/completed/pbrt-cameras.md) as the scene file names them:
+    kind ("perspective", "orthographic", "spherical"), viewHeight, mapping ("equirect", "equalarea"), aperture,
+    focusDistance, lensMapping ("polar", "concentric"), apertureShape ("circle", "polygon", "image"), apertureBlades,
+    apertureRotation, apertureImage, tilt and shift ([x, y]). Without them the camera reads as every older one does:
+    perspective, with the polar lens mapping."""
     forward = normalize(np.asarray(look_at, dtype=np.float64) - np.asarray(position, dtype=np.float64))
     right = normalize(np.cross(forward, [0.0, 1.0, 0.0]))
     up = np.cross(right, forward)
     # columns: right, up, back (the camera looks down its -z)
     orientation = quat_from_matrix(np.column_stack([right, up, -forward]))
-    return {"name": "render_camera", "position": [float(c) for c in position], "orientation": orientation,
-            "fov": fov, "aperture": 0.0, "focusDistance": 10.0, "exposure": 1.0}
+    result = {"name": "render_camera", "position": [float(c) for c in position], "orientation": orientation,
+              "fov": fov, "aperture": 0.0, "focusDistance": 10.0, "exposure": 1.0}
+    result.update(projection)
+    return result
 
 
 def make_scene(shapes, cam, width, height, *, background=None, environment_map=None, environment_intensity=1.0,

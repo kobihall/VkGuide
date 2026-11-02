@@ -1,0 +1,85 @@
+#version 460
+
+// 12 CONNECT TO THE CAMERA (docs/plans/completed/pbrt-bidirectional-path-tracing.md; pbrt-v4's LightPathIntegrator). At
+// each surface a light path reaches, a point on the lens sampled from the surface (crt_camera.glsl cameraSampleWi()),
+// and the importance a connection to it carries: the path's throughput, the BSDF in importance mode towards the lens
+// (the adjoint of the materials that are not reciprocal, crt_transport.glsl) with pbrt's shading-normal correction, the
+// camera's We over the lens point's solid-angle density. The connection goes to kernel 14 as a shadow ray towards the
+// lens, its film point in the ShadowRay's radianceSlot and mediumAndGroup words, which kernel 14 splats at.
+//
+// A delta surface has no connection, and a connection must fit the render's depth, a path of rayDepth edges at most,
+// as kernel 06's light sample must. Built once per material class, as kernel 06 is.
+
+#extension GL_GOOGLE_include_directive : require
+#include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
+#include "include/crt_material_class.glsl"
+#include "include/crt_interaction.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_samples.glsl"
+#include "equirect.glsl"
+#include "include/crt_transport.glsl"
+#include "include/crt_scatter.glsl"
+#include "include/crt_light.glsl"
+#include "include/crt_light_path.glsl"
+#include "include/crt_transport.glsl"
+#include "include/crt_spawn.glsl"
+#include "include/crt_camera.glsl"
+#include "include/crt_light_vertex_cache.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	// no early return: queueAppend() below has barriers every invocation must reach
+	const bool isActive = index < headers[CRT_SURFACE_QUEUE].rayCount;
+	bool shadow = false;
+	uint entry = 0u;
+
+	if (isActive) {
+		SurfaceMaterial material;
+		const LightVertex v = lightVertexAt(index, material);
+		entry = v.entry;
+		g_transportMode = CRT_TRANSPORT_IMPORTANCE;
+		if (v.path.bounce + 1u < pc.rayDepth && !isSpecularMaterial(material)) {
+			uint rng = CRT_SAMPLE_RECORD ? v.path.rngState : pcgHash(v.path.rngState ^ CRT_CONNECT_STREAM_SALT);
+			const vec2 u = sampleDimension2D(v.pathIndex, rng, CRT_SAMPLE_CONNECT_LENS);
+			CameraWiSample cs;
+			if (cameraSampleWi(v.si.p, u, cs)) {
+				const vec3 wo = -v.inDir;
+				const Spectrum f = spectrumScale(transportEval(material, wo, v.normal, cs.wi), shadingNormalCorrection(wo, cs.wi, v.normal, v.si.n));
+				Spectrum contribution = spectrumScale(spectrumMul(v.throughput, f), cs.we * pc.lightPathScale / cs.pdf);
+				// serving the light vertex cache, light tracing is one strategy among the rest: its MIS weight, against the
+				// camera path that would have found this vertex, which the frame's light paths outnumber by r (SmallVCM's
+				// ConnectToCamera)
+				if (CRT_LIGHT_VERTEX_CACHE) {
+					float dVCM;
+					float dVC;
+					lvcLightPartials(v.pathIndex, v.path.bounce, v.path.origin, v.si.p, v.hit.t, abs(dot(v.normal, v.inDir)), dVCM, dVC);
+					float cameraPdfPos;
+					float cameraPdfDir;
+					cameraPdfWe(cs.lensPoint, -cs.wi, cameraPdfPos, cameraPdfDir);
+					const float cameraPdfA = cameraPdfDir * abs(dot(v.normal, cs.wi)) / (cs.distance * cs.distance);
+					const float reversePdf = transportPdf(material, cs.wi, v.normal, wo);
+					const float wLight = lvcMis(cameraPdfA * pc.lightPathScale) * (dVCM + dVC * lvcMis(reversePdf));
+					contribution = spectrumScale(contribution, 1.0 / (1.0 + wLight));
+				}
+				ShadowRay ray;
+				if (spectrumMaxValue(contribution) > 0.0 && spawnShadowRay(v.si, cs.wi, cs.distance, vec3(0.0), ray)) {
+					ray.contribution = contribution;
+					ray.radianceSlot = floatBitsToUint(cs.film.x);
+					ray.mediumAndGroup = floatBitsToUint(cs.film.y);
+#ifdef CRT_SPECTRAL
+					ray.lambdaU = v.path.lambdaU;
+					ray.laneMask = v.laneMask;
+#endif
+					shadowRays[entry] = ray;
+					shadow = true;
+				}
+			}
+		}
+	}
+
+	queueAppend(CRT_QUEUE_SHADOW, shadow, entry);
+}

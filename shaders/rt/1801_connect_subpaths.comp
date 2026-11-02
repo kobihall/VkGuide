@@ -1,0 +1,539 @@
+#version 460
+
+// 18 CONNECT SUBPATHS (docs/plans/completed/pbrt-bidirectional-path-tracing.md; PBR 3ed 16.3, pbrt-v3's ConnectBDPT() and
+// MISWeight()). Every strategy (s, t) that joins s vertices of a pixel sample's light subpath to t of its camera subpath
+// (crt_bdpt.glsl), within the render's depth of rayDepth edges, skipping s = 1, t = 1 as pbrt does:
+//
+//   s = 0           the camera subpath alone, when it ends on a light (an emitter, or the lights at infinity)
+//   t = 1           the light subpath's vertex connected to a point on the lens (SampleWi()), splatted onto the film
+//   s = 1           a light sampled from the camera subpath's vertex (Sample_Li())
+//   s > 1, t > 1    the two vertices joined, each BSDF in its own transport mode
+//
+// each weighed by pbrt's MISWeight(): the balance heuristic over every strategy that could have made the path, from the
+// subpaths' pdfFwd and pdfRev, with the four densities the connection changes recomputed (pbrt's ScopedAssignment) and
+// a delta density counted as 1 (remap0); the rest of each subpath's sum is a running sum made once (prepareMisSums()).
+// One invocation per camera vertex t of each pixel sample of the frame's tile, t major, which adds its strategies to the
+// slot's radiance atomically: one per pixel sample left the GPU idle on a scene's longest subpaths. Visibility is tested
+// here, one occluded() a strategy, since queueing up to rayDepth^2 shadow rays a slot would cost more memory than the
+// vertices. A vertex's BSDF is rebuilt from its hit record, in either transport mode and of any material, so the kernel
+// evaluates every type. A background that is not the environment map, and an emitter the light list does not hold, are
+// lights only the camera subpath can find, at full weight. Under CRT_BIDIR_FLAG_STRATEGY_IMAGES each strategy also goes
+// to its own image (strategyImageAdd()). Built once per traversal and lane family.
+
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_atomic_float : require
+#include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
+// every material, as the complex class's kernels evaluate them; built once, for no surface queue
+#define CRT_MATERIAL_CLASS 1
+#define CRT_MATERIAL_CLASS_EVALUATES_COMPLEX 1
+#include "include/crt_interaction.glsl"
+#include "include/crt_random.glsl"
+#include "include/crt_samples.glsl"
+#include "equirect.glsl"
+#include "sky_gradient.glsl"
+#include "include/crt_transport.glsl"
+#include "include/crt_scatter.glsl"
+#include "include/crt_light.glsl"
+#include "include/crt_background.glsl"
+#include "include/crt_debug.glsl"
+#define SurfaceMaterial ComplexMaterial
+#include "include/crt_transport.glsl"
+#include "include/crt_spawn.glsl"
+#include "include/crt_trace.glsl"
+#include "include/crt_camera.glsl"
+#include "include/crt_light_emission.glsl"
+#include "include/crt_splat.glsl"
+#include "include/crt_bdpt.glsl"
+#include "include/crt_emitter.glsl"
+#include "include/crt_light_groups.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+// a strategy's lens and light samples draw from the slot's own stream, salted by the strategy
+#define CRT_STRATEGY_STREAM_SALT 0x2c1b3c6du
+
+shared uint s_nodesVisited;
+shared uint s_primitivesTested;
+
+// a surface vertex's BSDF, rebuilt from its hit record
+struct BdptSurface {
+	SurfaceInteraction si;
+	ComplexMaterial material;
+	vec3 normal;
+	uint materialIndex;
+};
+
+BdptSurface rebuildSurface(BdptVertex v)
+{
+	BdptSurface b;
+	b.si = surfaceInteraction(v.hit, v.rayOrigin, v.rayDirection);
+	const TextureSite site = surfaceTextureSite(b.si, v.hit, v.rayDirection, 0.0, 0.0);
+	b.materialIndex = resolveMixMaterial(b.si.material, b.si.p, -v.rayDirection, site);
+	bool frontFace;
+	b.normal = materialShadingNormal(classicMaterial(b.materialIndex), v.hit, b.si, v.rayDirection, frontFace, b.materialIndex, site);
+	b.material = resolveComplexMaterial(b.materialIndex, b.si, site);
+	b.material.frontFace = frontFace;
+#ifdef CRT_SPECTRAL
+	// a dispersive glass at the lane its subpath kept: the first lane its beta still carries
+	if (b.material.isBxdf && (b.material.bxdfFlags & CRT_BXDF_FLAG_DISPERSIVE) != 0u) {
+		uint lane = 0u;
+		for (uint i = 0u; i < CRT_LANE_END; i++) {
+			if (spectrumLane(v.beta, i) > 0.0) {
+				lane = i;
+				break;
+			}
+		}
+		b.material.bxdf.eta = scalarFromRef(materialSpectrumRef(b.materialIndex, CRT_SLOT_AUX0), lane);
+	}
+#endif
+	return b;
+}
+
+float remap0(float f)
+{
+	return f != 0.0 ? f : 1.0;
+}
+
+// pbrt's Vertex::Pdf() for a surface: the density with which its BSDF, met from `prev`, samples `next`, by area there
+float surfacePdf(BdptVertex v, BdptSurface b, vec3 toPrev, BdptVertex next)
+{
+	return bdptConvertDensity(transportPdf(b.material, toPrev, b.normal, bdptDirection(v.p, next)), v.p, next);
+}
+
+// pbrt's Vertex::Pdf() for the camera: PDF_We()'s directional density towards `next`, by area there
+float cameraPdf(vec3 lensPoint, BdptVertex next)
+{
+	float pdfPos;
+	float pdfDir;
+	cameraPdfWe(lensPoint, bdptDirection(lensPoint, next), pdfPos, pdfDir);
+	return bdptConvertDensity(pdfDir, lensPoint, next);
+}
+
+// pbrt's PdfLight(): the density of the light at `light` emitting towards `v`, by area at v; a light at infinity's is its
+// disk's
+float pdfLight(BdptVertex light, BdptVertex v)
+{
+	const uint index = bdptLightIndex(light.flags);
+	if (index == CRT_NO_LIGHT) {
+		return 0.0;
+	}
+	vec3 w;
+	float pdf;
+	if ((light.flags & CRT_BDPT_INFINITE) != 0u) {
+		w = -light.n;
+		pdf = infiniteLightPdfPos();
+	} else {
+		w = v.p - light.p;
+		const float distanceSquared = dot(w, w);
+		if (!(distanceSquared > 0.0)) {
+			return 0.0;
+		}
+		w /= sqrt(distanceSquared);
+		float pdfPos;
+		float pdfDir;
+		lightPdfLe(index, light.n, w, pdfPos, pdfDir);
+		pdf = pdfDir / distanceSquared;
+	}
+	if ((v.flags & CRT_BDPT_ON_SURFACE) != 0u) {
+		pdf *= abs(dot(v.n, w));
+	}
+	return pdf;
+}
+
+// pbrt's PdfLightOrigin(): the density of choosing the light's point, its pick times its position's; a light at infinity's
+// the density of its direction (InfiniteLightDensity())
+float pdfLightOrigin(BdptVertex light, BdptVertex v)
+{
+	const uint index = bdptLightIndex(light.flags);
+	if (index == CRT_NO_LIGHT) {
+		return 0.0;
+	}
+	const uint kind = lightKindOf(lights[index]);
+	if (kind == CRT_LIGHT_ENVIRONMENT) {
+		return lightPmf(index) * environmentPdf(0u, light.n, environmentRotation());
+	}
+	if (kind == CRT_LIGHT_DIRECTIONAL) {
+		return 0.0;
+	}
+	float pdfPos;
+	float pdfDir;
+	lightPdfLe(index, light.n, normalize(v.p - light.p), pdfPos, pdfDir);
+	return lightPmf(index) * pdfPos;
+}
+
+// pbrt's MISWeight() needs, for strategy (s, t), the sum over every other strategy of the ratio of its density to this
+// one's: a product of pdfRev / pdfFwd along each subpath, of which only the two vertices nearest the connection on each side
+// change with the strategy. The rest is a running sum per subpath, made once a slot (SmallVCM's recursion):
+//
+//   S(k) = r_k (included_k + S(k - 1)),   r_k = remap0(pdfRev_k) / remap0(pdfFwd_k)
+//
+// with included_k pbrt's test that neither vertex k nor the one before it is delta (for the light subpath's vertex 0,
+// the light itself). misWeight() then takes O(1) a strategy rather than O(s + t)
+float g_cameraSums[CRT_MAX_DEPTH + 2];
+float g_lightSums[CRT_MAX_DEPTH + 2];
+// per vertex: whether it is delta, and whether pbrt's sum includes it
+uint g_cameraDelta;
+uint g_cameraIncluded;
+uint g_lightDelta;
+uint g_lightIncluded;
+
+void prepareMisSums(uint slot, int nCamera, int nLight)
+{
+	g_cameraDelta = 0u;
+	g_cameraIncluded = 0u;
+	float sum = 0.0;
+	g_cameraSums[0] = 0.0;
+	for (int k = 1; k < nCamera; k++) {
+		const uvec3 mis = bdptLoadMis(slot, false, uint(k));
+		const bool delta = (mis.x & CRT_BDPT_DELTA) != 0u;
+		g_cameraDelta |= delta ? 1u << uint(k) : 0u;
+		const bool included = !delta && (g_cameraDelta & (1u << uint(k - 1))) == 0u;
+		g_cameraIncluded |= included ? 1u << uint(k) : 0u;
+		sum = remap0(uintBitsToFloat(mis.z)) / remap0(uintBitsToFloat(mis.y)) * ((included ? 1.0 : 0.0) + sum);
+		g_cameraSums[k] = sum;
+	}
+	g_lightDelta = 0u;
+	g_lightIncluded = 0u;
+	sum = 0.0;
+	for (int k = 0; k < nLight; k++) {
+		const uvec3 mis = bdptLoadMis(slot, true, uint(k));
+		const bool delta = (mis.x & CRT_BDPT_DELTA) != 0u;
+		g_lightDelta |= delta ? 1u << uint(k) : 0u;
+		const bool before = k > 0 ? (g_lightDelta & (1u << uint(k - 1))) != 0u : (mis.x & CRT_BDPT_DELTA_LIGHT) != 0u;
+		const bool included = !delta && !before;
+		g_lightIncluded |= included ? 1u << uint(k) : 0u;
+		sum = remap0(uintBitsToFloat(mis.z)) / remap0(uintBitsToFloat(mis.y)) * ((included ? 1.0 : 0.0) + sum);
+		g_lightSums[k] = sum;
+	}
+}
+
+// pbrt's MISWeight() for strategy (s, t), with the four reverse densities it changes (pbrt's ScopedAssignment) and the
+// pdfFwd of the vertices nearest the connection. `qsPdfFwd` and `sampledDeltaLight` are the sampled light vertex's for
+// s = 1; pbrt counts the connecting vertices pt and qs as not delta
+float misWeight(int s, int t, float ptPdfRev, float ptMinusPdfRev, float qsPdfRev, float qsMinusPdfRev, float ptPdfFwd, float ptMinusPdfFwd,
+	float qsPdfFwd, float qsMinusPdfFwd, bool sampledDeltaLight)
+{
+	if (s + t == 2) {
+		return 1.0;
+	}
+	float sumRi = 0.0;
+	// the camera subpath: vertex t - 1 (pt), t - 2 (ptMinus), and the running sum below them
+	if (t > 1) {
+		const float a1 = remap0(ptPdfRev) / remap0(ptPdfFwd);
+		const bool included1 = (g_cameraDelta & (1u << uint(t - 2))) == 0u;
+		float inner = 0.0;
+		if (t > 2) {
+			const float a2 = remap0(ptMinusPdfRev) / remap0(ptMinusPdfFwd);
+			const bool included2 = (g_cameraIncluded & (1u << uint(t - 2))) != 0u;
+			inner = a2 * ((included2 ? 1.0 : 0.0) + (t > 3 ? g_cameraSums[t - 3] : 0.0));
+		}
+		sumRi += a1 * ((included1 ? 1.0 : 0.0) + inner);
+	}
+	// the light subpath: vertex s - 1 (qs), s - 2 (qsMinus), and the running sum below them
+	if (s > 0) {
+		const float b1 = remap0(qsPdfRev) / remap0(qsPdfFwd);
+		const bool before = s > 1 ? (g_lightDelta & (1u << uint(s - 2))) != 0u : sampledDeltaLight;
+		float inner = 0.0;
+		if (s > 1) {
+			const float b2 = remap0(qsMinusPdfRev) / remap0(qsMinusPdfFwd);
+			const bool included2 = (g_lightIncluded & (1u << uint(s - 2))) != 0u;
+			inner = b2 * ((included2 ? 1.0 : 0.0) + (s > 2 ? g_lightSums[s - 3] : 0.0));
+		}
+		sumRi += b1 * ((!before ? 1.0 : 0.0) + inner);
+	}
+	return 1.0 / (1.0 + sumRi);
+}
+
+// what an emitter or the lights at infinity at camera vertex `pt` send back along the subpath (pbrt's Vertex::Le())
+Spectrum emittedTowards(BdptVertex pt)
+{
+	if (bdptKind(pt.flags) == CRT_BDPT_ESCAPED) {
+		return backgroundSpectrum(pt.n);
+	}
+	const SurfaceInteraction si = surfaceInteraction(pt.hit, pt.rayOrigin, pt.rayDirection);
+	if (!emitsTowardsRay(si.material, si)) {
+		return spectrumConst(0.0);
+	}
+	const TextureSite site = surfaceTextureSite(si, pt.hit, pt.rayDirection, 0.0, 0.0);
+	return emittedSpectrum(classicMaterial(si.material), si.material, si, site);
+}
+
+// pbrt's visualizestrategies and visualizeweights: strategy (s, t)'s contribution, weighed by its MIS weight or not, into its
+// own image in the light groups' sums (CRT_BIDIR_FLAG_STRATEGY_IMAGES; src/rt_scene_types.h bdptStrategyIndex()). A
+// strategy that splats adds at the pixel its film point falls in, which the export divides by the pixel's samples
+void strategyImageAdd(uint pathIndex, int s, int t, Spectrum L, float weight, bool splat, vec2 film)
+{
+	const uint index = uint(s + (s + t - 2) * (s + t + 3) / 2);
+	if (index >= pc.lightGroupCount || !(weight > 0.0)) {
+		return;
+	}
+	const Spectrum value = (pc.bidirFlags & CRT_BIDIR_FLAG_STRATEGY_WEIGHTED) != 0u ? spectrumScale(L, weight) : L;
+#ifndef CRT_SPECTRAL
+	const vec3 rgb = value;
+#else
+	const vec3 rgb = spectrumToFilm(value);
+#endif
+	if (!splat) {
+		lightGroupAdd(pathIndex, index, rgb);
+		return;
+	}
+	if (!(film.x >= 0.0 && film.x < 1.0 && film.y >= 0.0 && film.y < 1.0) || !(all(equal(rgb, rgb)) && all(lessThan(abs(rgb), vec3(CRT_INFINITY))))) {
+		return;
+	}
+	const uint x = min(uint(film.x * float(pc.width)), pc.width - 1u);
+	const uint y = min(uint((1.0 - film.y) * float(pc.height)), pc.height - 1u);
+	const uint base = (y * pc.width + x) * channelStride() + 3u * index;
+	atomicAdd(channelSums[base + 0u], rgb.r);
+	atomicAdd(channelSums[base + 1u], rgb.g);
+	atomicAdd(channelSums[base + 2u], rgb.b);
+}
+
+bool isLightVertex(BdptVertex v)
+{
+	const uint kind = bdptKind(v.flags);
+	return kind == CRT_BDPT_ESCAPED || (kind == CRT_BDPT_SURFACE && (v.flags & CRT_BDPT_EMITS) != 0u);
+}
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	if (gl_LocalInvocationID.x == 0u) {
+		s_nodesVisited = 0u;
+		s_primitivesTested = 0u;
+	}
+	memoryBarrierShared();
+	barrier();
+	g_nodesVisited = 0u;
+	g_primitivesTested = 0u;
+
+	// the camera vertex t major, so a SIMD group's invocations loop over the same strategies
+	const uint slot = index % pc.lightPathCount;
+	const int t = int(index / pc.lightPathCount) + 1;
+	const uint pathIndex = bdptTileStart + slot;
+	const uint pixel = pathIndex / pc.samplesPerFrame;
+	const bool inTile = t <= int(pc.rayDepth) + 1 && pathIndex < pc.poolSize && pixel < pc.width * pc.height
+		&& (pathIndex - pixel * pc.samplesPerFrame) < min(sampleBudget[pixel], pc.samplesPerFrame);
+	if (inTile) {
+		const uvec2 counts = bdptCounts(slot);
+		const int nCamera = int(counts.x);
+		const int nLight = int(counts.y);
+		const uint sampleIndex = imageLoad(samplesTaken, ivec2(pixel % pc.width, pixel / pc.width)).r + (pathIndex - pixel * pc.samplesPerFrame);
+#ifdef CRT_SPECTRAL
+		spectralBegin(spectralRepresentation() == CRT_REPRESENTATION_HERO ? bdptLambdaU(pixel, sampleIndex) : 0.0);
+#endif
+		uint rng = pcgHash(pixel ^ pcgHash(sampleIndex ^ pcgHash(pc.seed ^ CRT_STRATEGY_STREAM_SALT)));
+		prepareMisSums(slot, nCamera, nLight);
+		Spectrum total = spectrumConst(0.0);
+
+		// the debug views that replace shading show the camera subpath's first surface; bounce heat its last vertex, and
+		// ambient occlusion casts its ray here, since nothing else traces for the camera subpath. The MIS weights view
+		// weighs the path tracer's two strategies, which this integrator does not have, and stays black, as under lvc
+		if (t == 1 && pc.debugView != CRT_DEBUG_NONE && pc.debugView != CRT_DEBUG_MIS_WEIGHTS && nCamera >= 2) {
+			const BdptVertex v1 = bdptLoadVertex(slot, false, 1u);
+			vec3 value = vec3(0.0);
+			if (pc.debugView == CRT_DEBUG_BOUNCE_HEAT) {
+				value = bounceHeat(uint(nCamera - 2));
+			} else if (bdptKind(v1.flags) == CRT_BDPT_SURFACE) {
+				const BdptSurface b = rebuildSurface(v1);
+				debugTerminalValue(b.normal, b.si.frontFace ? b.si.n : -b.si.n, 0.0, v1.rayDirection, true, value);
+				if (pc.debugView == CRT_DEBUG_AMBIENT_OCCLUSION) {
+					uint aoRng = pcgHash(rng ^ 0x68e31da4u);
+					const vec3 direction = hemisphereFromSample(b.normal, 1.0, vec2(randomFloat(aoRng), randomFloat(aoRng)));
+					ShadowRay ray;
+					value = spawnShadowRay(b.si, direction, pc.aoDistance, vec3(0.0), ray) && !occluded(ray.origin, ray.direction, traceTMin(), ray.tMax) ? vec3(1.0) : vec3(0.0);
+				}
+			} else {
+				debugTerminalValue(vec3(0.0), vec3(0.0), 0.0, v1.n, false, value);
+			}
+			radiance[pathIndex] = vec4(value, 1.0);
+		}
+
+		if (t <= nCamera && pc.debugView == CRT_DEBUG_NONE) {
+			const BdptVertex pt = bdptLoadVertex(slot, false, uint(t - 1));
+			const bool ptSurface = bdptKind(pt.flags) == CRT_BDPT_SURFACE;
+			BdptSurface ptb;
+			if (ptSurface) {
+				ptb = rebuildSurface(pt);
+			}
+			const BdptVertex ptMinus = t > 1 ? bdptLoadVertex(slot, false, uint(t - 2)) : pt;
+			const vec3 ptToPrev = t > 1 ? -pt.rayDirection : vec3(0.0);
+			for (int s = 0; s <= nLight; s++) {
+				// rayDepth edges at most; pbrt leaves out s = 1, t = 1
+				if ((s == 1 && t == 1) || s + t < 2 || s + t - 1 > int(pc.rayDepth)) {
+					continue;
+				}
+				// the lights at infinity end the camera subpath: nothing connects to them
+				if (t > 1 && s != 0 && bdptKind(pt.flags) == CRT_BDPT_ESCAPED) {
+					continue;
+				}
+				Spectrum L = spectrumConst(0.0);
+				float weight = 0.0;
+				bool splat = false;
+				vec2 film = vec2(0.0);
+				ShadowRay ray;
+				bool needsVisibility = false;
+
+				if (s == 0) {
+					// the camera subpath as a whole path, ending on a light
+					if (!isLightVertex(pt)) {
+						continue;
+					}
+					L = spectrumMul(pt.beta, emittedTowards(pt));
+					if (!(spectrumMaxValue(L) > 0.0)) {
+						continue;
+					}
+					// a light only this strategy finds (the sky, a solid background, an emitter outside the light list)
+					if (bdptLightIndex(pt.flags) == CRT_NO_LIGHT || t == 2) {
+						weight = 1.0;
+					} else {
+						weight = misWeight(s, t, pdfLightOrigin(pt, ptMinus), pdfLight(pt, ptMinus), 0.0, 0.0, pt.pdfFwd, ptMinus.pdfFwd, 0.0, 0.0, false);
+					}
+				} else if (t == 1) {
+					// the light subpath's vertex connected to the lens, splatted at the film point it reaches
+					const BdptVertex qs = bdptLoadVertex(slot, true, uint(s - 1));
+					if ((qs.flags & CRT_BDPT_CONNECTIBLE) == 0u || bdptKind(qs.flags) != CRT_BDPT_SURFACE) {
+						continue;
+					}
+					const BdptSurface qsb = rebuildSurface(qs);
+					uint strategyRng = pcgHash(rng ^ uint(s * 64 + t));
+					CameraWiSample cs;
+					if (!cameraSampleWi(qs.p, vec2(randomFloat(strategyRng), randomFloat(strategyRng)), cs)) {
+						continue;
+					}
+					g_transportMode = CRT_TRANSPORT_IMPORTANCE;
+					const vec3 qsToPrev = -qs.rayDirection;
+					const Spectrum f = spectrumScale(transportEval(qsb.material, qsToPrev, qsb.normal, cs.wi), shadingNormalCorrection(qsToPrev, cs.wi, qsb.normal, qsb.si.n));
+					L = spectrumScale(spectrumMul(qs.beta, f), cs.we / cs.pdf);
+					if (!(spectrumMaxValue(L) > 0.0) || !spawnShadowRay(qsb.si, cs.wi, cs.distance, vec3(0.0), ray)) {
+						continue;
+					}
+					// the sampled camera vertex: on no surface
+					BdptVertex camera = pt;
+					camera.p = cs.lensPoint;
+					camera.flags = CRT_BDPT_CAMERA | CRT_BDPT_CONNECTIBLE;
+					const float qsPdfRev = cameraPdf(cs.lensPoint, qs);
+					float qsMinusPdfRev = 0.0;
+						float qsMinusPdfFwd = 0.0;
+					if (s > 1) {
+						const BdptVertex qsMinus = bdptLoadVertex(slot, true, uint(s - 2));
+						qsMinusPdfRev = surfacePdf(qs, qsb, cs.wi, qsMinus);
+							qsMinusPdfFwd = qsMinus.pdfFwd;
+					}
+					weight = misWeight(s, t, 0.0, 0.0, qsPdfRev, qsMinusPdfRev, 0.0, 0.0, qs.pdfFwd, qsMinusPdfFwd, false);
+					splat = true;
+					film = cs.film;
+					needsVisibility = true;
+				} else if (s == 1) {
+					// a light sampled from the camera subpath's vertex
+					if ((pt.flags & CRT_BDPT_CONNECTIBLE) == 0u || !ptSurface || lightHeader.count == 0u) {
+						continue;
+					}
+					uint strategyRng = pcgHash(rng ^ uint(s * 64 + t));
+					const uint lightIndex = sampleLightIndex(randomFloat(strategyRng));
+					const vec2 u = vec2(randomFloat(strategyRng), randomFloat(strategyRng));
+					vec3 direction;
+					float distance;
+					Spectrum emitted;
+					float pdf;
+					vec3 lightNormal;
+					const float pmf = lightPmf(lightIndex);
+					if (!(pmf > 0.0) || !sampleLight(lightIndex, ptb.si.p, u, 0u, direction, distance, emitted, pdf, lightNormal) || !(pdf > 0.0)) {
+						continue;
+					}
+					g_transportMode = CRT_TRANSPORT_RADIANCE;
+					L = spectrumScale(spectrumMul(spectrumMul(pt.beta, transportEval(ptb.material, ptToPrev, ptb.normal, direction)), emitted), 1.0 / (pdf * pmf));
+					if (!(spectrumMaxValue(L) > 0.0) || !spawnShadowRay(ptb.si, direction, distance, lightNormal, ray)) {
+						continue;
+					}
+					// the sampled light vertex
+					const uint kind = lightKindOf(lights[lightIndex]);
+					const bool infinite = isInfiniteLight(kind);
+					BdptVertex light = pt;
+					light.flags = CRT_BDPT_LIGHT | bdptLightBits(lightIndex) | (isDeltaLight(lights[lightIndex].kind) ? CRT_BDPT_DELTA_LIGHT : 0u)
+						| (infinite ? CRT_BDPT_INFINITE : 0u) | (dot(lightNormal, lightNormal) > 0.0 ? CRT_BDPT_ON_SURFACE : 0u);
+					light.p = infinite ? ptb.si.p + direction : ptb.si.p + distance * direction;
+					light.n = infinite ? direction : lightNormal;
+					const float sampledPdfFwd = pdfLightOrigin(light, pt);
+					const float ptPdfRev = pdfLight(light, pt);
+					const float ptMinusPdfRev = surfacePdf(pt, ptb, direction, ptMinus);
+					const float qsPdfRev = surfacePdf(pt, ptb, ptToPrev, light);
+					weight = misWeight(s, t, ptPdfRev, ptMinusPdfRev, qsPdfRev, 0.0, pt.pdfFwd, ptMinus.pdfFwd, sampledPdfFwd, 0.0, (light.flags & CRT_BDPT_DELTA_LIGHT) != 0u);
+					needsVisibility = true;
+				} else {
+					// the two subpaths' vertices joined
+					const BdptVertex qs = bdptLoadVertex(slot, true, uint(s - 1));
+					if ((qs.flags & CRT_BDPT_CONNECTIBLE) == 0u || (pt.flags & CRT_BDPT_CONNECTIBLE) == 0u || !ptSurface || bdptKind(qs.flags) != CRT_BDPT_SURFACE) {
+						continue;
+					}
+					const BdptSurface qsb = rebuildSurface(qs);
+					const vec3 toQs = qs.p - pt.p;
+					const float distanceSquared = dot(toQs, toQs);
+					if (!(distanceSquared > 0.0)) {
+						continue;
+					}
+					const float distance = sqrt(distanceSquared);
+					const vec3 direction = toQs / distance;
+					const vec3 qsToPrev = -qs.rayDirection;
+					g_transportMode = CRT_TRANSPORT_IMPORTANCE;
+					const Spectrum fq = spectrumScale(transportEval(qsb.material, qsToPrev, qsb.normal, -direction), shadingNormalCorrection(qsToPrev, -direction, qsb.normal, qsb.si.n));
+					g_transportMode = CRT_TRANSPORT_RADIANCE;
+					const Spectrum fp = transportEval(ptb.material, ptToPrev, ptb.normal, direction);
+					L = spectrumScale(spectrumMul(spectrumMul(qs.beta, fq), spectrumMul(fp, pt.beta)), 1.0 / distanceSquared);
+					if (!(spectrumMaxValue(L) > 0.0) || !spawnShadowRay(ptb.si, direction, distance, qsb.si.n, ray)) {
+						continue;
+					}
+					const BdptVertex qsMinus = bdptLoadVertex(slot, true, uint(s - 2));
+					const float ptPdfRev = surfacePdf(qs, qsb, qsToPrev, pt);
+					const float ptMinusPdfRev = surfacePdf(pt, ptb, direction, ptMinus);
+					const float qsPdfRev = surfacePdf(pt, ptb, ptToPrev, qs);
+					const float qsMinusPdfRev = surfacePdf(qs, qsb, -direction, qsMinus);
+					weight = misWeight(s, t, ptPdfRev, ptMinusPdfRev, qsPdfRev, qsMinusPdfRev, pt.pdfFwd, ptMinus.pdfFwd, qs.pdfFwd, qsMinus.pdfFwd, false);
+					needsVisibility = true;
+				}
+
+				const Spectrum contribution = spectrumScale(L, weight);
+				if (!(spectrumMaxValue(contribution) > 0.0)) {
+					continue;
+				}
+				if (needsVisibility && occluded(ray.origin, ray.direction, traceTMin(), ray.tMax)) {
+					continue;
+				}
+				if (CRT_LIGHT_GROUPS && (pc.bidirFlags & CRT_BIDIR_FLAG_STRATEGY_IMAGES) != 0u) {
+					strategyImageAdd(pathIndex, s, t, L, weight, splat, film);
+				}
+				if (splat) {
+#ifndef CRT_SPECTRAL
+					const vec3 rgb = contribution;
+#else
+					const vec3 rgb = spectrumToFilm(contribution);
+#endif
+					if (all(equal(rgb, rgb)) && all(lessThan(abs(rgb), vec3(CRT_INFINITY)))) {
+						splatAdd(film, rgb);
+					}
+				} else {
+					total = spectrumAdd(total, contribution);
+				}
+			}
+		}
+		// the slot's camera vertices meet in its pixel sample
+#ifndef CRT_SPECTRAL
+		const vec3 rgb = total;
+#else
+		const vec3 rgb = spectrumToFilm(total);
+#endif
+		if (pc.debugView == CRT_DEBUG_NONE && any(notEqual(rgb, vec3(0.0)))) {
+			atomicAdd(radiance[pathIndex].x, rgb.x);
+			atomicAdd(radiance[pathIndex].y, rgb.y);
+			atomicAdd(radiance[pathIndex].z, rgb.z);
+		}
+		atomicAdd(s_nodesVisited, g_nodesVisited);
+		atomicAdd(s_primitivesTested, g_primitivesTested);
+	}
+	memoryBarrierShared();
+	barrier();
+	if (gl_LocalInvocationID.x == 0u) {
+		atomicAdd(traversalStats[2u * CRT_MAX_DEPTH], s_nodesVisited);
+		atomicAdd(traversalStats[2u * CRT_MAX_DEPTH + 1u], s_primitivesTested);
+	}
+}

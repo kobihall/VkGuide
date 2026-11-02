@@ -2,7 +2,7 @@
 
 Some light paths no unbiased method samples well. A caustic seen in a mirror, a pool floor lit through water and viewed through the water, is a specular–diffuse–specular path: neither the camera side nor the light side can connect across the diffuse vertex, so path tracing and BDPT converge on it very slowly. Photon mapping estimates the light at diffuse points from photons deposited nearby, which trades a bias that vanishes over time for robustness on those paths. pbrt 3's `SPPMIntegrator` implements stochastic progressive photon mapping (Hachisuka and Jensen 2009; PBR 3ed §16.2): each iteration traces camera paths to visible points, traces photons from the lights, and shrinks each pixel's gathering radius so that the estimate is consistent. This plan adds it as an integrator.
 
-*Not implemented. Depends on the light-tracing stages of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md). Part of the [roadmap](pbrt-roadmap.md).*
+*Not implemented. Depends on the light-tracing stages of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md). Part of the [roadmap](pbrt-roadmap.md).*
 
 ## What the renderer does today
 
@@ -31,7 +31,7 @@ The pixel's estimate after `k` iterations is `Ld / k + τ / (k N_p π r²)`, whe
 
 ### Shared with VCM
 
-The hash grid over points with radii is the same structure vertex merging needs. [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md)'s `lvc` integrator can reuse it to merge camera vertices with cached light vertices, which is VCM (Georgiev et al. 2012; Hachisuka et al. 2012).
+The hash grid over points with radii is the same structure vertex merging needs. [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md)'s `lvc` integrator can reuse it to merge camera vertices with cached light vertices, which is VCM (Georgiev et al. 2012; Hachisuka et al. 2012).
 
 ### Later
 

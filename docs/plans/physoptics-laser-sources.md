@@ -2,12 +2,12 @@
 
 Every beam axis starts at a laser. To the beam solver a laser is a chief ray and a complex beam parameter at its waist; to the path tracer it is a light that emits a few milliwatts into a cone a milliradian wide from a spot a millimeter across. Neither exists today: the tracer's lights are punctual lights, emitting surfaces and the environment. This plan adds the laser as an optical element and as a light: its Gaussian beam with M², astigmatism and a waist that need not sit at the output, its spectrum from a single line to a femtosecond pulse's bandwidth, its power and its polarization, and the emitted-ray sampling that light tracing draws from.
 
-*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) (the element), [pbrt-light-types.md](completed/pbrt-light-types.md) (emitted-ray sampling, `sampleLe()` and `pdfLe()`) and [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) (line spectra, wavelength sampling by the emitter). Rendering its light needs the light integrator of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md); the beam solver needs only the element. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) (the element), [pbrt-light-types.md](completed/pbrt-light-types.md) (emitted-ray sampling, `sampleLe()` and `pdfLe()`) and [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) (line spectra, wavelength sampling by the emitter). Rendering its light needs the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md); the beam solver needs only the element. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer does today
 
 - `SceneLight` (`src/rt_scene_types.h`) is a point, spot or directional light; `LightListBuilder` (`src/rt_lights.cpp`) prices every light by power for two alias tables that kernel 06 samples.
-- Every light is reached by next-event estimation or by a BSDF sample landing on an emitter. Nothing traces from a light, which [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md)'s light integrator adds.
+- Every light is reached by next-event estimation or by a BSDF sample landing on an emitter. Nothing traces from a light, which [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md)'s light integrator adds.
 - Emitters are unpolarized and carry RGB.
 
 ## Design

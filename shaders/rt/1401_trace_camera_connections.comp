@@ -1,0 +1,61 @@
+#version 460
+
+// 14 TRACE CAMERA CONNECTIONS (docs/plans/completed/pbrt-bidirectional-path-tracing.md). Drains the shadow queue kernels
+// 11 and 12 filled with connections to the camera's lens: for each, whether anything is in the way (the selected
+// traversal's occluded(), as kernel 08 asks it), and if nothing is, its contribution splatted at the film point it
+// carries in its ShadowRay's radianceSlot and mediumAndGroup words (crt_splat.glsl). A contribution that is not finite
+// is dropped and counted, as kernel 09 drops a sample. Built once per traversal.
+
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_atomic_float : require
+#include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
+#include "include/crt_trace.glsl"
+#include "include/crt_splat.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+shared uint s_nodesVisited;
+shared uint s_primitivesTested;
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+
+	if (gl_LocalInvocationID.x == 0u) {
+		s_nodesVisited = 0u;
+		s_primitivesTested = 0u;
+	}
+	memoryBarrierShared();
+	barrier();
+
+	g_nodesVisited = 0u;
+	g_primitivesTested = 0u;
+	if (index < headers[CRT_QUEUE_SHADOW].rayCount) {
+		const uint entry = queues[queueSlot(CRT_QUEUE_SHADOW, index)];
+		const ShadowRay ray = shadowRays[entry];
+		if (!occluded(ray.origin, ray.direction, traceTMin(), ray.tMax)) {
+			const vec2 film = vec2(uintBitsToFloat(ray.radianceSlot), uintBitsToFloat(ray.mediumAndGroup));
+#ifndef CRT_SPECTRAL
+			const vec3 rgb = ray.contribution;
+#else
+			spectralBegin(ray.lambdaU);
+			const vec3 rgb = spectrumToFilm(ray.contribution);
+#endif
+			if (all(equal(rgb, rgb)) && all(lessThan(abs(rgb), vec3(CRT_INFINITY)))) {
+				splatAdd(film, rgb);
+			} else {
+				atomicAdd(traversalStats[CRT_STAT_DROPPED_SAMPLES], 1u);
+			}
+		}
+		atomicAdd(s_nodesVisited, g_nodesVisited);
+		atomicAdd(s_primitivesTested, g_primitivesTested);
+	}
+	memoryBarrierShared();
+	barrier();
+
+	if (gl_LocalInvocationID.x == 0u) {
+		atomicAdd(traversalStats[2u * CRT_MAX_DEPTH + 2u * pc.bounce], s_nodesVisited);
+		atomicAdd(traversalStats[2u * CRT_MAX_DEPTH + 2u * pc.bounce + 1u], s_primitivesTested);
+	}
+}

@@ -129,6 +129,9 @@ struct ImportedSettings {
 	RenderSettings render;
 	// kernel 01's variant id ("halton", "zsobol", ...), empty to keep the scene's
 	std::string sampler;
+	// the integrator's key (src/rt_kernels.h IntegratorInfo::key): "path", or "light" and "bdpt" for pbrt's "lightpath" and
+	// "bdpt"
+	std::string integrator { "path" };
 	// pbrt's "ambientocclusion" integrator, which is the ambient occlusion debug view at this distance
 	std::optional<float> ambientOcclusionDistance;
 	// pbrt's imaging ratio, shutter x ISO / 100, which pbrt multiplies into every pixel of the image it writes and

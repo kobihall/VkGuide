@@ -96,9 +96,9 @@ struct IntegratorInfo {
 
 | Integrator | Plan | Runs from the path tracer | Runs from another integrator | Stages of its own |
 |---|---|---|---|---|
-| `light` | [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md) | 01, 02, 09 | | 11 emit light rays, 12 connect to the camera, 13 scatter light paths, 14 trace camera connections |
-| `lvc` | [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md) | 00, 01, 02, 08, 09 | `light`'s 11 to 14 | 15 handle emitters, 16 scatter and connect |
-| `bdpt` | [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md) | 00, 01, 02, 09 | `light`'s 11 | 17 store vertices and scatter, 18 connect subpaths |
+| `light` | [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md) | 01, 02, 09 | | 11 emit light rays, 12 connect to the camera, 13 scatter light paths, 14 trace camera connections |
+| `lvc` | [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md) | 00, 01, 02, 08, 09 | `light`'s 11 to 14 | 15 handle emitters, 16 scatter and connect |
+| `bdpt` | [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md) | 00, 01, 02, 09 | `light`'s 11 | 17 store vertices and scatter, 18 connect subpaths |
 | `sppm` | [pbrt-photon-mapping.md](../pbrt-photon-mapping.md) | 00 to 04, 08 | `light`'s 11 and 13 | 19 store visible points, 20 deposit photons, 21 update photon statistics |
 | `pssmlt` | [pbrt-metropolis-light-transport.md](../pbrt-metropolis-light-transport.md) | 00, 02 to 08 | | 22 mutate chain samples, 23 accept and splat |
 | `mmlt` | [pbrt-metropolis-light-transport.md](../pbrt-metropolis-light-transport.md) | | `bdpt`'s stages | 22, 23 |
@@ -152,7 +152,7 @@ Stages stay in `shaders/rt/`, because every integrator shares them. A schedule's
 3. The split into `GpuRenderer`, `WavefrontPool` and `PathSchedule`, with the resource table and the pipeline cache.
 4. The panels.
 
-Steps 1 to 3 change no image. The first new integrator arrives with [pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md).
+Steps 1 to 3 change no image. The first new integrator arrives with [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md).
 
 ## Verification
 

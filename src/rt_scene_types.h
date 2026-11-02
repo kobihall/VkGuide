@@ -27,6 +27,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <aov.h>
+#include <camera_model.h>
 #include <film.h>
 #include <rt_material.h>
 #include <sampler.h>
@@ -170,10 +171,26 @@ struct SceneCamera {
 	std::string name;
 	glm::vec3 position { 0.f, 0.f, 5.f };
 	glm::quat orientation { 1.f, 0.f, 0.f, 0.f };
+	// how it projects (src/camera_model.h, docs/plans/completed/pbrt-cameras.md); CAMERA_TRAITS says which of the fields
+	// below a kind uses
+	CameraKind kind { CameraKind::Perspective };
 	float vfovDegrees { 70.f };
+	// orthographic: the height of the view volume
+	float orthoHeight { 2.f };
+	SphericalMapping mapping { SphericalMapping::Equirectangular };
 	// the thin lens: a zero aperture is a pinhole; focusDistance is where the image plane sits
 	float aperture { 0.f };
 	float focusDistance { 6.f };
+	ApertureShape apertureShape { ApertureShape::Circle };
+	uint32_t apertureBlades { 6 };
+	float apertureRotationDegrees { 0.f };
+	// ApertureShape::Image: the image, absolute; its luminance is the aperture's transmission
+	std::string apertureImage;
+	// a new camera's lens mapping; a scene file before version 26 names none, and reads as LensMapping::Polar
+	LensMapping lensMapping { LensMapping::Concentric };
+	// the plane of focus tilted about camera x and y, in degrees, and the film shifted, in image heights (RTCameraSnapshot)
+	glm::vec2 tiltDegrees { 0.f };
+	glm::vec2 shift { 0.f };
 	// display only: TonemapPass's scale for renders from this camera. Scales the picture, not
 	// the light (that is the scene's environmentIntensity)
 	float exposure { 1.f };
@@ -525,31 +542,29 @@ struct SceneMeshObject {
 
 //---------------------------------------------------------------- camera snapshot
 
-// What the path tracer's ray generation needs of a camera, by value: the look-from / look-at /
-// up form the ported RTIOW camera is built from, plus the lens. Everything about the camera
-// that affects the rays and nothing that does not (exposure is applied at display time), so
-// comparing two of these says whether a render has to start over
-struct RTCameraSnapshot {
-	glm::vec3 lookFrom { 0.f, 0.f, 0.f };
-	glm::vec3 lookAt { 0.f, 0.f, -1.f };
-	glm::vec3 vUp { 0.f, 1.f, 0.f };
-	float vfovDegrees { 70.f };
-	float aperture { 0.f };
-	float focusDistance { 1.f };
-
-	bool operator==(const RTCameraSnapshot&) const = default;
-};
-
+// What the path tracer's ray generation needs of a camera, by value (src/camera_model.h RTCameraSnapshot): everything
+// about the camera that affects the rays and nothing that does not (exposure is applied at display time), so comparing
+// two of these says whether a render has to start over
 inline RTCameraSnapshot cameraSnapshot(const SceneCamera& camera)
 {
 	RTCameraSnapshot snapshot;
 	snapshot.lookFrom = camera.position;
 	snapshot.lookAt = camera.position + camera.forward();
 	snapshot.vUp = camera.up();
+	snapshot.kind = camera.kind;
 	snapshot.vfovDegrees = camera.vfovDegrees;
+	snapshot.orthoHeight = glm::max(camera.orthoHeight, 1e-4f);
+	snapshot.mapping = camera.mapping;
 	//a zero focus distance would collapse the whole image plane onto one point
 	snapshot.aperture = glm::max(camera.aperture, 0.f);
 	snapshot.focusDistance = glm::max(camera.focusDistance, 0.01f);
+	snapshot.apertureShape = camera.apertureShape;
+	snapshot.apertureBlades = camera.apertureBlades;
+	snapshot.apertureRotationDegrees = camera.apertureRotationDegrees;
+	snapshot.apertureImage = camera.apertureShape == ApertureShape::Image ? camera.apertureImage : std::string {};
+	snapshot.lensMapping = camera.lensMapping;
+	snapshot.tiltDegrees = camera.tiltDegrees;
+	snapshot.shift = camera.shift;
 	return snapshot;
 }
 
@@ -602,6 +617,24 @@ struct OpticsSettings {
 	bool exactCoatings { false };
 	bool operator==(const OpticsSettings&) const = default;
 };
+
+// THE BIDIRECTIONAL INTEGRATORS' settings (docs/plans/completed/pbrt-bidirectional-path-tracing.md)
+struct BidirectionalSettings {
+	// lvc: the cache vertices each camera vertex connects to
+	int connections { 1 };
+	// lvc: the light vertex cache's memory in MB, which sizes the frame's light paths
+	int cacheBudgetMB { 256 };
+	// bdpt: each strategy's contribution in an image of its own (pbrt's visualizestrategies), weighed by its MIS weight
+	// (pbrt's visualizeweights) or not
+	bool visualizeStrategies { false };
+	bool visualizeWeights { true };
+	bool operator==(const BidirectionalSettings&) const = default;
+};
+
+inline constexpr int MIN_CACHE_CONNECTIONS = 1;
+inline constexpr int MAX_CACHE_CONNECTIONS = 4;
+inline constexpr int MIN_CACHE_BUDGET_MB = 16;
+inline constexpr int MAX_CACHE_BUDGET_MB = 2048;
 
 // How a render is made. Owned by RaytraceRenderer and saved with the scene. The camera's own
 // settings (lens, exposure) live on the SceneCamera, and which camera renders is the
@@ -683,6 +716,8 @@ struct RenderSettings {
 	// OPTICS (docs/plans/completed/physoptics-optical-materials.md): the surrounding medium and exact coatings. Changes nothing in a
 	// scene without optical bodies
 	OpticsSettings optics;
+	// LIGHT TRACING AND BIDIRECTIONAL PATH TRACING: the cache's connections and budget, and the strategy images
+	BidirectionalSettings bidirectional;
 	// TEXTURES (docs/plans/completed/pbrt-textures.md). Where an imported model's own textures are read from: the texture library,
 	// each at its own size with mips (new scenes), or the legacy 512 x 512 array, which reproduces renders from before
 	// the library bit for bit (a file that names no storage). Everything else textured always reads the library

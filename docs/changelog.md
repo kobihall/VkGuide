@@ -1,5 +1,52 @@
 # Changelog
 
+## 2026-11-01
+
+### New
+
+- A camera's **projection** is **Perspective**, **Orthographic** or **Spherical** (`docs/plans/completed/pbrt-cameras.md`). An orthographic camera sends parallel rays from a film as tall as its **view height**. A spherical camera sees every direction from its position, laid out as **Equirectangular**, the environment map's own layout, so a render loads back as the map, or as pbrt's **Equal-area** square.
+- A lens's **aperture shape** is a **Circle**, a **Polygon** of 3 to 16 **blades** turned by a **rotation**, or an **Image** whose luminance is the aperture's transmission. Out-of-focus highlights take the shape. The shape never changes the image's brightness.
+- **tilt** turns the plane of focus about the camera's x and y axes, up to 80 degrees, pivoting at the focus distance, so a ground plane can be sharp from near to far. **shift** slides the film across its plane, in image heights.
+- **Focus on...** in a camera's panel waits for a click in the **Viewport**, and moves the plane of focus to the surface under the cursor, then shows it for a moment. Escape cancels.
+- The **Viewport** outlines an orthographic camera as a box as large as its view volume and a spherical camera as three rings, and a perspective camera's frame follows its shift.
+- `bin/camera_test` checks the cameras on the CPU, and **Windows** → **GPU self-tests** → **Camera parity** checks `crt_camera.glsl` against it.
+- `tools/verify/camera_scenes.py` writes seven verification scenes to `assets/scenes/` (`cam_*.gltf`) and `assets/textures/aperture_star.png`. `tools/verify/camera_check.py` checks them, and `run_all.py` runs it.
+- `tools/verify/pbrt_camera_scenes.py` writes pbrt-v4 scenes of an orthographic, a spherical, a shifted and a thin-lens camera to `assets/models/pbrt_cameras/`. `pbrt_compare.py` matches pbrt on each to within the noise.
+- The **Integrator** combo has three bidirectional integrators (`docs/plans/completed/pbrt-bidirectional-path-tracing.md`). **Light tracing** traces paths from the lights only and connects each surface they reach to the camera, as pbrt-v4's `lightpath` does. **Bidirectional (light vertex cache)** stores the frame's light paths' vertices and connects every camera path vertex to some of them. **Bidirectional (pbrt 3)** is pbrt 3's BDPT, which joins each pixel sample's camera and light subpaths in every way and weighs each by its MIS weight.
+- A light path's connection to the camera lands anywhere on the film, as a splat spread over the pixel filter.
+- The bidirectional integrators connect only to a perspective camera without a tilt, as pbrt's do. The **Integrator** combo greys them for any other render camera, and a render with one is refused with the reason.
+- Render Settings has a **Bidirectional** section: **Connections** and **Light vertex cache** for the light vertex cache, and **Vertex memory** and **Visualize strategies** for pbrt 3's BDPT. **Visualize strategies** keeps each strategy in an image of its own, weighted by its MIS weight or not (**Weighted**), which an EXR export writes as `bdpt_dDD_sSS_tTT`, pbrt's names.
+- pbrt 3's BDPT renders the image in tiles that fit **Vertex memory**, so a frame can cover part of the image. A sweep of the tiles is one sample per pixel, and the progress bar moves once a sweep.
+- `tools/verify/bidirectional_scenes.py` writes four verification scenes to `assets/scenes/` (`bd_*.gltf`). `tools/verify/bidirectional_check.py` checks the bidirectional integrators against the path tracer on them, and `run_all.py` runs it and compares pbrt 3's BDPT with pbrt's own. `pbrt_compare.py --cornell` takes `--integrator`, `--max-depth` and `--visualize-strategies`.
+
+### Changed
+
+- A new camera samples its lens with pbrt's concentric mapping, which keeps a stratified sampler's strata on the lens. A camera in a scene file from before has the old polar mapping, and renders as it did. **concentric lens mapping** in the camera panel switches it: the converged image is the same, the noise differs.
+- Scene files are payload version 27: a camera saves its kind, view height, spherical mapping, lens mapping, aperture shape, blades, rotation and image, tilt and shift, and the render settings save the bidirectional integrators' settings when they differ from the defaults.
+- pbrt scenes with the `lightpath` and `bdpt` integrators render with light tracing and pbrt 3's BDPT, which used to be the path tracer. `visualizestrategies` and `visualizeweights` turn on **Visualize strategies**.
+- A bidirectional integrator renders with the **Compensated mean** film when **Running mean** is chosen, since its splats join the film in a resolve the running mean does not have, and without light groups or spectral images. Light tracing keeps only the sample count of the auxiliary outputs, since its paths never start at the camera.
+- Under the bidirectional integrators the **MIS weights** debug view is black: it shows the path tracer's two strategies, which they do not have.
+- pbrt scenes import their `orthographic` and `spherical` cameras, and a `screenwindow` becomes the camera's shift and field of view. A pbrt orthographic camera with a lens is reported: pbrt starts its lens rays on a disk at the camera's origin, where this renderer centers the lens on each film point's ray. pbrt's equirectangular layout runs the other way round from the environment map's, which a spherical camera keeps, and is reported too.
+- An EXR export's `NDCFromWorld` follows the camera's shift and an orthographic camera's view volume. A spherical camera writes none.
+- Kernel 00's variants are named **Box pixels** and **Filtered pixels**, since the camera is no longer always a thin lens.
+
+### Fixed
+
+- Fixed the auxiliary outputs' view images being cleared without transfer usage, which the validation layers reported when light tracing or pbrt 3's BDPT started a render with outputs on.
+
+### Internal
+
+- `src/camera_model.h` (static library `rt_camera`) is the C++ mirror of `shaders/rt/include/crt_camera.glsl`, and holds `RTCameraSnapshot`, `CAMERA_TRAITS` and `CameraFrame`. Kernel 00's body moved from `crt_camera.glsl` to `crt_camera_rays.glsl`. The warps lights and cameras share moved from `crt_light.glsl` to `crt_warp.glsl`, and `equirectDirectionOf()` to `shaders/equirect.glsl`, which has an include guard.
+- `CrtParams` is 320 bytes, with the camera's fields after `pixelSpread`; `packCameraParams()` writes them.
+- Specialization constant 7, `CRT_CAMERA_MODEL`, is on for a camera beyond Ray Tracing in One Weekend's, in the kernels that set `KernelVariant::readsCamera`. Off, kernel 00 is the code it was, which keeps lens renders bit-identical under Metal's fast math.
+- Binding 65, `ImageDistributions`, holds piecewise-constant 2D tables over images (`packPiecewiseConstant2D()`, `crt_image_table.glsl`), the aperture image's for now.
+- `RaytraceSceneAccel::sceneInstances` keeps the instances the TLAS was built over, for CPU queries such as the focus pick. `VulkanEngine::syncLightImages()` is `syncSceneImages()`.
+- Stages 11 to 18 are the bidirectional integrators', in `shaders/rt/11VV` to `18VV`, with the schedules `LightSchedule`, `LvcSchedule` and `BdptSchedule`. Bindings 42 `SplatAccumulation`, 52 `LightVertexCache` and 53 `BdptVertices` are new, and binding 65 holds the projection and goniometric lights' image tables after the aperture's.
+- Specialization constants 10 `CRT_SPLATS`, 11 `CRT_LIGHT_VERTEX_CACHE` and 12 `CRT_BDPT` are new. `CrtParams` is 352 bytes, with the bidirectional fields after the camera's.
+- Importance transport comes from `crt_transport.glsl`, through macros the path tracer's kernels never define, so they compile and render as before. `spawnShadowRay()`, `aovCapture()` and the emitter functions of kernel 04 moved unchanged into `crt_spawn.glsl`, `crt_surface_views.glsl` and `crt_emitter.glsl`.
+- Light paths draw sample dimensions from 198 on (`CrtParams::sampleDimensionBase`), and the Halton tables hold 400 primes. The first 200 are unchanged.
+- `IntegratorSchedule::samplesPerFrame()` may report 0 for a frame that adds no complete sample.
+
 ## 2026-10-31
 
 ### New

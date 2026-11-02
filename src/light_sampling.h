@@ -55,6 +55,11 @@ struct LightSample {
 	float pdf { 0.f };
 };
 
+// THE SAMPLE WARPS the cameras share (shaders/rt/include/crt_warp.glsl): pbrt-v4's SampleUniformTriangle(), the barycentrics
+// of a point uniform over a triangle, and SampleUniformDiskConcentric(), Shirley and Chiu's square-to-disk map
+glm::vec3 sampleUniformTriangle(const glm::vec2& u);
+glm::vec2 sampleUniformDiskConcentric(const glm::vec2& u);
+
 // pbrt's AngleBetween(): the angle between two unit vectors, accurate near 0 and near pi
 float lightAngleBetween(const glm::vec3& a, const glm::vec3& b);
 // pbrt's DifferenceOfProducts() / SumOfProducts(): a * b -+ c * d with the rounding error of the
@@ -161,6 +166,60 @@ float lightImageSolidAngle(bool projection, float fovDegrees, uint32_t width, ui
 // glTF's recommended window on the inverse-square law when a light has a range; 1 for range 0
 float rangeWindow(float distance, float range);
 
+//---------------------------------------------------------------- emitted rays
+
+// One ray leaving a light, which light paths start with (PBR 3ed 16.1.2; pbrt-v4's SampleLe() and PDF_Le()): its
+// origin, an area light's surface normal there (zero for every other light), its unit direction, and the density of
+// each: per unit of area (1 for a light at a point) and per unit of solid angle (1 for a directional light). Mirrored
+// line for line by crt_light.glsl's sampleLe() and pdfLe(), which add the radiance, the textures and the spectra
+struct LightLeSample {
+	glm::vec3 origin { 0.f };
+	glm::vec3 normal { 0.f };
+	glm::vec3 direction { 0.f, 0.f, 1.f };
+	float pdfPos { 0.f };
+	float pdfDir { 0.f };
+	// a triangle light's point, for its texture
+	glm::vec3 barycentrics { 0.f };
+};
+
+// the sides an area light emits from: both, or only the one its normal faces, or only the other (a record flagged
+// reversed, src/rt_lights.cpp)
+enum class EmitSides : uint32_t {
+	Both,
+	Front,
+	Back
+};
+
+// a direction about +z with density cos(theta) / pi, through the concentric disk (pbrt-v4's SampleCosineHemisphere())
+glm::vec3 sampleCosineHemisphere(const glm::vec2& u);
+// a direction uniform on the sphere (pbrt-v4's SampleUniformSphere()), density 1 / (4 pi)
+glm::vec3 sampleUniformSphere(const glm::vec2& u);
+// a direction uniform in the cone of half-angle acos(cosMax) about +z (pbrt-v4's SampleUniformCone())
+glm::vec3 sampleUniformCone(const glm::vec2& u, float cosMax);
+
+// an area light's emitting surface's area
+float areaLightArea(const AreaLightGeometry& light);
+// a point uniform by area and its normal, then a direction cosine-weighted about the side it leaves from. Two-sided, the
+// side is picked with probability 1/2 and uDir.x stretched back over [0, 1)
+bool sampleAreaLe(const AreaLightGeometry& light, EmitSides sides, const glm::vec2& uPos, const glm::vec2& uDir, LightLeSample& out);
+// the densities sampleAreaLe() gives the ray leaving a point of normal `normal` along the unit `direction`
+void areaPdfLe(const AreaLightGeometry& light, EmitSides sides, const glm::vec3& normal, const glm::vec3& direction, float& pdfPos, float& pdfDir);
+// a point light's: from its position, every direction alike
+bool samplePointLe(const glm::vec3& position, const glm::vec2& uDir, LightLeSample& out);
+// a spot light's: uniform in its outer cone about `axis`, the direction it shines
+bool sampleSpotLe(const glm::vec3& position, const glm::vec3& axis, float cosOuter, const glm::vec2& uDir, LightLeSample& out);
+float spotPdfDir(const glm::vec3& axis, float cosOuter, const glm::vec3& direction);
+// a light at infinity, from the unit direction `towardLight`: an origin uniform on the disk of the scene's bounding
+// sphere (center, radius) square to it, behind the scene, pbrt-v4's DistantLight::SampleLe()
+glm::vec3 infiniteLightOrigin(const glm::vec4& sceneSphere, const glm::vec3& towardLight, const glm::vec2& uPos);
+float infiniteLightPdfPos(const glm::vec4& sceneSphere);
+struct PiecewiseConstant2D;
+// What a projection or goniometric light's emitted directions are drawn by: its image of `width` x `height` linear
+// values, row 0 its top, weighed by the solid angle each texel covers per unit of the image's area. A projection's
+// texels subtend cos^3 of their angle off the axis on its image plane at unit distance, half `extents` across; a
+// goniometric light's equal-area image covers 4 pi / texels with each
+PiecewiseConstant2D buildLightImageDistribution(bool projection, const glm::vec2& extents, uint32_t width, uint32_t height, const float* values);
+
 //---------------------------------------------------------------- alias table
 
 // Vose's alias method as pbrt-v4's AliasTable builds it: bin i is kept with probability q and
@@ -197,6 +256,10 @@ PiecewiseConstant2D buildPiecewiseConstant2D(std::span<const float> values, uint
 // a point of the unit square with density `pdf` (0 for a table that is all zero)
 glm::vec2 samplePiecewiseConstant2D(const PiecewiseConstant2D& table, const glm::vec2& u, float& pdf);
 float piecewiseConstant2DPdf(const PiecewiseConstant2D& table, const glm::vec2& uv);
+// THE GPU'S COPY in binding 65, ImageDistributions (shaders/rt/include/crt_image_table.glsl), appended to `out`: four
+// words (the width and the height as uint bits, the integral, 0), then the marginal cdf (height + 1 values), the row cdfs
+// (height x (width + 1)) and the function (height x width). Returns where it starts, in floats
+uint32_t packPiecewiseConstant2D(const PiecewiseConstant2D& table, std::vector<float>& out);
 
 // the tracer's equirectangular mapping (shaders/equirect.glsl): u turns right from -z towards +x,
 // v runs from +y at the top to -y at the bottom

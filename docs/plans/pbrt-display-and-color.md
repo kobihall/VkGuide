@@ -31,7 +31,7 @@ The photographic modes apply to radiance × 683, undoing the import's division b
 | pbrt sensor | `shutter × ISO / 100` | pbrt-v4's imaging ratio (`film.cpp`, PBR 4ed §5.4.2), which ignores the f-number; for matching pbrt renders ([pbrt-scene-import.md](completed/pbrt-scene-import.md)) |
 | Camera | `1 / (1.2 × 2^EV100)`, `EV100 = log2(N² / t × 100 / ISO)` | the saturation-based sensitivity of ISO 12232 as Lagarde and de Rousiers 2014 use it: f-number, shutter and ISO behave as on a camera |
 
-The thin lens's aperture radius, which sets depth of field, stays independent of the f-number in the **Camera** mode, as on a real camera whose focal length is not modeled. The realistic camera computes its aperture's effect on irradiance physically ([pbrt-cameras.md](pbrt-cameras.md)), so with it only the shutter and ISO terms apply.
+The thin lens's aperture radius, which sets depth of field, stays independent of the f-number in the **Camera** mode, as on a real camera whose focal length is not modeled. The realistic camera computes its aperture's effect on irradiance physically ([pbrt-cameras.md](completed/pbrt-cameras.md)), so with it only the shutter and ISO terms apply.
 
 ### White balance
 

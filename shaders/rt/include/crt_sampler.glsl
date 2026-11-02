@@ -637,8 +637,12 @@ vec2 pixel2D(SampleState s)
 void fillCameraRecord(uint pathIndex, uint pixel, uint x, uint y, uint sampleIndex)
 {
 	// the camera ray's seed, kernel 00's own (the record flag mixes a salt in after, so that the
-	// stream the rest of the path spills into is not these numbers again)
+	// stream the rest of the path spills into is not these numbers again). A light path's emission mixes its
+	// dimension base in, so its numbers are not the camera path's
 	uint rng = pcgHash(pixel ^ pcgHash(sampleIndex ^ pcgHash(pc.seed)));
+	if (pc.sampleDimensionBase != 0u) {
+		rng = pcgHash(rng ^ pc.sampleDimensionBase);
+	}
 	float values[6];
 	for (uint i = 0u; i < 6u; i++) {
 		values[i] = samplerPcgFloat(rng);
@@ -670,10 +674,13 @@ void fillBounceRecord(uint pathIndex, uint pixel, uint x, uint y, uint sampleInd
 void fillCameraRecord(uint pathIndex, uint pixel, uint x, uint y, uint sampleIndex)
 {
 	SampleState s = startSample(x, y, sampleIndex);
-	const vec2 offset = pixel2D(s);
-	const vec2 lens = get2D(s, 2u);
-	const float time = get1D(s, 4u);
-	const float wavelength = get1D(s, 5u);
+	// a light path's emission takes the camera's six dimensions after the camera path's (src/sampler.h
+	// SAMPLE_LIGHT_PATH_BASE); only a camera's pixel is stratified as the pixel's own
+	const uint dimensionBase = pc.sampleDimensionBase;
+	const vec2 offset = dimensionBase == 0u ? pixel2D(s) : get2D(s, dimensionBase);
+	const vec2 lens = get2D(s, dimensionBase + 2u);
+	const float time = get1D(s, dimensionBase + 4u);
+	const float wavelength = get1D(s, dimensionBase + 5u);
 	raySamples[pathIndex].direct = vec4(offset, lens);
 	raySamples[pathIndex].indirect = vec4(time, wavelength, 0.0, 0.0);
 	raySamples[pathIndex].medium = vec4(0.0);
@@ -682,7 +689,7 @@ void fillCameraRecord(uint pathIndex, uint pixel, uint x, uint y, uint sampleInd
 void fillBounceRecord(uint pathIndex, uint pixel, uint x, uint y, uint sampleIndex, uint bounce)
 {
 	SampleState s = startSample(x, y, sampleIndex);
-	const uint base = 6u + 12u * bounce;
+	const uint base = pc.sampleDimensionBase + 6u + 12u * bounce;
 	const float lightChoice = get1D(s, base);
 	const vec2 lightPoint = get2D(s, base + 1u);
 	const float lobe = get1D(s, base + 4u);

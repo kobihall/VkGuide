@@ -797,9 +797,9 @@ void VulkanEngine::run()
 
 		m_displayRegistry.beginFrame(m_frameNumber);
 
-		//the texture library loads what was added since the last frame (a model, a user texture, a light's image),
-		//before the tracer packs the scene that names it
-		syncLightImages();
+		//the texture library loads what was added since the last frame (a model, a user texture, a light's image, a
+		//camera's aperture), before the tracer packs the scene that names it
+		syncSceneImages();
 		m_textureLibrary.update(this, (uint32_t)std::clamp(m_raytracer.settings().maxTextureSize, 16, 16384));
 
 		//before the imgui content below, so a raytrace that finished since the last frame has
@@ -970,7 +970,9 @@ void VulkanEngine::drawViewportWindow()
 		view.drawList->AddRect(lo, hi, IM_COL32(255, 220, 80, 255), 0.f, 0, 1.5f);
 	}
 
+	updateFocusPick(view);
 	drawCameraOverlays(view);
+	drawFocusPlane(view);
 	drawLightOverlays(view);
 	forEachEnabledCapability(m_capabilities, [&](const CapabilityInfo& capability) {
 		if (capability.viewportOverlays != nullptr) {
@@ -1333,7 +1335,8 @@ void VulkanEngine::updateViewportCamera()
 
 	ViewportFrameInput input;
 	input.dt = dt;
-	input.hovered = m_viewportHovered;
+	//a focus pick's click is the pick's, not the navigation's
+	input.hovered = m_viewportHovered && m_focusPickCameraId == 0;
 	if (m_viewportNav.drag() == ViewportDrag::Look) {
 		auto held = [this](int key) { return glfwGetKey(m_window, key) == GLFW_PRESS ? 1.f : 0.f; };
 		input.move = glm::vec3(held(GLFW_KEY_D) - held(GLFW_KEY_A), held(GLFW_KEY_E) - held(GLFW_KEY_Q), held(GLFW_KEY_W) - held(GLFW_KEY_S));
@@ -1363,6 +1366,84 @@ void VulkanEngine::updateViewportCamera()
 	m_raytraceScene.setCameraPose(m_firstPersonCameraId, view.position, glm::normalize(glm::quat_cast(glm::mat3(view.getRotationMatrix()))));
 }
 
+void VulkanEngine::beginFocusPick(uint64_t cameraId)
+{
+	m_focusPickCameraId = m_focusPickCameraId == cameraId ? 0 : cameraId;
+}
+
+void VulkanEngine::updateFocusPick(const ViewportView& view)
+{
+	if (m_focusPickCameraId == 0) {
+		return;
+	}
+	SceneCamera* camera = m_raytraceScene.findCamera(m_focusPickCameraId);
+	if (camera == nullptr || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+		m_focusPickCameraId = 0;
+		return;
+	}
+	if (!m_viewportHovered) {
+		return;
+	}
+	ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+	ImGui::SetTooltip("Click the surface to focus %s on (Esc cancels)", camera->name.c_str());
+	if (!ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+		return;
+	}
+	m_focusPickCameraId = 0;
+	//the ray under the cursor, from the viewport's own camera: the near and far points of its pixel, unprojected
+	const ImVec2 mouse = ImGui::GetMousePos();
+	const glm::vec2 ndc((mouse.x - view.pos.x) / view.size.x * 2.f - 1.f, 1.f - (mouse.y - view.pos.y) / view.size.y * 2.f);
+	const glm::mat4 inverse = glm::inverse(view.viewProj);
+	const glm::vec4 nearPoint = inverse * glm::vec4(ndc, -1.f, 1.f);
+	const glm::vec4 farPoint = inverse * glm::vec4(ndc, 1.f, 1.f);
+	const glm::vec3 origin = glm::vec3(nearPoint) / nearPoint.w;
+	const glm::vec3 direction = glm::normalize(glm::vec3(farPoint) / farPoint.w - origin);
+	const std::optional<float> distance = m_raytracer.pickDistance(this, m_raytraceScene, origin, direction);
+	if (!distance.has_value()) {
+		fmt::println("Focus on: the click found no surface");
+		return;
+	}
+	//the plane of focus pivots about the point on the axis at the focus distance: the distance that puts the point on it,
+	//which without a tilt is the point's depth along the axis
+	const glm::vec3 point = origin + *distance * direction;
+	const CameraFrame frame = buildCameraFrame(cameraSnapshot(*camera), 1, 1);
+	const glm::vec3 normal = (frame.flags & CAMERA_FLAG_TILTED) != 0u ? glm::vec3(frame.focusPlane) : frame.backward;
+	const float along = glm::dot(normal, point - camera->position) / glm::dot(normal, -frame.backward);
+	if (!(along > 0.f)) {
+		fmt::println("Focus on: the surface is behind the camera's plane of focus");
+		return;
+	}
+	m_raytraceScene.setCameraFocusDistance(camera->id, std::max(along, 0.01f));
+	m_focusFlashCameraId = camera->id;
+	m_focusFlashUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+}
+
+void VulkanEngine::drawFocusPlane(const ViewportView& view)
+{
+	if (m_focusFlashCameraId == 0 || std::chrono::steady_clock::now() > m_focusFlashUntil) {
+		m_focusFlashCameraId = 0;
+		return;
+	}
+	const SceneCamera* camera = m_raytraceScene.findCamera(m_focusFlashCameraId);
+	if (camera == nullptr || !cameraTraits(camera->kind).lens) {
+		return;
+	}
+	//the film's frame on the plane of focus, tilted as the render tilts it: the corners of the untilted frame, carried
+	//along their chief rays onto the tilted plane
+	const CameraFrame frame = buildCameraFrame(cameraSnapshot(*camera), (uint32_t)std::max(m_raytracer.settings().width, 1), (uint32_t)std::max(m_raytracer.settings().height, 1));
+	ImVec2 corners[4];
+	const glm::vec2 film[4] = { { 0.f, 0.f }, { 1.f, 0.f }, { 1.f, 1.f }, { 0.f, 1.f } };
+	for (int i = 0; i < 4; i++) {
+		//a ray reaches its point of focus at t = 1 from wherever on the lens it leaves
+		const CameraRay ray = generateCameraRay(frame, film[i], glm::vec2(0.5f), nullptr);
+		if (!view.project(ray.origin + ray.direction, corners[i])) {
+			return;
+		}
+	}
+	view.drawList->AddQuadFilled(corners[0], corners[1], corners[2], corners[3], IM_COL32(255, 220, 80, 60));
+	view.drawList->AddQuad(corners[0], corners[1], corners[2], corners[3], IM_COL32(255, 220, 80, 200), 1.5f);
+}
+
 void VulkanEngine::drawCameraOverlays(const ViewportView& view)
 {
 	const std::vector<SceneCamera>& cameras = m_raytraceScene.cameras();
@@ -1382,21 +1463,61 @@ void VulkanEngine::drawCameraOverlays(const ViewportView& view)
 		const bool isRenderCamera = camera.id == m_raytracer.renderCameraId();
 		const ImU32 color = isRenderCamera ? IM_COL32(255, 220, 80, 255) : IM_COL32(200, 200, 200, 160);
 
-		//a short pyramid along -z: the apex is the camera, the base a frame at `depth` sized by the fov
 		const float depth = 0.5f;
-		const float halfHeight = depth * glm::tan(glm::radians(camera.vfovDegrees) * 0.5f);
-		const float halfWidth = halfHeight * aspect;
 		const glm::mat4 transform = camera.transform();
-		auto corner = [&](float x, float y) { return glm::vec3(transform * glm::vec4(x, y, -depth, 1.f)); };
-		const glm::vec3 apex = camera.position;
+		auto at = [&](float x, float y, float z) { return glm::vec3(transform * glm::vec4(x, y, z, 1.f)); };
+		if (camera.kind == CameraKind::Spherical) {
+			//it sees every way: three rings about its position, and a tick where its image's center looks
+			const float radius = 0.2f;
+			constexpr int SEGMENTS = 32;
+			for (int ring = 0; ring < 3; ring++) {
+				for (int i = 0; i < SEGMENTS; i++) {
+					const float a0 = 2.f * glm::pi<float>() * (float)i / (float)SEGMENTS;
+					const float a1 = 2.f * glm::pi<float>() * (float)(i + 1) / (float)SEGMENTS;
+					auto point = [&](float a) {
+						const float c = radius * std::cos(a);
+						const float d = radius * std::sin(a);
+						return ring == 0 ? at(c, d, 0.f) : ring == 1 ? at(c, 0.f, d) : at(0.f, c, d);
+					};
+					line(point(a0), point(a1), color);
+				}
+			}
+			line(camera.position, at(0.f, 0.f, -2.f * radius), color);
+			continue;
+		}
+
+		//a short pyramid along -z: the apex is the camera, the base a frame at `depth` sized by the fov, moved by the
+		//shift. An orthographic camera's is a box as large as its view volume
+		const bool orthographic = camera.kind == CameraKind::Orthographic;
+		const float halfHeight = orthographic ? 0.5f * camera.orthoHeight : depth * glm::tan(glm::radians(camera.vfovDegrees) * 0.5f);
+		const float halfWidth = halfHeight * aspect;
+		const glm::vec2 offset = 2.f * halfHeight * camera.shift;
+		auto corner = [&](float x, float y) { return at(x + offset.x, y + offset.y, -depth); };
 		const glm::vec3 c0 = corner(-halfWidth, -halfHeight);
 		const glm::vec3 c1 = corner(halfWidth, -halfHeight);
 		const glm::vec3 c2 = corner(halfWidth, halfHeight);
 		const glm::vec3 c3 = corner(-halfWidth, halfHeight);
-		line(apex, c0, color);
-		line(apex, c1, color);
-		line(apex, c2, color);
-		line(apex, c3, color);
+		if (orthographic) {
+			auto back = [&](float x, float y) { return at(x + offset.x, y + offset.y, 0.f); };
+			const glm::vec3 b0 = back(-halfWidth, -halfHeight);
+			const glm::vec3 b1 = back(halfWidth, -halfHeight);
+			const glm::vec3 b2 = back(halfWidth, halfHeight);
+			const glm::vec3 b3 = back(-halfWidth, halfHeight);
+			line(b0, c0, color);
+			line(b1, c1, color);
+			line(b2, c2, color);
+			line(b3, c3, color);
+			line(b0, b1, color);
+			line(b1, b2, color);
+			line(b2, b3, color);
+			line(b3, b0, color);
+		} else {
+			const glm::vec3 apex = camera.position;
+			line(apex, c0, color);
+			line(apex, c1, color);
+			line(apex, c2, color);
+			line(apex, c3, color);
+		}
 		line(c0, c1, color);
 		line(c1, c2, color);
 		line(c2, c3, color);
@@ -1539,12 +1660,19 @@ void VulkanEngine::rebuildSceneDerivedData()
 	m_sceneRevision++;
 }
 
-void VulkanEngine::syncLightImages()
+void VulkanEngine::syncSceneImages()
 {
 	for (const SceneLight& light : m_raytraceScene.lights()) {
 		if ((light.kind == LightKind::Projection || light.kind == LightKind::Goniometric) && !light.image.empty()) {
 			const LightImageRequest request = lightImageRequest(light.image);
 			m_textureLibrary.add(request.source, request.colorSpace, request.sampling, std::filesystem::path(light.image).filename().string());
+		}
+	}
+	//an aperture image is read as a light's is: its luminance is what the render samples the lens by
+	for (const SceneCamera& camera : m_raytraceScene.cameras()) {
+		if (camera.apertureShape == ApertureShape::Image && !camera.apertureImage.empty()) {
+			const LightImageRequest request = lightImageRequest(camera.apertureImage);
+			m_textureLibrary.add(request.source, request.colorSpace, request.sampling, std::filesystem::path(camera.apertureImage).filename().string());
 		}
 	}
 }
@@ -1756,6 +1884,9 @@ void VulkanEngine::usePbrtSettings(const std::string& modelKey)
 	render.lightGroups = current.lightGroups;
 	m_raytracer.setSettings(render);
 	KernelSelection kernels = m_raytracer.kernels();
+	if (const IntegratorId integrator = findIntegrator(settings.integrator); integrator != IntegratorId::Count) {
+		kernels.integrator = integrator;
+	}
 	if (!settings.sampler.empty()) {
 		const std::span<const KernelVariant> samplers = kernelVariants(KernelSlot::GenerateSamples);
 		for (uint32_t i = 0; i < (uint32_t)samplers.size(); i++) {

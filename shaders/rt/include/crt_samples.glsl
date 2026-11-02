@@ -37,6 +37,15 @@
 
 // Mixed into a path's PCG seed when a record exists, so that the stream consumers spill into is
 // not the one the independent sampler fills the camera's dimensions from
+// A LIGHT PATH'S (docs/plans/completed/pbrt-bidirectional-path-tracing.md): its emission takes the camera pass's fields,
+// written at its own dimensions (src/sampler.h SAMPLE_LIGHT_PATH_BASE): the pixel's two for its point on the light, the
+// lens's two for its direction, time for the light it starts at. At each vertex the light sample's point is the lens
+// point of its connection to the camera
+#define CRT_SAMPLE_EMIT_POSITION 0u
+#define CRT_SAMPLE_EMIT_DIRECTION 2u
+#define CRT_SAMPLE_EMIT_LIGHT 4u
+#define CRT_SAMPLE_CONNECT_LENS 1u
+
 #define CRT_RECORD_STREAM_SALT 0x5bd1e995u
 
 // Whether the sampler writes the record. A specialization constant, set when the pipeline is built:

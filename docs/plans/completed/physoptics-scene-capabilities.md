@@ -81,7 +81,7 @@ Registration is by name: the Scene panel asks the registry for the folders, add 
 
 **Edit** → **Scene capabilities...** lists every capability with a checkbox and its description.
 
-- Turning one on adds its UI at once and shows a note above the Scene panel: "Optical bench recommends:" and the list of settings it would change, with **Apply** and **Dismiss**. **Optical bench** recommends the light integrator ([pbrt-bidirectional-path-tracing.md](../pbrt-bidirectional-path-tracing.md)) when the scene has lasers, a fixed seed for comparisons, the breadboard at the default size, and showing millimeters. Nothing changes until **Apply**, and the note never returns for that scene.
+- Turning one on adds its UI at once and shows a note above the Scene panel: "Optical bench recommends:" and the list of settings it would change, with **Apply** and **Dismiss**. **Optical bench** recommends the light integrator ([pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md)) when the scene has lasers, a fixed seed for comparisons, the breadboard at the default size, and showing millimeters. Nothing changes until **Apply**, and the note never returns for that scene.
 - Turning one off is refused while its dependent objects exist. The dialog lists them (by name and kind) with **Delete them and turn off** and **Cancel**.
 - An action that needs a capability turns it on, with the same note: **Import prescription...** is under the Optics menu, but opening a scene, pasting an optic, or a script adding a laser to a scene without the capability enables it rather than failing.
 

@@ -10,3 +10,5 @@ imgui.ini
 compile.sh
 run.sh
 /assets/spectra/uplift_*.bin
+# written by tools/verify/camera_check.py, the environment map cam_mirror_env.gltf reads
+/assets/scenes/cam_room_equirect.exr

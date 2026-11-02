@@ -544,6 +544,8 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 				image.sampler = entry->sampler;
 				//the frustum follows the stored image's shape, which the luminance copy shares
 				image.aspect = (float)entry->size.x / (float)std::max(entry->size.y, 1u);
+				image.luminance = entry->luminance.data();
+				image.luminanceSize = entry->luminanceSize;
 				accel->textured = true;
 			}
 		}
@@ -771,6 +773,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		}
 	}
 	accel->tlas = buildTlas(blasPointers, instances);
+	accel->sceneInstances = instances;
 
 	//the GPU's instance records: the unbounded shapes, which every ray tests directly, then the TLAS
 	//slot order, so a TLAS leaf names its instance by slot + unboundedCount
@@ -829,6 +832,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	const bool hasBounds = bounds.min.x <= bounds.max.x && bounds.min.y <= bounds.max.y && bounds.min.z <= bounds.max.z;
 	const float sceneRadius = hasBounds ? std::max(0.5f * glm::length(bounds.max - bounds.min), 1e-3f) : 1.f;
 	accel->lights = lightList.finish(sceneRadius);
+	accel->sceneSphere = glm::vec4(hasBounds ? 0.5f * (bounds.min + bounds.max) : glm::vec3(0.f), sceneRadius);
 
 	//a textured shape emitter's records name its instance as it was made; the GPU's records are in another order, so
 	//each is given its instance's slot there

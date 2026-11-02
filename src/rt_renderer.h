@@ -19,6 +19,8 @@
 
 #include <chrono>
 #include <filesystem>
+#include <optional>
+#include <unordered_map>
 
 #include <rt_accel.h>
 #include <rt_gpu.h>
@@ -142,6 +144,10 @@ public:
 	void drawKernelPanel(VulkanEngine* engine);
 	bool* kernelPanelVisibilityFlag() { return &m_showKernelPanel; }
 
+	// the distance along the world-space ray (`direction` unit) to the first surface it hits in the scene as the next
+	// render would trace it, on the CPU (traceScene()); none for a miss. What a camera's focus is picked with
+	std::optional<float> pickDistance(VulkanEngine* engine, const RaytraceSceneEditor& editor, const glm::vec3& origin, const glm::vec3& direction);
+
 private:
 	// everything a render depends on, compared every frame against what the running render
 	// was started from
@@ -166,6 +172,8 @@ private:
 		// the scene's light groups, which the sums a render keeps are split by
 		uint32_t lightGroupCount { 1 };
 		uint32_t environmentGroup { 0 };
+		// the camera's aperture image's distribution, once its image has loaded: a render started before restarts
+		const PiecewiseConstant2D* aperture { nullptr };
 
 		bool operator==(const RenderKey&) const = default;
 	};
@@ -184,7 +192,10 @@ private:
 	RenderEstimate estimate(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	// the "Camera" combo of Render Settings
 	void drawCameraCombo(const RaytraceSceneEditor& editor);
-	RenderKey currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const SceneCamera& camera) const;
+	RenderKey currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const SceneCamera& camera);
+	// the distribution of the camera's aperture image, built from the texture library's luminance copy the first time it
+	// is asked for once the image has loaded; null for any other aperture, or before then
+	std::shared_ptr<const PiecewiseConstant2D> apertureTable(VulkanEngine* engine, const SceneCamera& camera);
 	void startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	// the TLAS, instances and materials over the current BLAS set, rebuilt only when the objects or
 	// shapes actually differ from what it was built from. A render restarted by a camera drag
@@ -216,6 +227,8 @@ private:
 	bool drawIntegratorCombo();
 	// the "Direct lighting" combo over kernel 06's variants and what the light list holds
 	void drawLightingSettings(VulkanEngine* engine);
+	// the bidirectional integrators' settings: lvc's connections and cache, bdpt's vertex memory and strategy images
+	void drawBidirectionalSettings();
 	// the "Compare to reference" section: capture, save, load, clear, the running render's error and
 	// its convergence curve
 	void drawReference(VulkanEngine* engine);
@@ -278,6 +291,8 @@ private:
 	std::vector<SceneLight> m_sceneAccelLights;
 	std::vector<MaterialDef> m_sceneAccelMaterials;
 	EnvironmentLight m_sceneAccelEnvironment;
+	// the aperture images' distributions, by texture library entry
+	std::unordered_map<uint64_t, std::shared_ptr<const PiecewiseConstant2D>> m_apertureTables;
 	SpectralSceneContext m_sceneAccelSpectral;
 	SceneTextureContext m_sceneAccelTextures;
 	uint64_t m_sceneAccelModelRevision { 0 };
@@ -319,6 +334,9 @@ private:
 	double m_acceptedWork { 0.0 };
 	// why the last startRender() refused, empty when it did not
 	std::string m_blockedReason;
+	// whether the render camera can take a connection from a light path (src/camera_model.h cameraConnects()), which the
+	// integrator combo greys the bidirectional integrators by; set each frame the Render Settings window draws
+	bool m_cameraConnects { true };
 	// Render was pressed: update() starts it next frame, before the image windows record the display image
 	bool m_startRequested { false };
 

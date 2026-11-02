@@ -19,6 +19,7 @@
 
 // src/light_sampling.h LIGHT_MIN_SPHERICAL_SOLID_ANGLE / LIGHT_MAX_SPHERICAL_SOLID_ANGLE
 #include "crt_material.glsl"
+#include "crt_warp.glsl"
 #include "crt_shape.glsl"
 
 #define CRT_MIN_SPHERICAL_SOLID_ANGLE 1e-3
@@ -367,20 +368,6 @@ bool sampleSphericalTriangle(vec3 v0, vec3 v1, vec3 v2, vec3 ref, vec2 u, out ve
 	return true;
 }
 
-vec3 sampleUniformTriangle(vec2 u)
-{
-	float b0;
-	float b1;
-	if (u.x < u.y) {
-		b0 = u.x / 2.0;
-		b1 = u.y - b0;
-	} else {
-		b1 = u.y / 2.0;
-		b0 = u.x - b1;
-	}
-	return vec3(b0, b1, 1.0 - b0 - b1);
-}
-
 bool sampleTriangleLight(vec3 v0, vec3 v1, vec3 v2, vec3 ref, vec2 u, out LightSample s, out vec3 barycentrics)
 {
 	barycentrics = vec3(1.0 / 3.0);
@@ -427,24 +414,6 @@ float triangleLightPdf(vec3 v0, vec3 v1, vec3 v2, vec3 ref, vec3 lightPoint)
 }
 
 //---------------------------------------------------------------- capped cylinder
-
-vec2 sampleUniformDiskConcentric(vec2 u)
-{
-	const vec2 offset = 2.0 * u - 1.0;
-	if (offset.x == 0.0 && offset.y == 0.0) {
-		return vec2(0.0);
-	}
-	float r;
-	float theta;
-	if (abs(offset.x) > abs(offset.y)) {
-		r = offset.x;
-		theta = (CRT_PI / 4.0) * (offset.y / offset.x);
-	} else {
-		r = offset.y;
-		theta = CRT_PI / 2.0 - (CRT_PI / 4.0) * (offset.x / offset.y);
-	}
-	return r * vec2(cos(theta), sin(theta));
-}
 
 float cylinderLightPdf(vec3 center, vec3 axisX, vec3 axisY, float radius, float height, vec3 ref, vec3 lightPoint)
 {
@@ -515,36 +484,6 @@ float spotFalloffSmooth(float cosAngle, float cosOuter, float cosInner)
 float spotFalloffOf(uint kind, float cosAngle, float cosOuter, float cosInner)
 {
 	return (kind & CRT_LIGHT_FLAG_SMOOTHSTEP) != 0u ? spotFalloffSmooth(cosAngle, cosOuter, cosInner) : spotFalloff(cosAngle, cosOuter, cosInner);
-}
-
-// pbrt-v4's equal-area mapping (src/light_sampling.cpp equalAreaSphereToSquare()), which a goniometric light's image is
-// laid out in
-vec2 equalAreaSphereToSquare(vec3 d)
-{
-	const float x = abs(d.x);
-	const float y = abs(d.y);
-	const float z = abs(d.z);
-	const float r = sqrt(max(1.0 - z, 0.0));
-	const float a = max(x, y);
-	float b = min(x, y);
-	b = a == 0.0 ? 0.0 : b / a;
-	float phi = 0.406758566246788489601959989e-5
-		+ b * (0.636226545274016134946890922156
-			+ b * (0.61572017898280213493197203466e-2
-				+ b * (-0.247333733281268944196501420480 + b * (0.881770664775316294736387951347e-1 + b * (0.419038818029165735901852432784e-1 + b * -0.251390972343483509333252996350e-1)))));
-	if (x < y) {
-		phi = 1.0 - phi;
-	}
-	float v = phi * r;
-	float u = r - v;
-	if (d.z < 0.0) {
-		const float t = u;
-		u = 1.0 - v;
-		v = 1.0 - t;
-	}
-	u = d.x < 0.0 ? -u : u;
-	v = d.y < 0.0 ? -v : v;
-	return vec2(0.5 * (u + 1.0), 0.5 * (v + 1.0));
 }
 
 // What a projection or goniometric light sends towards `direction` (unit, from the light), as a multiple of its
@@ -635,14 +574,6 @@ float envSampleCdf(uint base, uint count, float u, out uint offset)
 		du /= width;
 	}
 	return min((float(offset) + du) / float(count), CRT_ONE_MINUS_EPSILON);
-}
-
-vec3 equirectDirectionOf(vec2 uv)
-{
-	const float phi = (uv.x - 0.5) * 2.0 * CRT_PI;
-	const float latitude = (0.5 - uv.y) * CRT_PI;
-	const float cosLatitude = cos(latitude);
-	return vec3(cosLatitude * sin(phi), sin(latitude), -cosLatitude * cos(phi));
 }
 
 bool sampleEnvironment(uint table, vec2 u, vec2 rotation, out vec3 direction, out float pdf)

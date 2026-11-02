@@ -36,7 +36,6 @@ const char* const PLAN_LIGHT_SAMPLER = "pbrt-bvh-light-sampler.md";
 const char* const PLAN_SHAPES = "pbrt-analytic-shapes.md";
 const char* const PLAN_SUBDIVISION = "pbrt-subdivision-and-displacement.md";
 const char* const PLAN_MOTION = "pbrt-motion-blur.md";
-const char* const PLAN_BDPT = "pbrt-bidirectional-path-tracing.md";
 const char* const PLAN_PHOTONS = "pbrt-photon-mapping.md";
 const char* const PLAN_MLT = "pbrt-metropolis-light-transport.md";
 const char* const PLAN_REGULARIZATION = "pbrt-path-regularization.md";
@@ -1871,18 +1870,49 @@ private:
 		} else {
 			const PbrtParams& p = s.camera->params;
 			aspect = p.getFloat("frameaspectratio", aspect);
-			if (p.find("screenwindow") != nullptr) {
-				report("camera screenwindow is ignored", s.camera->loc, PLAN_CAMERAS);
+			//pbrt's screen window: [-aspect, aspect] x [-1, 1] by default, or [-1, 1] x [-1 / aspect, 1 / aspect] for a
+			//portrait film, in units of tan(fov / 2) for a perspective camera and of the scene for an orthographic one
+			double window[4] = { aspect >= 1.0 ? -aspect : -1.0, aspect >= 1.0 ? aspect : 1.0, aspect >= 1.0 ? -1.0 : -1.0 / aspect, aspect >= 1.0 ? 1.0 : 1.0 / aspect };
+			if (const std::vector<double> given = p.getNumbers("screenwindow"); given.size() == 4) {
+				std::copy(given.begin(), given.end(), window);
+				//the renderer's film keeps the render's aspect: a window of another shape is stretched in pbrt
+				const double windowAspect = (window[1] - window[0]) / std::max(window[3] - window[2], 1e-12);
+				if (std::abs(windowAspect / aspect - 1.0) > 1e-3) {
+					report(fmt::format("camera screenwindow is {:.4g} wide per unit of height and the film {:.4g}; the film keeps its own shape", windowAspect, aspect), s.camera->loc);
+				}
 			}
-			if (s.camera->type != "perspective") {
+			const double windowHeight = std::max(window[3] - window[2], 1e-12);
+			//the window's center becomes the film's shift, in image heights
+			camera.shift = glm::vec2((float)(0.5 * (window[0] + window[1]) / windowHeight), (float)(0.5 * (window[2] + window[3]) / windowHeight));
+			if (s.camera->type == "orthographic") {
+				camera.kind = CameraKind::Orthographic;
+				camera.orthoHeight = (float)windowHeight;
+				//pbrt-v4's OrthographicCamera starts a lens ray on a disk at the camera's origin, whatever its film point
+				if (p.getFloat("lensradius", 0.0) > 0.0) {
+					report("pbrt's orthographic lens is a disk at the camera's origin; here it is centered on each film point's ray, so the image out of focus differs", s.camera->loc);
+				}
+			} else if (s.camera->type == "spherical") {
+				camera.kind = CameraKind::Spherical;
+				camera.shift = glm::vec2(0.f);
+				const std::string mapping = p.getString("mapping", "equalarea");
+				if (mapping == "equirectangular") {
+					camera.mapping = SphericalMapping::Equirectangular;
+					report("pbrt's equirectangular camera turns the other way round; it renders in the environment map's layout", s.camera->loc);
+				} else {
+					camera.mapping = SphericalMapping::EqualArea;
+				}
+			} else if (s.camera->type != "perspective") {
 				report(fmt::format("{} camera is a perspective camera with the same pose", s.camera->type), s.camera->loc, PLAN_CAMERAS);
 				for (const PbrtParam& param : p.list) {
 					param.used = true;
 				}
 			}
-			//pbrt's fov spans the shorter image axis; the renderer's is vertical
+			//pbrt's fov spans the shorter image axis, and the window's height in units of its tangent; the renderer's is
+			//the vertical field of view
 			const double fov = glm::radians(p.getFloat("fov", 90.0));
-			const double vfov = aspect >= 1.0 ? fov : 2.0 * std::atan(std::tan(fov / 2.0) / aspect);
+			const double vfov = p.find("screenwindow") != nullptr ? 2.0 * std::atan(0.5 * windowHeight * std::tan(fov / 2.0))
+			                    : aspect >= 1.0                  ? fov
+			                                                     : 2.0 * std::atan(std::tan(fov / 2.0) / aspect);
 			camera.vfovDegrees = (float)glm::degrees(vfov);
 			const double lensRadius = p.getFloat("lensradius", 0.0);
 			const double focalDistance = p.getFloat("focaldistance", 1e6);
@@ -2016,8 +2046,15 @@ private:
 		if (integratorType == "ambientocclusion") {
 			out.ambientOcclusionDistance = (float)integrator.params.getFloat("maxdistance", std::numeric_limits<float>::infinity());
 			integrator.params.find("cossample");
-		} else if (integratorType == "bdpt" || integratorType == "lightpath") {
-			report(fmt::format("Integrator \"{}\" is the path tracer", integratorType), integrator.loc, PLAN_BDPT);
+		} else if (integratorType == "lightpath") {
+			out.integrator = "light";
+		} else if (integratorType == "bdpt") {
+			out.integrator = "bdpt";
+			//pbrt's per-strategy images: visualizeweights, the weighted ones, wins when both are set, as in pbrt
+			const bool strategies = integrator.params.getBool("visualizestrategies", false);
+			const bool weights = integrator.params.getBool("visualizeweights", false);
+			r.bidirectional.visualizeStrategies = strategies || weights;
+			r.bidirectional.visualizeWeights = weights;
 		} else if (integratorType == "sppm") {
 			report("Integrator \"sppm\" is the path tracer", integrator.loc, PLAN_PHOTONS);
 		} else if (integratorType == "mlt") {
@@ -2035,7 +2072,7 @@ private:
 					integrator.loc, PLAN_LIGHT_SAMPLER);
 			}
 		}
-		if (integratorType == "sppm" || integratorType == "bdpt" || integratorType == "mlt" || integratorType == "lightpath") {
+		if (integratorType == "sppm" || integratorType == "mlt") {
 			for (const PbrtParam& p : integrator.params.list) {
 				p.used = true;
 			}

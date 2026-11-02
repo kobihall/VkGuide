@@ -12,6 +12,10 @@
 // the radiance estimate through light samples matches quadrature (the full table only: the
 // compensated one covers the bright directions alone, by design).
 // For the alias table: sampled frequencies against the weights.
+// For emitted rays (docs/plans/completed/pbrt-bidirectional-path-tracing.md), of every area light from one side, the other
+// and both, and of point, spot and directional lights: the densities a sample reports are the pdf function's, the
+// directional density integrates to 1 over the sphere, and the power the samples estimate is the light's (L A pi per
+// side, 4 pi I, I times a spot's solid angle, E times the disk's area).
 // For the environment map's half-float GPU copy: a map brighter than 65504 stays finite and within
 // half float's precision of the file, and a map that fits is stored unscaled.
 //
@@ -541,6 +545,98 @@ void testProjectionPower()
 	}
 }
 
+// emitted rays: the densities and the power, per kind
+void testEmittedRays(size_t samples)
+{
+	for (const ShapeKind kind : { ShapeKind::Sphere, ShapeKind::Quad, ShapeKind::Cylinder }) {
+		const Emitter emitter = shapeEmitter(kind);
+		for (const EmitSides sides : { EmitSides::Both, EmitSides::Front, EmitSides::Back }) {
+			const AreaLightGeometry& light = emitter.lights[0];
+			double power = 0.0;
+			double directionIntegral = 0.0;
+			float worstPdf = 0.f;
+			for (size_t i = 0; i < samples; i++) {
+				LightLeSample s;
+				if (sampleAreaLe(light, sides, glm::vec2(uniform(), uniform()), glm::vec2(uniform(), uniform()), s)) {
+					//unit radiance: L |cos| / (pdfPos pdfDir) estimates the power
+					power += std::abs(glm::dot(s.normal, s.direction)) / (s.pdfPos * s.pdfDir);
+					float pdfPos;
+					float pdfDir;
+					areaPdfLe(light, sides, s.normal, s.direction, pdfPos, pdfDir);
+					worstPdf = std::max({ worstPdf, std::abs(pdfPos - s.pdfPos) / s.pdfPos, std::abs(pdfDir - s.pdfDir) / s.pdfDir });
+				}
+				float pdfPos;
+				float pdfDir;
+				areaPdfLe(light, sides, uniformSphere(), uniformSphere(), pdfPos, pdfDir);
+				directionIntegral += pdfDir * 4.0 * LIGHT_PI;
+			}
+			power /= (double)samples;
+			directionIntegral /= (double)samples;
+			const double expected = areaLightArea(light) * LIGHT_PI * (sides == EmitSides::Both ? 2.0 : 1.0);
+			const char* sideName = sides == EmitSides::Both ? "both sides" : sides == EmitSides::Front ? "front" : "back";
+			fmt::println("  {} {}: power {:.4f} of L A pi per side, directions integrate to {:.4f}", emitter.name, sideName, power / expected, directionIntegral);
+			check(std::abs(power / expected - 1.0) < 1e-3, fmt::format("{} {}: emitted power is {:.5f} of the light's", emitter.name, sideName, power / expected));
+			check(std::abs(directionIntegral - 1.0) < 0.02, fmt::format("{} {}: the directional density integrates to {:.4f}", emitter.name, sideName, directionIntegral));
+			check(worstPdf < 1e-4f, fmt::format("{} {}: a sample's densities are {:.3g} off the pdf function's", emitter.name, sideName, worstPdf));
+		}
+	}
+	{
+		const Emitter emitter = triangleEmitter();
+		double power = 0.0;
+		for (size_t i = 0; i < samples; i++) {
+			LightLeSample s;
+			if (sampleAreaLe(emitter.lights[0], EmitSides::Front, glm::vec2(uniform(), uniform()), glm::vec2(uniform(), uniform()), s)) {
+				power += std::abs(glm::dot(s.normal, s.direction)) / (s.pdfPos * s.pdfDir);
+				const glm::vec3 point = s.barycentrics.x * emitter.lights[0].a + s.barycentrics.y * emitter.lights[0].b + s.barycentrics.z * emitter.lights[0].c;
+				check(glm::length(point - s.origin) < 1e-5f, "triangle: the barycentrics are not the origin's");
+			}
+		}
+		power /= (double)samples;
+		const double expected = areaLightArea(emitter.lights[0]) * LIGHT_PI;
+		fmt::println("  triangle front: power {:.4f} of L A pi", power / expected);
+		check(std::abs(power / expected - 1.0) < 1e-3, fmt::format("triangle: emitted power is {:.5f} of the light's", power / expected));
+	}
+
+	//point: 4 pi I; spot: I times the solid angle of its falloff; directional: E times the disk's area
+	double pointPower = 0.0;
+	double spotPower = 0.0;
+	double spotIntegral = 0.0;
+	const glm::vec3 axis = glm::normalize(glm::vec3(0.3f, -1.f, 0.2f));
+	const float cosOuter = std::cos(35.f * LIGHT_PI / 180.f);
+	const float cosInner = std::cos(20.f * LIGHT_PI / 180.f);
+	for (size_t i = 0; i < samples; i++) {
+		LightLeSample s;
+		samplePointLe(glm::vec3(1.f, 2.f, 3.f), glm::vec2(uniform(), uniform()), s);
+		pointPower += 1.0 / (s.pdfPos * s.pdfDir);
+		if (sampleSpotLe(glm::vec3(0.f), axis, cosOuter, glm::vec2(uniform(), uniform()), s)) {
+			spotPower += spotFalloffSmooth(glm::dot(s.direction, axis), cosOuter, cosInner) / (s.pdfPos * s.pdfDir);
+			check(std::abs(spotPdfDir(axis, cosOuter, s.direction) - s.pdfDir) < 1e-4f * s.pdfDir, "spot: a sample's density is not the pdf function's");
+		}
+		spotIntegral += spotPdfDir(axis, cosOuter, uniformSphere()) * 4.0 * LIGHT_PI;
+	}
+	pointPower /= (double)samples;
+	spotPower /= (double)samples;
+	spotIntegral /= (double)samples;
+	const double spotExpected = spotSolidAngle(cosOuter, cosInner, true);
+	fmt::println("  point: power {:.4f} of 4 pi I; spot: {:.4f} of I times its solid angle, directions integrate to {:.4f}", pointPower / (4.0 * LIGHT_PI), spotPower / spotExpected, spotIntegral);
+	check(std::abs(pointPower / (4.0 * LIGHT_PI) - 1.0) < 1e-4, "point: emitted power is not 4 pi I");
+	check(std::abs(spotPower / spotExpected - 1.0) < 0.01, fmt::format("spot: emitted power is {:.4f} of I times its solid angle", spotPower / spotExpected));
+	check(std::abs(spotIntegral - 1.0) < 0.03, fmt::format("spot: the directional density integrates to {:.4f}", spotIntegral));
+
+	const glm::vec4 sceneSphere(1.f, -2.f, 0.5f, 3.f);
+	const glm::vec3 toward = glm::normalize(glm::vec3(-0.4f, 1.f, 0.3f));
+	float worstPlane = 0.f;
+	float worstDisk = 0.f;
+	for (size_t i = 0; i < 1000; i++) {
+		const glm::vec3 origin = infiniteLightOrigin(sceneSphere, toward, glm::vec2(uniform(), uniform()));
+		const glm::vec3 offset = origin - glm::vec3(sceneSphere);
+		worstPlane = std::max(worstPlane, std::abs(glm::dot(offset, toward) - sceneSphere.w));
+		worstDisk = std::max(worstDisk, glm::length(offset - glm::dot(offset, toward) * toward) - sceneSphere.w);
+	}
+	check(worstPlane < 1e-5f && worstDisk < 1e-5f, "infinite lights: an origin is off the disk behind the scene");
+	check(std::abs(infiniteLightPdfPos(sceneSphere) * LIGHT_PI * 9.f - 1.f) < 1e-6f, "infinite lights: the positional density is not one over the disk's area");
+}
+
 int main(int argc, char* argv[])
 {
 	size_t samples = 20000;
@@ -593,6 +689,9 @@ int main(int argc, char* argv[])
 	testEqualArea();
 	testIes();
 	testProjectionPower();
+
+	fmt::println("emitted rays:");
+	testEmittedRays(samples * 25);
 
 	fmt::println("\n{}", g_failures == 0 ? "PASS" : fmt::format("FAIL ({} problem(s))", g_failures));
 	return g_failures == 0 ? 0 : 2;

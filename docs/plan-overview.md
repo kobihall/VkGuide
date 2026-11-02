@@ -53,7 +53,7 @@ Planning-only, as of 2026-08-23. Nothing in `src/`/`shaders/` has been implement
 
 `docs/plans/pbrt-roadmap.md`, written 2026-09-26, plans every feature of *Physically Based Rendering* (3rd and 4th editions), the pbrt-v4 source, and *Ray Tracing: The Next Week* and *The Rest of Your Life* that the path tracer lacks or implements weakly: 43 plans in `docs/plans/`. It records the decisions that shape them, the binding numbers, queues and struct fields they reserve, and the order to build them in. Each of those plans assumes the roadmap, `docs/raytracing-overview.md` and `docs/codebase-map.md` §8, and uses a shorter template than the seven docs above.
 
-The roadmap revised two earlier drafts to its template: `docs/plans/pbrt-adaptive-sampling.md`, the policy that fills the per-pixel sample budget (5) threads through, and `docs/plans/pbrt-participating-media.md`, kernels 05 and 07. The earlier `docs/plans/depth-of-field.md` was deleted on 2026-09-26: the GPU path tracer has had a thin-lens camera since (5), and `docs/plans/pbrt-cameras.md` keeps its click-to-focus idea.
+The roadmap revised two earlier drafts to its template: `docs/plans/pbrt-adaptive-sampling.md`, the policy that fills the per-pixel sample budget (5) threads through, and `docs/plans/pbrt-participating-media.md`, kernels 05 and 07. The earlier `docs/plans/depth-of-field.md` was deleted on 2026-09-26: the GPU path tracer has had a thin-lens camera since (5), and `docs/plans/completed/pbrt-cameras.md` built its click-to-focus idea on 2026-11-01.
 
 On 2026-10-18 those plans were renamed `docs/plans/pbrt-*.md`, and the roadmap `docs/plans/pbrt-roadmap.md`.
 

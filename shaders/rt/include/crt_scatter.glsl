@@ -820,6 +820,14 @@ mat3 bxdfFrame(ComplexMaterial m, vec3 normal, bool frontFace)
 	return mat3(tangent, cross(n, tangent), n);
 }
 
+// THE TRANSPORT MODE pbrt-v4's BxDFs and the optical interface evaluate in: radiance, which camera paths carry, in every
+// kernel of the path tracer; a kernel of the bidirectional integrators defines it as its g_transportMode
+// (crt_transport.glsl) before including this file, so that one kernel evaluates a light vertex in importance mode and a
+// camera vertex in radiance mode
+#ifndef CRT_SURFACE_TRANSPORT
+#define CRT_SURFACE_TRANSPORT CRT_TRANSPORT_RADIANCE
+#endif
+
 bool scatterSurface(ComplexMaterial m, vec3 inDir, vec3 normal, bool frontFace, uint pathIndex, inout uint rng, out Spectrum attenuation, out vec3 outDir)
 {
 	if (m.isOptic && !m.isBxdf) {
@@ -835,7 +843,7 @@ bool scatterSurface(ComplexMaterial m, vec3 inDir, vec3 normal, bool frontFace, 
 	BxdfSample s;
 	attenuation = spectrumConst(0.0);
 	outDir = normal;
-	if (!bxdfSample(m.bxdf, wo, uc, u, CRT_TRANSPORT_RADIANCE, s) || !(s.pdf > 0.0)) {
+	if (!bxdfSample(m.bxdf, wo, uc, u, CRT_SURFACE_TRANSPORT, s) || !(s.pdf > 0.0)) {
 		return false;
 	}
 	attenuation = spectrumScale(s.f, abs(s.wi.z) / s.pdf);
@@ -859,7 +867,7 @@ Spectrum evalSurface(ComplexMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 	const mat3 frame = bxdfFrame(m, normal, m.frontFace);
 	const vec3 woLocal = transpose(frame) * -inDir;
 	const vec3 wiLocal = transpose(frame) * wi;
-	return spectrumScale(bxdfF(m.bxdf, woLocal, wiLocal, CRT_TRANSPORT_RADIANCE), abs(wiLocal.z));
+	return spectrumScale(bxdfF(m.bxdf, woLocal, wiLocal, CRT_SURFACE_TRANSPORT), abs(wiLocal.z));
 }
 
 float pdfSurface(ComplexMaterial m, vec3 inDir, vec3 normal, vec3 wi)
@@ -874,7 +882,7 @@ float pdfSurface(ComplexMaterial m, vec3 inDir, vec3 normal, vec3 wi)
 		return pdfSurface(m.classic, inDir, normal, wi);
 	}
 	const mat3 frame = bxdfFrame(m, normal, m.frontFace);
-	return bxdfPdf(m.bxdf, transpose(frame) * -inDir, transpose(frame) * wi, CRT_TRANSPORT_RADIANCE);
+	return bxdfPdf(m.bxdf, transpose(frame) * -inDir, transpose(frame) * wi, CRT_SURFACE_TRANSPORT);
 }
 
 bool isSpecularMaterial(ComplexMaterial m)

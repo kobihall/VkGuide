@@ -69,7 +69,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 | [pbrt-textures.md](completed/pbrt-textures.md) | Native-size mipmapped textures, ray-cone footprints, texture references, uv mappings, textures on shapes |
 | [pbrt-procedural-textures.md](pbrt-procedural-textures.md) | Checker, noise, fBm, marble and the rest. Incomplete: representation undecided |
 | [pbrt-bump-mapping.md](pbrt-bump-mapping.md) | Displacement-texture bump mapping, normal maps in the material kernel, shadow-terminator fixes |
-| [pbrt-cameras.md](pbrt-cameras.md) | Orthographic, spherical, realistic lens systems, aperture shapes, tilt-shift, click-to-focus |
+| [pbrt-cameras.md](completed/pbrt-cameras.md) | Implemented except the realistic camera: orthographic, spherical, aperture shapes, tilt-shift, click-to-focus |
 | [pbrt-display-and-color.md](pbrt-display-and-color.md) | sRGB display curve, tone mapping operators, photographic exposure, white balance, output gamut |
 | [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) | Implemented: auxiliary outputs, light groups and Relight, EXR, PFM, HDR and PNG export, the ambient occlusion view and the batch mode. The spectral images came with spectral rendering |
 
@@ -117,7 +117,7 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 
 | Plan | What it adds |
 |---|---|
-| [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md) | Light tracing, then two BDPT integrators (a light vertex cache for the GPU, and pbrt 3's), with film splatting |
+| [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md) | Implemented except media and vertex merging: light tracing, a light-vertex-cache BDPT for the GPU and pbrt 3's BDPT with its strategy images, with film splatting |
 | [pbrt-photon-mapping.md](pbrt-photon-mapping.md) | Stochastic progressive photon mapping |
 | [pbrt-metropolis-light-transport.md](pbrt-metropolis-light-transport.md) | Primary-sample-space MLT over the path tracer, then multiplexed MLT over pbrt 3's BDPT |
 
@@ -142,8 +142,8 @@ Each plan lists its own prerequisites. The groups follow the order the work shou
 ## Dependencies between the plans
 
 ```text
-integrator-layer (implemented) ─> bidirectional-path-tracing ─┬─> photon-mapping
-                                                              └─> metropolis-light-transport
+integrator-layer (implemented) ─> bidirectional-path-tracing (implemented) ─┬─> photon-mapping
+                                                                            └─> metropolis-light-transport
 
 thin-hit-record ─┬─> robust-intersections ─> camera-relative-space
                  ├─> material-system ─┬─> bsdf-library ─┬─> layered-materials
@@ -206,7 +206,7 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 39 | `MotionTransforms` | motion-blur |
 | 40 | `BssrdfTables` | subsurface-scattering |
 | 41 | `MeasuredBsdfs` | measured-bsdfs |
-| 42 | `SplatAccumulation` | bidirectional-path-tracing |
+| 42 | `SplatAccumulation` | bidirectional-path-tracing (implemented) |
 | 43 | `PhotonGrid` | photon-mapping |
 | 44 | `MarkovChains` | metropolis-light-transport |
 | 45 | `ChannelSums` | aovs-and-image-output (implemented): the light groups, then `sum(w)`, then the spectral images' buckets (spectral-rendering, implemented) |
@@ -216,11 +216,11 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 49 | `MediumPathState` | participating-media |
 | 50 | `ShapeParams` | analytic-shapes |
 | 51 | `CsgNodes` | csg |
-| 52 | `LightVertexCache` | bidirectional-path-tracing |
-| 53 | `BdptVertices` | bidirectional-path-tracing |
+| 52 | `LightVertexCache` | bidirectional-path-tracing (implemented) |
+| 53 | `BdptVertices` | bidirectional-path-tracing (implemented) |
 | 54 | `VisiblePoints` | photon-mapping |
 
-Bindings 55 to 61 are reserved by the [laser optics plan](physoptics-laser-optics.md): 55 `OpticSurfaces`, 56 `OpticCoatings`, 57 `OpticPathState`, 58 `BeamGraph`, 59 `Detectors`, 60 `DetectorFilm`, 61 `RayRecords`. Binding 62, `FilmCascade`, is the outlier-reweighted film's cascade of buffers by brightness, which the film plan added. Binding 63, `PathSpectra`, is a spectral build's path throughputs, which spectral rendering added. Binding 64, `TriangleUv1`, is the meshes' second uv sets, which textures added.
+Bindings 55 to 61 are reserved by the [laser optics plan](physoptics-laser-optics.md): 55 `OpticSurfaces`, 56 `OpticCoatings`, 57 `OpticPathState`, 58 `BeamGraph`, 59 `Detectors`, 60 `DetectorFilm`, 61 `RayRecords`. Binding 62, `FilmCascade`, is the outlier-reweighted film's cascade of buffers by brightness, which the film plan added. Binding 63, `PathSpectra`, is a spectral build's path throughputs, which spectral rendering added. Binding 64, `TriangleUv1`, is the meshes' second uv sets, which textures added. Binding 65, `ImageDistributions`, holds piecewise-constant 2D tables over images, the camera's aperture image first, which cameras added. Specialization constant 7, `CRT_CAMERA_MODEL`, is the cameras' too.
 
 The Radeon Pro 560X allows 31 storage buffers per stage (`maxPerStageDescriptorStorageBuffers`). No kernel may declare more; the per-variant subsets keep every kernel well under it today (kernel 02 declares 14).
 
@@ -284,7 +284,7 @@ The stage library ([integrator-layer.md](completed/integrator-layer.md)) is shar
 | Stages | Plan |
 |---|---|
 | 10 | subsurface-scattering: sample subsurface |
-| 11 to 18 | bidirectional-path-tracing: 11 emit light rays, 12 connect to the camera, 13 scatter light paths, 14 trace camera connections, 15 handle emitters (`lvc`), 16 scatter and connect (`lvc`), 17 store vertices and scatter (`bdpt`), 18 connect subpaths (`bdpt`) |
+| 11 to 18 | bidirectional-path-tracing (implemented): 11 emit light rays, 12 connect to the camera, 13 scatter light paths, 14 trace camera connections, 15 handle emitters (`lvc`), 16 scatter and connect (`lvc`), 17 store vertices and scatter (`bdpt`), 18 connect subpaths (`bdpt`) |
 | 19 to 21 | photon-mapping: 19 store visible points, 20 deposit photons, 21 update photon statistics |
 | 22, 23 | metropolis-light-transport: 22 mutate chain samples, 23 accept and splat |
 | 24, 25 | wavefront-performance: 24 regenerate paths, 25 film per finished path |
@@ -296,7 +296,7 @@ A kernel that traces includes `crt_trace.glsl` and is compiled once per traversa
 
 ### Scene files
 
-Every plan that saves something bumps `SCENE_FILE_FORMAT_VERSION` by one when it lands (20 today), and every older version keeps loading. Plans do not pre-assign version numbers, since the order they land in is unknown.
+Every plan that saves something bumps `SCENE_FILE_FORMAT_VERSION` by one when it lands (26 today), and every older version keeps loading. Plans do not pre-assign version numbers, since the order they land in is unknown.
 
 ### pbrt scenes
 

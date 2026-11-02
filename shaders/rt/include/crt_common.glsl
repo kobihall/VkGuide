@@ -57,6 +57,13 @@ layout (constant_id = 6) const bool CRT_OPTICS = false;
 // paths carry ray cones (PathState.coneWidth, coneSpread) for the trilinear and anisotropic texture filters. constant_id 8
 // is CRT_TEXTURES (crt_texture.glsl)
 layout (constant_id = 9) const bool CRT_RAY_CONES = false;
+// CRT_CAMERA_MODEL: the render's camera is more than Ray Tracing in One Weekend's (docs/plans/completed/pbrt-cameras.md):
+// another kind, an aperture shape, the concentric lens mapping or a tilt. Off, kernel 00 is the code it always was
+// (crt_camera.glsl); every kernel that reads the camera is specialized for it
+layout (constant_id = 7) const bool CRT_CAMERA_MODEL = false;
+// CRT_SPLATS: kernel 09 folds the splats of light tracing and the bidirectional integrators (binding 42) into its
+// resolve (docs/plans/completed/pbrt-bidirectional-path-tracing.md). Off, it is the code it always was
+layout (constant_id = 10) const bool CRT_SPLATS = false;
 
 #define CRT_DEBUG_NONE 0u
 #define CRT_DEBUG_PRIMARY_DIRECTION 1u
@@ -602,6 +609,9 @@ layout (rgba32f, set = 0, binding = 32) uniform image2DArray aovImages;
 // the light groups' sums: per pixel, lightGroupCount x 3 floats of sum(w L) by group, then sum(w), the weight sum the
 // groups divide by. Kernels 03, 04 and 08 add atomically (several slots land on one pixel in a frame); kernel 09
 // adds the weight. A 4-byte stub while light groups are off
+// the splats of light tracing and the bidirectional integrators: three floats a pixel, by pixel, added to with float
+// atomics (crt_splat.glsl) and folded into kernel 09's resolve under CRT_SPLATS; a stub otherwise
+layout (std430, set = 0, binding = 42) buffer SplatBuffer { float splats[]; };
 layout (std430, set = 0, binding = 45) buffer ChannelSumBuffer { float channelSums[]; };
 // pbrt's Sobol generator matrices and the other tables the samplers read, uploaded once. The header
 // and layout are in crt_sampler.glsl, built by src/rt_gpu.cpp
@@ -617,6 +627,10 @@ layout (std430, set = 0, binding = 56) readonly buffer OpticCoatingBuffer { vec4
 layout (std430, set = 0, binding = 62) buffer FilmCascadeBuffer { vec4 filmCascade[]; };
 // each mesh triangle's TEXCOORD_1 uvs, six floats by global attribute record, while CRT_FLAG_UV1 says a mesh has them
 layout (std430, set = 0, binding = 64) readonly buffer TriangleUv1Buffer { float triangleUv1s[]; };
+// piecewise-constant 2D distributions over images, each a table of src/light_sampling.h packPiecewiseConstant2D(): a word per
+// punctual light naming its image's emission table (crt_light_emission.glsl) and the tables, then the camera's aperture
+// image's (crt_camera.glsl). A stub without any
+layout (std430, set = 0, binding = 65) readonly buffer ImageDistributionBuffer { float imageDistributions[]; };
 #ifdef CRT_SPECTRAL
 // the throughput of every path of a spectral family, by path index: CRT_LANES floats. The exact RGB build keeps it in
 // PathState.throughput and does not bind it
@@ -687,7 +701,42 @@ layout (push_constant) uniform Params {
 	float environmentSin;
 	// the angle one pixel subtends at the camera: a ray cone's spread at the eye (CRT_RAY_CONES)
 	float pixelSpread;
+	// the camera beyond the RTIOW camera above (crt_camera.glsl): camera z with the focus distance in w, the tilted plane of
+	// focus, the kind, the CRT_CAMERA_FLAG_* bits, the polygon's blades, where the aperture image's table starts in
+	// binding 65, the aperture's rotation, the areas its density and the film are measured over
+	vec4 cameraBackward;
+	vec4 focusPlane;
+	uint cameraKind;
+	uint cameraFlags;
+	uint apertureBlades;
+	uint apertureTable;
+	float apertureCos;
+	float apertureSin;
+	float lensArea;
+	float filmArea;
+	// an orthographic camera's pixel height in scene units
+	float pixelWidth;
+	// the bidirectional integrators (src/rt_gpu_types.h): kernel 01's first dimension, a light path's splat's scale, the
+	// pixel filter's inverse integral, the scene's bounding sphere, the frame's light paths, the light vertex cache's
+	// connections, the frame's shared hero wavelength sample, CRT_BIDIR_FLAG_*
+	uint sampleDimensionBase;
+	float lightPathScale;
+	float splatNormalization;
+	vec4 sceneSphere;
+	uint lightPathCount;
+	uint cacheConnections;
+	float frameLambdaU;
+	uint bidirFlags;
 } pc;
+
+#define CRT_BIDIR_FLAG_SPLATS 1u
+#define CRT_BIDIR_FLAG_FRAME_WAVELENGTHS 2u
+#define CRT_BIDIR_FLAG_FILTERED_SPLATS 4u
+#define CRT_BIDIR_FLAG_EMISSIVE_PASS 8u
+#define CRT_BIDIR_FLAG_LIGHT_PASS 16u
+#define CRT_BIDIR_FLAG_ESCAPED_PASS 32u
+#define CRT_BIDIR_FLAG_STRATEGY_IMAGES 64u
+#define CRT_BIDIR_FLAG_STRATEGY_WEIGHTED 128u
 
 // the rotation environmentToMap() and environmentFromMap() (equirect.glsl) take
 vec2 environmentRotation()

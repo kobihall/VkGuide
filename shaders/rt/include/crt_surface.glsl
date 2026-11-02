@@ -68,58 +68,7 @@ layout (local_size_x = CRT_WORKGROUP) in;
 #define SurfaceMaterial ClassicMaterial
 #endif
 
-// How far a sampled point on an area light may be from the truth, per coordinate, in units of its
-// magnitude and the shadow ray origin's: the sample's own arithmetic, the light list's world-space
-// copy of the surface (built on the CPU from the instance's transform) against the object-space copy
-// the traversal tests, and the transform that carries the ray there. Generous: a ray that ends this
-// much short of a light costs nothing measurable, and one that ends past it would shadow itself
-#define CRT_LIGHT_END_GAMMA 16
-
-// The shadow ray from the vertex `si` towards a light sample, written to `ray`: false when the ray
-// would have no length. Without error-bounded offsets it starts at the vertex and stops a fraction
-// short of the light, as it always did. With them it starts past the vertex's error bound on the
-// side it leaves through, and ends past the light point's on the side it arrives from (pbrt's
-// SpawnRayTo, PBR 4ed 6.8.6), so nothing fixed to an epsilon is left in it. A point or spot light is
-// a point: only its start is offset. A directional light or the environment has no end at all
-bool spawnShadowRay(SurfaceInteraction si, vec3 direction, float distance, vec3 lightNormal, out ShadowRay ray)
-{
-	ray.mediumAndGroup = 0u;
-#ifdef CRT_SPECTRAL
-	ray.lambdaU = 0.0;
-	ray.laneMask = 0u;
-	ray.spectralPad = 0u;
-#endif
-	if ((pc.flags & CRT_FLAG_ERROR_BOUNDS) == 0u) {
-		ray.origin = si.p;
-		ray.direction = direction;
-		// short of the light itself, so the shadow ray cannot be stopped by the surface it is aimed at
-		ray.tMax = distance >= CRT_INFINITY ? CRT_INFINITY : distance * (1.0 - 1e-4);
-		return true;
-	}
-	ray.origin = offsetRayOrigin(si.p, si.pError, si.n, direction);
-	if (distance >= CRT_INFINITY) {
-		ray.direction = direction;
-		ray.tMax = CRT_INFINITY;
-		return true;
-	}
-	// the light point as the sample's own direction and distance give it: the sampler hands over no
-	// point, so that exposing one cannot change how the compiler fuses the sampling arithmetic (and
-	// with it the bits of a render made without error-bounded offsets)
-	vec3 end = fma(vec3(distance), direction, si.p);
-	if (dot(lightNormal, lightNormal) > 0.0) {
-		const vec3 lightPoint = end;
-		const vec3 endError = CRT_GAMMA(CRT_LIGHT_END_GAMMA) * (abs(lightPoint) + abs(ray.origin));
-		end = offsetRayOrigin(lightPoint, endError, lightNormal, ray.origin - lightPoint);
-	}
-	const vec3 toEnd = end - ray.origin;
-	const float length = sqrt(dot(toEnd, toEnd));
-	if (!(length > 0.0)) {
-		return false;
-	}
-	ray.direction = toEnd / length;
-	ray.tMax = length;
-	return true;
-}
+#include "crt_spawn.glsl"
 
 // The next-event estimate at this vertex: sample one light, evaluate the BSDF towards it, and write
 // shadowRays[entry] if it would add anything. `si` is the vertex, `normal` the shading normal the
@@ -207,58 +156,7 @@ bool nextEvent(SurfaceMaterial material, vec3 inDir, SurfaceInteraction si, vec3
 	return true;
 }
 
-// The ambient occlusion view (pbrt's AOIntegrator): one ray in a cosine-distributed direction about the shading
-// normal, as long as the AO distance. Kernel 08 adds 1 to the path's radiance for the ray that reaches nothing, so
-// the pixel is the fraction that do, and the path ends here
-bool ambientOcclusionRay(SurfaceInteraction si, vec3 normal, uint pathIndex, PathState path, uint entry)
-{
-	uint rng = path.rngState;
-	const vec3 direction = hemisphereFromSample(normal, 1.0, sampleDimension2D(pathIndex, rng, CRT_SAMPLE_DIRECT_POINT));
-	ShadowRay ray;
-	if (!spawnShadowRay(si, direction, pc.aoDistance, vec3(0.0), ray)) {
-		return false;
-	}
-	ray.contribution = spectrumConst(1.0);
-	ray.radianceSlot = path.radianceSlot;
-	shadowRays[entry] = ray;
-	return true;
-}
-
-// The camera path's visible surface, if this is the one (aovWantsSurface()): its position, normals, uv and ids go
-// into PixelState, with the BSDF's directional albedo towards the camera when that output is on. The albedo is the
-// mean of the weights scatterSurface() returns over pbrt's 16 fixed samples (crt_samples.glsl): a Lambertian
-// surface gives its color, glass about 1, a mirror its tint, a fuzzy metal its tint times the share of samples
-// that do not go below the surface. It draws none of the path's own numbers
-void aovCapture(uint slot, HitRecord hit, SurfaceInteraction si, SurfaceMaterial material, vec3 inDir, vec3 normal, bool frontFace)
-{
-	if (!aovWantsSurface(slot, isSpecularMaterial(material))) {
-		return;
-	}
-	vec3 albedo = vec3(0.0);
-	if ((pc.aovOutputs & CRT_AOV_OUTPUT_ALBEDO) != 0u) {
-		Spectrum sum = spectrumConst(0.0);
-		for (int i = 0; i < CRT_ALBEDO_SAMPLES; i++) {
-			g_albedoSample = i;
-			uint rng = 0x9E3779B9u * uint(i + 1);
-			Spectrum attenuation;
-			vec3 outDir;
-			if (scatterSurface(material, inDir, normal, frontFace, slot, rng, attenuation, outDir)) {
-				sum = spectrumAdd(sum, attenuation);
-			}
-		}
-		g_albedoSample = -1;
-		// a spectral build reports the reflectance's color under the working space's white
-#ifndef CRT_SPECTRAL
-		albedo = sum;
-		albedo *= 1.0 / float(CRT_ALBEDO_SAMPLES);
-#else
-		albedo = reflectanceToFilm(spectrumScale(sum, 1.0 / float(CRT_ALBEDO_SAMPLES)));
-#endif
-	}
-	// the shading normal on the geometric normal's side, as pbrt's VisibleSurface has it
-	const vec3 shadingNormal = dot(normal, si.n) < 0.0 ? -normal : normal;
-	aovRecord(slot, si.p, si.n, shadingNormal, si.uv, albedo, hit.instance, si.material);
-}
+#include "crt_surface_views.glsl"
 
 void main()
 {

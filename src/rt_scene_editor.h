@@ -28,9 +28,10 @@ class TransformGizmo;
 
 // the per-object imgui controls, one per struct rather than a virtual per class. Each returns
 // whether anything the render depends on changed; drawCameraParams() also reports a change to
-// a display-only setting (exposure), which does not warrant restarting a render
+// a display-only setting (exposure), which does not warrant restarting a render, and a click on its
+// aperture image's Load...
 bool drawShapeParams(SceneShape& shape);
-bool drawCameraParams(SceneCamera& camera, bool& displayChanged);
+bool drawCameraParams(SceneCamera& camera, bool& displayChanged, bool& loadAperture);
 bool drawLightParams(SceneLight& light);
 bool drawMeshObjectParams(SceneMeshObject& object);
 
@@ -164,6 +165,8 @@ public:
 	// frame. Marks a change only when the pose actually moved, so a resting camera does not
 	// restart renders
 	void setCameraPose(uint64_t id, const glm::vec3& position, const glm::quat& orientation);
+	// a focus pick's: the camera's focus distance
+	void setCameraFocusDistance(uint64_t id, float focusDistance);
 
 	// incremented by every mutation that a render depends on: add, delete, shape, material,
 	// camera or mesh-object parameters, a gizmo drag, a loaded file. A consumer that derives data

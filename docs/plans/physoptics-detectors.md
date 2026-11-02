@@ -2,14 +2,14 @@
 
 A simulated experiment is only as useful as what it lets you measure. In the lab that is a power meter's reading, a camera's frame, a beam profiler's widths, a spectrometer's trace, or the spot on an alignment card. This plan adds those as optical elements whose surfaces record the light that reaches them: light paths from the lasers deposit their power on a detector's film as they hit it, in a new stage after kernel 02, and a measurement panel turns each film into the numbers a lab reports, with the beam solver's analytic prediction beside each one.
 
-*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-laser-sources.md](physoptics-laser-sources.md), and the light integrator of [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md). Spectrometers need [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-laser-sources.md](physoptics-laser-sources.md), and the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md). Spectrometers need [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer does today
 
 - The only film is the camera's: kernel 09 folds each frame's samples into the accumulation image, and the tonemap pass displays it.
 - Float atomics on storage buffers are available (`shaderBufferFloat32AtomicAdd`); on images they are not.
 - A light path to a detector is importance transport, which needs every BSDF it scatters from to be reciprocal. Phong, the fuzzy metal and the Lambertian lobe of `pbr` are not (relative asymmetry 0.5 to 0.95, measured by [pbrt-verification-harness.md](completed/pbrt-verification-harness.md)), so stray light that scatters from a mount or a table made of them reads the wrong power at a detector. Mounts and the table use the types of [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md), and the detector verification scenes include a diffuse wall read from both sides.
-- [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md)'s light integrator traces paths from lights and splats connections to the camera into binding 42.
+- [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md)'s light integrator traces paths from lights and splats connections to the camera into binding 42.
 
 ## Design
 

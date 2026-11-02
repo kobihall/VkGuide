@@ -1,0 +1,109 @@
+// The body of kernel 00, shared by its variants: 0001 jitters a sample uniformly inside its pixel, and 0002
+// (CRT_PIXEL_FILTER) places it by the pixel filter, in a neighbourhood that can reach past the pixel.
+// Everything after the sample's place in the image plane is the same for both, so it is written once; the
+// including .comp holds the version, the extension and the includes below. A change here changes both
+// kernels, and 0001's compiled shader is checked against the commit before for exactly that reason. The camera
+// itself, how a point of the film and the lens become a ray, is crt_camera.glsl.
+// Requires crt_common.glsl, crt_spectrum.glsl, crt_random.glsl, crt_samples.glsl, crt_aov.glsl, crt_camera.glsl, and
+// crt_filter.glsl for CRT_PIXEL_FILTER. A spectral build also starts the path's spectrum: its throughput in every lane,
+// and for hero wavelengths the sample they derive from.
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	// no early return: queueAppend() below has barriers every invocation must reach
+	const bool inPool = index < pc.poolSize;
+
+	bool spawn = false;
+
+	if (inPool) {
+		const uint pixel = index / pc.samplesPerFrame;
+		const uint k = index - pixel * pc.samplesPerFrame;
+		const uint x = pixel % pc.width;
+		const uint y = pixel / pc.width;
+
+		spawn = k < min(sampleBudget[pixel], pc.samplesPerFrame);
+		radiance[index] = vec4(0.0, 0.0, 0.0, spawn ? 1.0 : 0.0);
+		if (CRT_AOV) {
+			aovClear(index);
+		}
+
+		if (spawn) {
+			// the stream depends only on the pixel, which sample of that pixel this is, and the render
+			const uint sampleIndex = imageLoad(samplesTaken, ivec2(x, y)).r + k;
+			uint rng = pcgHash(pixel ^ pcgHash(sampleIndex ^ pcgHash(pc.seed)));
+			if (CRT_SAMPLE_RECORD) {
+				rng = pcgHash(rng ^ CRT_RECORD_STREAM_SALT);
+			}
+
+			// pixel x covers [x/W, (x+1)/W) of the image plane, rows top-down; a jittered sample
+			// lands anywhere in the pixel, an un-jittered one at its centre
+			const bool jitter = (pc.flags & CRT_FLAG_JITTER) != 0u;
+			const vec2 jitterSample = jitter ? sampleDimension2D(index, rng, CRT_SAMPLE_CAMERA_PIXEL) : vec2(0.5);
+#ifdef CRT_PIXEL_FILTER
+			// the sample's place in the pixel's neighbourhood comes from the filter, and the sign of the
+			// filter there rides in the slot's w (kernel 09 weighs the sample by it). An un-jittered
+			// sample is the centre of its pixel, as in the unfiltered variant
+			float slotWeight = 1.0;
+			vec2 offsetInPixel = jitterSample;
+			if (jitter) {
+				const FilterSample filtered = sampleFilter(jitterSample);
+				offsetInPixel = vec2(0.5) + filtered.offset;
+				slotWeight = filtered.weight;
+			}
+			radiance[index].w = slotWeight;
+			const float jx = offsetInPixel.x;
+			const float jy = offsetInPixel.y;
+#else
+			const float jx = jitterSample.x;
+			const float jy = jitterSample.y;
+#endif
+			const float u = (float(x) + jx) / float(pc.width);
+			const float v = (float(pc.height - 1u - y) + jy) / float(pc.height);
+
+			// the lens sample only for a lens: a pinhole draws nothing from the path's stream here
+			vec2 lensSample = vec2(0.0);
+			if (cameraLensRadius() > 0.0) {
+				lensSample = sampleDimension2D(index, rng, CRT_SAMPLE_CAMERA_LENS);
+			}
+			vec3 origin;
+			vec3 direction;
+			generateCameraRay(vec2(u, v), lensSample, origin, direction);
+
+			PathState path;
+			path.origin = origin;
+			path.radianceSlot = index;
+			path.direction = direction;
+#ifndef CRT_SPECTRAL
+			path.rngState = rng;
+			path.throughput = vec3(1.0);
+#else
+			// the one number the path's wavelengths derive from: the camera pass's wavelength dimension, or the
+			// path's own stream. Drawn last, so every dimension before it is what the exact RGB build draws
+			path.lambdaU = spectralRepresentation() == CRT_REPRESENTATION_HERO ? sampleDimension(index, rng, CRT_SAMPLE_CAMERA_WAVELENGTH) : 0.0;
+			path.rngState = rng;
+			path.laneMask = spectrumFullLaneMask();
+			path.spectralPad = 0u;
+			// one in every lane the representation uses, zero in the rest
+			Spectrum unit = spectrumConst(0.0);
+			for (uint lane = 0u; lane < spectrumActiveLanes(); lane++) {
+				spectrumSetLane(unit, lane, 1.0);
+			}
+			pathSpectra[index] = unit;
+#endif
+			path.bounce = 0u;
+			// the camera sampled no light, so whatever a camera ray finds counts in full
+			path.misPdf = CRT_MIS_FULL;
+			path.misExponent = 1.0;
+			// the ray cone of a pinhole: no width at the eye, the angle one pixel subtends. An orthographic camera's starts a
+			// pixel wide and does not spread
+			path.coneWidth = CRT_RAY_CONES ? pc.pixelWidth : 0.0;
+			path.coneSpread = CRT_RAY_CONES ? pc.pixelSpread : 0.0;
+			paths[index] = path;
+		}
+	}
+
+	queueAppend(CRT_QUEUE_RAY_A, spawn, index);
+}

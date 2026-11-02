@@ -138,7 +138,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 21. [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md). Implemented 2026-10-21. Image export and the batch mode the verification scripts use.
 22. [pbrt-display-and-color.md](pbrt-display-and-color.md). The sRGB curve and false color for wavelengths outside the visible range.
-23. [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md). Its light tracing integrator (steps 1 and 2 of that plan) is what renders laser light; `lvc` and `bdpt` can follow at any later point.
+23. [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md). Its light tracing integrator (steps 1 and 2 of that plan) is what renders laser light; `lvc` and `bdpt` can follow at any later point.
 24. [physoptics-detectors.md](physoptics-detectors.md)
 25. [physoptics-guided-tracing.md](physoptics-guided-tracing.md)
 26. [physoptics-data-export.md](physoptics-data-export.md)
@@ -146,7 +146,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 ### Milestone 4: imaging systems and the geometric goals
 
 27. [physoptics-prescription-import.md](physoptics-prescription-import.md)
-28. [pbrt-cameras.md](pbrt-cameras.md). Its realistic camera traces through a lens assembly from item 27.
+28. [pbrt-cameras.md](completed/pbrt-cameras.md). Its realistic camera traces through a lens assembly from item 27.
 29. [physoptics-verification-scenes.md](physoptics-verification-scenes.md). The geometric section: a 35 mm prime lens, a telescope, a microscope, Gaussian beam propagation through mirrors and lenses, an off-axis parabola's focal spot. Its spectral and polarization sections are verified as milestones 5 and 6 land.
 
 ### Milestone 5: the spectral goals
@@ -235,7 +235,7 @@ The limit of 31 storage buffers per stage still applies. Kernel 02 gains three b
 | Queue | 10 | `CRT_QUEUE_DETECTOR` | detectors |
 | Stage | 26 | deposit on detectors | detectors |
 
-The realistic camera's trace through its lens runs inside kernel 00, which [pbrt-cameras.md](pbrt-cameras.md) already owns, so it needs no stage.
+The realistic camera's trace through its lens runs inside kernel 00, which [pbrt-cameras.md](completed/pbrt-cameras.md) already owns, so it needs no stage.
 
 ### Instances and path state
 

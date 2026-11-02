@@ -209,14 +209,96 @@ bool drawShapeParams(SceneShape& shape)
 	return changed;
 }
 
-bool drawCameraParams(SceneCamera& camera, bool& displayChanged)
+// `loadAperture` is set when the aperture image's Load... is clicked, for the caller to open the dialog
+bool drawCameraParams(SceneCamera& camera, bool& displayChanged, bool& loadAperture)
 {
+	loadAperture = false;
 	bool changed = dragLength3("position", camera.position);
 	changed |= drawOrientation(camera.orientation);
 
-	changed |= ImGui::SliderFloat("vertical fov", &camera.vfovDegrees, 10.f, 120.f, "%.1f");
-	changed |= sliderLength("aperture", camera.aperture, 0.f, 1.f);
-	changed |= sliderLength("focus distance", camera.focusDistance, 0.01f, 50.f, true);
+	//the projection (src/camera_model.h): the traits say which of the fields a kind uses
+	int kind = (int)camera.kind;
+	if (ImGui::Combo("projection", &kind, [](void*, int i) { return cameraKindName((CameraKind)i); }, nullptr, (int)CameraKind::Count)) {
+		camera.kind = (CameraKind)kind;
+		changed = true;
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Perspective is a thin lens. Orthographic sends parallel rays from a film the size of the view volume.\n"
+			"Spherical sees every direction from its position, laid out as an environment map (equirectangular) or as pbrt's\n"
+			"equal-area square. Light tracing and the bidirectional integrators connect to a perspective camera only, as pbrt's do");
+	}
+	const CameraTraits& traits = cameraTraits(camera.kind);
+	if (traits.fieldOfView) {
+		changed |= ImGui::SliderFloat("vertical fov", &camera.vfovDegrees, 10.f, 120.f, "%.1f");
+	}
+	if (traits.viewHeight) {
+		changed |= sliderLength("view height", camera.orthoHeight, 0.01f, 100.f, true);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("The height of the view volume; its width follows the render's aspect");
+		}
+	}
+	if (traits.sphericalMapping) {
+		int mapping = (int)camera.mapping;
+		if (ImGui::Combo("mapping", &mapping, [](void*, int i) { return sphericalMappingName((SphericalMapping)i); }, nullptr, (int)SphericalMapping::Count)) {
+			camera.mapping = (SphericalMapping)mapping;
+			changed = true;
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Equirectangular is the environment map's layout: a render can be loaded back as the map.\n"
+				"Equal-area is pbrt-v4's square layout, for a square render");
+		}
+	}
+	if (traits.lens) {
+		changed |= sliderLength("aperture", camera.aperture, 0.f, 1.f);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("The lens's diameter; 0 is a pinhole. It changes the depth of field, never the brightness");
+		}
+		changed |= sliderLength("focus distance", camera.focusDistance, 0.01f, 50.f, true);
+		ImGui::BeginDisabled(camera.aperture <= 0.f);
+		int shape = (int)camera.apertureShape;
+		if (ImGui::Combo("aperture shape", &shape, [](void*, int i) { return apertureShapeName((ApertureShape)i); }, nullptr, (int)ApertureShape::Count)) {
+			camera.apertureShape = (ApertureShape)shape;
+			changed = true;
+		}
+		if (camera.apertureShape == ApertureShape::Circle) {
+			bool concentric = camera.lensMapping == LensMapping::Concentric;
+			if (ImGui::Checkbox("concentric lens mapping", &concentric)) {
+				camera.lensMapping = concentric ? LensMapping::Concentric : LensMapping::Polar;
+				changed = true;
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("pbrt's square-to-disk map, which keeps a stratified sampler's strata on the lens. Off is Ray Tracing in\n"
+					"One Weekend's polar map, which scenes saved before camera kinds render with: the same image, other noise");
+			}
+		} else if (camera.apertureShape == ApertureShape::Polygon) {
+			int blades = (int)camera.apertureBlades;
+			if (ImGui::SliderInt("blades", &blades, (int)MIN_APERTURE_BLADES, (int)MAX_APERTURE_BLADES)) {
+				camera.apertureBlades = (uint32_t)blades;
+				changed = true;
+			}
+			changed |= ImGui::SliderFloat("rotation", &camera.apertureRotationDegrees, -180.f, 180.f, "%.1f deg");
+		} else {
+			const std::string shownPath = camera.apertureImage.empty() ? std::string("none") : std::filesystem::path(camera.apertureImage).filename().string();
+			ImGui::Text("image: %s", shownPath.c_str());
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("%s", camera.apertureImage.empty() ? "Without an image the aperture is the whole square" : camera.apertureImage.c_str());
+			}
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Load...")) {
+				loadAperture = true;
+			}
+		}
+		ImGui::EndDisabled();
+		changed |= ImGui::DragFloat2("tilt", &camera.tiltDegrees.x, 0.1f, -MAX_CAMERA_TILT, MAX_CAMERA_TILT, "%.1f deg");
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Turns the plane of focus about the camera's x axis (a positive angle recedes at the top) and its y axis\n"
+				"(recedes at the right), pivoting at the focus distance: a ground plane can be sharp from near to far");
+		}
+		changed |= ImGui::DragFloat2("shift", &camera.shift.x, 0.005f, -2.f, 2.f, "%.3f");
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Slides the film across its plane, in image heights: a building's verticals stay parallel");
+		}
+	}
 
 	//display only: applied by the tonemap every frame, so a running render need not restart
 	displayChanged = ImGui::SliderFloat("exposure", &camera.exposure, 0.f, 4.f);
@@ -792,6 +874,16 @@ void RaytraceSceneEditor::replaceMaterials(std::vector<MaterialDef>&& materials)
 	}
 	m_selectedMaterialId = 0;
 	markChanged();
+}
+
+void RaytraceSceneEditor::setCameraFocusDistance(uint64_t id, float focusDistance)
+{
+	SceneCamera* camera = findCamera(id);
+	if (camera == nullptr || camera->focusDistance == focusDistance) {
+		return;
+	}
+	camera->focusDistance = focusDistance;
+	markCameraChanged();
 }
 
 void RaytraceSceneEditor::setCameraPose(uint64_t id, const glm::vec3& position, const glm::quat& orientation)
@@ -1714,8 +1806,18 @@ void RaytraceSceneEditor::drawSelectedCamera(VulkanEngine* engine, SceneCamera& 
 
 	ImGui::BeginDisabled(firstPerson);
 	bool displayChanged = false;
-	bool changed = drawCameraParams(camera, displayChanged);
+	bool loadAperture = false;
+	bool changed = drawCameraParams(camera, displayChanged, loadAperture);
 	ImGui::EndDisabled();
+	if (loadAperture) {
+		const uint64_t id = camera.id;
+		engine->requestOpenFile("Aperture Image", { "png", "jpg", "jpeg", "hdr", "exr", "pfm", "tga", "bmp" }, [this, id](const std::filesystem::path& path) {
+			if (SceneCamera* chosen = findCamera(id)) {
+				chosen->apertureImage = path.string();
+				markCameraChanged();
+			}
+		});
+	}
 
 	TransformGizmo& gizmo = engine->m_transformGizmo;
 	const bool editing = gizmo.isEditing(gizmoTargetId(camera.id));
@@ -1746,6 +1848,20 @@ void RaytraceSceneEditor::drawSelectedCamera(VulkanEngine* engine, SceneCamera& 
 	} else if (firstPerson) {
 		ImGui::SameLine();
 		ImGui::TextDisabled("(fly the viewport: RMB look, WASD)");
+	}
+	//a click in the viewport sets the focus distance to the surface under it (VulkanEngine::beginFocusPick())
+	if (cameraTraits(camera.kind).lens) {
+		const bool picking = engine->m_focusPickCameraId == camera.id;
+		if (ImGui::Button(picking ? "Cancel Focus" : "Focus on...")) {
+			engine->beginFocusPick(camera.id);
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Then click a surface in the viewport: the plane of focus moves to it");
+		}
+		if (picking) {
+			ImGui::SameLine();
+			ImGui::TextDisabled("(click a surface in the viewport)");
+		}
 	}
 
 	if (changed) {

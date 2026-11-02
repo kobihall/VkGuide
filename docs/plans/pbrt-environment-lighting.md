@@ -25,7 +25,7 @@ pbrt-v4 stores every spherical image, environment maps included, in Clarberg's e
 - The GPU sampler cannot wrap across the octahedron's folded edges, so equal-area lookups filter by hand: four `texelFetch` calls with pbrt's octahedral wrap (`WrapMode::OctahedralSphere`).
 - **Convert to equal-area** resamples an equirectangular map on load, as `imgtool makeequiarea` does offline.
 
-The goniometric light ([pbrt-light-types.md](completed/pbrt-light-types.md)), the spherical camera's equal-area output ([pbrt-cameras.md](pbrt-cameras.md)) and the sky below use the same mapping, through one `crt_equal_area.glsl` mirrored in `light_sampling.cpp`.
+The goniometric light ([pbrt-light-types.md](completed/pbrt-light-types.md)), the spherical camera's equal-area output ([pbrt-cameras.md](completed/pbrt-cameras.md)) and the sky below use the same mapping, through one `crt_equal_area.glsl` mirrored in `light_sampling.cpp`.
 
 ### Portals
 
