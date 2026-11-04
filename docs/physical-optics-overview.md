@@ -1,6 +1,6 @@
 # Physical optics, end to end
 
-*A readable account of the laser optics simulator as it is built so far: what exists, how the parts fit, and the rules that keep them consistent. What is still to come, and in what order, is in the [laser optics plan](plans/physoptics-laser-optics.md); the file-by-file detail is in `docs/codebase-map.md` §8.27, §8.28 and §8.30. Every physoptics plan updates this file when it lands: its row in the status table, its section, and the cross-plan list at the end.*
+*A readable account of the laser optics simulator as it is built so far: what exists, how the parts fit, and the rules that keep them consistent. What is still to come, and in what order, is in the [laser optics plan](plans/physoptics-laser-optics.md); the file-by-file detail is in `docs/codebase-map.md` §8.27, §8.28, §8.30 and §8.35. Every physoptics plan updates this file when it lands: its row in the status table, its section, and the cross-plan list at the end.*
 
 ---
 
@@ -31,8 +31,9 @@ scene file ──► capabilities ──► which folders, menus, windows, setti
 | [physoptics-optical-materials](plans/completed/physoptics-optical-materials.md) | 2026-10-29 | Glass catalogs, air, coatings from ideal splitters to thin-film stacks and metals, the `optical_interface` material, surface scatter |
 | [physoptics-optical-elements](plans/completed/physoptics-optical-elements.md) | 2026-10-29 | Thirteen kinds of element in Thorlabs sizes, the **Optics** folder, their panel and preview, and the scene's length unit |
 | [physoptics-bench-and-mounts](plans/completed/physoptics-bench-and-mounts.md) | 2026-10-30 | The breadboard, the stack of fork, holder, post and mount under every optic, placement on the table, the fork's hole, the adjusters' kinematics, and the bench in the preview and the tracer |
+| [physoptics-laser-sources](plans/completed/physoptics-laser-sources.md) | 2026-11-02 | The laser: a Gaussian beam of any M², astigmatic or round, as an element and as a light that light tracing starts paths at; the wave reference, the beam checks, and five of the geometric verification scenes |
 
-Every other physoptics plan is unbuilt. The laser optics plan's roadmap gives their order: light types, laser sources and the beam axis come next.
+Every other physoptics plan is unbuilt. The laser optics plan's roadmap gives their order: the beam axis and the Gaussian beam solver come next.
 
 ## 3. Scene capabilities
 
@@ -81,7 +82,7 @@ each frame, for c in pending:
     else show changes; Apply runs each change; Apply or Dismiss drops c
 ```
 
-Nothing changes until **Apply**. Opening a file that already has the capability shows no note, since its settings are the file's to keep. **Optical bench** recommends a fixed seed, millimeters as the scene's length unit, and a 1 mm near clip plane for the **Viewport**. Later plans add the light integrator when the scene has lasers. The breadboard is an object, not a setting, so the template adds it and no recommendation does.
+Nothing changes until **Apply**. Opening a file that already has the capability shows no note, since its settings are the file's to keep. **Optical bench** recommends a fixed seed, millimeters as the scene's length unit, a 1 mm near clip plane for the **Viewport**, and **Lights** wavelength sampling, so a laser's line a few picometers wide is found in the spectral modes. A scene with a laser but another integrator shows a note in **Render Settings** with a **Use Light tracing** button rather than a recommendation, since the integrator is the scene's choice. The breadboard is an object, not a setting, so the template adds it and no recommendation does.
 
 ### Templates
 
@@ -153,6 +154,8 @@ Glasses live in an `OpticalLibrary` (`src/optic_library.h`) beside the material 
 The AGF reader (`src/optic_glass.cpp`) reads Zemax's catalogs, in ASCII or UTF-16, with every dispersion formula they use: Schott, the Sellmeier forms, Herzberger, Conrady, the Handbook forms and the Extended ones. A glass's `IT` lines give its internal transmittance $T_i$ through thickness $d_i$, which becomes an absorption coefficient interpolated over wavelength, $\alpha(\lambda) = -\ln T_i / d_i$. A ray that crosses length $\ell$ of the glass keeps $e^{-\alpha \ell}$ of its throughput.
 
 Air is Ciddor 1996 at 15 C, 101,325 Pa and 450 ppm CO2: 1.000276 at 633 nm. **Render Settings** → **Optics** → **Surrounding medium** picks air or vacuum, which every body's medium 0 is.
+
+Every index the tracer uses is absolute. A catalog's formula is relative to air, as Schott's data and the AGF format are, so a catalog glass's absolute index is its formula times Ciddor's air (`OpticGlass::relativeToAir`, `glassIndex()`); in air a lens then refracts by the catalog's own ratio, and in vacuum by the absolute index. The spectral builds read it from `absoluteIndexRef()`, a table every nanometer from 200 to 2500 nm. Until 2026-11-02 the air was divided out twice, which made every lens 0.05 % long; the laser checks' telescopes found it.
 
 ### Coatings
 
@@ -254,7 +257,25 @@ which Newton's method solves in double. One adjuster alone turns the plate about
 
 `BenchScene` (`src/bench_scene.h`) uploads the breadboard, the post and each mount model a stack uses, and draws them through the capability's `rasterGeometry` hook. In the tracer every part is a mesh instance of the part's one BLAS, in its finish without decals, and every post is an exact capped cylinder. An optic's faces lie exactly in the mount faces they rest on, so the preview draws optics with a small depth bias toward the camera (1 step and a slope factor of 0.25), and they win the tie instead of flickering with their mount. A larger bias let glass seen nearly edge on show through its mount's lip from a meter away. The raster pass is reverse-Z, so the 1 mm near plane a bench uses keeps a depth step of about 1e-7 of the distance. Each carries a `BenchTag`, the optic's id and the part, so that a later plan can name what a beam clipped.
 
-## 8. Where things live
+## 8. Lasers
+
+A laser is an element (`OpticKind::Laser`) and a light. Its body is one disk, its output aperture, with the `laser_aperture` material; its housing (a laser head, a diode module or a fiber collimator) is a parameter the **Viewport** outlines with lines, and an arrow shows the beam in the color of its wavelength, but nothing the tracer sees. It is placed freely and never mounted. While the bench snaps, its output goes on the nearest hole and its beam along the grid, and the gizmo slides it, raises it and turns it about the vertical in quarter turns.
+
+Its beam is two independent transverse axes, each a Gaussian beam of its own waist $w_0$, waist position and $M^2$, so a diode's elliptical, astigmatic beam is one laser. Along one axis the radius is $w(z)^2 = w_0^2 + \theta^2 (z - z_0)^2$ with $\theta = M^2 \lambda / (\pi w_0)$. The panel takes the beam either way: the waist, its position and $M^2$, or a data sheet's output diameter and full divergence, which `fitLaserAxis()` turns back into them. The HNL050LB preset is the first, from the user's data sheet: 632.8 nm, 5 mW, 0.81 mm and 1.0 mrad, which make $M^2 = 1.005$ with the waist at the output. The spectrum is a Lorentzian or Gaussian line of a given width.
+
+As rays, the beam is its Wigner function: per axis a position at the waist and a slope, each normal, the position carried along the slope to the aperture. That distribution is positive for a Gaussian beam and free space only shears it, so the rays reproduce the beam's second moments through any paraxial system, focus included. What rays cannot carry is diffraction at a hard edge.
+
+Only light tracing starts paths at a laser: next-event estimation never samples one (its light leaves in a cone of milliradians), so lasers sit after every other light in the list, outside both next-event tables, with a table of their own (`crt_laser.glsl`). The path tracer sees a laser's aperture glow when it looks into it, with the beam's radiance, and nothing its beam lights. Exact RGB gives a laser the display color of its wavelength, scaled so its channels average to 1, so a screen's channel mean reads watts. The design wavelength follows the scene's one laser.
+
+### Measuring a beam without detectors
+
+`tools/verify/beam_probe.py` measures a beam on a white Lambertian screen, seen square-on by a pinhole camera on the beam's axis. The camera has no geometry, so it can stand in the beam. The image maps to the screen linearly, so its sum is the power and its second moments are the beam's. `tools/verify/laser_check.py` and `tools/verify/optics_verification.py` build every beam check on it; the detectors replace the screen when they land.
+
+### The wave reference
+
+`tools/verify/wave_optics.py` propagates the same beam by diffraction: diffractsim's angular spectrum method on a grid, with Matsushima's band limit, a beam of $M^2 > 1$ as a Gaussian Schell-model beam (an incoherent sum of Hermite-Gaussian modes with geometric weights, whose Wigner function is the rays' Gaussian), astigmatism, circular apertures, any mask and thin lenses. In free space the rays and the waves must agree to within the rays' noise; past a mask they part, and the comparison images show where. Its self-test checks it against the closed forms and, under diffractsim's venv, against diffractsim itself.
+
+## 9. Where things live
 
 ```text
 src/scene_capabilities.{h,cpp}   the capability registry, the Optical bench entry, templates, the capability windows
@@ -277,6 +298,9 @@ src/length_unit.{h,cpp}          the scene's length unit and the widgets that sh
 src/optic_mount.h                MountPose, FineAdjust and MountKind: how an optic stands, saved with it
 src/optic_bench.{h,cpp}          rt_optics: the breadboard, the stack, the fork rule, placement and the adjusters
 src/bench_scene.{h,cpp}          the breadboard, posts and mounts on the GPU, in the preview and in the tracer
+src/optic_laser.{h,cpp}          rt_optics: a laser's beam from its parameters, the data sheet fit, the housings, the design wavelength
+src/light_sampling.{h,cpp}       rt_light: the laser's emitted rays and densities (LaserEmitter), beside every other light's
+shaders/rt/include/crt_laser.glsl           the laser's beam, its rays and radiance, light tracing's pick
 shaders/rt/include/crt_optic.glsl           the intersector and the surface records, mirroring optic_surface.cpp
 shaders/rt/include/crt_coating.glsl         the coating tables and the transfer matrix, mirroring optic_coating.cpp
 shaders/rt/include/crt_optic_material.glsl  the optical interface, absorption and the ABg lobe
@@ -284,9 +308,14 @@ assets/glass/bundled.agf         the bundled glass catalog
 tests/optics_test.cpp            bin/optics_test
 tools/verify/optics_scenes.py    writes assets/scenes/optics_*.gltf
 tools/verify/optics_check.py     renders them and checks what each must show
+tools/verify/beam_probe.py       a screen and a camera to measure a beam, ABCD and the waist fit
+tools/verify/wave_optics.py      the wave reference
+tools/verify/laser_scenes.py     writes assets/scenes/optics/laser_*.gltf
+tools/verify/laser_check.py      renders them against the closed forms and the wave reference
+tools/verify/optics_verification.py  the geometric verification scenes, assets/scenes/optics/*.gltf
 ```
 
-## 9. Across plans
+## 10. Across plans
 
 ### Checks every physoptics plan runs before it is done
 
@@ -297,7 +326,7 @@ Each plan that adds bench UI or objects keeps the bench consistent with the rest
 1. Every object kind the plan adds is listed by `opticalBenchDependentObjects()` with its kind, name and an `erase` function. With one in the scene, turning the capability off is refused and names it. **Delete them and turn off** leaves a scene that saves as one that never had the capability, apart from the version.
 1. A file from the plan's own build, edited to drop `"capabilities"`, opens with **Optical bench** on and says so.
 1. Its recommended settings join `opticalBenchRecommendedSettings()`, listing only settings that differ. None is ever applied without **Apply**, except by the Optical bench template.
-1. What the plan adds to a new bench joins `populateOpticalBench()`. The plan's table lists the target contents: the breadboard, a HeNe laser at beam height, a power meter, a beam axis from the laser, and the light integrator.
+1. What the plan adds to a new bench joins `populateOpticalBench()`. The plan's table lists the target contents: the breadboard, a HeNe laser at beam height, a power meter, a beam axis from the laser, and the light integrator. The laser and the light integrator wait for the power meter, so that a new bench measures something.
 1. A new window docks in `buildOpticsLayout()`, and in `buildRenderLayout()` if a render scene wants it too. A user's saved layout has no place for a new window, so it opens as a tab in the center the first time. Check both a fresh `imgui.ini` and one saved before the plan.
 1. Panels show lengths through `src/length_unit.h`, in the scene's unit, and angles in degrees or microradians. The file stores SI units.
 1. Anything that stands on the bench is placed through `opticWorldTransform()` or a stack of its own built the same way, never by a free transform the panel edits directly.
@@ -312,12 +341,13 @@ Each plan that adds bench UI or objects keeps the bench consistent with the rest
 - Stacks other than forks do not collide: two post holders in neighboring holes overlap.
 - Mounts trace in their plain finishes: the decals are the preview's alone, since the path tracer's texture array holds 512 × 512 layers.
 - No detector exists, so the checks of the optics plans that need one (a 50:50 split measured as power on two detectors, a dichroic's split by wavelength) render images instead. [physoptics-detectors.md](plans/physoptics-detectors.md) runs them.
-- The design wavelength is one scene setting. When lasers exist, a monochromatic scene may want it to follow the laser's line.
+- A laser's light renders only under light tracing. The light vertex cache and pbrt 3's BDPT need their MIS taught that a laser cannot be sampled by next-event estimation.
+- The scene file clamps a camera's field of view to at least 1 degree, so a check that resolves a 20 µm focus puts its camera a few millimeters from the screen.
 - The coating tables keep power, not phase. [pbrt-polarization.md](plans/pbrt-polarization.md) adds the phases, and the polarizing cube's s and p split, which the renderer averages today.
 - In float, about 1 in 10^6 rays crossing an element's edge ends inside the body, against none in double: float's limit at a rim, measured by `bin/optics_test`.
 - An off-axis parabola's thin edge is 0.75 of its diameter. At 1 in and 90 degrees that gives 30.95 mm, where MPD149's drawing gives 31.75 mm. A per-part table would match each drawing.
 - Whether a capability may hide UI its scenes do not need, such as the environment map controls in a bench scene, is open. So far capabilities only add, and hiding is a workspace's job.
 
-## 10. Sources
+## 11. Sources
 
-The [laser optics plan](plans/physoptics-laser-optics.md) and its sources; the [bench and mounts plan](plans/completed/physoptics-bench-and-mounts.md); the [scene capabilities plan](plans/completed/physoptics-scene-capabilities.md) and its survey of OpticStudio, COMSOL, Unreal, Blender and FreeCAD; the Mitsuba 3 documentation, "Variants" and "Scene format"; the Dear ImGui docking branch, `DockBuilder` and the `.ini` settings handlers. For the optics: the sources of the [optical surfaces](plans/completed/physoptics-optical-surfaces.md), [optical materials](plans/completed/physoptics-optical-materials.md) and [optical elements](plans/completed/physoptics-optical-elements.md) plans, chiefly Macleod 2010, *Thin-film optical filters*; Ciddor 1996, *Refractive index of air*; the Zemax OpticStudio manual's "Glass catalogs"; Stover 2012, *Optical scattering*; and the Thorlabs product pages and drawings.
+The [laser optics plan](plans/physoptics-laser-optics.md) and its sources; the [bench and mounts plan](plans/completed/physoptics-bench-and-mounts.md); the [scene capabilities plan](plans/completed/physoptics-scene-capabilities.md) and its survey of OpticStudio, COMSOL, Unreal, Blender and FreeCAD; the Mitsuba 3 documentation, "Variants" and "Scene format"; the Dear ImGui docking branch, `DockBuilder` and the `.ini` settings handlers. For the lasers: the sources of the [laser sources plan](plans/completed/physoptics-laser-sources.md), chiefly Siegman 1986, *Lasers*; Bastiaans 1979 on the Wigner function; Gori 1980 and Mandel and Wolf 1995 on Gaussian Schell-model beams; and diffractsim. For the optics: the sources of the [optical surfaces](plans/completed/physoptics-optical-surfaces.md), [optical materials](plans/completed/physoptics-optical-materials.md) and [optical elements](plans/completed/physoptics-optical-elements.md) plans, chiefly Macleod 2010, *Thin-film optical filters*; Ciddor 1996, *Refractive index of air*; the Zemax OpticStudio manual's "Glass catalogs"; Stover 2012, *Optical scattering*; and the Thorlabs product pages and drawings.

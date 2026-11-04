@@ -1,0 +1,21 @@
+{
+  "waist": 2.0448609853793694e-05,
+  "focus_from_datum": 0.1016829600959586,
+  "tolerance": {
+    "waist": 0.01,
+    "position": 0.0001
+  },
+  "misaligned_measured": {
+    "0.1": {
+      "radius_u": 2.083281302145149e-05,
+      "radius_v": 2.088725925593868e-05,
+      "centroid_u": 0.0003547981934629147
+    },
+    "0.5": {
+      "radius_u": 2.5102035430992678e-05,
+      "radius_v": 2.5520155142293157e-05,
+      "centroid_u": 0.0017748260897802112
+    }
+  },
+  "notes": "aligned: lambda f / (pi w). Misaligned spot growth is recorded, not checked: its reference is OpticStudio's or Optiland's"
+}

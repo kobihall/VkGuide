@@ -1,0 +1,53 @@
+{
+  "angles": [
+    {
+      "angle": 10.0,
+      "tangential": {
+        "focus": 0.0985599411037571,
+        "waist": 1.982031569373636e-05,
+        "measured_focus": 0.0985586677758439,
+        "measured_waist": 1.985183105170359e-05
+      },
+      "sagittal": {
+        "focus": 0.10162555154501907,
+        "waist": 2.04370600903125e-05,
+        "measured_focus": 0.10162565306923972,
+        "measured_waist": 2.0441108720463865e-05
+      }
+    },
+    {
+      "angle": 20.0,
+      "tangential": {
+        "focus": 0.09404294884933546,
+        "waist": 1.891162088740608e-05,
+        "measured_focus": 0.09404069513374597,
+        "measured_waist": 1.9030429501629404e-05
+      },
+      "sagittal": {
+        "focus": 0.10650658834274715,
+        "waist": 2.1419083142794278e-05,
+        "measured_focus": 0.10650737025187647,
+        "measured_waist": 2.143535538224249e-05
+      }
+    },
+    {
+      "angle": 45.0,
+      "tangential": {
+        "focus": 0.07075709347029048,
+        "waist": 1.4227837866409252e-05,
+        "measured_focus": 0.07074798659700185,
+        "measured_waist": 1.6064426144678617e-05
+      },
+      "sagittal": {
+        "focus": 0.14154990414467156,
+        "waist": 2.8471487393839005e-05,
+        "measured_focus": 0.14154893256386109,
+        "measured_waist": 2.8478236741494858e-05
+      }
+    }
+  ],
+  "tolerance": {
+    "position": 0.001
+  },
+  "notes": "tangential focus R cos(theta) / 2, sagittal R / (2 cos(theta)), as Gaussian waists (ABCD)"
+}

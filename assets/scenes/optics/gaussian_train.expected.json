@@ -1,0 +1,12 @@
+{
+  "waist": 4.4831506636030686e-05,
+  "waist_position_after_lens": 0.10252526240068023,
+  "m2": 1.0053295075093758,
+  "rayleigh_range": 0.009925254258056612,
+  "tolerance": {
+    "waist": 0.01,
+    "position": 0.0005,
+    "m2": 0.02
+  },
+  "notes": "the focus after the lens: ABCD of the thick lens, the embedded Gaussian of the HNL050LB"
+}

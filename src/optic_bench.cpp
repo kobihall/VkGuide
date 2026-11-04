@@ -1165,6 +1165,20 @@ void dropOntoBench(SceneOptic& optic, const BenchContext& context, std::span<con
 	placeOnBench(optic, glm::dvec2(target.x, target.z), target.y, pose.yaw, false, context, others);
 }
 
+void snapFreeToBench(SceneOptic& optic, const BenchContext& context)
+{
+	MountPose& pose = optic.mount;
+	const glm::dvec3 local = opticOrigin(optic, context);
+	const glm::dvec3 origin = pose.freePosition + pose.freeOrientation * local;
+	const glm::dvec2 hole = nearestHole(context.settings, glm::dvec2(origin.x, origin.z));
+	// the axis's direction across the table, rounded to a quarter turn; straight up or down keeps the turn it had
+	const glm::dvec3 axis = pose.freeOrientation * glm::dvec3(0.0, 0.0, 1.0);
+	const double yaw = std::hypot(axis.x, axis.z) > 1e-9 ? std::atan2(axis.x, axis.z) : 0.0;
+	const double snapped = 0.5 * PI * std::round(yaw / (0.5 * PI));
+	pose.freeOrientation = glm::angleAxis(snapped, glm::dvec3(0.0, 1.0, 0.0));
+	pose.freePosition = glm::dvec3(hole.x, origin.y, hole.y) - pose.freeOrientation * local;
+}
+
 glm::dvec3 opticOrigin(const SceneOptic& optic, const OpticPrescription& body)
 {
 	switch (optic.kind) {

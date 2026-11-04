@@ -6,8 +6,9 @@
   VKGUIDE_SELFTEST=1 bin/vulkan_guide                              shaders against their C++ mirrors
   furnace_check.py, cornell_check.py, filter_check.py, film_check.py, aov_check.py, spectral_check.py, bsdf_check.py,
   optics_check.py, light_texture_check.py, camera_check.py,        scene-level energy, reference, filter, film, output,
-  bidirectional_check.py                                           spectral, optics, light type, texture, camera and
-                                                                   bidirectional checks
+  bidirectional_check.py, laser_check.py,                          spectral, optics, light type, texture, camera,
+  optics_verification.py                                           bidirectional, laser and geometric optics checks
+  wave_optics.py                                                   the wave reference against its closed forms
   pbrt_compare.py --cornell --integrator bdpt                      bdpt against pbrt-v4's own BDPT (not with --skip-pbrt)
 
 Build first (cd build && cmake --build .). The renders need the GPU and take a few minutes; --cpu-only
@@ -50,6 +51,7 @@ def main():
     quick = ["--quick"] if args.quick else []
     ok &= run("bsdf_test", [str(BIN / "bsdf_test")] + quick)
     ok &= run("light_test", [str(BIN / "light_test")])
+    ok &= run("wave_optics", [sys.executable, os.path.join(HERE, "wave_optics.py")], cwd=HERE)
     ok &= run("camera_test", [str(BIN / "camera_test")])
     ok &= run("sampler_test", [str(BIN / "sampler_test")])
     ok &= run("film_test", [str(BIN / "film_test")])
@@ -78,6 +80,8 @@ def main():
         ok &= run("light_texture_check", [sys.executable, os.path.join(HERE, "light_texture_check.py")] + quick, cwd=HERE)
         ok &= run("camera_check", [sys.executable, os.path.join(HERE, "camera_check.py")] + quick, cwd=HERE)
         ok &= run("bidirectional_check", [sys.executable, os.path.join(HERE, "bidirectional_check.py")] + quick, cwd=HERE)
+        ok &= run("laser_check", [sys.executable, os.path.join(HERE, "laser_check.py")] + quick, cwd=HERE)
+        ok &= run("optics_verification", [sys.executable, os.path.join(HERE, "optics_verification.py")] + quick, cwd=HERE)
         if not args.skip_pbrt:
             ok &= run("pbrt_compare bdpt", [sys.executable, os.path.join(HERE, "pbrt_compare.py"), "--cornell", "--integrator", "bdpt", "--max-depth", "5",
                                             "--size", "128", "--spp", "64" if args.quick else "256", "--max-mean-error", "0.01"], cwd=HERE)

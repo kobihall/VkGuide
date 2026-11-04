@@ -208,7 +208,7 @@ private:
 	void drawFilmSettings(VulkanEngine* engine);
 	// the "Spectral" section (docs/plans/completed/pbrt-spectral-rendering.md): the representation, its lanes, range and
 	// sampling, the working space, the design wavelength, and how a monochromatic render is shown
-	void drawSpectralSettings();
+	void drawSpectralSettings(VulkanEngine* engine);
 	// the "Outputs" section: the auxiliary outputs, the light groups and Relight
 	void drawOutputsSettings(VulkanEngine* engine, RaytraceSceneEditor& editor);
 	// the "Export" section: the file options, Save when finished and the Export Render button

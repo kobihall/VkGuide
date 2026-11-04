@@ -7,6 +7,7 @@
 #include <imgui.h>
 
 #include <length_unit.h>
+#include <optic_laser.h>
 #include <optic_library.h>
 #include <vk_engine.h>
 
@@ -56,7 +57,10 @@ void drawGlassDetails(VulkanEngine* engine, const OpticGlass& glass)
 	if (glass.index.kind == SpectrumKind::Dispersion) {
 		ImGui::TextDisabled("%s, %d coefficients", dispersionFormulaName(glass.index.formula), dispersionCoefficientCount(glass.index.formula));
 	}
-	ImGui::Text("n at F, d, C: %.6f  %.6f  %.6f", glassIndex(glass, LAMBDA_F), glassIndex(glass, LAMBDA_D), glassIndex(glass, LAMBDA_C));
+	ImGui::Text("n at F, d, C: %.6f  %.6f  %.6f", indexRelativeToAir(glass, LAMBDA_F), indexRelativeToAir(glass, LAMBDA_D), indexRelativeToAir(glass, LAMBDA_C));
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Relative to air, as a catalog gives them. The absolute index is these times Ciddor's air (%.6f at the d line)", ciddorAirIndex(LAMBDA_D));
+	}
 	ImGui::Text("Abbe number: %.2f (catalog %.2f)", abbeNumber(glass), glass.catalogVd);
 	if (glass.range.y > glass.range.x) {
 		ImGui::TextDisabled("valid from %.0f to %.0f nm; outside it the formula is extrapolated", glass.range.x, glass.range.y);
@@ -346,13 +350,19 @@ void drawOpticsRenderSettings(VulkanEngine* engine)
 	if (ImGui::IsItemHovered()) {
 		ImGui::SetTooltip("Medium 0 of every optical body: standard air at 15 C, 101 325 Pa and 450 ppm CO2, or vacuum for an XUV setup");
 	}
-	float design = settings.spectral.designWavelength;
+	const SceneOptic* laser = singleLaser(engine->m_raytraceScene.optics());
+	if (laser != nullptr) {
+		changed |= ImGui::Checkbox(fmt::format("design wavelength follows {}", laser->name).c_str(), &settings.spectral.designFollowsLaser);
+	}
+	ImGui::BeginDisabled(laser != nullptr && settings.spectral.designFollowsLaser);
+	float design = designWavelength(settings.spectral, engine->m_raytraceScene.optics());
 	if (ImGui::SliderFloat("design wavelength (nm)", &design, 200.f, 2000.f, "%.1f")) {
 		settings.spectral.designWavelength = design;
 		changed = true;
 	}
-	if (ImGui::IsItemHovered()) {
-		ImGui::SetTooltip("Exact RGB reads every glass's index here (the helium d line, 587.6 nm, by default); the element readouts and wedge angles too");
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+		ImGui::SetTooltip("Exact RGB reads every glass's index here (the helium d line, 587.6 nm, by default, or the scene's laser's while it has\none); the element readouts and wedge angles too");
 	}
 	changed |= ImGui::Checkbox("exact coatings", &settings.optics.exactCoatings);
 	if (ImGui::IsItemHovered()) {

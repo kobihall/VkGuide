@@ -64,6 +64,10 @@ layout (constant_id = 7) const bool CRT_CAMERA_MODEL = false;
 // CRT_SPLATS: kernel 09 folds the splats of light tracing and the bidirectional integrators (binding 42) into its
 // resolve (docs/plans/completed/pbrt-bidirectional-path-tracing.md). Off, it is the code it always was
 layout (constant_id = 10) const bool CRT_SPLATS = false;
+// CRT_LASERS: the scene holds a laser (docs/plans/completed/physoptics-laser-sources.md): light tracing starts paths at its
+// beam, and kernel 04 lights its aperture for a camera ray (crt_laser.glsl). Constant_id 11 and 12 are
+// CRT_LIGHT_VERTEX_CACHE and CRT_BDPT. Every kernel that reads the instances is specialized for it
+layout (constant_id = 13) const bool CRT_LASERS = false;
 
 #define CRT_DEBUG_NONE 0u
 #define CRT_DEBUG_PRIMARY_DIRECTION 1u
@@ -100,6 +104,8 @@ layout (constant_id = 10) const bool CRT_SPLATS = false;
 #define CRT_MATERIAL_MIX 11u
 // a surface of an optical body (docs/plans/completed/physoptics-optical-materials.md, crt_optic_material.glsl)
 #define CRT_MATERIAL_OPTICAL_INTERFACE 12u
+// a laser's output aperture (docs/plans/completed/physoptics-laser-sources.md): black, glowing with its instance's beam
+#define CRT_MATERIAL_LASER_APERTURE 13u
 
 // PathState.misPdf's sentinel: whatever emission this path's next ray finds counts at full weight,
 // because no light was sampled towards it - a camera ray, a ray leaving a specular surface, or a
@@ -307,6 +313,10 @@ struct GpuMaterial {
 // pbrt-v4's projection and goniometric lights (docs/plans/completed/pbrt-light-types.md): delta lights with an image
 #define CRT_LIGHT_PROJECTION 8u
 #define CRT_LIGHT_GONIOMETRIC 9u
+// a laser (docs/plans/completed/physoptics-laser-sources.md): two records, the light's and its beam's (crt_laser.glsl),
+// after every light next-event estimation samples
+#define CRT_LIGHT_LASER 10u
+#define CRT_LIGHT_LASER_BEAM 11u
 // GpuLight.kind holds the kind in its low 8 bits (lightKindOf()) and these flags above them. src/rt_lights.h GPU_LIGHT_*
 #define CRT_LIGHT_KIND_MASK 0xFFu
 // a spot light falls off as pbrt's smoothstep instead of glTF's squared ramp
@@ -334,6 +344,9 @@ struct GpuMaterial {
 //                x axis, the half-width of the frustum at unit distance; c = its y axis, the half-height. It shines down
 //                cross(c, b), the light's -z
 //   goniometric  a = position, its image as a projection's; b.xyz, c.xyz its frame's x and y axes
+//   laser        a = the beam's reference plane's center, the aperture's radius; b.xyz = the axis it leaves along;
+//                c.xyz = the beam's x axis. Its alias fields are the lasers' own table. The next record is its beam:
+//                a = the x and y waist radii, then their waists' distances behind the plane; b.xy = the half angles
 //   environment  nothing: the map's tables are environmentSampling
 struct GpuLight {
 	vec4 a;
@@ -368,11 +381,13 @@ struct LightHeader {
 	uint deltaCount;
 	// the environment map's record, or CRT_NO_LIGHT when the background is not a map
 	uint environment;
-	uint pad0;
+	// the lasers' first record and their count, two records each; 0 without any
+	uint laserBase;
 	float invTotalPower;
 	float invDeltaPower;
-	float pad1;
-	float pad2;
+	uint laserCount;
+	// one over the power of every light a light path may start from: the full table's and the lasers'
+	float invEmitPower;
 };
 
 #ifndef CRT_SPECTRAL

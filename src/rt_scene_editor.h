@@ -1,5 +1,7 @@
 #pragma once
 
+#include <limits>
+
 // The live, persistent list of scene objects the raytracer owns - analytic shapes, cameras, punctual
 // lights and the placed glTF mesh objects - the material library they are shaded with, the "Scene"
 // panel that browses and edits the objects, and the "Materials" window that edits the library.
@@ -276,6 +278,9 @@ private:
 	std::vector<SceneOptic> m_optics;
 	BenchSettings m_bench;
 	std::vector<OpticStack> m_stacks;
+	// a laser's turn about the vertical over the gizmo drag so far, unsnapped, which the snapped turn steps after; NaN
+	// between drags
+	double m_laserDragYaw { std::numeric_limits<double>::quiet_NaN() };
 	bool m_showBenchSettings { false };
 	std::vector<MaterialDef> m_materials;
 	std::vector<std::string> m_lightGroupNames { "Default" };

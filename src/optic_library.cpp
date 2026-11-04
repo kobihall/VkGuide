@@ -259,7 +259,7 @@ uint32_t OpticalLibrary::packCoatingRecord(const OpticCoating& coating, const Co
 		const OpticGlass& g = glass != nullptr ? *glass : fallback;
 		out.push_back(glm::vec4((float)films[i].thickness, n));
 		out.push_back(glm::vec4(k, 0.f));
-		out.push_back(glm::vec4(floatOf(addSpectrum(g.index)), floatOf(addSpectrum(g.absorption)), 0.f, 0.f));
+		out.push_back(glm::vec4(floatOf(addSpectrum(absoluteIndexRef(g))), floatOf(addSpectrum(g.absorption)), 0.f, 0.f));
 	}
 	if (coating.kind == CoatingKind::Metal) {
 		const SpectrumRef eta = namedRef("metal-" + coating.metal + "-eta").value_or(constantRef(1.f));

@@ -184,6 +184,8 @@ inline constexpr uint32_t CRT_FEATURE_SPLATS = 1u << 24;
 inline constexpr uint32_t CRT_FEATURE_LIGHT_VERTEX_CACHE = 1u << 25;
 // pbrt 3's BDPT, for kernel 11 (CRT_BDPT)
 inline constexpr uint32_t CRT_FEATURE_BDPT = 1u << 26;
+// the scene's light list holds a laser, for every kernel that reads the instances (CRT_LASERS)
+inline constexpr uint32_t CRT_FEATURE_LASERS = 1u << 27;
 
 // the camera's fields of the push constants, from its frame (src/camera_model.h): what GpuRenderer::baseParams() and the
 // camera self-test both write

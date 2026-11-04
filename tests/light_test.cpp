@@ -18,11 +18,18 @@
 // side, 4 pi I, I times a spot's solid angle, E times the disk's area).
 // For the environment map's half-float GPU copy: a map brighter than 65504 stays finite and within
 // half float's precision of the file, and a map that fits is stored unscaled.
+// For lasers (docs/plans/completed/physoptics-laser-sources.md), a round M^2 = 1 and M^2 = 2 beam and an astigmatic diode
+// beam: 10^6 emitted rays, carried to the waist, one Rayleigh range and ten past it, have second-moment radii within
+// 0.5 % of w(z); a sample's densities are the pdf function's; the position density integrates to 1 over the plane and the
+// direction density to 1 over the sphere; the samples follow the beam's phase-space density (chi-square per axis); the
+// radiance over the densities gives the power.
 //
 // Run:  ./bin/light_test [--samples N]
 
 #include <ies_loader.h>
 #include <light_sampling.h>
+
+#include "test_stats.h"
 
 #include <bvh_layout.h>
 #include <shape.h>
@@ -637,6 +644,170 @@ void testEmittedRays(size_t samples)
 	check(std::abs(infiniteLightPdfPos(sceneSphere) * LIGHT_PI * 9.f - 1.f) < 1e-6f, "infinite lights: the positional density is not one over the disk's area");
 }
 
+// a laser beam whose frame is turned off the world's axes and whose center is away from the origin
+LaserEmitter testLaser(glm::vec2 waist, glm::vec2 waistDistance, glm::vec2 m2, float wavelength)
+{
+	LaserEmitter laser;
+	laser.center = glm::vec3(0.3f, 0.1f, -0.2f);
+	laser.axis = glm::normalize(glm::vec3(0.4f, 0.1f, 1.f));
+	laser.xAxis = glm::normalize(glm::cross(glm::vec3(0.f, 1.f, 0.f), laser.axis));
+	laser.waist = waist;
+	laser.waistDistance = waistDistance;
+	laser.halfAngle = m2 * wavelength / (LIGHT_PI * waist);
+	return laser;
+}
+
+void testLaser(const std::string& name, const LaserEmitter& laser, size_t samples)
+{
+	const glm::vec3 yAxis = glm::cross(laser.axis, laser.xAxis);
+	// each axis's 1/e^2 radius at `fromWaist` past its waist
+	auto beamRadius = [&](int axis, double fromWaist) {
+		const double w0 = laser.waist[axis];
+		const double theta = laser.halfAngle[axis];
+		return std::sqrt(w0 * w0 + theta * theta * fromWaist * fromWaist);
+	};
+	// the planes, per axis, at 0, 1 and 10 Rayleigh ranges past its own waist (along the axis from the reference plane)
+	const double multiples[3] = { 0.0, 1.0, 10.0 };
+	double secondMoment[2][3] = {};
+	double worstDensity = 0.0;
+	double power = 0.0;
+	// the x axis's (position, slope) and the y axis's on 20 x 20 cells of +-4 standard deviations, the rest one cell
+	constexpr int BINS = 20;
+	std::vector<double> observed[2];
+	observed[0].assign(BINS * BINS + 1, 0.0);
+	observed[1].assign(BINS * BINS + 1, 0.0);
+	const glm::dvec2 sigmaW = 0.5 * glm::dvec2(laser.waist);
+	const glm::dvec2 sigmaS = 0.5 * glm::dvec2(laser.halfAngle);
+	const glm::dvec2 d = glm::dvec2(laser.waistDistance);
+	const glm::dvec2 sigmaX = glm::sqrt(sigmaW * sigmaW + d * d * sigmaS * sigmaS);
+	auto cellOf = [&](int axis, double x, double slope) {
+		const int i = (int)std::floor((x / sigmaX[axis] + 4.0) / 8.0 * BINS);
+		const int j = (int)std::floor((slope / sigmaS[axis] + 4.0) / 8.0 * BINS);
+		return i >= 0 && i < BINS && j >= 0 && j < BINS ? i * BINS + j : BINS * BINS;
+	};
+	for (size_t n = 0; n < samples; n++) {
+		LightLeSample s;
+		if (!sampleLaserLe(laser, glm::vec2(uniform(), uniform()), glm::vec2(uniform(), uniform()), s)) {
+			check(false, name + ": a sample was refused");
+			continue;
+		}
+		const glm::dvec3 origin(s.origin - laser.center);
+		const glm::dvec3 direction(s.direction);
+		const glm::dvec3 axis(laser.axis);
+		const glm::dvec3 xs[2] = { glm::dvec3(laser.xAxis), glm::dvec3(yAxis) };
+		for (int a = 0; a < 2; a++) {
+			const double rayleigh = laser.waist[a] / laser.halfAngle[a];
+			for (int k = 0; k < 3; k++) {
+				// the plane `fromWaist` past the waist, which is waistDistance behind the reference plane
+				const double plane = multiples[k] * rayleigh - laser.waistDistance[a];
+				const double t = (plane - glm::dot(origin, axis)) / glm::dot(direction, axis);
+				const double x = glm::dot(origin + t * direction, xs[a]);
+				secondMoment[a][k] += x * x;
+			}
+			const double x = glm::dot(origin, xs[a]);
+			const double slope = glm::dot(direction, xs[a]) / glm::dot(direction, axis);
+			observed[a][(size_t)cellOf(a, x, slope)] += 1.0;
+		}
+		float pdfPos;
+		float pdfDir;
+		laserPdfLe(laser, s.origin, s.direction, pdfPos, pdfDir);
+		worstDensity = std::max({ worstDensity, std::abs((double)pdfPos / s.pdfPos - 1.0), std::abs((double)pdfDir / s.pdfDir - 1.0) });
+		// a watt's radiance, its cosine and the densities: 1 per sample
+		power += laserRadiance(laser, s.origin, s.direction) * glm::dot(s.direction, laser.axis) / ((double)s.pdfPos * s.pdfDir);
+	}
+	power /= (double)samples;
+	double worstRadius = 0.0;
+	for (int a = 0; a < 2; a++) {
+		const double rayleigh = laser.waist[a] / laser.halfAngle[a];
+		for (int k = 0; k < 3; k++) {
+			const double measured = 2.0 * std::sqrt(secondMoment[a][k] / (double)samples);
+			const double expected = beamRadius(a, multiples[k] * rayleigh);
+			worstRadius = std::max(worstRadius, std::abs(measured / expected - 1.0));
+		}
+	}
+
+	// the joint density of one axis's position in the plane and slope, integrated over a cell by a 6 x 6 midpoint rule
+	auto cellIntegral = [&](int axis, int i, int j) {
+		const double x0 = (8.0 * i / BINS - 4.0) * sigmaX[axis];
+		const double s0 = (8.0 * j / BINS - 4.0) * sigmaS[axis];
+		const double dx = 8.0 / BINS * sigmaX[axis];
+		const double ds = 8.0 / BINS * sigmaS[axis];
+		double sum = 0.0;
+		for (int u = 0; u < 6; u++) {
+			for (int v = 0; v < 6; v++) {
+				const double x = x0 + (u + 0.5) / 6.0 * dx;
+				const double slope = s0 + (v + 0.5) / 6.0 * ds;
+				const double a = (x - d[axis] * slope) / sigmaW[axis];
+				const double b = slope / sigmaS[axis];
+				sum += std::exp(-0.5 * (a * a + b * b)) / (2.0 * LIGHT_PI * sigmaW[axis] * sigmaS[axis]);
+			}
+		}
+		return sum / 36.0 * dx * ds;
+	};
+	double worstP = 1.0;
+	for (int a = 0; a < 2; a++) {
+		std::vector<double> expected(BINS * BINS + 1, 0.0);
+		double inside = 0.0;
+		for (int i = 0; i < BINS; i++) {
+			for (int j = 0; j < BINS; j++) {
+				expected[(size_t)(i * BINS + j)] = cellIntegral(a, i, j) * (double)samples;
+				inside += expected[(size_t)(i * BINS + j)];
+			}
+		}
+		expected[BINS * BINS] = std::max((double)samples - inside, 0.0);
+		worstP = std::min(worstP, stats::chiSquareTest(observed[a], expected).pValue);
+	}
+
+	// the position density over the plane, and the direction density over the slopes (d omega = cos^3 d slope), from
+	// a point half a beam radius off the axis, by the midpoint rule over +-8 standard deviations
+	const glm::vec3 point = laser.center + 0.5f * laser.waist.x * laser.xAxis;
+	double positionIntegral = 0.0;
+	double directionIntegral = 0.0;
+	constexpr int GRID = 160;
+	const glm::dvec2 mean = d * sigmaS * sigmaS * glm::dvec2(0.5 * laser.waist.x, 0.0) / (sigmaX * sigmaX);
+	const glm::dvec2 sigmaGiven = sigmaW * sigmaS / sigmaX;
+	for (int i = 0; i < GRID; i++) {
+		for (int j = 0; j < GRID; j++) {
+			const glm::dvec2 u((i + 0.5) / GRID * 16.0 - 8.0, (j + 0.5) / GRID * 16.0 - 8.0);
+			const glm::dvec2 x = u * sigmaX;
+			float pdfPos;
+			float pdfDir;
+			laserPdfLe(laser, laser.center + (float)x.x * laser.xAxis + (float)x.y * yAxis, laser.axis, pdfPos, pdfDir);
+			positionIntegral += pdfPos * (16.0 / GRID) * (16.0 / GRID) * sigmaX.x * sigmaX.y;
+			const glm::dvec2 slope = mean + u * sigmaGiven;
+			const glm::dvec3 direction = glm::normalize(slope.x * glm::dvec3(laser.xAxis) + slope.y * glm::dvec3(yAxis) + glm::dvec3(laser.axis));
+			laserPdfLe(laser, point, glm::vec3(direction), pdfPos, pdfDir);
+			const double cosTheta = glm::dot(direction, glm::dvec3(laser.axis));
+			directionIntegral += pdfDir * cosTheta * cosTheta * cosTheta * (16.0 / GRID) * (16.0 / GRID) * sigmaGiven.x * sigmaGiven.y;
+		}
+	}
+	fmt::println("  {}: radii within {:.3f} % of w(z), densities within {:.2g}, chi-square p {:.3f}, position {:.5f} and direction {:.5f} integrals, power {:.5f}", name,
+		100.0 * worstRadius, worstDensity, worstP, positionIntegral, directionIntegral, power);
+	check(worstRadius < 0.005, fmt::format("{}: a second-moment radius is {:.3f} % off w(z)", name, 100.0 * worstRadius));
+	// in float, a slope of a few 1e-4 read back from a unit direction, and a beam radius from a point tenths of a meter
+	// out, lose about 1e-4 of a standard deviation, which moves a density in the beam's far tail by a few 1e-3. Nothing
+	// weighs by the recomputed densities: light tracing divides by the sample's own
+	check(worstDensity < 1e-2, fmt::format("{}: a sample's densities are {:.3g} off the pdf function's", name, worstDensity));
+	check(worstP > 1e-3, fmt::format("{}: the samples do not follow the beam (chi-square p = {:.2g})", name, worstP));
+	check(std::abs(positionIntegral - 1.0) < 1e-3, fmt::format("{}: the position density integrates to {:.5f}", name, positionIntegral));
+	check(std::abs(directionIntegral - 1.0) < 1e-3, fmt::format("{}: the direction density integrates to {:.5f}", name, directionIntegral));
+	check(std::abs(power - 1.0) < 1e-3, fmt::format("{}: the radiance over the densities gives {:.5f} W per watt", name, power));
+	// nothing leaves backward
+	check(laserRadiance(laser, laser.center, -laser.axis) == 0.f, name + ": radiance leaves backward");
+}
+
+void testLasers(size_t samples)
+{
+	// a HeNe's waist at the output; the same beam at M^2 = 2 with its waist 30 mm inside the housing; a diode's elliptical
+	// beam with its x and y waists 50 mm apart, in front of the output and behind it
+	testLaser("M^2 = 1", testLaser(glm::vec2(0.405e-3f), glm::vec2(0.f), glm::vec2(1.f), 632.8e-9f), samples);
+	testLaser("M^2 = 2", testLaser(glm::vec2(0.405e-3f), glm::vec2(0.03f), glm::vec2(2.f), 632.8e-9f), samples);
+	testLaser("astigmatic diode", testLaser(glm::vec2(1.2e-3f, 0.4e-3f), glm::vec2(-0.02f, 0.03f), glm::vec2(1.3f, 1.8f), 635e-9f), samples);
+	// a stratified sampler's strata stay apart: Box-Muller maps a corner of the square to the tails, never the middle
+	const glm::vec2 n = sampleStandardNormal2(glm::vec2(0.f, 0.25f));
+	check(std::abs(n.x) < 1e-6f && std::abs(n.y) < 1e-6f, "Box-Muller: u = (0, 1/4) is not the center");
+}
+
 int main(int argc, char* argv[])
 {
 	size_t samples = 20000;
@@ -692,6 +863,9 @@ int main(int argc, char* argv[])
 
 	fmt::println("emitted rays:");
 	testEmittedRays(samples * 25);
+
+	fmt::println("lasers ({} rays each):", samples * 50);
+	testLasers(samples * 50);
 
 	fmt::println("\n{}", g_failures == 0 ? "PASS" : fmt::format("FAIL ({} problem(s))", g_failures));
 	return g_failures == 0 ? 0 : 2;

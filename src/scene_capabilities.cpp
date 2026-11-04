@@ -1,6 +1,8 @@
 #include <scene_capabilities.h>
 
 #include <length_unit.h>
+#include <optic_laser.h>
+#include <optic_models.h>
 #include <optics_ui.h>
 #include <scene_io.h>
 #include <vk_engine.h>
@@ -48,6 +50,20 @@ void opticalBenchRecommendedSettings(const VulkanEngine* engine, std::vector<Set
 			.apply = [](VulkanEngine* e) { e->m_viewportNav.settings.nearClip = BENCH_NEAR_CLIP; },
 		});
 	}
+	//a laser's line is a few picometers wide, which the spectral modes find only by drawing wavelengths from the lights'
+	//spectra (docs/plans/completed/physoptics-laser-sources.md)
+	if (engine->m_raytracer.settings().spectral.sampling != WavelengthSampling::Lights) {
+		out.push_back(SettingChange {
+			.label = "Wavelength sampling",
+			.current = wavelengthSamplingKey(engine->m_raytracer.settings().spectral.sampling),
+			.recommended = wavelengthSamplingKey(WavelengthSampling::Lights),
+			.apply = [](VulkanEngine* e) {
+				RenderSettings settings = e->m_raytracer.settings();
+				settings.spectral.sampling = WavelengthSampling::Lights;
+				e->m_raytracer.setSettings(settings);
+			},
+		});
+	}
 	//a bench is millimeters: optics are sold and drawn in them (docs/plans/completed/physoptics-optical-elements.md)
 	if (engine->m_lengthUnit != LengthUnit::Millimeters) {
 		out.push_back(SettingChange {
@@ -70,7 +86,8 @@ void opticalBenchDependentObjects(const VulkanEngine* engine, std::vector<Object
 			.erase = [](VulkanEngine* e) { e->m_raytraceScene.setBench(BenchSettings {}); },
 		});
 	}
-	//the optical elements (physoptics-optical-elements.md); the lasers, beam axes and detectors follow as their plans land
+	//the optical elements (physoptics-optical-elements.md) and the lasers (physoptics-laser-sources.md); the beam axes and
+	//detectors follow as their plans land
 	for (const SceneOptic& optic : engine->m_raytraceScene.optics()) {
 		const uint64_t id = optic.id;
 		out.push_back(ObjectRef {
@@ -106,6 +123,42 @@ void opticalBenchSceneStatus(VulkanEngine* engine)
 			tip += line + "\n";
 		}
 		ImGui::SetTooltip("%s", tip.c_str());
+	}
+}
+
+// Each laser's housing as an outline, the placeholder model's box behind its output, and an arrow along its beam in
+// the color of its wavelength (docs/plans/completed/physoptics-laser-sources.md): lines over the preview, which neither
+// the raster pass nor the tracer sees. The tracer has the output aperture alone
+void opticalBenchOverlays(VulkanEngine* engine, const ViewportView& view)
+{
+	for (const SceneOptic& optic : engine->m_raytraceScene.optics()) {
+		if (optic.kind != OpticKind::Laser) {
+			continue;
+		}
+		const MountModelInfo* model = findMountModel(laserHousing(opticEnum(optic, "housing")).model);
+		const glm::dvec3 size = model != nullptr ? glm::dvec3(model->nominalSize) : glm::dvec3(0.02);
+		auto world = [&](const glm::dvec3& p) { return glm::vec3(optic.world * glm::dvec4(p, 1.0)); };
+		const ImU32 outline = IM_COL32(200, 200, 210, 200);
+		glm::vec3 corners[8];
+		for (int i = 0; i < 8; i++) {
+			corners[i] = world(glm::dvec3((i & 1) ? 0.5 * size.x : -0.5 * size.x, (i & 2) ? 0.5 * size.y : -0.5 * size.y, (i & 4) ? 0.0 : -size.z));
+		}
+		for (int i = 0; i < 8; i++) {
+			for (int bit = 1; bit < 8; bit <<= 1) {
+				if ((i & bit) == 0) {
+					view.line(corners[i], corners[i | bit], outline, 1.f);
+				}
+			}
+		}
+		const LaserBeam beam = laserBeam(optic);
+		const glm::dvec3 color = glm::clamp(beam.rgb / std::max({ beam.rgb.r, beam.rgb.g, beam.rgb.b, 1e-6 }), 0.0, 1.0);
+		const ImU32 arrow = IM_COL32((int)(255 * color.r), (int)(255 * color.g), (int)(255 * color.b), 255);
+		const double length = std::max(0.05, 0.5 * size.z);
+		const glm::dvec3 tip = beam.center + length * beam.axis;
+		const glm::dvec3 side = glm::normalize(glm::cross(beam.axis, glm::dvec3(0.0, 1.0, 0.0) + 1e-3 * beam.xAxis));
+		view.line(world(beam.center), world(tip), arrow, 2.f);
+		view.line(world(tip), world(tip - 0.15 * length * beam.axis + 0.06 * length * side), arrow, 2.f);
+		view.line(world(tip), world(tip - 0.15 * length * beam.axis - 0.06 * length * side), arrow, 2.f);
 	}
 }
 
@@ -187,7 +240,7 @@ const CapabilityInfo CAPABILITIES[] = {
 		.renderSettings = drawOpticsRenderSettings,
 		.materialFolders = drawOpticalLibraryFolders,
 		.materialDetails = drawOpticalLibraryDetails,
-		.viewportOverlays = nullptr,
+		.viewportOverlays = opticalBenchOverlays,
 		.rasterGeometry = opticalBenchRasterGeometry,
 		.workspace = &OPTICS_WORKSPACE,
 	},

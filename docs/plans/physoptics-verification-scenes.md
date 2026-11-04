@@ -2,12 +2,12 @@
 
 The request ends with what should be buildable, in four stages: a camera lens, a telescope, a microscope, Gaussian beam propagation and an off-axis parabola's focus first; then prisms, chromatic aberration, XUV optics and dichroics once spectral rendering exists; then wave plates, beamsplitters, Brewster windows and crystals once polarization exists; and diffraction and interference once the wave backend exists. This plan turns each into a scene in `assets/scenes/optics/`, a reference it is checked against (closed-form, OpticStudio, Optiland or LightPipes), a tolerance, and a script that runs the check. The unit tests of the other plans (`bin/optics_test`, `bin/beam_test`) check parts; these scenes check the system, and that the beam solver and the path tracer agree with each other and with the references.
 
-*Not implemented. Each scene depends on the plans its row names; the geometric section needs milestones 1 to 4 of the [laser optics plan](physoptics-laser-optics.md), the spectral section milestone 5, the polarization section milestone 6. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Partly implemented. Five geometric scenes (`gaussian_train`, `telescope_kepler`, `telescope_galilean`, `oap_focus`, `tilted_spherical_mirror`) were built with [physoptics-laser-sources.md](completed/physoptics-laser-sources.md) on 2026-11-02 and are checked on white screens against ABCD; "Results so far" below has their numbers. Each scene depends on the plans its row names; the geometric section needs milestones 1 to 4 of the [laser optics plan](physoptics-laser-optics.md), the spectral section milestone 5, the polarization section milestone 6. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## How a scene is checked
 
 - Every scene starts from the **Optical bench** template ([physoptics-scene-capabilities.md](completed/physoptics-scene-capabilities.md)) and is a saved scene file with its optics, mounts, beam axes, detectors and, where it renders an image, a camera.
-- `tools/verify_optics.py` opens each with the batch mode of [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md), renders to its sample target, exports its detectors and the solver's tables ([physoptics-data-export.md](physoptics-data-export.md)), computes the scene's quantities, and compares them with the reference within the tolerance. It writes the results tables below.
+- `tools/verify/optics_verification.py` (the plan first named it `tools/verify_optics.py`; the verification scripts all live in `tools/verify/`) opens each with the batch mode of [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md), renders to its sample target, exports its detectors and the solver's tables ([physoptics-data-export.md](physoptics-data-export.md)), computes the scene's quantities, and compares them with the reference within the tolerance. It writes the results tables below.
 - Each scene is checked twice where it can be: by the beam solver's analytic readout, and by light tracing on its detectors. The two must agree within the Monte Carlo noise, which the script estimates from 20 independent seeds.
 - References that need OpticStudio are run on the Windows machine through the comparison scripts' input and output files ([physoptics-data-export.md](physoptics-data-export.md)).
 
@@ -24,6 +24,19 @@ The request ends with what should be buildable, in four stages: a camera lens, a
 | `oap_focus.gltf` | a collimated 2 mm beam on a 90° off-axis parabola, then misaligned by 0.1° and 0.5° | focal spot radii on a beam profiler; the solver's waist; the growth of the spot with misalignment | `w₀' = λ f / (π w)` aligned; OpticStudio's or Optiland's spot diagram and Gaussian analyses when misaligned | 1 % aligned; 5 % in spot growth |
 
 Every geometric scene also checks that its beam axis is all **Hit** at its nominal alignment, and that nudging a named optic produces the status change the scene's notes predict.
+
+### Results so far
+
+Until detectors exist, `tools/verify/optics_verification.py` measures each beam on a white Lambertian screen seen square-on by a pinhole camera, with light tracing (`tools/verify/beam_probe.py`), and fits w(z)² through five or seven planes for a waist, its position and M². The references are ABCD's (the embedded Gaussian of M² λ, thick lenses, the tilted mirror's tangential and sagittal focal lengths `R cos θ / 2` and `R / (2 cos θ)`). The lenses have ideal AR coatings: an uncoated lens's ghosts widen a second-moment radius by about 1 %, which a real profiler would see too. Each scene's `<name>.expected.json` holds its reference values. At 16 samples per pixel on 2026-11-02:
+
+- `gaussian_train`: the focus 102.523 and 102.532 mm past the lens (ABCD 102.525 mm), the waist 44.82 and 44.79 µm (44.83 µm), M² 1.006 and 1.004 (the laser's 1.005).
+- `telescope_kepler`: radii 0.2070 mm 0.1 m past the second lens and 1.1851 mm 0.6 m past it (ABCD 0.2068 and 1.1846 mm). `telescope_galilean`: 0.2958 and 1.2823 mm (0.2955 and 1.2816 mm).
+- `oap_focus`: the waist 20.46 µm (λ f / (π w) = 20.43 µm, ABCD 20.45 µm) and its focus 101.686 mm from the datum (101.683 mm). Turned 0.1° and 0.5°, the spot at the nominal focus is 1.02 and 1.24 times the aligned waist and moves 0.355 and 1.775 mm: recorded, not checked, until OpticStudio's or Optiland's numbers exist.
+- `tilted_spherical_mirror`: every focus within 0.01 mm of ABCD; the foci 3.065, 12.464 and 70.803 mm apart at 10°, 20° and 45° (`R / (2 cos θ) − R cos θ / 2` = 3.062, 12.449 and 70.711 mm). At 45° the tangential waist is 16.1 µm against ABCD's 14.2 µm: the sphere's other aberrations, which ABCD leaves out.
+
+These checks found that catalog glasses were divided by the air's index twice ([physoptics-optical-materials.md](completed/physoptics-optical-materials.md)): before the fix the Gaussian train's focus was 0.11 mm long and the telescopes 0.3 % to 0.5 % wide.
+
+Still to do for these scenes: the beam profilers and power meters of [physoptics-detectors.md](physoptics-detectors.md) in place of the screens, the solver's analytic readout beside the light tracing, the 21 planes, LightPipes' Fresnel propagation for `gaussian_train`, and Optiland or OpticStudio for the misaligned parabola. `camera_35mm` and `microscope` wait for the realistic camera and the prescription import.
 
 ## Spectral goals
 
@@ -46,6 +59,8 @@ Every geometric scene also checks that its beam axis is all **Hit** at its nomin
 ## Waiting for the wave backend
 
 These need the phases and optical path lengths the wave backend will carry. When the rest of this plan is implemented, move this section to `docs/plans/waiting/physoptics-verification-scenes.md`.
+
+Their references no longer need LightPipes alone: `tools/verify/wave_optics.py` (2026-11-02) propagates a laser's beam by the angular spectrum through masks and thin lenses, with M² above 1 and astigmatism, and its self-test places a circular aperture's first dark ring within 0.1 % of `1.22 λ z / D`. `iris_airy` and `truncated_gaussian` can be checked against it as soon as the wave backend renders them, and `laser_check.py`'s iris case already shows the ray tracer's side of `truncated_gaussian`: past a 1 mm iris the rays keep a clipped Gaussian 19 % brighter at its peak than the waves' Airy-ringed core.
 
 | Scene | Setup | Checked | Reference |
 |---|---|---|---|

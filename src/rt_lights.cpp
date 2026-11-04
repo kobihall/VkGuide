@@ -287,6 +287,34 @@ void LightListBuilder::addEnvironment(float luminanceIntegral, float intensity, 
 	m_list.environment = true;
 }
 
+uint32_t LightListBuilder::addLaser(const LaserLight& laser)
+{
+	//priced as every light is, by the luminance of what it sends out, here its power times its color's; a line no eye
+	//sees still carries its false color, whose luminance keeps it in the table
+	const float power = std::max(laser.power, 0.f);
+	const float price = power * std::max(luminanceOf(laser.rgb), 1e-3f);
+	if (!(price > 0.f) || !std::isfinite(price)) {
+		return GPU_NO_LIGHT;
+	}
+	const LaserEmitter& e = laser.emitter;
+	GpuLight first;
+	first.kind = (uint32_t)GpuLightKind::Laser | GPU_LIGHT_FLAG_ONE_SIDED;
+	first.a = glm::vec4(e.center, laser.apertureRadius);
+	first.b = glm::vec4(e.axis, 0.f);
+	first.c = glm::vec4(e.xAxis, 0.f);
+	first.radiance = laser.rgb * power;
+	first.power = price;
+	first.spectrum = laser.spectrum.index;
+	first.spectrumScale = power;
+	GpuLight beam;
+	beam.kind = (uint32_t)GpuLightKind::LaserBeam;
+	beam.a = glm::vec4(e.waist, e.waistDistance);
+	beam.b = glm::vec4(e.halfAngle, 0.f, 0.f);
+	m_lasers.push_back(first);
+	m_lasers.push_back(beam);
+	return (uint32_t)(m_lasers.size() / 2 - 1);
+}
+
 uint32_t LightListBuilder::beginTriangleRun(uint32_t triangleCount)
 {
 	const uint32_t base = (uint32_t)m_list.triangleLights.size();
@@ -354,7 +382,32 @@ RaytraceLightList LightListBuilder::finish(float sceneRadius)
 	}
 	list.header.invDeltaPower = deltaTotal > 0.0 ? (float)(1.0 / deltaTotal) : 0.f;
 
+	//the lasers, after every light next-event estimation samples, with their table in their first records
+	if (!m_lasers.empty()) {
+		const uint32_t base = (uint32_t)list.lights.size();
+		const uint32_t count = (uint32_t)(m_lasers.size() / 2);
+		std::vector<float> laserWeights(count);
+		double laserTotal = 0.0;
+		for (uint32_t i = 0; i < count; i++) {
+			laserWeights[i] = m_lasers[2 * i].power;
+			laserTotal += laserWeights[i];
+		}
+		const std::vector<AliasEntry> laserTable = buildAliasTable(laserWeights);
+		for (uint32_t i = 0; i < count && i < laserTable.size(); i++) {
+			m_lasers[2 * i].aliasQ = laserTable[i].q;
+			m_lasers[2 * i].aliasIndex = laserTable[i].alias;
+		}
+		list.lights.insert(list.lights.end(), m_lasers.begin(), m_lasers.end());
+		list.header.laserBase = base;
+		list.header.laserCount = count;
+		//the first table counts only when it samples anything
+		const double emitTotal = (list.header.count > 0 ? total : 0.0) + laserTotal;
+		list.header.invEmitPower = emitTotal > 0.0 ? (float)(1.0 / emitTotal) : 0.f;
+		list.laserPower = (float)laserTotal;
+	}
+
 	m_list = {};
 	m_crossSectionPower.clear();
+	m_lasers.clear();
 	return list;
 }

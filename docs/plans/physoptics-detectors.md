@@ -2,7 +2,7 @@
 
 A simulated experiment is only as useful as what it lets you measure. In the lab that is a power meter's reading, a camera's frame, a beam profiler's widths, a spectrometer's trace, or the spot on an alignment card. This plan adds those as optical elements whose surfaces record the light that reaches them: light paths from the lasers deposit their power on a detector's film as they hit it, in a new stage after kernel 02, and a measurement panel turns each film into the numbers a lab reports, with the beam solver's analytic prediction beside each one.
 
-*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-laser-sources.md](physoptics-laser-sources.md), and the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md). Spectrometers need [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-laser-sources.md](completed/physoptics-laser-sources.md), and the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md). Spectrometers need [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer does today
 
@@ -42,7 +42,7 @@ The light integrator emits each path with power `P_laser / N`, for N paths emitt
 
 ### Channels
 
-- In exact RGB a film has three channels, in watts per channel as the RGB laser color defines them ([physoptics-laser-sources.md](physoptics-laser-sources.md)), and a power reading is their mean.
+- In exact RGB a film has three channels, in watts per channel as the RGB laser color defines them ([physoptics-laser-sources.md](completed/physoptics-laser-sources.md)), and a power reading is their mean.
 - In a spectral mode a film has the representation's bands, or for a spectrometer its own set of bins over its range, and a power reading is their sum.
 - With a beam axis in a mode that tracks the graph ([physoptics-guided-tracing.md](physoptics-guided-tracing.md)), **Separate stray light** doubles the channels: one set for paths on the graph, one for paths off it, so a detector shows the main beam and the ghosts and scatter apart.
 
@@ -75,7 +75,7 @@ An alignment card or a screen scatters what reaches it, so the light integrator'
 ## Verification
 
 - A scene without detectors renders bit-identical, and stage 26 is never dispatched.
-- A power meter covering the whole beam a meter from the laser reads the laser's power within 0.5 % after 10⁶ paths, and its standard error matches the spread over 20 independent runs.
+- A power meter covering the whole beam a meter from the laser reads the laser's power within 0.5 % after 10⁶ paths, and its standard error matches the spread over 20 independent runs. Until detectors exist, `tools/verify/laser_check.py` makes this check with a white screen seen square-on by a pinhole camera (`tools/verify/beam_probe.py`), which reads 5.0000 mW of the HNL050LB's 5 mW; the detector version replaces the screen in the same scenes (`assets/scenes/optics/laser_*.gltf`), and the beam profilers of `optics_verification.py` likewise.
 - A beam profiler at a lens's focus measures second-moment radii within 1 % of the solver's, for an aberration-free case (a paraxial beam through a long-focal-length lens).
 - An ideal 50:50 splitter between two power meters gives each half the power within noise; a probe plane before them changes neither reading beyond float rounding.
 - An alignment card in the beam shows a spot in a camera render, of the radius the solver predicts at the card.

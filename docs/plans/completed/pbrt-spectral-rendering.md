@@ -186,7 +186,7 @@ The report lines that remain point to the plans that add what is missing, chiefl
 
 - Sensor response curves in place of the CIE functions (`"matching"` accepts only `cie1931`), and white balance: [pbrt-display-and-color.md](../pbrt-display-and-color.md).
 - Light paths that draw their wavelengths from the emitter, for [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md).
-- The **Design wavelength** following a scene's single laser: [physoptics-laser-sources.md](../physoptics-laser-sources.md) sets it when lasers exist.
+- The **Design wavelength** following a scene's single laser: [physoptics-laser-sources.md](physoptics-laser-sources.md) sets it when lasers exist.
 - AGF catalogs, the Henke tables and coatings: [physoptics-optical-materials.md](physoptics-optical-materials.md) and [physoptics-gratings-and-xuv.md](../physoptics-gratings-and-xuv.md). The `Dispersion` kind and the line kind are what they fill in.
 - The rest of [pbrt-bsdf-library.md](pbrt-bsdf-library.md).
 

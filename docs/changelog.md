@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-11-02
+
+### New
+
+- **Optics** → **Add** → **Optic** → **Laser** adds a laser (`docs/plans/completed/physoptics-laser-sources.md`): a Gaussian beam of a waist radius, a waist position and an M², the same in x and y or **separate x and y** for an elliptical, astigmatic beam, with a Lorentzian or Gaussian line of a given width, a power, and a pointing angle and offset. **As a data sheet gives it** takes the output diameter and full divergence instead and sets the waist and M² from them.
+- The **HNL050LB** preset is Thorlabs' HeNe from its data sheet: 632.8 nm, a 0.002 nm line, 5 mW, 0.81 mm across and 1.0 mrad, which make M² 1.005.
+- A laser is placed freely, without a post. While the bench snaps, its output sits on the nearest hole with its beam along the grid, and dragging it turns it in quarter turns; **Snap to nearest hole** does the same. The **Viewport** outlines its housing and draws an arrow along its beam in the color of its wavelength.
+- **Light tracing** renders a laser's light: its paths start at the beam, so a screen it falls on shows the spot, the right size and the right power. Every integrator shows a laser's aperture glowing when the camera looks into the beam.
+- Render Settings notes when the scene has a laser but the integrator cannot render its light, with **Use Light tracing**.
+- The design wavelength follows the scene's laser while it has exactly one, unless **Design wavelength follows** is off.
+- **Optical bench** recommends **Lights** wavelength sampling, which finds a laser's line in the spectral modes.
+- `tools/verify/wave_optics.py` is a wave-optics reference: a laser's beam propagated by diffraction (diffractsim's angular spectrum method), with M² above 1, astigmatism, masks and thin lenses, and a self-test against closed forms and diffractsim.
+- `tools/verify/laser_scenes.py` writes six laser scenes to `assets/scenes/optics/`, and `tools/verify/laser_check.py` checks them against w(z), the laser's power and, screen by screen, the wave reference, and shows where the rays and the waves part past an iris. `tools/verify/optics_verification.py` checks the Gaussian train, the Keplerian and Galilean telescopes, an off-axis parabola's focus and a tilted spherical mirror's two foci against ABCD. `run_all.py` runs all three.
+
+### Changed
+
+- Scene files are payload version 28: the optic type `laser`, a user glass's `absolute`, and `designFollowsLaser` when it is off.
+- A glass's panel shows its index relative to air, as its catalog gives it.
+
+### Fixed
+
+- Fixed lenses refracting by their glass's index divided by the air's twice: a catalog's index is relative to air, and it was read as absolute. Every lens in air focused 0.05 % long; optics renders change by that much.
+
+### Internal
+
+- `OpticKind::Laser` is the fourteenth kind, with `OpticParamKind::Wavelength` (meters shown in nanometers), `OpticTraits::sizeLabel` and `snapsFree`, and `src/optic_laser.h` (`LaserBeam`, `fitLaserAxis()`, `designWavelength()`). `snapFreeToBench()` is in `src/optic_bench.h`.
+- A laser is two light records, `GpuLightKind::Laser` (10) and `LaserBeam` (11), after every other light. `GpuLightHeader`'s spare words are `laserBase`, `laserCount` and `invEmitPower`, 0 without a laser.
+- `shaders/rt/include/crt_laser.glsl` mirrors `sampleLaserLe()`, `laserPdfLe()` and `laserRadiance()` in `src/light_sampling.cpp`. Specialization constant 13, `CRT_LASERS` (`CRT_FEATURE_LASERS`), is on for every kernel that reads the instances while the scene has a laser; off, kernels 04 and 11 are the code they were.
+- `MaterialType::LaserAperture` (`laser_aperture`, `CRT_MATERIAL_LASER_APERTURE` 13).
+- `OpticGlass::relativeToAir`; `glassIndex()` is absolute, `indexRelativeToAir()` is the catalog's, and `absoluteIndexRef()` tabulates the absolute index for the GPU.
+- `tools/verify/beam_probe.py` measures a beam on a white screen seen square-on by a pinhole camera, and holds the ABCD and waist-fit code the checks share.
+
 ## 2026-11-01
 
 ### New

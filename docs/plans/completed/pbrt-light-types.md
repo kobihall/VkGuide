@@ -66,7 +66,7 @@ A **Color temperature** option replaces a light's color with a normalized blackb
 | Directional | uniform on a disk the size of the scene's bounding sphere, facing the light | the light's direction |
 | Sphere, rectangle, cylinder, triangle | uniform by area | cosine-weighted about the normal; for two-sided emission, a side picked with probability ½ |
 | Environment | uniform on a disk the size of the scene's bounding sphere | by the map's distribution, as `SampleLi()` already does |
-| Laser ([physoptics-laser-sources.md](../physoptics-laser-sources.md)) | Gaussian over the beam's waist, carried to the output aperture | Gaussian about the axis with the far-field divergence, the beam's Wigner distribution |
+| Laser ([physoptics-laser-sources.md](physoptics-laser-sources.md)) | Gaussian over the beam's waist, carried to the output aperture | Gaussian about the axis with the far-field divergence, the beam's Wigner distribution |
 
 The path tracer never calls them, and next-event estimation never samples a laser, whose emission is confined to a cone of milliradians: lasers stay out of the alias tables, and only light paths start at them. [pbrt-bidirectional-path-tracing.md](pbrt-bidirectional-path-tracing.md), [pbrt-photon-mapping.md](../pbrt-photon-mapping.md) and [pbrt-metropolis-light-transport.md](../pbrt-metropolis-light-transport.md) do, and this plan gives them one tested implementation instead of three.
 

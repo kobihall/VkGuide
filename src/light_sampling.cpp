@@ -1268,3 +1268,82 @@ float environmentPdf(const PiecewiseConstant2D& table, const glm::vec3& directio
 	}
 	return piecewiseConstant2DPdf(table, equirectUvOf(environmentToMap(direction, rotation))) / (2.f * LIGHT_PI * LIGHT_PI * cosLatitude);
 }
+
+//---------------------------------------------------------------- lasers
+
+glm::vec2 sampleStandardNormal2(const glm::vec2& u)
+{
+	const float r = std::sqrt(-2.f * std::log(std::max(1.f - u.x, 1e-30f)));
+	const float phi = 2.f * LIGHT_PI * u.y;
+	return glm::vec2(r * std::cos(phi), r * std::sin(phi));
+}
+
+float gaussian2(const glm::vec2& v, const glm::vec2& sigma)
+{
+	const glm::vec2 t = v / sigma;
+	return std::exp(-0.5f * glm::dot(t, t)) / (2.f * LIGHT_PI * sigma.x * sigma.y);
+}
+
+namespace {
+
+// the densities of the plane point `x` and the slope `slope`, in the beam's frame: the point's marginal over slopes,
+// N(x; sqrt(sw^2 + d^2 ss^2)), and the slope's conditional on the point, a normal of its own, per unit solid angle
+void laserDensities(const LaserEmitter& laser, const glm::vec2& x, const glm::vec2& slope, float& pdfPos, float& pdfDir)
+{
+	const glm::vec2 sigmaW = 0.5f * laser.waist;
+	const glm::vec2 sigmaS = 0.5f * laser.halfAngle;
+	const glm::vec2 d = laser.waistDistance;
+	const glm::vec2 varianceX = sigmaW * sigmaW + d * d * sigmaS * sigmaS;
+	pdfPos = gaussian2(x, glm::sqrt(varianceX));
+	const glm::vec2 mean = d * sigmaS * sigmaS * x / varianceX;
+	const glm::vec2 sigmaGiven = sigmaW * sigmaS / glm::sqrt(varianceX);
+	const float cosTheta = 1.f / std::sqrt(1.f + glm::dot(slope, slope));
+	pdfDir = gaussian2(slope - mean, sigmaGiven) / (cosTheta * cosTheta * cosTheta);
+}
+
+}
+
+bool sampleLaserLe(const LaserEmitter& laser, const glm::vec2& uPos, const glm::vec2& uDir, LightLeSample& out)
+{
+	out = LightLeSample {};
+	const glm::vec3 yAxis = glm::cross(laser.axis, laser.xAxis);
+	const glm::vec2 slope = sampleStandardNormal2(uDir) * (0.5f * laser.halfAngle);
+	const glm::vec2 x = sampleStandardNormal2(uPos) * (0.5f * laser.waist) + laser.waistDistance * slope;
+	out.origin = laser.center + x.x * laser.xAxis + x.y * yAxis;
+	out.normal = laser.axis;
+	out.direction = glm::normalize(slope.x * laser.xAxis + slope.y * yAxis + laser.axis);
+	laserDensities(laser, x, slope, out.pdfPos, out.pdfDir);
+	return out.pdfPos > 0.f && out.pdfDir > 0.f;
+}
+
+void laserPdfLe(const LaserEmitter& laser, const glm::vec3& origin, const glm::vec3& direction, float& pdfPos, float& pdfDir)
+{
+	pdfPos = 0.f;
+	pdfDir = 0.f;
+	const float cosTheta = glm::dot(direction, laser.axis);
+	if (!(cosTheta > 0.f)) {
+		return;
+	}
+	const glm::vec3 yAxis = glm::cross(laser.axis, laser.xAxis);
+	const glm::vec3 offset = origin - laser.center;
+	const glm::vec2 x(glm::dot(offset, laser.xAxis), glm::dot(offset, yAxis));
+	const glm::vec2 slope = glm::vec2(glm::dot(direction, laser.xAxis), glm::dot(direction, yAxis)) / cosTheta;
+	laserDensities(laser, x, slope, pdfPos, pdfDir);
+}
+
+float laserRadiance(const LaserEmitter& laser, const glm::vec3& point, const glm::vec3& direction)
+{
+	const float cosTheta = glm::dot(direction, laser.axis);
+	if (!(cosTheta > 0.f)) {
+		return 0.f;
+	}
+	const glm::vec3 yAxis = glm::cross(laser.axis, laser.xAxis);
+	// back along the ray to the plane
+	const glm::vec3 offset = point - laser.center;
+	const glm::vec3 crossing = offset - (glm::dot(offset, laser.axis) / cosTheta) * direction;
+	const glm::vec2 x(glm::dot(crossing, laser.xAxis), glm::dot(crossing, yAxis));
+	const glm::vec2 slope = glm::vec2(glm::dot(direction, laser.xAxis), glm::dot(direction, yAxis)) / cosTheta;
+	const float joint = gaussian2(x - laser.waistDistance * slope, 0.5f * laser.waist) * gaussian2(slope, 0.5f * laser.halfAngle);
+	const float cos2 = cosTheta * cosTheta;
+	return joint / (cos2 * cos2);
+}

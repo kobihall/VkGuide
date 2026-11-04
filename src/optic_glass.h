@@ -5,6 +5,11 @@
 // internal transmittance, from which the absorption coefficient alpha(lambda) = -ln(T) / d follows. The surrounding
 // medium is a glass too: air by Ciddor's formula, or vacuum.
 //
+// INDICES ARE ABSOLUTE. A catalog's formula gives the index relative to air, as Schott's data sheets and the AGF format
+// do (OpticStudio's "Glass catalogs"), so a catalog glass's absolute index is its formula times Ciddor's air at the same
+// wavelength (relativeToAir). In air the ratio of the two is then the catalog's own, and in vacuum the glass is the
+// absolute index it is. Air and vacuum are absolute already.
+//
 // The reader takes the AGF files the glass makers publish (Schott, Ohara, CDGM, Hoya, Sumita), in ASCII or in the
 // UTF-16 OpticStudio writes. assets/glass/bundled.agf holds the glasses the bundled elements are sold in.
 
@@ -44,12 +49,20 @@ struct OpticGlass {
 	SpectrumRef absorption { constantRef(0.f) };
 	// the TD line, kept as text and saved back but not used: no plan models temperature
 	std::string thermal;
+	// `index` is relative to air, as a catalog's formula is: glassIndex() multiplies it by Ciddor's air. False for the
+	// built-in air and vacuum, whose indices are absolute
+	bool relativeToAir { true };
 
 	bool operator==(const OpticGlass&) const = default;
 };
 
-// the index at lambda nm
+// the absolute index at lambda nm
 double glassIndex(const OpticGlass& glass, double lambda);
+// the absolute index as a spectrum the GPU evaluates: `index` itself for an absolute glass, and for one relative to air
+// the product tabulated every nanometer from 200 to 2500 nm, which linear interpolation holds to about 1e-8
+SpectrumRef absoluteIndexRef(const OpticGlass& glass);
+// the index relative to standard air at lambda nm: what a catalog gives, and what its nd and Abbe number are of
+double indexRelativeToAir(const OpticGlass& glass, double lambda);
 // the absorption coefficient at lambda nm, in 1/m
 double glassAbsorption(const OpticGlass& glass, double lambda);
 // (nd - 1) / (nF - nC) from the glass's own formula

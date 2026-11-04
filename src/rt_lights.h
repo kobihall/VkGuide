@@ -5,15 +5,19 @@
 // shaders/rt/include/crt_light.glsl). Built with the rest of the traced scene by buildSceneAccel()
 // (rt_accel.h), whenever an object, a light or the background changes.
 //
-// Four kinds of source, in this order in the list:
+// Five kinds of source, in this order in the list:
 //  - the punctual lights (SceneLight), first, so the delta lights are lights[0, deltaCount)
 //  - analytic shapes whose material emits: one record per shape, six for a box, none for the
 //    infinite plane, which has no finite area to sample
 //  - glTF triangles whose material emits, one record per triangle
 //  - the environment map, when it is the background
+//  - the lasers (docs/plans/completed/physoptics-laser-sources.md), last, two records each, from laserBase on
 // Each gets a power - what it sends into the scene - and an alias table picks among them in
 // proportion to it (pbrt-v4's PowerLightSampler). The delta lights get a second table over
-// themselves alone, which the BSDF strategy uses, since nothing else can reach them.
+// themselves alone, which the BSDF strategy uses, since nothing else can reach them. The lasers are in neither:
+// next-event estimation never samples a laser, whose light leaves in a cone of milliradians that a shadow ray toward
+// its aperture would almost never fall in. They have a third table of their own, which light tracing picks from beside
+// the first, every light by its power over the total of both (sampleEmitterIndex(), crt_laser.glsl).
 //
 // An emitter the list leaves out (the infinite plane, a black light) is still correct: kernel 04
 // finds no record for it and counts whatever a BSDF sample finds on it at full weight.
@@ -39,7 +43,10 @@ enum class GpuLightKind : uint32_t {
 	Directional = 6,
 	Environment = 7,
 	Projection = 8,
-	Goniometric = 9
+	Goniometric = 9,
+	// a laser's two records: the first as every light's, the second its beam (crt_laser.glsl)
+	Laser = 10,
+	LaserBeam = 11
 };
 
 // GpuLight::kind holds the kind in its low 8 bits and these flags above (crt_common.glsl CRT_LIGHT_FLAG_*)
@@ -94,11 +101,14 @@ struct GpuLightHeader {
 	uint32_t count { 0 };
 	uint32_t deltaCount { 0 };
 	uint32_t environment { GPU_NO_LIGHT };
-	uint32_t pad0 { 0 };
+	// the lasers' first record, and how many lasers there are (two records each); 0 and 0 without any, so a list without
+	// a laser is the bytes it always was
+	uint32_t laserBase { 0 };
 	float invTotalPower { 0.f };
 	float invDeltaPower { 0.f };
-	float pad1 { 0.f };
-	float pad2 { 0.f };
+	uint32_t laserCount { 0 };
+	// one over the power of every light the light paths start from: the first table's and the lasers'
+	float invEmitPower { 0.f };
 };
 static_assert(sizeof(GpuLightHeader) == 32);
 
@@ -119,6 +129,7 @@ struct RaytraceLightList {
 	uint32_t triangleLightCount { 0 };
 	bool environment { false };
 	float totalPower { 0.f };
+	float laserPower { 0.f };
 };
 
 // The solid angle a spot light's intensity covers, its falloff weighed in: its power over its intensity
@@ -162,6 +173,16 @@ struct LightSpectrum {
 	float price { 0.f };
 };
 
+// What a laser's records carry: its beam in world space (src/light_sampling.h), its output aperture's radius, the exact
+// RGB color of a watt of it (src/optic_laser.h LaserBeam::rgb), its power in watts and its spectrum
+struct LaserLight {
+	LaserEmitter emitter;
+	float apertureRadius { 0.f };
+	glm::vec3 rgb { 1.f };
+	float power { 0.f };
+	LightSpectrum spectrum;
+};
+
 // Collects the lights one at a time, then finish() prices the ones that depend on the scene's size
 // and builds the alias tables. Punctual lights must be added before anything else. A punctual light's spectrum goes
 // into `spectra`, read in `context` (the working space) for its exact RGB color
@@ -182,6 +203,9 @@ public:
 		const LightSpectrum& spectrum = {}, uint32_t flags = 0);
 	// `luminanceIntegral` is EnvironmentDistribution::luminanceIntegral
 	void addEnvironment(float luminanceIntegral, float intensity, uint32_t group = 0);
+	// a laser, which finish() puts after everything else: its ordinal among the lasers, whose first record is then
+	// laserBase + 2 ordinal, or GPU_NO_LIGHT for a laser with no power
+	uint32_t addLaser(const LaserLight& laser);
 
 	// a run of triangleLights entries for one mesh instance, all GPU_NO_LIGHT until set
 	uint32_t beginTriangleRun(uint32_t triangleCount);
@@ -200,4 +224,6 @@ private:
 	std::vector<float> m_crossSectionPower;
 	// the punctual lights' emission tables, by light
 	std::vector<std::pair<uint32_t, PiecewiseConstant2D>> m_imageDistributions;
+	// two records per laser
+	std::vector<GpuLight> m_lasers;
 };

@@ -203,3 +203,7 @@ Verification (the plan's list, with what each gave):
 
 Not built, and left open: the Thorlabs curves themselves (the presets are designs; a downloaded curve loads through
 **Import Coating Curve**) and a glass's temperature.
+
+### Indices relative to air (2026-11-02)
+
+The laser sources' checks ([physoptics-laser-sources.md](physoptics-laser-sources.md)) found that a catalog glass's formula was read as an absolute index and divided by Ciddor's air at each surface, so the air came out twice: a catalog's index is already relative to air, as Schott's data and the AGF format give it. In air every lens refracted by 2.8e-4 too little and focused 0.05 % long. A catalog glass is now `relativeToAir`: `glassIndex()` multiplies its formula by Ciddor's air, so indices are absolute everywhere, a lens in air refracts by the catalog's own ratio, and in vacuum by the absolute index. `indexRelativeToAir()` gives the catalog's value, which nd, the Abbe number and the panel show, and `absoluteIndexRef()` tabulates the absolute index for the GPU's media and coating layers every nanometer from 200 to 2500 nm. `bin/optics_test` checks N-BK7's ratio in air against Schott's 1.5150892 at 632.8 nm, and the table against the formula.

@@ -14,6 +14,9 @@
 // path stands for; light tracing renders by splats alone. The light path's numbers come from its own dimensions of the
 // pixel sample (src/sampler.h SAMPLE_LIGHT_PATH_BASE), and in a spectral build its wavelengths from the path's own
 // sample, or the frame's under CRT_BIDIR_FLAG_FRAME_WAVELENGTHS (the light vertex cache's).
+//
+// Under CRT_LASERS light tracing also starts paths at the lasers, which no other light table holds (crt_laser.glsl),
+// picking among every light by power; the light vertex cache and pbrt 3's BDPT leave them out.
 
 #extension GL_GOOGLE_include_directive : require
 #include "include/crt_common.glsl"
@@ -70,14 +73,15 @@ bool connectLightToCamera(uint lightIndex, LightLeSample le, float pmf, vec2 u, 
 			emitted = spectrumScale(emitted, rangeWindow(cs.distance, light.a.w));
 		}
 	} else {
-		// an area light emits the radiance at its point along every direction of the sides it emits from
+		// an area light emits the radiance at its point along every direction of the sides it emits from; a laser's beam
+		// only along the directions it carries
 		const vec3 front = (light.kind & CRT_LIGHT_FLAG_REVERSED) != 0u ? -le.normal : le.normal;
 		cosLight = dot(le.normal, toward);
 		if (!areaLightTwoSided(light) && !(dot(front, toward) > 0.0)) {
 			return false;
 		}
 		cosLight = abs(cosLight);
-		emitted = le.radiance;
+		emitted = CRT_LASERS && lightKindOf(light) == CRT_LIGHT_LASER ? laserRadiance(lightIndex, le.origin, toward) : le.radiance;
 	}
 	const Spectrum contribution = spectrumScale(emitted, cosLight * cs.we * pc.lightPathScale / (pmf * le.pdfPos * cs.pdf));
 	if (!(spectrumMaxValue(contribution) > 0.0)) {
@@ -118,13 +122,16 @@ void main()
 		// the pixel samples the frame takes: kernel 09 counts them, and divides the splats by their total
 		radiance[index] = vec4(0.0, 0.0, 0.0, sampled ? 1.0 : 0.0);
 
-		if (sampled && index < pc.lightPathCount && lightHeader.count > 0u) {
+		// light tracing picks the lasers too
+		const bool lasersEmit = CRT_LASERS && !CRT_LIGHT_VERTEX_CACHE && !CRT_BDPT;
+		if (sampled && index < pc.lightPathCount && (lightHeader.count > 0u || (lasersEmit && lightHeader.laserCount > 0u))) {
 			const uint sampleIndex = imageLoad(samplesTaken, ivec2(x, y)).r + k;
 			uint rng = pcgHash(pixel ^ pcgHash(sampleIndex ^ pcgHash(pc.seed ^ CRT_LIGHT_STREAM_SALT)));
 			if (CRT_SAMPLE_RECORD) {
 				rng = pcgHash(rng ^ CRT_RECORD_STREAM_SALT);
 			}
-			const uint lightIndex = sampleLightIndex(sampleDimension(index, rng, CRT_SAMPLE_EMIT_LIGHT));
+			const float uLight = sampleDimension(index, rng, CRT_SAMPLE_EMIT_LIGHT);
+			const uint lightIndex = lasersEmit ? sampleEmitterIndex(uLight) : sampleLightIndex(uLight);
 			const vec2 uPos = sampleDimension2D(index, rng, CRT_SAMPLE_EMIT_POSITION);
 			const vec2 uDir = sampleDimension2D(index, rng, CRT_SAMPLE_EMIT_DIRECTION);
 			uint lensRng = pcgHash(rng ^ 0x27d4eb2fu);
@@ -139,7 +146,7 @@ void main()
 			spectralBegin(lambdaU);
 #endif
 			LightLeSample le;
-			const float pmf = lightPmf(lightIndex);
+			const float pmf = lasersEmit ? emitterPmf(lightIndex) : lightPmf(lightIndex);
 			if (pmf > 0.0 && sampleLe(lightIndex, uPos, uDir, le)) {
 				// the light vertex cache's and pbrt 3's BDPT's camera paths see a light directly themselves: only light tracing
 				// connects its point

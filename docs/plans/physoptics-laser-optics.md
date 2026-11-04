@@ -4,7 +4,7 @@ This plan turns the path tracer into a simulator of optical experiments on a las
 
 The request this plan answers is `docs/00-laser-optics.md`. It takes its approach from femtoPro, the University of Würzburg's virtual ultrafast laser laboratory, without copying its feature list. The 18 `physoptics-*.md` plans below implement it, on top of the `pbrt-*.md` plans of the [pbrt roadmap](pbrt-roadmap.md). This file holds the decisions that shape all of them, the resources they reserve, and one linear order to build everything in.
 
-*Written 2026-10-18. The optomechanical models (2026-10-28), scene capabilities, the optical surfaces, materials and elements (2026-10-29), and the bench and mounts (2026-10-30) are implemented; `docs/physical-optics-overview.md` describes what is built. Read the [pbrt roadmap](pbrt-roadmap.md), `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan here assumes them.*
+*Written 2026-10-18. The optomechanical models (2026-10-28), scene capabilities, the optical surfaces, materials and elements (2026-10-29), the bench and mounts (2026-10-30), and the laser sources (2026-11-02) are implemented; `docs/physical-optics-overview.md` describes what is built. Read the [pbrt roadmap](pbrt-roadmap.md), `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan here assumes them.*
 
 ## What femtoPro does, and what this plan takes from it
 
@@ -54,7 +54,7 @@ Technical defaults the plans state and the user can object to:
 
 - The world unit is the meter, as in glTF. Every optics panel shows millimeters, degrees and microradians.
 - The CPU side of the optics is a Vulkan-free static library, `rt_optics`, built at `-O2` like `rt_bvh` and `rt_light`. Its geometry is templated on the scalar type: the beam solver runs in `double`, and the `float` instantiation is the line-for-line mirror of the GLSL.
-- In exact RGB mode a glass's index is read at the scene's **Design wavelength** (587.6 nm by default, or the laser's wavelength when the scene has one laser), not at 550 nm. [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) added the setting; [physoptics-laser-sources.md](physoptics-laser-sources.md) makes it follow a single laser.
+- In exact RGB mode a glass's index is read at the scene's **Design wavelength** (587.6 nm by default, or the laser's wavelength when the scene has one laser), not at 550 nm. [pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md) added the setting; [physoptics-laser-sources.md](completed/physoptics-laser-sources.md) makes it follow a single laser.
 - An optic's materials are library entries the optic owns, the way a glTF model owns its imported materials in [pbrt-material-system.md](completed/pbrt-material-system.md).
 - Ports on beam-axis nodes are general (any number of outputs), so beamsplitters, acousto-optic modulators and nonlinear crystals fit the graph. Only the linear optics of the element list get physics in these plans.
 
@@ -88,7 +88,7 @@ Two consumers read the same optics. The solver traces one chief ray per segment 
 | [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) | `SceneOptic` and `OPTIC_TRAITS`: every element of the request with its Thorlabs sizes, the Optics folder, the scene file |
 | [physoptics-optomechanical-models.md](completed/physoptics-optomechanical-models.md) | The offline STEP-to-mesh pipeline, cleanup, connection nodes, the mount library, placeholders and the parts list |
 | [physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md) | The breadboard, posts, post holders and clamps, mount poses, hole snapping, fine adjusters, mounts as traced geometry |
-| [physoptics-laser-sources.md](physoptics-laser-sources.md) | The laser element: Gaussian emission, line spectra, power, polarization, emitted-ray sampling |
+| [physoptics-laser-sources.md](completed/physoptics-laser-sources.md) | The laser element: Gaussian emission, line spectra, power, polarization, emitted-ray sampling |
 | [physoptics-beam-axis.md](physoptics-beam-axis.md) | The authored graph of elements and ports, its editor, the traced graph beside it |
 | [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) | Chief rays with differential ray transfer, astigmatic beam matrices, clipping, ghosts, selective updating |
 | [physoptics-beam-preview.md](physoptics-beam-preview.md) | Beams in the raster viewport as at most three conical sections per segment |
@@ -128,7 +128,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 ### Milestone 2: beams
 
 15. [pbrt-light-types.md](completed/pbrt-light-types.md). Emitted-ray sampling, which the laser's emission joins.
-16. [physoptics-laser-sources.md](physoptics-laser-sources.md)
+16. [physoptics-laser-sources.md](completed/physoptics-laser-sources.md). Implemented 2026-11-02, with light tracing as the only integrator that renders a laser's light, its polarization deferred to item 31, and a wave-optics reference (`tools/verify/wave_optics.py`) that later plans compare the rays with.
 17. [physoptics-beam-axis.md](physoptics-beam-axis.md)
 18. [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)
 19. [physoptics-beam-preview.md](physoptics-beam-preview.md)
@@ -147,7 +147,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 27. [physoptics-prescription-import.md](physoptics-prescription-import.md)
 28. [pbrt-cameras.md](completed/pbrt-cameras.md). Its realistic camera traces through a lens assembly from item 27.
-29. [physoptics-verification-scenes.md](physoptics-verification-scenes.md). The geometric section: a 35 mm prime lens, a telescope, a microscope, Gaussian beam propagation through mirrors and lenses, an off-axis parabola's focal spot. Its spectral and polarization sections are verified as milestones 5 and 6 land.
+29. [physoptics-verification-scenes.md](physoptics-verification-scenes.md). Five of its geometric scenes (the Gaussian train, both telescopes, the off-axis parabola and the tilted mirror) were built with the laser sources on 2026-11-02 and checked on screens; their detector and solver checks remain. The geometric section: a 35 mm prime lens, a telescope, a microscope, Gaussian beam propagation through mirrors and lenses, an off-axis parabola's focal spot. Its spectral and polarization sections are verified as milestones 5 and 6 land.
 
 ### Milestone 5: the spectral goals
 

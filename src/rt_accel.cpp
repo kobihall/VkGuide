@@ -14,6 +14,7 @@
 #include <fmt/format.h>
 #include <glm/gtc/packing.hpp>
 
+#include <optic_laser.h>
 #include <optic_library.h>
 #include <rt_textures.h>
 #include <vk_loader.h>
@@ -335,7 +336,8 @@ struct OpticPacker {
 			const OpticGlass& g = glass != nullptr ? *glass : fallback;
 			accel.opticData.push_back(glm::vec4((float)glassIndex(g, spectral.designWavelength), (float)glassAbsorption(g, RGB_LAMBDAS[0]),
 				(float)glassAbsorption(g, RGB_LAMBDAS[1]), (float)glassAbsorption(g, RGB_LAMBDAS[2])));
-			const uint32_t index = accel.spectra.add(g.index, SpectrumRole::Scalar);
+			//absolute, as glassIndex() is: a catalog's index times the air's
+			const uint32_t index = accel.spectra.add(absoluteIndexRef(g), SpectrumRole::Scalar);
 			const uint32_t absorption = accel.spectra.add(g.absorption, SpectrumRole::Scalar);
 			accel.opticData.push_back(glm::vec4(floatOf(index), floatOf(absorption), floatOf(isConstantSpectrum(g.index) ? 0u : 1u), 0.f));
 		}
@@ -580,6 +582,9 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 		uint32_t slots;
 	};
 	std::map<size_t, OpticInstanceRecord> opticRecords;
+	//THE LASERS (docs/plans/completed/physoptics-laser-sources.md): each laser optic's beam, in world space, for the light
+	//list, which puts it after every other light; its instance's lightBase then names its first record
+	std::vector<std::pair<size_t, LaserLight>> lasers;
 	if (library != nullptr && !optics.empty()) {
 		OpticPacker packer { *library, spectral, *accel, {} };
 		OpticBuildContext context;
@@ -628,6 +633,31 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 			instance.objectToWorld = glm::mat4(optic.bodyToWorld());
 			instance.optic = body.floats;
 			opticRecords[instances.size()] = OpticInstanceRecord { body.base, (uint32_t)body.prescription.surfaces.size(), body.media, (uint32_t)traits.slots.size() };
+			if (optic.kind == OpticKind::Laser) {
+				const LaserBeam beam = laserBeam(optic);
+				const glm::dmat4& world = optic.world;
+				LaserLight laser;
+				//the light paths start on a plane just in front of the aperture, which they would otherwise hit again at
+				//t = 0 and be absorbed by: 10 um, and 1e-6 of the distance from the origin beyond the float error of a hit,
+				//with the waists that much further behind it, so the beam is the same beam
+				const glm::dvec3 axis = glm::normalize(glm::dvec3(world * glm::dvec4(beam.axis, 0.0)));
+				const glm::dvec3 center = glm::dvec3(world * glm::dvec4(beam.center, 1.0));
+				const double lead = 1e-5 + 1e-6 * glm::length(center);
+				laser.emitter.center = glm::vec3(center + lead * axis);
+				laser.emitter.axis = glm::vec3(axis);
+				laser.emitter.xAxis = glm::vec3(glm::normalize(glm::dvec3(world * glm::dvec4(beam.xAxis, 0.0))));
+				//distances behind the plane: the waist is waistPosition in front of it
+				laser.emitter.waist = glm::vec2((float)beam.x.waist, (float)beam.y.waist);
+				laser.emitter.waistDistance = glm::vec2((float)(lead - beam.x.waistPosition), (float)(lead - beam.y.waistPosition));
+				laser.emitter.halfAngle = glm::vec2((float)beam.x.halfAngle, (float)beam.y.halfAngle);
+				laser.apertureRadius = (float)beam.apertureRadius;
+				laser.rgb = glm::vec3(beam.rgb);
+				laser.power = (float)beam.power;
+				//a line integrating to 1 over nanometers, unnormalized: the record's scale is the power
+				laser.spectrum.index = accel->spectra.add(beam.spectrum, SpectrumRole::Unbounded);
+				laser.spectrum.scale = laser.power;
+				lasers.emplace_back(instances.size(), laser);
+			}
 			instances.push_back(instance);
 			materialBase.push_back(tableBase);
 			lightBase.push_back(GPU_NO_LIGHT);
@@ -828,6 +858,13 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	if (environment.distribution != nullptr) {
 		lightList.addEnvironment(environment.distribution->luminanceIntegral, environment.intensity, std::min(environment.group, MAX_LIGHT_GROUPS - 1u));
 	}
+	std::vector<std::pair<size_t, uint32_t>> laserOrdinals;
+	for (const auto& [instance, laser] : lasers) {
+		const uint32_t ordinal = lightList.addLaser(laser);
+		if (ordinal != GPU_NO_LIGHT) {
+			laserOrdinals.emplace_back(instance, ordinal);
+		}
+	}
 	const Aabb& bounds = accel->tlas.bounds;
 	const bool hasBounds = bounds.min.x <= bounds.max.x && bounds.min.y <= bounds.max.y && bounds.min.z <= bounds.max.z;
 	const float sceneRadius = hasBounds ? std::max(0.5f * glm::length(bounds.max - bounds.min), 1e-3f) : 1.f;
@@ -842,6 +879,9 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	}
 	for (size_t slot = 0; slot < accel->tlas.bvh.primOrder.size(); slot++) {
 		gpuSlot[accel->tlas.bvh.primOrder[slot]] = (uint32_t)(accel->unboundedCount + slot);
+	}
+	for (const auto& [instance, ordinal] : laserOrdinals) {
+		accel->instances[gpuSlot[instance]].lightBase = accel->lights.header.laserBase + 2u * ordinal;
 	}
 	for (GpuLight& light : accel->lights.lights) {
 		if ((light.kind & GPU_LIGHT_FLAG_TEXTURED) == 0) {

@@ -1,0 +1,9 @@
+{
+  "power": 0.005,
+  "radius": 0.0006434477445760455,
+  "tolerance": {
+    "power": 0.005,
+    "radius": 0.01
+  },
+  "notes": "HNL050LB 1 m from a white screen: all of its power, at its 1/e^2 radius there"
+}

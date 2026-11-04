@@ -185,7 +185,8 @@ endif()
 # line-for-line mirror of shaders/rt/include/crt_optic.glsl), the AGF glass reader, the thin-film transfer matrix, the
 # element traits and builders and their preview meshes, and the bench (docs/plans/completed/physoptics-bench-and-mounts.md): the
 # breadboard, the stack of fork, holder, post and mount under every optic by the mount models' mates, and the kinematic
-# mounts' adjusters. Checked by tests/optics_test.cpp; the CPU traversal in rt_bvh intersects optics through it
+# mounts' adjusters, and what a laser element's parameters make of its beam (docs/plans/completed/physoptics-laser-sources.md).
+# Checked by tests/optics_test.cpp; the CPU traversal in rt_bvh intersects optics through it
 add_library(rt_optics STATIC
     optic_bench.cpp
     optic_bench.h
@@ -195,6 +196,8 @@ add_library(rt_optics STATIC
     optic_coating.h
     optic_glass.cpp
     optic_glass.h
+    optic_laser.cpp
+    optic_laser.h
     optic_library.cpp
     optic_library.h
     optic_mesh.cpp

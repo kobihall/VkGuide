@@ -2,7 +2,7 @@
 
 A light path from a laser through a twenty-element setup meets twenty-odd surfaces, and at each the path tracer must find what it hits next and decide whether it reflects or refracts. The beam axis already says what it should hit and which way it should go. This plan lets the path tracer use that, in four modes chosen per beam axis: **Full** ignores the graph; **Seeded** uses it only to speed up the search, and gives the same result as **Full**; **Guided** also biases each reflect-or-refract choice toward the graph and reweights, which stays unbiased and still finds every ghost; **Sequential** traces the graph's surfaces alone, as a lens design program's sequential mode does, which is fast and ignores clipping by anything outside the graph and every ghost.
 
-*Not implemented. Depends on [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-laser-sources.md](physoptics-laser-sources.md), the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md) and [physoptics-detectors.md](physoptics-detectors.md), which measures what the modes change. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-laser-sources.md](completed/physoptics-laser-sources.md), the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md) and [physoptics-detectors.md](physoptics-detectors.md), which measures what the modes change. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 

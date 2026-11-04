@@ -1,0 +1,8 @@
+{
+  "irradiance": 14051.865630009524,
+  "spot_half_angle": 0.00042546805507201994,
+  "tolerance": {
+    "irradiance": 0.01
+  },
+  "notes": "the image integrates to the irradiance at the camera; off the axis by 5 radii, none"
+}

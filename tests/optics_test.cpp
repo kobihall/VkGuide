@@ -14,6 +14,9 @@
 //  - the bench: every kind in every mount stands at the beam height on its post, holder and fork; the stack reproduces
 //    example mirror.FCStd; snapping, the fork's hole and its clashes; the kinematic mounts' adjusters against Thorlabs'
 //    angle per revolution, about the right axis and reversibly; free placement and back; the breadboard's mesh
+//  - lasers (docs/plans/completed/physoptics-laser-sources.md): the HNL050LB preset's beam against its data sheet, the
+//    data sheet's diameter and divergence back to the waist and M^2, the aperture square to a pointed beam, its color,
+//    the design wavelength following one laser and not two, and a laser snapped onto a hole with its beam along the grid
 //
 // Run from the repository root:  ./bin/optics_test [--rays N] [--root dir] [--selfcheck]
 
@@ -21,6 +24,7 @@
 #include <optic_catalog.h>
 #include <optic_coating.h>
 #include <optic_glass.h>
+#include <optic_laser.h>
 #include <optic_library.h>
 #include <optic_mesh.h>
 #include <optic_surface.h>
@@ -556,7 +560,7 @@ void testGlasses()
 	const OpticGlass* bk7 = g_library.findGlass("N-BK7");
 	check(bk7 != nullptr, "N-BK7 is in the bundled catalog");
 	if (bk7 != nullptr) {
-		const double nd = glassIndex(*bk7, LAMBDA_D) + (g_plant ? 1e-4 : 0.0);
+		const double nd = indexRelativeToAir(*bk7, LAMBDA_D) + (g_plant ? 1e-4 : 0.0);
 		check(std::abs(nd - 1.51680) < 1e-5, fmt::format("N-BK7 nd = {:.6f}, Schott 1.51680", nd));
 		check(std::abs(abbeNumber(*bk7) - 64.17) < 0.005, fmt::format("N-BK7 vd = {:.3f}, Schott 64.17", abbeNumber(*bk7)));
 		check(glassAbsorption(*bk7, 550.0) > 0.0 && glassAbsorption(*bk7, 310.0) > 10.0 * glassAbsorption(*bk7, 550.0), "N-BK7 absorbs in the UV, from its IT lines");
@@ -568,7 +572,7 @@ void testGlasses()
 		}
 		for (const OpticGlass& glass : catalog.glasses) {
 			checked++;
-			const double nd = glassIndex(glass, LAMBDA_D);
+			const double nd = indexRelativeToAir(glass, LAMBDA_D);
 			check(std::abs(nd - glass.catalogNd) < 1e-5, fmt::format("{}: nd {:.6f} against the catalog's {:.5f}", glass.name, nd, glass.catalogNd));
 			check(std::abs(abbeNumber(glass) - glass.catalogVd) < 0.01, fmt::format("{}: vd {:.3f} against the catalog's {:.2f}", glass.name, abbeNumber(glass), glass.catalogVd));
 		}
@@ -577,6 +581,18 @@ void testGlasses()
 	const OpticGlass* air = g_library.findGlass(GLASS_AIR);
 	check(air != nullptr && std::abs(glassIndex(*air, 633.0) - 1.000276) < 2e-6, fmt::format("air at 633 nm: {:.7f}", air != nullptr ? glassIndex(*air, 633.0) : 0.0));
 	check(std::abs(ciddorAirIndex(633.0) - 1.000276) < 2e-6, "Ciddor's air at 633 nm");
+	// a catalog's index is relative to air: absolute, it is that times the air's, so in air a lens refracts by the
+	// catalog's own ratio (docs/plans/completed/physoptics-laser-sources.md found the air divided out twice)
+	if (bk7 != nullptr && air != nullptr) {
+		const double ratio = glassIndex(*bk7, 632.8) / glassIndex(*air, 632.8) + (g_plant ? 1e-4 : 0.0);
+		check(std::abs(ratio - 1.5150892) < 1e-6, fmt::format("N-BK7 in air at 632.8 nm: {:.7f}, Schott's relative index 1.5150892", ratio));
+		const SpectrumRef table = absoluteIndexRef(*bk7);
+		double worst = 0.0;
+		for (double lambda = 360.0; lambda <= 830.0; lambda += 0.37) {
+			worst = std::max(worst, std::abs(evalSpectrumRefRaw(table, lambda) - glassIndex(*bk7, lambda)));
+		}
+		check(worst + (g_plant ? 1e-5 : 0.0) < 1e-6, fmt::format("N-BK7's GPU table is {:.2e} off its absolute index", worst));
+	}
 	// the ND test glass: an optical density of 1 through 2 mm
 	const OpticGlass* nd = g_library.findGlass("ND-OD1");
 	check(nd != nullptr && std::abs(std::exp(-glassAbsorption(*nd, 550.0) * 2e-3) - 0.1) < 1e-6, "ND-OD1 transmits 0.1 through 2 mm");
@@ -589,7 +605,7 @@ void testGlasses()
 	}
 	std::vector<std::string> warnings;
 	const std::optional<GlassCatalog> wide = parseAgf(utf16, "wide", warnings);
-	check(wide && wide->glasses.size() == 1 && std::abs(glassIndex(wide->glasses[0], LAMBDA_D) - 1.5168) < 1e-4, "a UTF-16 AGF catalog reads");
+	check(wide && wide->glasses.size() == 1 && std::abs(indexRelativeToAir(wide->glasses[0], LAMBDA_D) - 1.5168) < 1e-4, "a UTF-16 AGF catalog reads");
 }
 
 //---------------------------------------------------------------- coatings
@@ -1107,6 +1123,81 @@ void testBench(const std::string& root)
 
 }
 
+void testLasers()
+{
+	fmt::println("lasers: the preset, the data sheet fit, the aperture, the color, the design wavelength, snapping");
+	const double plant = g_plant ? 1e-3 : 0.0;
+	// HNL050LB: 0.81 mm and 1.0 mrad at 632.8 nm, its waist at the output, 5 mW; a Gaussian line 0.002 nm wide
+	SceneOptic laser = makeOptic(OpticKind::Laser);
+	laser.name = "laser";
+	const LaserBeam beam = laserBeam(laser);
+	check(laser.sizePreset == 0 && std::abs(2.0 * beam.x.radius(0.0) - 0.81e-3) + plant * 1e-3 < 1e-12, fmt::format("HNL050LB: output diameter {:.6g} mm", 2e3 * beam.x.radius(0.0)));
+	check(std::abs(2.0 * beam.x.halfAngle - 1.0e-3) + plant * 1e-3 < 1e-12, fmt::format("HNL050LB: full divergence {:.6g} mrad", 2e3 * beam.x.halfAngle));
+	check(std::abs(beam.x.m2 - PI * 0.405e-3 * 0.5e-3 / 632.8e-9) + plant < 1e-9 && beam.x.m2 > 1.005 && beam.x.m2 < 1.006, fmt::format("HNL050LB: M^2 = {:.5f}", beam.x.m2));
+	check(std::abs(beam.power - 5e-3) + plant < 1e-15 && std::abs(beam.wavelength - 632.8e-9) < 1e-18, "HNL050LB: power or wavelength");
+	// a 1.5 GHz Gaussian line: sqrt(2 ln 2 / pi) c / 1.5 GHz = 13.3 cm
+	const double dnu = 299792458.0 * 0.002e-9 / (632.8e-9 * 632.8e-9);
+	check(std::abs(dnu / 1.4973e9 - 1.0) < 1e-3 && std::abs(beam.coherenceLength - std::sqrt(2.0 * std::log(2.0) / PI) * 299792458.0 / dnu) + plant < 1e-9,
+		fmt::format("HNL050LB: coherence length {:.4g} m for a {:.4g} GHz line", beam.coherenceLength, dnu * 1e-9));
+	check(std::abs(beam.apertureRadius - 3.0 * 0.405e-3) + plant < 1e-12, fmt::format("HNL050LB: aperture radius {:.4g} mm, not three beam radii", beam.apertureRadius * 1e3));
+	check(std::abs((beam.rgb.r + beam.rgb.g + beam.rgb.b) / 3.0 - 1.0) + plant < 1e-12 && beam.rgb.r > beam.rgb.g && beam.rgb.r > beam.rgb.b, "HNL050LB: its color is not red, averaging 1");
+
+	// the data sheet's diameter and divergence give back the waist and M^2 they came from, anywhere the waist is
+	double worstFit = 0.0;
+	for (int i = 0; i < 200; i++) {
+		const double waist = 1e-5 * std::pow(1e3, uniform());
+		const double m2 = 1.0 + 9.0 * uniform();
+		const double lambda = 400e-9 + 1200e-9 * uniform();
+		const double position = (uniform() - 0.5) * 2.0 * PI * waist * waist / (m2 * lambda);
+		const double theta = m2 * lambda / (PI * waist);
+		const double diameter = 2.0 * std::sqrt(waist * waist + theta * theta * position * position);
+		const std::optional<LaserAxisFit> fit = fitLaserAxis(diameter, 2.0 * theta, position, lambda);
+		worstFit = std::max(worstFit, fit ? std::max(std::abs(fit->waist / waist - 1.0), std::abs(fit->m2 / m2 - 1.0)) : 1.0);
+	}
+	check(worstFit + plant < 1e-9, fmt::format("data sheet fit: the waist or M^2 comes back {:.3g} off", worstFit));
+	check(!fitLaserAxis(1e-3, 1e-4, 0.0, 632.8e-9), "data sheet fit: a beam of M^2 0.25 was accepted");
+
+	// a pointed, offset beam's aperture is square to it, at its center, and the readout's surface count is one
+	setOpticValue(laser, "pointingX", 0.01);
+	setOpticValue(laser, "pointingY", -0.02);
+	setOpticValue(laser, "offsetX", 1e-3);
+	OpticReadout readout;
+	const OpticPrescription body = buildOptic(laser, context(), readout);
+	const LaserBeam pointed = laserBeam(laser);
+	const glm::dvec3 normal = body.surfaces.empty() ? glm::dvec3(0.0) : body.surfaces[0].placement.rotation * glm::dvec3(0.0, 0.0, 1.0);
+	check(body.surfaces.size() == 1 && glm::length(normal - pointed.axis) + plant < 1e-12 && glm::length(body.surfaces[0].placement.origin - pointed.center) < 1e-15,
+		"pointed laser: the aperture is not square to the beam at its center");
+	check(std::abs(std::atan(pointed.axis.x / pointed.axis.z) - 0.01) + plant < 1e-12 && std::abs(glm::dot(pointed.axis, pointed.xAxis)) < 1e-15, "pointed laser: the axis or its x axis");
+
+	// an infrared line shows in the display's infrared color, averaging 1
+	SceneOptic infrared = makeOptic(OpticKind::Laser);
+	setOpticValue(infrared, "wavelength", 1064e-9);
+	const LaserBeam ir = laserBeam(infrared);
+	check(std::abs(ir.rgb.r - 3.0) + plant < 1e-6 && ir.rgb.g == 0.0 && ir.rgb.b == 0.0, fmt::format("1064 nm: color ({:.3f}, {:.3f}, {:.3f})", ir.rgb.r, ir.rgb.g, ir.rgb.b));
+
+	// the design wavelength follows the scene's one laser, and not two
+	SpectralSettings spectral;
+	std::vector<SceneOptic> optics { makeOptic(OpticKind::PlanarMirror), infrared };
+	check(std::abs(designWavelength(spectral, optics) - 1064.f) + plant < 1e-3, "design wavelength: does not follow the one laser");
+	spectral.designFollowsLaser = false;
+	check(designWavelength(spectral, optics) == DEFAULT_DESIGN_WAVELENGTH, "design wavelength: follows the laser when told not to");
+	spectral.designFollowsLaser = true;
+	optics.push_back(makeOptic(OpticKind::Laser));
+	check(designWavelength(spectral, optics) == DEFAULT_DESIGN_WAVELENGTH, "design wavelength: follows one of two lasers");
+
+	// snapped: on the nearest hole, the beam level along the grid, the height kept
+	BenchContext bench;
+	bench.settings.table = true;
+	bench.build = context();
+	SceneOptic placed = makeOptic(OpticKind::Laser);
+	placed.mount.freePosition = glm::dvec3(0.031, 0.1234, -0.012);
+	placed.mount.freeOrientation = glm::angleAxis(1.3, glm::dvec3(0.0, 1.0, 0.0)) * glm::angleAxis(0.05, glm::dvec3(1.0, 0.0, 0.0));
+	snapFreeToBench(placed, bench);
+	const glm::dvec3 axis = placed.mount.freeOrientation * glm::dvec3(0.0, 0.0, 1.0);
+	check(glm::length(placed.mount.freePosition - glm::dvec3(0.025, 0.1234, -0.0)) + plant < 1e-12 && glm::length(axis - glm::dvec3(1.0, 0.0, 0.0)) < 1e-12,
+		fmt::format("snapped laser at ({:.4f}, {:.4f}, {:.4f}) along ({:.3f}, {:.3f}, {:.3f})", placed.mount.freePosition.x, placed.mount.freePosition.y, placed.mount.freePosition.z, axis.x, axis.y, axis.z));
+}
+
 int main(int argc, char** argv)
 {
 	int rays = 200000;
@@ -1139,6 +1230,7 @@ int main(int argc, char** argv)
 		testCoatings();
 		testElements();
 		testBench(root);
+		testLasers();
 	};
 	runAll();
 	const int failures = g_failures;

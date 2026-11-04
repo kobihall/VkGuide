@@ -10,7 +10,28 @@
 
 double glassIndex(const OpticGlass& glass, double lambda)
 {
-	return evalSpectrumRefRaw(glass.index, lambda);
+	const double index = evalSpectrumRefRaw(glass.index, lambda);
+	return glass.relativeToAir ? index * ciddorAirIndex(lambda) : index;
+}
+
+double indexRelativeToAir(const OpticGlass& glass, double lambda)
+{
+	const double index = evalSpectrumRefRaw(glass.index, lambda);
+	return glass.relativeToAir ? index : index / ciddorAirIndex(lambda);
+}
+
+SpectrumRef absoluteIndexRef(const OpticGlass& glass)
+{
+	if (!glass.relativeToAir) {
+		return glass.index;
+	}
+	std::vector<float> samples;
+	samples.reserve(2 * 2301);
+	for (int lambda = 200; lambda <= 2500; lambda++) {
+		samples.push_back((float)lambda);
+		samples.push_back((float)glassIndex(glass, (double)lambda));
+	}
+	return tabulatedRef(std::move(samples));
 }
 
 double glassAbsorption(const OpticGlass& glass, double lambda)
@@ -20,9 +41,10 @@ double glassAbsorption(const OpticGlass& glass, double lambda)
 
 double abbeNumber(const OpticGlass& glass)
 {
-	const double nF = glassIndex(glass, LAMBDA_F);
-	const double nC = glassIndex(glass, LAMBDA_C);
-	return nF != nC ? (glassIndex(glass, LAMBDA_D) - 1.0) / (nF - nC) : 0.0;
+	// a catalog's, relative to air
+	const double nF = indexRelativeToAir(glass, LAMBDA_F);
+	const double nC = indexRelativeToAir(glass, LAMBDA_C);
+	return nF != nC ? (indexRelativeToAir(glass, LAMBDA_D) - 1.0) / (nF - nC) : 0.0;
 }
 
 bool outsideRange(const OpticGlass& glass, double lambda)
@@ -50,6 +72,7 @@ OpticGlass airGlass()
 	OpticGlass air;
 	air.name = GLASS_AIR;
 	air.catalog = "builtin";
+	air.relativeToAir = false;
 	air.index = tabulatedRef(std::move(samples));
 	air.range = glm::dvec2(230.0, 1690.0);
 	air.catalogNd = ciddorAirIndex(LAMBDA_D);
@@ -61,6 +84,7 @@ OpticGlass vacuumGlass()
 	OpticGlass vacuum;
 	vacuum.name = GLASS_VACUUM;
 	vacuum.catalog = "builtin";
+	vacuum.relativeToAir = false;
 	vacuum.index = constantRef(1.f);
 	vacuum.catalogNd = 1.0;
 	return vacuum;

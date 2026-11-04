@@ -66,7 +66,7 @@ Wide-gamut output (Display P3 on this Mac's panel, through `VK_EXT_swapchain_col
 
 ### Wavelength display colors
 
-`wavelengthDisplayColor(λ)` turns one wavelength into an sRGB color: the CIE 1931 color of a line at λ, normalized and gamut-mapped, inside the visible range, and the false-color map's color for λ outside it (deep red for the infrared, violet for the ultraviolet, and a configurable color for XUV). The beam preview ([physoptics-beam-preview.md](physoptics-beam-preview.md)) colors laser beams with it, and the lasers of [physoptics-laser-sources.md](physoptics-laser-sources.md) take their exact-RGB color from it, as femtoPro colors its beams from their spectra.
+`wavelengthDisplayColor(λ)` turns one wavelength into an sRGB color: the CIE 1931 color of a line at λ, normalized and gamut-mapped, inside the visible range, and the false-color map's color for λ outside it (deep red for the infrared, violet for the ultraviolet, and a configurable color for XUV). The beam preview ([physoptics-beam-preview.md](physoptics-beam-preview.md)) colors laser beams with it, and the lasers of [physoptics-laser-sources.md](completed/physoptics-laser-sources.md) take their exact-RGB color from it, as femtoPro colors its beams from their spectra.
 
 ### Glare
 

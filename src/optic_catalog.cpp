@@ -6,13 +6,15 @@
 #include <fmt/format.h>
 
 #include <optic_glass.h>
+#include <optic_laser.h>
 #include <optic_library.h>
 
 // The kinds of docs/plans/completed/physoptics-optical-elements.md, with the defaults the user settled on 2026-10-29: mirrors are
 // N-BK7 with a fine-ground back and a -P01 protected silver front; CM127, CM254 and CM508 are 3.0, 6.0 and 9.0 mm at the
 // center; an off-axis parabola's thin edge is 0.75 of its diameter; the equilateral prism is F2, the right-angle prism
 // N-BK7 uncoated, the non-polarizing cube N-BK7 and the polarizing cube N-SF1 with the cement folded into the diagonal's
-// coating; a round wedge's thin edge is 2, 3 and 6 mm at 1/2, 1 and 2 in, a plate wedge's 3 mm.
+// coating; a round wedge's thin edge is 2, 3 and 6 mm at 1/2, 1 and 2 in, a plate wedge's 3 mm. A laser's one preset is
+// Thorlabs' HNL050LB from the data sheet the user gave on 2026-11-02 (docs/plans/completed/physoptics-laser-sources.md).
 //
 // THE BODY FRAMES. A transmissive element takes light along +z, entering its front face at z = 0. A mirror's
 // reflecting face is at z = 0 facing +z, and light arrives along -z. A cube's and a prism's origin is the center of
@@ -336,6 +338,53 @@ const OpticParam ROUND_WEDGE_PARAMS[] = {
 	{ "glass", "glass", OpticParamKind::Glass, std::string("N-BK7"), 0, 0, {}, {}, nullptr, nullptr },
 };
 
+const char* const HOUSING_LABELS[] = { "Laser head (HNL050LB)", "Diode module (CPS635R)", "Fiber collimator (F220APC-633)" };
+const char* const HOUSING_KEYS[] = { "laser_head", "diode_module", "fiber_collimator" };
+const char* const LASER_SPECTRUM_LABELS[] = { "Lorentzian line", "Gaussian line or band" };
+const char* const LASER_SPECTRUM_KEYS[] = { "lorentzian", "gaussian" };
+
+bool laserAstigmatic(const OpticParams& params)
+{
+	const auto found = params.find("astigmatic");
+	const bool* b = found != params.end() ? std::get_if<bool>(&found->second) : nullptr;
+	return b != nullptr && *b;
+}
+
+#define WAVELENGTH(name, label, value, lo, hi, tip) OpticParam { name, label, OpticParamKind::Wavelength, OpticValue((double)(value)), lo, hi, {}, {}, tip, nullptr }
+#define NUMBER(name, label, value, lo, hi, tip, visible) OpticParam { name, label, OpticParamKind::Number, OpticValue((double)(value)), lo, hi, {}, {}, tip, visible }
+
+// HNL050LB: 0.81 mm 1/e^2 diameter and 1.0 mrad full divergence, its waist at the output, which is M^2 = 1.005
+constexpr double HNL_WAIST = 0.405 * MM;
+constexpr double HNL_HALF_ANGLE = 0.5e-3;
+constexpr double HNL_WAVELENGTH = 632.8e-9;
+const OpticSizeValue HNL050LB[] = { { "housing", 0.0 }, { "wavelength", HNL_WAVELENGTH }, { "spectrum", 1.0 }, { "linewidth", 0.002e-9 }, { "power", 5e-3 },
+	{ "waistRadius", HNL_WAIST }, { "waistPosition", 0.0 }, { "m2", PI * HNL_WAIST * HNL_HALF_ANGLE / HNL_WAVELENGTH } };
+const OpticSize LASER_PRESETS[] = { { "HNL050LB", "HNL050LB HeNe, 632.8 nm, 5 mW", HNL050LB } };
+
+const OpticParam LASER_PARAMS[] = {
+	{ "housing", "housing", OpticParamKind::Enum, 0, 0, 2, HOUSING_LABELS, HOUSING_KEYS,
+		"What the laser stands for. Only its output aperture is geometry; the Viewport outlines the housing", nullptr },
+	WAVELENGTH("wavelength", "wavelength", HNL_WAVELENGTH, 1e-9, 20e-6, "The line's center. Exact RGB reads the glasses here when the scene has one laser"),
+	{ "spectrum", "spectrum", OpticParamKind::Enum, 1, 0, 1, LASER_SPECTRUM_LABELS, LASER_SPECTRUM_KEYS,
+		"Lorentzian: a single-frequency laser's line. Gaussian: a Doppler-broadened gas laser's line, or a pulse's bandwidth", nullptr },
+	WAVELENGTH("linewidth", "linewidth", 0.002e-9, 1e-15, 1e-6, "Full width at half maximum: the spectral modes draw a laser's wavelengths from it"),
+	NUMBER("power", "power (W)", 5e-3, 0.0, 1e3, "Average power", nullptr),
+	LENGTH("waistRadius", "waist radius", HNL_WAIST, 1e-7, 0.05, "The 1/e^2 intensity radius at the waist (along the beam's x axis when x and y differ)"),
+	LENGTH("waistPosition", "waist position", 0.0, -2.0, 2.0, "From the output aperture along the beam: negative inside the housing"),
+	NUMBER("m2", "M^2", PI * HNL_WAIST * HNL_HALF_ANGLE / HNL_WAVELENGTH, 1.0, 100.0, "The beam quality factor: the divergence over a perfect Gaussian's of the same waist", nullptr),
+	{ "astigmatic", "separate x and y", OpticParamKind::Bool, false, 0, 0, {}, {}, "An elliptical or astigmatic beam, such as a diode's: y gets a waist, waist position and M^2 of its own", nullptr },
+	{ "waistRadiusY", "waist radius y", OpticParamKind::Length, HNL_WAIST, 1e-7, 0.05, {}, {}, nullptr, laserAstigmatic },
+	{ "waistPositionY", "waist position y", OpticParamKind::Length, 0.0, -2.0, 2.0, {}, {}, nullptr, laserAstigmatic },
+	NUMBER("m2Y", "M^2 y", PI * HNL_WAIST * HNL_HALF_ANGLE / HNL_WAVELENGTH, 1.0, 100.0, nullptr, laserAstigmatic),
+	{ "ellipseAngle", "x axis angle", OpticParamKind::Angle, 0.0, -PI, PI, {}, {}, "The beam's x axis about the output axis, from the housing's x", laserAstigmatic },
+	{ "pointingX", "pointing x", OpticParamKind::Angle, 0.0, -0.1, 0.1, {}, {}, "The beam's angle toward the housing's +x: a laser that does not leave its housing straight", nullptr },
+	{ "pointingY", "pointing y", OpticParamKind::Angle, 0.0, -0.1, 0.1, {}, {}, "The beam's angle toward the housing's +y", nullptr },
+	LENGTH("offsetX", "offset x", 0.0, -0.01, 0.01, "The beam's center across the output aperture, along the housing's x"),
+	LENGTH("offsetY", "offset y", 0.0, -0.01, 0.01, "The beam's center along the housing's y"),
+};
+
+#undef NUMBER
+#undef WAVELENGTH
 #undef LENGTH
 
 //---------------------------------------------------------------- slots, mounts, ports
@@ -343,6 +392,7 @@ const OpticParam ROUND_WEDGE_PARAMS[] = {
 const MaterialSlot MIRROR_SLOTS[] = { { "front", SlotDefault::Polished, "thorlabs_P01" }, { "back", SlotDefault::Ground, "uncoated" }, { "edge", SlotDefault::Ground, "uncoated" } };
 const MaterialSlot TRANSMISSIVE_SLOTS[] = { { "front", SlotDefault::Polished, "uncoated" }, { "back", SlotDefault::Polished, "uncoated" }, { "edge", SlotDefault::Ground, "uncoated" } };
 const MaterialSlot IRIS_SLOTS[] = { { "blades", SlotDefault::Black, "uncoated" } };
+const MaterialSlot LASER_SLOTS[] = { { "aperture", SlotDefault::LaserAperture, "uncoated" } };
 const MaterialSlot PLATE_BS_SLOTS[] = { { "front", SlotDefault::Polished, "thorlabs_BSW" }, { "back", SlotDefault::Polished, "thorlabs_A" }, { "edge", SlotDefault::Ground, "uncoated" } };
 const MaterialSlot CUBE_SLOTS[] = { { "faces", SlotDefault::Polished, "thorlabs_A" }, { "diagonal", SlotDefault::Polished, "ideal_50_50" } };
 const MaterialSlot RA_SLOTS[] = { { "legs", SlotDefault::Polished, "uncoated" }, { "hypotenuse", SlotDefault::Polished, "uncoated" }, { "caps", SlotDefault::Ground, "uncoated" } };
@@ -361,6 +411,7 @@ const PortEvent THROUGH_TWO[] = { { 0, false }, { 1, false } };
 const OpticPort TRANSMITTED_PORTS[] = { { "Transmitted", THROUGH_TWO } };
 const OpticPort SPLITTER_PORTS[] = { { "Reflected", REFLECT_FRONT }, { "Transmitted", THROUGH_TWO } };
 const OpticPort IRIS_PORTS[] = { { "Transmitted", {} } };
+const OpticPort LASER_PORTS[] = { { "Output", {} } };
 // the cube's surfaces: 0 z-, 1 y-, 2 z+, 3 y+, 4 to 7 the two triangles of each x face, 8 the diagonal
 const PortEvent CUBE_REFLECTED[] = { { 0, false }, { 8, true }, { 1, false } };
 const PortEvent CUBE_TRANSMITTED[] = { { 0, false }, { 8, false }, { 2, false } };
@@ -689,6 +740,27 @@ void buildRoundWedge(const SceneOptic& o, const OpticBuildContext& context, Opti
 	r.lengths.push_back({ "thick edge", thin + 2.0 * radius * slope });
 }
 
+// the output aperture: a disk square to the beam where it leaves, emitting toward +z (crt_laser.glsl)
+void buildLaser(const SceneOptic& o, const OpticBuildContext&, OpticPrescription& p, OpticReadout& r)
+{
+	const LaserBeam beam = laserBeam(o);
+	OpticSurface s;
+	s.shape = SurfaceShape::Conic;
+	s.placement = frameFromNormal(beam.center, beam.axis, beam.xAxis);
+	s.aperture = circle(beam.apertureRadius);
+	p.media = { OpticMedium {} };
+	add(p, s, 0, 0, 0, 0);
+
+	// the output diameter and divergence are the panel's own fields (they set the waist and M^2)
+	const bool astigmatic = opticBool(o, "astigmatic");
+	r.lengths.push_back({ astigmatic ? "Rayleigh range x" : "Rayleigh range", beam.x.rayleighRange() });
+	if (astigmatic) {
+		r.lengths.push_back({ "Rayleigh range y", beam.y.rayleighRange() });
+	}
+	r.lengths.push_back({ "coherence length", beam.coherenceLength });
+	r.lengths.push_back({ "aperture diameter", 2.0 * beam.apertureRadius });
+}
+
 //---------------------------------------------------------------- the table
 
 // by OpticKind
@@ -706,6 +778,7 @@ const OpticTraits OPTIC_TRAITS[] = {
 	{ "equilateral_prism", "Equilateral dispersing prism", "Equilateral prisms", EQ_SIZES, EQ_PARAMS, PRISM_SLOTS, PRISM_MOUNTS, PRISM_PORTS, false, buildEquilateralPrism, true },
 	{ "plate_wedge", "Plate wedge prism", "Plate wedges", PLATE_WEDGE_SIZES, PLATE_WEDGE_PARAMS, TRANSMISSIVE_SLOTS, PLATE_MOUNTS, TRANSMITTED_PORTS, false, buildPlateWedge, true },
 	{ "round_wedge", "Round wedge prism", "Round wedges", WEDGE_SIZES, ROUND_WEDGE_PARAMS, TRANSMISSIVE_SLOTS, ROTATION_MOUNTS, TRANSMITTED_PORTS, false, buildRoundWedge, true },
+	{ "laser", "Laser", "Lasers", LASER_PRESETS, LASER_PARAMS, LASER_SLOTS, {}, LASER_PORTS, false, buildLaser, false, "preset", true },
 };
 static_assert(std::size(OPTIC_TRAITS) == OPTIC_KIND_COUNT);
 
@@ -925,6 +998,10 @@ MaterialDef defaultSlotMaterial(const SceneOptic& optic, size_t slot)
 	material.name = fmt::format("{} / {}", optic.name, slot < traits.slots.size() ? traits.slots[slot].name : "slot");
 	material.opticOrigin = OpticSlotOrigin { optic.id, (uint32_t)slot };
 	const SlotDefault kind = slot < traits.slots.size() ? traits.slots[slot].kind : SlotDefault::Polished;
+	if (kind == SlotDefault::LaserAperture) {
+		material.type = MaterialType::LaserAperture;
+		return material;
+	}
 	if (kind == SlotDefault::Black) {
 		// black anodized aluminum, as the mounts' blades are (physoptics-bench-and-mounts.md)
 		material.type = MaterialType::Diffuse;

@@ -226,6 +226,10 @@ bool refitFork(SceneOptic& optic, const BenchContext& context, std::span<const O
 // zero. Not snapped: the optic stays where it was as nearly as a stack allows
 void dropOntoBench(SceneOptic& optic, const BenchContext& context, std::span<const OpticStack> others);
 
+// A freely placed optic that snaps (OpticTraits::snapsFree, a laser) put on the bench: its origin's x and z on the nearest
+// hole, its height kept, and its axis level and turned to the nearest of the grid's four directions
+void snapFreeToBench(SceneOptic& optic, const BenchContext& context);
+
 //---------------------------------------------------------------- the adjusters
 
 // A kinematic mount's plate rests on the pivot ball and the two adjusters' tips. The plate's orientation is

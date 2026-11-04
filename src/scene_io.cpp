@@ -114,7 +114,14 @@ namespace {
 //   appear in "kernels", and "render" gains "bidirectional" when it differs from the defaults: the light vertex cache's
 //   "connections" and "cacheBudget" (MB), and bdpt's "visualizeStrategies" and "visualizeWeights". An older file renders
 //   with the path tracer it names, as it did
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 27;
+//28: the optic type "laser" (docs/plans/completed/physoptics-laser-sources.md), whose "params" are its "housing",
+//   "wavelength" and "linewidth" (meters), "spectrum", "power" (watts), "waistRadius", "waistPosition", "m2", "astigmatic",
+//   the y axis's "waistRadiusY", "waistPositionY", "m2Y" and "ellipseAngle", and the "pointingX", "pointingY", "offsetX"
+//   and "offsetY", its "size" a preset's key ("HNL050LB"). Its slot "aperture" holds a "laser_aperture" material. A
+//   laser is placed freely, as an unmounted optic is. "spectral" gains "designFollowsLaser", written only when false.
+//   A user glass gains "absolute", written when its index is not relative to air (a catalog formula is). An older
+//   file has no laser, and its glasses are read relative to air, as catalog glasses now are
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 28;
 
 //---------------------------------------------------------------- writing
 
@@ -317,8 +324,10 @@ std::string glassJson(const OpticGlass& glass)
 		const glm::dvec3& line = glass.transmittance[i];
 		lines += fmt::format("{}[{},{},{}]", i > 0 ? "," : "", jsonDouble(line.x), jsonDouble(line.y), jsonDouble(line.z));
 	}
-	return fmt::format(R"({{"name":{},"index":{},"range":[{},{}],"nd":{},"vd":{},"transmittance":[{}],"thermal":{}}})", jsonString(glass.name), spectrumJson(glass.index),
-		jsonDouble(glass.range.x), jsonDouble(glass.range.y), jsonDouble(glass.catalogNd), jsonDouble(glass.catalogVd), lines, jsonString(glass.thermal));
+	//version 28: "absolute" for a glass whose index is not relative to air, as a catalog's is
+	return fmt::format(R"({{"name":{},"index":{},"range":[{},{}],"nd":{},"vd":{},"transmittance":[{}],"thermal":{}{}}})", jsonString(glass.name), spectrumJson(glass.index),
+		jsonDouble(glass.range.x), jsonDouble(glass.range.y), jsonDouble(glass.catalogNd), jsonDouble(glass.catalogVd), lines, jsonString(glass.thermal),
+		glass.relativeToAir ? "" : R"(,"absolute":true)");
 }
 
 std::string coatingJson(const OpticCoating& c)
@@ -523,6 +532,11 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		json += fmt::format(R"(,"spectral":{{"representation":{},"lanes":{},"range":[{},{}],"wavelength":{},"designWavelength":{},"bandBasis":{},"gaussians":[{}],"sampling":{},"emittersShare":{},"colorSpace":{},"images":{},"matching":"cie1931"}}}})",
 			jsonString(spectralRepresentationKey(s.representation)), s.lanes, jsonNumber(s.lambdaMin), jsonNumber(s.lambdaMax), jsonNumber(s.monochromaticWavelength), jsonNumber(s.designWavelength),
 			jsonString(bandBasisKey(s.bandBasis)), gaussians, jsonString(wavelengthSamplingKey(s.sampling)), jsonNumber(s.lightSamplingShare), jsonString(colorSpace(s.colorSpace).key), s.imageBuckets);
+		//version 28: only when the design wavelength does not follow the scene's laser
+		if (!s.designFollowsLaser) {
+			json.resize(json.size() - 2);
+			json += R"(,"designFollowsLaser":false}})";
+		}
 	}
 	//version 21: the optics settings, still inside "render", only when they differ from the defaults
 	if (r.optics != OpticsSettings {}) {
@@ -1300,6 +1314,7 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 		}
 		readOptionalFloat(spectral["wavelength"], s.monochromaticWavelength);
 		readOptionalFloat(spectral["designWavelength"], s.designWavelength);
+		readOptionalBool(spectral["designFollowsLaser"], s.designFollowsLaser);
 		readOptionalFloat(spectral["emittersShare"], s.lightSamplingShare);
 		simdjson::dom::array gaussians;
 		if (spectral["gaussians"].get_array().get(gaussians) == simdjson::SUCCESS) {
@@ -1777,6 +1792,9 @@ bool readGlass(simdjson::dom::object object, OpticGlass& out)
 	}
 	out.absorption = absorptionFromTransmittance(out.transmittance);
 	out.thermal = readOptionalString(object["thermal"]);
+	bool absolute = false;
+	readOptionalBool(object["absolute"], absolute);
+	out.relativeToAir = !absolute;
 	return true;
 }
 
@@ -1925,6 +1943,7 @@ bool readOptic(simdjson::dom::object object, size_t index, SceneOpticRecord& out
 			case OpticParamKind::Length:
 			case OpticParamKind::Angle:
 			case OpticParamKind::Number:
+			case OpticParamKind::Wavelength:
 				if (readDouble(element, d)) {
 					optic.params[param.name] = d;
 				}

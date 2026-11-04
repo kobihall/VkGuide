@@ -2,7 +2,7 @@
 
 On a lab notebook sketch, an experiment is a line: laser, turning mirror, lens, iris, beamsplitter, then two arms. That line is the design intent, and the alignment is the work of making the real beam follow it. The beam axis is that sketch as a scene object: a tree whose nodes are visits to optical elements and whose edges leave each element by a named port. You build it by hand, or from the beam the solver traces, and the solver then reports every place where the real beam leaves it. The tree also tells the locked transforms what moves with what ([physoptics-locked-transforms.md](physoptics-locked-transforms.md)), and the path tracer which surfaces a light path is meant to reach next ([physoptics-guided-tracing.md](physoptics-guided-tracing.md)).
 
-*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) and [physoptics-laser-sources.md](physoptics-laser-sources.md). The solver that compares it with the real beam is [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-optical-elements.md](completed/physoptics-optical-elements.md) and [physoptics-laser-sources.md](completed/physoptics-laser-sources.md). The solver that compares it with the real beam is [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 

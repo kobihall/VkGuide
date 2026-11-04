@@ -66,7 +66,10 @@ enum class MaterialType : uint8_t {
 	// a surface of an optical body (docs/plans/completed/physoptics-optical-materials.md): exact Fresnel or a coating between the
 	// surface's two media, which the body's record names, never the material. Only an optic's surface can use it; on
 	// anything else it reflects and refracts as an uncoated surface between air and air would, passing light through
-	OpticalInterface
+	OpticalInterface,
+	// a laser's output aperture (docs/plans/completed/physoptics-laser-sources.md): black, and glowing with its instance's
+	// laser beam toward the directions the beam leaves in (crt_laser.glsl). On anything that is not a laser it is black
+	LaserAperture
 };
 
 inline constexpr MaterialType MATERIAL_TYPES[] = {
@@ -83,6 +86,7 @@ inline constexpr MaterialType MATERIAL_TYPES[] = {
 	MaterialType::DiffuseTransmission,
 	MaterialType::Mix,
 	MaterialType::OpticalInterface,
+	MaterialType::LaserAperture,
 };
 
 inline constexpr size_t MATERIAL_TYPE_COUNT = sizeof(MATERIAL_TYPES) / sizeof(MATERIAL_TYPES[0]);

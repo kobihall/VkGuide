@@ -90,6 +90,9 @@ struct SpectralSettings {
 	// what exact RGB reads a dispersive glass's index at, and what an optical design is specified at (the
 	// helium d line by default)
 	float designWavelength { DEFAULT_DESIGN_WAVELENGTH };
+	// while the scene has exactly one laser, read the glasses at its wavelength instead
+	// (docs/plans/completed/physoptics-laser-sources.md, designWavelength() in src/optic_laser.h)
+	bool designFollowsLaser { true };
 	BandBasis bandBasis { BandBasis::Box };
 	std::array<GaussianBand, 3> gaussians { DEFAULT_RGB_GAUSSIANS };
 	WavelengthSampling sampling { WavelengthSampling::Visible };

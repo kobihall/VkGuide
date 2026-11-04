@@ -495,6 +495,26 @@ glm::vec3 glassPreview(const MaterialDef&)
 	return glm::vec3(0.75f, 0.85f, 1.f);
 }
 
+// black, with the emits flag that sends its hits to kernel 04, which evaluates the laser's beam there: the record holds no
+// emission, so every other emitter reader finds none
+void packLaserAperture(const MaterialDef&, const PackContext&, MaterialRecordWriter& writer)
+{
+	CrtClassicMaterial out {};
+	out.type = (uint32_t)MaterialType::LaserAperture;
+	out.albedoLayer = -1;
+	out.normalLayer = -1;
+	out.metalRoughLayer = -1;
+	out.emissiveLayer = -1;
+	out.normalScale = 1.f;
+	writer.write(&out, sizeof(out));
+	writer.out.flags |= CRT_MATERIAL_FLAG_EMITS;
+}
+
+glm::vec3 laserPreview(const MaterialDef&)
+{
+	return glm::vec3(0.9f, 0.1f, 0.1f);
+}
+
 //---------------------------------------------------------------- the table
 
 // by MaterialType
@@ -513,6 +533,7 @@ const MaterialTraits MATERIAL_TRAITS[] = {
 	{ "mix", "Mix (pbrt)", MIX_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX, packMix, noEmission, mixPreview },
 	{ "optical_interface", "Optical interface", OPTICAL_INTERFACE_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX | MATERIAL_TYPE_DELTA, packOpticalInterface,
 		noEmission, glassPreview },
+	{ "laser_aperture", "Laser aperture", {}, MATERIAL_TYPE_EMISSIVE, packLaserAperture, noEmission, laserPreview },
 };
 static_assert(sizeof(MATERIAL_TRAITS) / sizeof(MATERIAL_TRAITS[0]) == MATERIAL_TYPE_COUNT);
 
@@ -635,7 +656,7 @@ void MaterialRecordWriter::write(const void* data, size_t bytes)
 
 bool usesEmissionBlock(MaterialType type)
 {
-	return type != MaterialType::Emissive && type != MaterialType::Pbr && type != MaterialType::OpticalInterface;
+	return type != MaterialType::Emissive && type != MaterialType::Pbr && type != MaterialType::OpticalInterface && type != MaterialType::LaserAperture;
 }
 
 uint32_t textureTarget(const MaterialDef& material, std::string_view name)
@@ -721,6 +742,8 @@ uint32_t textureTarget(const MaterialDef& material, std::string_view name)
 	case MaterialType::OpticalInterface:
 		//the ABg lobe's B and g shape a table the CPU integrates, so only its total scatter can vary over the surface
 		return name == "tis" ? CRT_TEX_TARGET_TIS : CRT_TEX_TARGET_NONE;
+	case MaterialType::LaserAperture:
+		return CRT_TEX_TARGET_NONE;
 	}
 	return CRT_TEX_TARGET_NONE;
 }

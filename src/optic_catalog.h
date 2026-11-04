@@ -44,9 +44,11 @@ enum class OpticKind : uint8_t {
 	RightAnglePrism,
 	EquilateralPrism,
 	PlateWedge,
-	RoundWedge
+	RoundWedge,
+	// a source (docs/plans/completed/physoptics-laser-sources.md): its body is its output aperture, and it is a light
+	Laser
 };
-inline constexpr size_t OPTIC_KIND_COUNT = 13;
+inline constexpr size_t OPTIC_KIND_COUNT = 14;
 
 // the most material slots a kind has
 inline constexpr size_t MAX_OPTIC_MATERIAL_SLOTS = 4;
@@ -65,7 +67,9 @@ enum class OpticParamKind : uint8_t {
 	Enum,
 	Bool,
 	// a glass of the optical library, by name
-	Glass
+	Glass,
+	// meters, shown in nanometers
+	Wavelength
 };
 
 struct OpticParam {
@@ -104,7 +108,9 @@ enum class SlotDefault : uint8_t {
 	// a ground interface (rough glass between the same media)
 	Ground,
 	// black anodized metal: diffuse, reflectance 0.04 (an iris's blades)
-	Black
+	Black,
+	// a laser's output aperture (MaterialType::LaserAperture), which emits the element's beam
+	LaserAperture
 };
 struct MaterialSlot {
 	const char* name;
@@ -184,6 +190,10 @@ struct OpticTraits {
 	void (*build)(const SceneOptic&, const OpticBuildContext&, OpticPrescription&, OpticReadout&);
 	// whether the body closes on itself (an iris is one sheet, which does not)
 	bool closed;
+	// what the panel calls the sizes: a part's sizes, or a laser's presets
+	const char* sizeLabel { "size" };
+	// placed freely and never mounted, but put on a hole with its axis along the grid when the bench snaps (a laser)
+	bool snapsFree { false };
 };
 
 std::span<const OpticTraits> opticTraitsTable();

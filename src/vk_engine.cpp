@@ -9,6 +9,7 @@
 #include <file_dialog.h>
 #include <vk_ui.h>
 #include <optics_ui.h>
+#include <optic_laser.h>
 #include <optic_mesh.h>
 
 #include <fstream>
@@ -2817,7 +2818,7 @@ OpticBuildContext VulkanEngine::opticBuildContext() const
 {
 	OpticBuildContext context;
 	context.library = &m_opticalLibrary;
-	context.designWavelength = m_raytracer.settings().spectral.designWavelength;
+	context.designWavelength = designWavelength(m_raytracer.settings().spectral, m_raytraceScene.optics());
 	context.surrounding = surroundingGlass(m_raytracer.settings().optics.surrounding);
 	return context;
 }

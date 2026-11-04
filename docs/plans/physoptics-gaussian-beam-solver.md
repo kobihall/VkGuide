@@ -44,6 +44,8 @@ A general astigmatic Gaussian beam's field is `exp(−i k rᵀ Q⁻¹ r / 2)` fo
 
 A laser's M² enters as an embedded Gaussian: its two complex rays at the waist are scaled so that `wᵢ` uses `M²ᵢ λ` on each of the laser's axes (Siegman). For a beam with unequal M² whose axes later rotate, this is an approximation, which the readout flags.
 
+The root segment comes from `laserBeam()` (`src/optic_laser.h`, built 2026-11-02): the beam's center, axis and x axis in the laser's body frame (the pointing applied), each axis's waist, waist position and M², the center wavelength and the power. Its Jones vector waits for the laser's polarization ([pbrt-polarization.md](pbrt-polarization.md), "Lasers"); until then the solver carries an unpolarized laser as two orthogonal Jones vectors of half the power each, as below. `tools/verify/optics_verification.py` already checks the renderer's beams against ABCD through lenses and mirrors, and its closed-form code (`tools/verify/beam_probe.py`) is the reference `bin/beam_test` can share.
+
 ### Polarization
 
 The chief ray carries a Jones vector in its transverse frame. At each surface the solver rotates it into the plane of incidence, multiplies by the coating's `rₛ, rₚ` or `tₛ, tₚ`, and rotates back, so a polarizing beamsplitter's two ports carry their real powers and a quarter-wave plate turns linear into circular ([physoptics-polarization-optics.md](physoptics-polarization-optics.md) adds retarders and birefringent crystals to this). An unpolarized or partially polarized laser is carried as two orthogonal Jones vectors whose powers add, which is exact for the powers. This works with or without the polarized path-tracer family, since the solver is a few complex multiplies per surface.

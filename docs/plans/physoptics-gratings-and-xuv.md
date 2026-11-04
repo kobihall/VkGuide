@@ -52,7 +52,7 @@ At XUV and soft X-ray wavelengths a material's index is `n = 1 − δ + iβ` wit
 ### The XUV bench
 
 - **Surrounding medium** is vacuum ([physoptics-optical-materials.md](completed/physoptics-optical-materials.md)); the panel warns when an XUV source is set in air, which absorbs it within millimeters.
-- A laser element at an XUV wavelength is a fine model of a high-harmonic beam, which is close to Gaussian with a divergence of milliradians ([physoptics-laser-sources.md](physoptics-laser-sources.md)).
+- A laser element at an XUV wavelength is a fine model of a high-harmonic beam, which is close to Gaussian with a divergence of milliradians ([physoptics-laser-sources.md](completed/physoptics-laser-sources.md)).
 - The spectral range, the band set and the false color for the display follow the scene's sources: a setup whose lasers are all below 100 nm defaults to a hero-wavelength range around their lines, and to band images on detectors.
 - XUV optics are not on posts in a lab; they sit in vacuum chambers. They use **Free placement** ([physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md)), and a chamber model is not planned.
 

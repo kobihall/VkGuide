@@ -9,6 +9,7 @@
 //   sphere, rectangle,   a point uniform by area, a direction cosine-weighted about the side it leaves from; a two-sided
 //   cylinder, triangle   light picks the side with probability 1/2
 //   environment          from the disk, towards the scene, in a direction drawn by the map's full table
+//   laser                from its beam's plane, a point and a slope per axis from its Gaussian beam (crt_laser.glsl)
 //
 // A point light's range window falls off with the distance a light path travels to its first vertex, which the light
 // path kernels apply (crt_light_path.glsl). Kept out of crt_light.glsl, so the path tracer's kernels are the code they
@@ -20,6 +21,7 @@
 
 #include "crt_warp.glsl"
 #include "crt_image_table.glsl"
+#include "crt_laser.glsl"
 
 struct LightLeSample {
 	vec3 origin;
@@ -167,6 +169,17 @@ bool sampleLe(uint index, vec2 uPos, vec2 uDir, out LightLeSample s)
 	s.deltaDirection = kind == CRT_LIGHT_DIRECTIONAL;
 	vec3 tint = vec3(1.0);
 	float factor = 1.0;
+
+	// a laser's beam, outside the switch so that a scene without one runs the code it always did
+	if (CRT_LASERS && kind == CRT_LIGHT_LASER) {
+		const LaserEmitter laser = laserEmitter(index);
+		if (!sampleLaserRay(laser, uPos, uDir, s.origin, s.direction, s.pdfPos, s.pdfDir)) {
+			return false;
+		}
+		s.normal = laser.axis;
+		s.radiance = spectrumScale(lightSpectrum(light), laserRadiancePerWatt(laser, s.origin, s.direction));
+		return true;
+	}
 
 	switch (kind) {
 	case CRT_LIGHT_POINT:

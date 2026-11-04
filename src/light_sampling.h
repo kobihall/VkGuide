@@ -220,6 +220,44 @@ struct PiecewiseConstant2D;
 // goniometric light's equal-area image covers 4 pi / texels with each
 PiecewiseConstant2D buildLightImageDistribution(bool projection, const glm::vec2& extents, uint32_t width, uint32_t height, const float* values);
 
+//---------------------------------------------------------------- lasers
+
+// A laser's beam as its light records carry it (docs/plans/completed/physoptics-laser-sources.md; crt_laser.glsl mirrors
+// these line for line): the reference plane through `center` square to the unit `axis`, the way the beam leaves, the
+// beam's unit `xAxis` in it, and per transverse axis the 1/e^2 waist radius, the distance from the waist forward to the
+// plane (positive when the waist is behind it, inside the housing) and the 1/e^2 far-field half angle. Along one axis
+// the beam is the Gaussian phase-space density over the position x in the plane and the slope s (the tangent of the
+// angle off the axis)
+//
+//     p(x, s) = N(x - d s; w0 / 2) N(s; theta / 2)
+//
+// its Wigner function, which is positive for a Gaussian beam and sheared by free space, so rays drawn from it carry the
+// beam's second moments exactly through any paraxial system, focus included (Bastiaans 1979). x and y are independent
+struct LaserEmitter {
+	glm::vec3 center { 0.f };
+	glm::vec3 axis { 0.f, 0.f, 1.f };
+	glm::vec3 xAxis { 1.f, 0.f, 0.f };
+	glm::vec2 waist { 1.f };
+	glm::vec2 waistDistance { 0.f };
+	glm::vec2 halfAngle { 1.f };
+};
+
+// two independent standard normals from two uniform numbers in [0, 1): the Box-Muller transform, which keeps a stratified
+// sampler's strata as strata of the beam's cross section
+glm::vec2 sampleStandardNormal2(const glm::vec2& u);
+// the product of two normal densities of standard deviations `sigma`, at `v`
+float gaussian2(const glm::vec2& v, const glm::vec2& sigma);
+// A ray leaving the laser: a waist point and a slope per axis, the point carried along the slope to the plane. pdfPos is
+// the point's density in the plane (the beam's intensity there per watt), pdfDir the direction's given the point, per
+// unit solid angle, and the normal is the axis, so L cos / (pdfPos pdfDir) is the power
+bool sampleLaserLe(const LaserEmitter& laser, const glm::vec2& uPos, const glm::vec2& uDir, LightLeSample& out);
+// the densities of a ray leaving the plane at `origin` along the unit `direction`
+void laserPdfLe(const LaserEmitter& laser, const glm::vec3& origin, const glm::vec3& direction, float& pdfPos, float& pdfDir);
+// The beam's radiance per watt along the unit `direction` through `point`, anywhere on that ray: p(x, s) / cos^4 at the
+// ray's crossing of the plane, since d(slope) = d(solid angle) / cos^3 and radiance divides by one cosine more. 0 for a
+// direction back into the housing
+float laserRadiance(const LaserEmitter& laser, const glm::vec3& point, const glm::vec3& direction);
+
 //---------------------------------------------------------------- alias table
 
 // Vose's alias method as pbrt-v4's AliasTable builds it: bin i is kept with probability q and

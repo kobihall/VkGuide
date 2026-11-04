@@ -9,6 +9,7 @@
 #include <implot.h>
 
 #include <file_dialog.h>
+#include <optic_laser.h>
 #include <render_export.h>
 #include <vk_readback.h>
 #include <rt_scene.h>
@@ -328,6 +329,15 @@ void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEdit
 		m_cameraConnects = cameraConnects(buildCameraFrame(cameraSnapshot(*camera), (uint32_t)m_settings.width, (uint32_t)m_settings.height));
 	}
 	drawIntegratorCombo();
+	//only light tracing starts paths at a laser (docs/plans/completed/physoptics-laser-sources.md)
+	if (m_kernels.integrator != IntegratorId::Light && std::any_of(editor.optics().begin(), editor.optics().end(), [](const SceneOptic& o) { return o.kind == OpticKind::Laser; })) {
+		ImGui::PushTextWrapPos(0.f);
+		ImGui::TextColored(ImVec4(1.f, 0.7f, 0.2f, 1.f), "Only Light tracing renders a laser's light. Here a laser's aperture glows when seen directly, and what its beam lights stays dark.");
+		ImGui::PopTextWrapPos();
+		if (ImGui::SmallButton("Use Light tracing")) {
+			m_kernels.integrator = IntegratorId::Light;
+		}
+	}
 	drawCameraCombo(editor);
 	drawSettings(engine);
 	//under the Analysis view, whose error and difference views compare with the same reference
@@ -347,7 +357,7 @@ void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEdit
 	}
 
 	drawSamplerSettings(engine);
-	drawSpectralSettings();
+	drawSpectralSettings(engine);
 	drawFilmSettings(engine);
 	drawOutputsSettings(engine, editor);
 	drawExportSettings(engine, editor);
@@ -541,6 +551,7 @@ RenderSettings RaytraceRenderer::renderSettings(VulkanEngine* engine) const
 	settings.rayDepth = std::clamp(settings.rayDepth, 1, CRT_MAX_DEPTH);
 	settings.samplesPerFrame = std::clamp(settings.samplesPerFrame, 1, CRT_MAX_SAMPLES_PER_FRAME);
 	settings.spectral = clampSpectralSettings(settings.spectral);
+	settings.spectral.designWavelength = designWavelength(settings.spectral, engine->m_raytraceScene.optics());
 	return settings;
 }
 
@@ -714,7 +725,7 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	if (m_settings.spectral.representation != SpectralRepresentation::ExactRgb) {
 		spectral.spectra.table = upliftTable(engine->m_rootPath, m_settings.spectral.colorSpace);
 	}
-	spectral.designWavelength = m_settings.spectral.designWavelength;
+	spectral.designWavelength = designWavelength(m_settings.spectral, editor.optics());
 	//and what the optical bodies' coating tables are packed for (docs/plans/completed/physoptics-optical-materials.md)
 	spectral.exactRgb = m_settings.spectral.representation == SpectralRepresentation::ExactRgb;
 	spectral.lambdaMin = m_settings.spectral.lambdaMin;
@@ -1457,7 +1468,7 @@ void RaytraceRenderer::drawSamplerSettings(VulkanEngine* engine)
 	}
 }
 
-void RaytraceRenderer::drawSpectralSettings()
+void RaytraceRenderer::drawSpectralSettings(VulkanEngine* engine)
 {
 	if (!ImGui::CollapsingHeader("Spectral")) {
 		return;
@@ -1625,8 +1636,19 @@ void RaytraceRenderer::drawSpectralSettings()
 		ImGui::EndCombo();
 	}
 	tooltip("The space the scene's RGB values (material and light colors) are in. Exact RGB converts them to linear sRGB;\nthe spectral modes uplift them with that space's table. Textures and environment maps are sRGB whatever it is.");
-	ImGui::DragFloat("Design wavelength", &s.designWavelength, 0.5f, SPECTRAL_RANGE_FLOOR, SPECTRAL_RANGE_CEILING, "%.2f nm", ImGuiSliderFlags_Logarithmic);
-	tooltip("The wavelength exact RGB reads a dispersive glass's index at: 587.6 nm (the helium d line) by default, or a\nlaser's wavelength. Every spectral mode reads the index at the path's own wavelengths.");
+	//while the scene has one laser, its wavelength unless told otherwise (docs/plans/completed/physoptics-laser-sources.md)
+	const SceneOptic* laser = singleLaser(engine->m_raytraceScene.optics());
+	if (laser != nullptr) {
+		ImGui::Checkbox(fmt::format("Design wavelength follows {}", laser->name).c_str(), &s.designFollowsLaser);
+		tooltip("While the scene has one laser, exact RGB reads the glasses at its wavelength. Off, at the wavelength below");
+	}
+	ImGui::BeginDisabled(laser != nullptr && s.designFollowsLaser);
+	float shown = designWavelength(s, engine->m_raytraceScene.optics());
+	if (ImGui::DragFloat("Design wavelength", &shown, 0.5f, SPECTRAL_RANGE_FLOOR, SPECTRAL_RANGE_CEILING, "%.2f nm", ImGuiSliderFlags_Logarithmic)) {
+		s.designWavelength = shown;
+	}
+	ImGui::EndDisabled();
+	tooltip("The wavelength exact RGB reads a dispersive glass's index at: 587.6 nm (the helium d line) by default, or the\nscene's laser's while it has one. Every spectral mode reads the index at the path's own wavelengths.");
 	if (!m_gpu.spectralNote().empty()) {
 		ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "%s", m_gpu.spectralNote().c_str());
 	}

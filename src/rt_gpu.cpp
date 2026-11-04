@@ -537,7 +537,7 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 	const bool readsInstances = std::find(declared.begin(), declared.end(), CrtBinding::Instances) != declared.end();
 	const bool readsTextures = std::find(declared.begin(), declared.end(), CrtBinding::Textures) != declared.end();
 	const uint32_t recordKey = (variant.readsRecord ? (features & 1u) : 0u) | (variant.usesOutputs ? (features & 14u) : 0u) | (family << 8u)
-		| (family != 0 ? features & 0xFF0000u : 0u) | (readsInstances ? (features & 16u) : 0u) | (readsTextures ? (features & 32u) : 0u) | (features & 64u) | (variant.readsCamera ? (features & 128u) : 0u) | (variant.foldsSplats ? (features & CRT_FEATURE_SPLATS) : 0u) | (variant.servesLightVertexCache ? (features & CRT_FEATURE_LIGHT_VERTEX_CACHE) : 0u) | (variant.storesBdptVertices ? (features & CRT_FEATURE_BDPT) : 0u);
+		| (family != 0 ? features & 0xFF0000u : 0u) | (readsInstances ? (features & (16u | CRT_FEATURE_LASERS)) : 0u) | (readsTextures ? (features & 32u) : 0u) | (features & 64u) | (variant.readsCamera ? (features & 128u) : 0u) | (variant.foldsSplats ? (features & CRT_FEATURE_SPLATS) : 0u) | (variant.servesLightVertexCache ? (features & CRT_FEATURE_LIGHT_VERTEX_CACHE) : 0u) | (variant.storesBdptVertices ? (features & CRT_FEATURE_BDPT) : 0u);
 	const auto found = m_passes.find({ &variant, key, classKey, recordKey });
 	if (found != m_passes.end()) {
 		return found->second;
@@ -586,6 +586,8 @@ const ComputePass& GpuRenderer::pass(VulkanEngine* engine, const KernelVariant& 
 	//runs the code it always did
 	if (readsInstances) {
 		builder.addSpecialization(6, (recordKey >> 4) & 1u);
+		//and whether it holds a laser (CRT_LASERS): light tracing's paths from the beams, kernel 04's apertures
+		builder.addSpecialization(13, (recordKey & CRT_FEATURE_LASERS) != 0u ? 1u : 0u);
 	}
 	//every kernel that reads the texture library for whether the scene textures anything through it (CRT_TEXTURES), and
 	//every kernel for whether paths carry ray cones (CRT_RAY_CONES), so a scene without either runs the code it always did
@@ -641,6 +643,7 @@ uint32_t GpuRenderer::pipelineFeatures(const KernelSelection& selection) const
 	const uint32_t family = laneFamily(spectral);
 	const uint32_t spectralBits = family != 0 ? ((uint32_t)spectral.representation << 16u) | ((uint32_t)spectral.sampling << 20u) : 0u;
 	const uint32_t optics = m_snapshot.scene != nullptr && m_snapshot.scene->opticCount > 0 ? 16u : 0u;
+	const uint32_t lasers = m_snapshot.scene != nullptr && m_snapshot.scene->lights.header.laserCount > 0 ? CRT_FEATURE_LASERS : 0u;
 	//bit 5 the library's textures, bit 6 ray cones, which only the filters that size a lookup by its footprint need
 	const bool textured = m_snapshot.scene != nullptr && m_snapshot.scene->textured;
 	const uint32_t textures = textured ? 32u : 0u;
@@ -651,7 +654,7 @@ uint32_t GpuRenderer::pipelineFeatures(const KernelSelection& selection) const
 	//bit 24 an integrator whose light paths splat, 25 the light vertex cache, 26 pbrt 3's BDPT
 	const uint32_t splats = (selection.selectedIntegrator().bidirectional ? CRT_FEATURE_SPLATS : 0u) | (selection.integrator == IntegratorId::Lvc ? CRT_FEATURE_LIGHT_VERTEX_CACHE : 0u)
 		| (selection.integrator == IntegratorId::Bdpt ? CRT_FEATURE_BDPT : 0u);
-	return (samplerWritesRecord(selection) ? 1u : 0u) | m_outputFeatures | optics | textures | cones | cameraModel | (family << 8u) | spectralBits | splats;
+	return (samplerWritesRecord(selection) ? 1u : 0u) | m_outputFeatures | optics | lasers | textures | cones | cameraModel | (family << 8u) | spectralBits | splats;
 }
 
 void GpuRenderer::preparePipelines(VulkanEngine* engine, const KernelSelection& selection)

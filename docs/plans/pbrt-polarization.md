@@ -8,7 +8,7 @@ The tracer carries intensity alone, as pbrt does: its Fresnel terms average the 
 
 - Throughput is a `Spectrum` ([pbrt-spectral-rendering.md](completed/pbrt-spectral-rendering.md)): a `vec3` in the exact RGB build and `CRT_LANES` scalars in a spectral build, kept in `PathSpectra` (binding 63). A polarized family makes each lane a Stokes vector.
 - The legacy `dielectric` uses Schlick's approximation, which has no s and p components. The `pbr` material also uses Schlick. [pbrt-bsdf-library.md](completed/pbrt-bsdf-library.md) adds pbrt's exact dielectric and conductor Fresnel equations, whose complex amplitudes `rs` and `rp` this plan needs.
-- Emitters and the environment emit unpolarized light. The lasers of [physoptics-laser-sources.md](physoptics-laser-sources.md) will be the first polarized emitters, each with a Stokes vector.
+- Emitters and the environment emit unpolarized light. The lasers of [physoptics-laser-sources.md](completed/physoptics-laser-sources.md) exist (2026-11-02) but are unpolarized too: their polarization parameters were deferred to this plan, as "Lasers" below says.
 
 ## Design
 
@@ -55,6 +55,15 @@ A polarimetric camera, which outputs the four Stokes images `s0` to `s3` as auxi
 ### Toward the electromagnetic goal
 
 Stokes vectors describe partially polarized, incoherent light: intensities add. Diffraction and interference need amplitudes and phases that add before squaring. On 2026-10-18 the user decided that the coherent wave backend which will do that is planned by no file here: they will design and build it last, after every pbrt and physoptics plan. What this plan owes it is to keep what it will need where it is cheap. The Fresnel and coating terms are kept as complex amplitudes, not only their squared magnitudes, and the reference frames defined here are the ones the backend's polarization will be expressed in. Nothing in this plan depends on the backend. Thin-film iridescence ([pbrt-appearance-extras.md](pbrt-appearance-extras.md)) is the one wave effect the tracer gets without it, because Belcour and Barla solve the interference analytically inside the BRDF. The grid-based [wave-simulation.md](wave-simulation.md) is a separate route to wave effects, and a comparison between the two is a natural test once both exist.
+
+### Lasers
+
+[physoptics-laser-sources.md](completed/physoptics-laser-sources.md) built the laser without its polarization, which the user deferred to this plan on 2026-11-02. This plan adds it:
+
+- The laser element's **Polarization** group: linear at an angle, circular left or right, elliptical (azimuth ψ and ellipticity χ), or unpolarized, and a degree of polarization p. Parameters are saved by name, so the scene file gains keys without a new reader. The HNL050LB preset is linear at 500:1 (p = 0.996), its axis to be confirmed with the user.
+- The Stokes vector `P (1, p cos 2ψ cos 2χ, p sin 2ψ cos 2χ, p sin 2χ)` in the frame of the beam's x axis, packed in the laser's second light record (`crt_laser.glsl`), whose `c` and the rest of `b` are free for it.
+- In the polarized family, kernel 11 starts a laser's light path with that Stokes vector as its throughput; in every other family it is reduced to `s₀`, which is what the lasers emit today.
+- `bin/light_test` checks that the emitted Stokes vectors average to the laser's, the check [physoptics-laser-sources.md](completed/physoptics-laser-sources.md) left for this plan.
 
 ## Registry, bindings and data
 

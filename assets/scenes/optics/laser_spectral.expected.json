@@ -1,0 +1,7 @@
+{
+  "power": 0.005,
+  "tolerance": {
+    "power": 0.01
+  },
+  "notes": "the same 5 mW from the luminance in the spectral modes"
+}

@@ -8,7 +8,7 @@ Polarization is how a laser lab controls power. A half-wave plate in a rotation 
 
 - [pbrt-polarization.md](pbrt-polarization.md): a polarized lane family whose throughput is, per lane, an adjoint Stokes row for camera paths; Mueller matrices for exact Fresnel, rough microfacets, depolarizers, an ideal `linear_polarizer` and a `retarder`; a polarizing filter on the camera.
 - [physoptics-optical-materials.md](completed/physoptics-optical-materials.md): coatings that return complex `rₛ, rₚ, tₛ, tₚ`, and the optical interface material, which averages s and p while the polarized family is off.
-- [physoptics-laser-sources.md](physoptics-laser-sources.md): lasers with a Stokes vector.
+- [physoptics-laser-sources.md](completed/physoptics-laser-sources.md): lasers, built 2026-11-02 without polarization. Their Stokes vector arrives with [pbrt-polarization.md](pbrt-polarization.md) (its "Lasers" section), before this plan.
 - [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md): a Jones vector on every chief ray, through every coating.
 
 ## Design

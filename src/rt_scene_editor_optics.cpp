@@ -6,6 +6,7 @@
 #include <rt_scene_editor.h>
 
 #include <length_unit.h>
+#include <optic_laser.h>
 #include <optic_library.h>
 #include <optics_ui.h>
 #include <vk_engine.h>
@@ -156,6 +157,19 @@ void RaytraceSceneEditor::standOnBench(VulkanEngine* engine, SceneOptic& optic, 
 	}
 	// facing the viewer: light from the viewer's side is what a new element is looked at with
 	const double yaw = std::atan2(eye.x - ahead.x, eye.z - ahead.z);
+	// a laser at the beam height on the table point, its beam across the view (along the view's right), and on a hole
+	// with its beam along the grid while the bench snaps
+	if (opticTraits(optic.kind).snapsFree) {
+		const glm::dvec3 right = glm::dvec3(view.orientation * glm::vec3(1.f, 0.f, 0.f));
+		const double across = std::hypot(right.x, right.z) > 1e-9 ? std::atan2(right.x, right.z) : 0.0;
+		optic.mount.freeOrientation = glm::angleAxis(across, glm::dvec3(0.0, 1.0, 0.0));
+		optic.mount.freePosition = glm::dvec3(ahead.x, m_bench.beamHeight, ahead.z);
+		if (m_bench.snap) {
+			snapFreeToBench(optic, engine->benchContext());
+		}
+		optic.world = optic.mount.freeTransform();
+		return;
+	}
 	if (optic.mount.isFree()) {
 		optic.mount.freePosition = eye + 0.3 * forward;
 		optic.mount.freeOrientation = glm::dquat(view.orientation * glm::angleAxis(glm::pi<float>(), glm::vec3(0.f, 1.f, 0.f)));
@@ -337,6 +351,50 @@ void RaytraceSceneEditor::drawOpticMaterialRows()
 	ImGui::TreePop();
 }
 
+// A laser's beam as a data sheet gives it: the 1/e^2 diameter at the output and the full divergence per axis, which set
+// the waist radius and M^2 at the waist position the panel holds (fitLaserAxis()). A pair no Gaussian beam has is refused
+static bool drawLaserDataSheet(SceneOptic& optic)
+{
+	static std::string refused;
+	bool changed = false;
+	const LaserBeam beam = laserBeam(optic);
+	const bool astigmatic = opticBool(optic, "astigmatic");
+	ImGui::SeparatorText("As a data sheet gives it");
+	for (int axis = 0; axis < (astigmatic ? 2 : 1); axis++) {
+		const LaserAxisBeam& a = axis == 0 ? beam.x : beam.y;
+		const char* suffix = axis == 0 ? (astigmatic ? " x" : "") : " y";
+		double diameter = 2.0 * a.radius(0.0);
+		double divergence = 2e3 * a.halfAngle;
+		ImGui::PushID(axis);
+		bool edited = inputLength(fmt::format("output diameter{}", suffix).c_str(), diameter, 1e-7, 0.1);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("The 1/e^2 intensity diameter at the output aperture");
+		}
+		edited |= ImGui::InputDouble(fmt::format("full divergence{}", suffix).c_str(), &divergence, 0.0, 0.0, "%.4g mrad", ImGuiInputTextFlags_EnterReturnsTrue);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("The full far-field angle at 1/e^2: twice M^2 lambda / (pi w0)");
+		}
+		if (edited) {
+			const std::optional<LaserAxisFit> fit = fitLaserAxis(diameter, divergence * 1e-3, a.waistPosition, beam.wavelength);
+			if (fit) {
+				changed |= setOpticValue(optic, axis == 0 ? "waistRadius" : "waistRadiusY", fit->waist);
+				changed |= setOpticValue(optic, axis == 0 ? "m2" : "m2Y", fit->m2);
+				refused.clear();
+			} else {
+				refused = fmt::format("No Gaussian beam is {} across with a full divergence of {:.4g} mrad at {:.6g} nm, with its waist {} from the output: M^2 would be below 1",
+					formatLength(diameter), divergence, beam.wavelength * 1e9, formatLength(a.waistPosition));
+			}
+		}
+		ImGui::PopID();
+	}
+	if (!refused.empty()) {
+		ImGui::PushTextWrapPos(0.f);
+		ImGui::TextColored(ImVec4(1.f, 0.45f, 0.3f, 1.f), "%s", refused.c_str());
+		ImGui::PopTextWrapPos();
+	}
+	return changed;
+}
+
 void RaytraceSceneEditor::drawSelectedOptic(VulkanEngine* engine, SceneOptic& optic)
 {
 	const OpticTraits& traits = opticTraits(optic.kind);
@@ -348,7 +406,7 @@ void RaytraceSceneEditor::drawSelectedOptic(VulkanEngine* engine, SceneOptic& op
 
 	// the size: a preset (Thorlabs' part at that size) or custom
 	const char* sizeLabel = optic.sizePreset >= 0 && optic.sizePreset < (int)traits.sizes.size() ? traits.sizes[(size_t)optic.sizePreset].label : "Custom";
-	if (ImGui::BeginCombo("size", sizeLabel)) {
+	if (ImGui::BeginCombo(traits.sizeLabel, sizeLabel)) {
 		for (int i = 0; i < (int)traits.sizes.size(); i++) {
 			if (ImGui::Selectable(traits.sizes[(size_t)i].label, i == optic.sizePreset) && i != optic.sizePreset) {
 				setOpticSize(optic, i);
@@ -416,12 +474,23 @@ void RaytraceSceneEditor::drawSelectedOptic(VulkanEngine* engine, SceneOptic& op
 			}
 			break;
 		}
+		case OpticParamKind::Wavelength: {
+			double nm = opticNumber(optic, param.name) * 1e9;
+			if (ImGui::InputDouble(param.label, &nm, 0.0, 0.0, "%.6g nm", ImGuiInputTextFlags_EnterReturnsTrue)) {
+				changed |= setOpticValue(optic, param.name, nm * 1e-9);
+			}
+			break;
+		}
 		}
 		(void)value;
 		if (param.tooltip != nullptr && ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("%s", param.tooltip);
 		}
 		ImGui::PopID();
+	}
+
+	if (optic.kind == OpticKind::Laser) {
+		changed |= drawLaserDataSheet(optic);
 	}
 
 	// what follows from the parameters, at the design wavelength, or why they make no body
@@ -508,7 +577,10 @@ bool RaytraceSceneEditor::drawOpticMount(VulkanEngine* engine, SceneOptic& optic
 		const MountModelInfo* model = opticMountModel(probe);
 		return model != nullptr ? fmt::format("{} ({})", mountKindLabel(kind), model->id) : std::string(mountKindLabel(kind));
 	};
-	if (ImGui::BeginCombo("mount", mountLabel(optic.mount.kind).c_str())) {
+	const bool snapsFree = opticTraits(optic.kind).snapsFree;
+	if (snapsFree) {
+		ImGui::TextDisabled("Placed freely: no post or mount yet");
+	} else if (ImGui::BeginCombo("mount", mountLabel(optic.mount.kind).c_str())) {
 		for (const MountKind kind : allowedMounts(optic)) {
 			if (ImGui::Selectable(mountLabel(kind).c_str(), kind == optic.mount.kind) && kind != optic.mount.kind) {
 				const bool wasFree = optic.mount.isFree();
@@ -572,6 +644,11 @@ bool RaytraceSceneEditor::drawOpticMount(VulkanEngine* engine, SceneOptic& optic
 			optic.mount.freePosition = origin - optic.mount.freeOrientation * local;
 			changed = true;
 		}
+		// a laser's output on a hole, its beam along the grid, as a gizmo drag does while the bench snaps
+		if (snapsFree && ImGui::SmallButton("Snap to nearest hole")) {
+			snapFreeToBench(optic, context);
+			changed = true;
+		}
 	} else {
 		// the stack's four, at the optic's origin: across the table, the turn about its vertical, the height
 		glm::dvec2 origin = optic.mount.origin;
@@ -620,7 +697,7 @@ bool RaytraceSceneEditor::drawOpticMount(VulkanEngine* engine, SceneOptic& optic
 	}
 	if (editing) {
 		ImGui::SameLine();
-		ImGui::TextDisabled(optic.mount.isFree() ? "(drag the gizmo in the viewport)" : "(drag in the viewport; Alt inverts snapping)");
+		ImGui::TextDisabled(optic.mount.isFree() && !snapsFree ? "(drag the gizmo in the viewport)" : "(drag in the viewport; Alt inverts snapping)");
 	}
 
 	// the fine adjustment the mount has
@@ -685,6 +762,49 @@ void RaytraceSceneEditor::beginOpticGizmo(VulkanEngine* engine, TransformGizmo& 
 {
 	const SceneOptic* optic = findOptic(id);
 	if (optic == nullptr) {
+		return;
+	}
+	if (opticTraits(optic->kind).snapsFree) {
+		// a laser as a post is moved: across the table, up and down, and about its vertical, at its output. While the bench
+		// snaps (Alt inverts it) the output goes on the nearest hole and the turn steps in quarter turns of the drag's own
+		gizmo.beginEditing(
+			opticGizmoTarget(id),
+			[this, id, engine]() -> std::optional<glm::mat4> {
+				const SceneOptic* o = findOptic(id);
+				if (o == nullptr) {
+					return std::nullopt;
+				}
+				if (!ImGuizmo::IsUsing()) {
+					m_laserDragYaw = std::numeric_limits<double>::quiet_NaN();
+				}
+				return glm::mat4(o->mount.freeTransform() * glm::translate(glm::dmat4(1.0), opticOrigin(*o, engine->benchContext())));
+			},
+			[this, id, engine](const glm::mat4& m) {
+				SceneOptic* o = findOptic(id);
+				if (o == nullptr) {
+					return;
+				}
+				const BenchContext context = engine->benchContext();
+				const bool snap = m_bench.snap != ImGui::GetIO().KeyAlt;
+				auto yawOf = [](const glm::dvec3& axis) { return std::hypot(axis.x, axis.z) > 1e-9 ? std::atan2(axis.x, axis.z) : 0.0; };
+				auto wrap = [](double a) { return std::remainder(a, 2.0 * PI); };
+				const double before = yawOf(o->mount.freeOrientation * glm::dvec3(0.0, 0.0, 1.0));
+				if (std::isnan(m_laserDragYaw)) {
+					m_laserDragYaw = before;
+				}
+				m_laserDragYaw += wrap(yawOf(glm::dvec3(m[2])) - before);
+				const double target = snap ? 0.5 * PI * std::round(m_laserDragYaw / (0.5 * PI)) : m_laserDragYaw;
+				o->mount.freeOrientation = glm::angleAxis(wrap(target - before), glm::dvec3(0.0, 1.0, 0.0)) * o->mount.freeOrientation;
+				const glm::dvec3 local = opticOrigin(*o, context);
+				glm::dvec3 origin(m[3]);
+				if (snap) {
+					const glm::dvec2 hole = nearestHole(m_bench, glm::dvec2(origin.x, origin.z));
+					origin = glm::dvec3(hole.x, origin.y, hole.y);
+				}
+				o->mount.freePosition = origin - o->mount.freeOrientation * local;
+				markChanged();
+			},
+			ImGuizmo::TRANSLATE_X | ImGuizmo::TRANSLATE_Y | ImGuizmo::TRANSLATE_Z | ImGuizmo::ROTATE_Y, ImGuizmo::WORLD);
 		return;
 	}
 	if (optic->mount.isFree()) {

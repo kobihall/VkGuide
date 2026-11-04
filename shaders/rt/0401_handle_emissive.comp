@@ -17,6 +17,9 @@
 // cannot reach) keeps w = 1 in every strategy, since the BSDF sample is its only way in. The point,
 // the uv, the material and the light record come from crt_interaction.glsl.
 //
+// A laser's aperture (CRT_LASERS) glows with the laser's beam toward the ray, at full weight, since no light sample can
+// reach a laser (docs/plans/completed/physoptics-laser-sources.md): its instance's light record names the laser.
+//
 // Nothing is appended to the next ray queue. For an emissive material the path ends here. A pbr
 // surface with emission was also queued for 06, which carries the path on;
 // src/rt_path_schedule.cpp runs this kernel to completion first, since 06 overwrites the
@@ -37,6 +40,16 @@
 layout (local_size_x = CRT_WORKGROUP) in;
 
 #include "include/crt_emitter.glsl"
+#include "include/crt_laser.glsl"
+
+// what the surface emits toward the ray: a laser aperture its laser's beam, anything else its material's emission
+Spectrum surfaceEmission(ClassicMaterial light, HitRecord hit, SurfaceInteraction si, TextureSite site, vec3 inDir)
+{
+	if (CRT_LASERS && light.type == CRT_MATERIAL_LASER_APERTURE) {
+		return laserRadiance(instances[hit.instance].lightBase, si.p, -inDir);
+	}
+	return emittedSpectrum(light, si.material, si, site);
+}
 
 void main()
 {
@@ -77,9 +90,9 @@ void main()
 	if (pc.debugView == CRT_DEBUG_MIS_WEIGHTS) {
 		if (path.bounce == 1u) {
 #ifndef CRT_SPECTRAL
-			radiance[path.radianceSlot].rgb += vec3(emits ? luminanceOf(path.throughput * emittedRadiance(light, si.material, si, site) * weight) : 0.0, 0.0, 0.0);
+			radiance[path.radianceSlot].rgb += vec3(emits ? luminanceOf(path.throughput * surfaceEmission(light, hit, si, site, inDir) * weight) : 0.0, 0.0, 0.0);
 #else
-			radiance[path.radianceSlot].rgb += vec3(emits ? luminanceOf(spectrumToFilm(spectrumScale(spectrumMul(throughput, emittedSpectrum(light, si.material, si, site)), weight))) : 0.0, 0.0, 0.0);
+			radiance[path.radianceSlot].rgb += vec3(emits ? luminanceOf(spectrumToFilm(spectrumScale(spectrumMul(throughput, surfaceEmission(light, hit, si, site, inDir)), weight))) : 0.0, 0.0, 0.0);
 #endif
 		}
 		return;
@@ -119,7 +132,7 @@ void main()
 	// added, not written: the path may have passed other glowing surfaces on earlier bounces. The
 	// weight is applied only when it is not 1, so a strategy without light sampling adds exactly
 	// what it always did
-	Spectrum contribution = spectrumMul(throughput, emittedSpectrum(light, si.material, si, site));
+	Spectrum contribution = spectrumMul(throughput, surfaceEmission(light, hit, si, site, inDir));
 	if (weight != 1.0) {
 		contribution = spectrumScale(contribution, weight);
 	}

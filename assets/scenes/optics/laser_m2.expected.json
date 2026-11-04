@@ -1,0 +1,16 @@
+{
+  "planes": [
+    0.05,
+    0.4,
+    1.2
+  ],
+  "radius": [
+    0.0004127436538632119,
+    0.0005890414182467909,
+    0.001288769561176021
+  ],
+  "tolerance": {
+    "radius": 0.01
+  },
+  "notes": "M^2 = 2, its waist 30 mm inside the housing: w(z) with the divergence twice a Gaussian's"
+}
