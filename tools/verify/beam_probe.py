@@ -26,7 +26,7 @@ import vkscene  # noqa: E402
 
 # the narrowest view the scene file keeps: it clamps a camera to 1 degree
 MIN_FOV_DEGREES = 1.0
-SCENE_VERSION = 30
+SCENE_VERSION = 31
 
 
 def unit(v):
@@ -58,7 +58,11 @@ def free_optic(kind, name, position, z_axis, up=(0.0, 1.0, 0.0), size=None, para
     the body's x up)"""
     x, y, z = frame_from_z(z_axis, up)
     mount = mount or MOUNTS.get(kind, "none")
-    record = {"type": kind, "name": name, "params": params or {}, "materials": materials or {},
+    params = dict(params or {})
+    if kind == "spherical_lens":
+        # a lens's position is its origin's (scene file version 31): the front vertex is the body frame's origin
+        params.setdefault("originAt", "front_vertex")
+    record = {"type": kind, "name": name, "params": params, "materials": materials or {},
               "mount": {"kind": mount, "position": [float(c) for c in position], "orientation": [float(c) for c in vkscene.quat_from_matrix(np.column_stack([x, y, z]))]}}
     if size is not None:
         record["size"] = size

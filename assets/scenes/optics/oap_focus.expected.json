@@ -7,14 +7,14 @@
   },
   "misaligned_measured": {
     "0.1": {
-      "radius_u": 2.049591197334658e-05,
-      "radius_v": 2.055606197985684e-05,
-      "centroid_u": -0.0003547826831698577
+      "radius_u": 2.049591200066094e-05,
+      "radius_v": 2.0556061983745665e-05,
+      "centroid_u": -0.0003547826831950681
     },
     "0.5": {
-      "radius_u": 2.2105222156818626e-05,
-      "radius_v": 2.2529294547087063e-05,
-      "centroid_u": -0.001774781714853566
+      "radius_u": 2.2105222062775265e-05,
+      "radius_v": 2.2529294452972896e-05,
+      "centroid_u": -0.0017747817148901599
     }
   },
   "notes": "aligned: lambda f / (pi w). Misaligned spot growth is recorded, not checked: its reference is OpticStudio's or Optiland's"

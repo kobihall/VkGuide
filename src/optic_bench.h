@@ -202,6 +202,16 @@ glm::dvec3 opticOrigin(const SceneOptic& optic, const OpticPrescription& body);
 // the same, from the optic's parameters
 glm::dvec3 opticOrigin(const SceneOptic& optic, const BenchContext& context);
 
+// What a free pose's position (MountPose::freePosition) holds, in the body frame: a spherical lens's origin, so that the
+// scene file keeps the point the lens is placed and turned by, and the glass follows from it; the body frame's own origin
+// for every other kind. The same pose then gives the body's transform and the origin's
+glm::dvec3 freeAnchor(const SceneOptic& optic, const OpticPrescription& body);
+glm::dvec3 freeAnchor(const SceneOptic& optic, const BenchContext& context);
+// the body frame -> world of a free or unmounted optic's pose
+glm::dmat4 freeBodyTransform(const SceneOptic& optic, const BenchContext& context);
+// the free pose that puts the body frame at `bodyToWorld`
+void setFreeFromBody(SceneOptic& optic, const glm::dmat4& bodyToWorld, const BenchContext& context);
+
 // The fork's hole for a post, among the holes its slot reaches. Axis-aligned directions first, then the nearest hole,
 // then the smallest angle from an axis, then the direction nearest `previousAngle`. The first that clears every other
 // stack's fork and holder wins; if none does, the first, `blocked`. `found` is false when no hole is in reach at all

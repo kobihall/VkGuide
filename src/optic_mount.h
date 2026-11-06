@@ -70,20 +70,23 @@ struct MountPose {
 	FineAdjust fine;
 	// six degrees of freedom, with no post, holder or fork under the mount
 	bool freePlacement { false };
-	// where the element's body frame is while it is free or unmounted
+	// where the element is while it is free or unmounted: its body frame's origin, or a spherical lens's own origin
+	// (freeAnchor(), optic_bench.h), the point it is placed and turned by. freeTransform() is that point's frame; the
+	// body's is freeBodyTransform()
 	glm::dvec3 freePosition { 0.0, 0.1, 0.0 };
 	glm::dquat freeOrientation { 1.0, 0.0, 0.0, 0.0 };
 
 	// placed by its free position and orientation rather than by the stack
 	bool isFree() const { return freePlacement || kind == MountKind::None; }
-	// the body frame -> world they give
+	// the frame at the free position -> world: the body frame for every kind but a spherical lens
 	glm::dmat4 freeTransform() const
 	{
 		glm::dmat4 m = glm::mat4_cast(freeOrientation);
 		m[3] = glm::dvec4(freePosition, 1.0);
 		return m;
 	}
-	// from a rigid transform: its translation and its rotation's unit quaternion
+	// from a rigid transform: its translation and its rotation's unit quaternion. A body frame goes through
+	// setFreeFromBody(), which knows the lens's origin
 	void setFreeTransform(const glm::dmat4& m)
 	{
 		freePosition = glm::dvec3(m[3]);

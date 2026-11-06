@@ -1098,11 +1098,41 @@ void testBench(const std::string& root)
 		placeOnBench(optic, glm::dvec2(0.05, 0.025), 0.1, 0.7, true, ctx, {});
 		const glm::dmat4 placed = assembleStack(optic, ctx).opticToWorld;
 		optic.mount.freePlacement = true;
-		optic.mount.setFreeTransform(placed);
+		setFreeFromBody(optic, placed, ctx);
 		dropOntoBench(optic, ctx, {});
 		const glm::dmat4 dropped = assembleStack(optic, ctx).opticToWorld;
 		check(glm::length(origin(dropped) - origin(placed)) + plant < 1e-9 && glm::length(axisZ(dropped) - axisZ(placed)) < 1e-9,
 			"turning Free placement off keeps an upright optic where it was");
+	}
+
+	// a lens's origin choices: Hecht's principal planes, and a free lens whose origin stays where the file put it as the
+	// choice changes, the glass moving along the axis
+	{
+		SceneOptic lens = makeOptic(OpticKind::SphericalLens);
+		setOpticValue(lens, "form", 1);
+		setOpticValue(lens, "r1", 0.05);
+		setOpticValue(lens, "r2", 0.08);
+		setOpticValue(lens, "centerThickness", 0.006);
+		lens.mount = MountPose {};
+		lens.mount.freePosition = glm::dvec3(0.01, 0.1, 0.2);
+		lens.mount.freeOrientation = glm::angleAxis(0.4, glm::dvec3(0.0, 1.0, 0.0));
+		const double n = ctx.build.relativeIndex(opticString(lens, "glass"));
+		const double c1 = 1.0 / 0.05;
+		const double c2 = -1.0 / 0.08;
+		const double d = 0.006;
+		const double f = 1.0 / ((n - 1.0) * (c1 - c2) + (n - 1.0) * (n - 1.0) * d * c1 * c2 / n);
+		const double h1 = -f * (n - 1.0) * d * c2 / n;
+		const double h2 = -f * (n - 1.0) * d * c1 / n;
+		const double expected[] = { 0.0, h1, 0.5 * (h1 + d + h2), d + h2, d };
+		const glm::dvec3 axis = lens.mount.freeOrientation * glm::dvec3(0.0, 0.0, 1.0);
+		for (int choice = 0; choice < 5; choice++) {
+			setOpticValue(lens, "originAt", choice);
+			const glm::dmat4 body = freeBodyTransform(lens, ctx);
+			const glm::dvec3 front = glm::dvec3(body[3]);
+			const glm::dvec3 origin = front + axis * expected[choice];
+			check(glm::length(origin - lens.mount.freePosition) + plant < 1e-12,
+				fmt::format("a lens's origin at choice {} is {:.3e} m from the stored position", choice, glm::length(origin - lens.mount.freePosition)));
+		}
 	}
 
 	// the breadboard: the default plate's holes, extent and triangle budget, and the largest table's count

@@ -189,6 +189,9 @@ constexpr double DEVIATION_DEGREES[] = { 2.0, 4.0, 6.0, 10.0 };
 const char* const LENS_FORM_LABELS[] = { "Plano-convex", "Bi-convex", "Plano-concave", "Bi-concave" };
 const char* const LENS_FORM_KEYS[] = { "plano_convex", "bi_convex", "plano_concave", "bi_concave" };
 
+const char* const LENS_ORIGIN_LABELS[] = { "Front vertex", "First principal plane", "Optical center", "Second principal plane", "Back vertex" };
+const char* const LENS_ORIGIN_KEYS[] = { "front_vertex", "first_principal_plane", "optical_center", "second_principal_plane", "back_vertex" };
+
 bool lensHasSecondRadius(const OpticParams& params)
 {
 	const auto found = params.find("form");
@@ -315,6 +318,8 @@ const OpticParam LENS_PARAMS[] = {
 	{ "r2", "R2 (back)", OpticParamKind::Length, 51.5 * MM, 1 * MM, 100.0, {}, {}, "The back face's radius, as a magnitude", lensHasSecondRadius },
 	LENGTH("centerThickness", "center thickness", 3.6 * MM, 0.1 * MM, 0.1, nullptr),
 	{ "glass", "glass", OpticParamKind::Glass, std::string("N-BK7"), 0, 0, {}, {}, nullptr, nullptr },
+	{ "originAt", "origin at", OpticParamKind::Enum, 4, 0, 4, LENS_ORIGIN_LABELS, LENS_ORIGIN_KEYS,
+		"Where the gizmo sits and the lens turns, along the axis from the front face (R1) to the back face (R2). The vertices are where each face meets the axis; the first plane is measured from the front vertex, the second from the back vertex. Choosing a form sets it: the optical center for a bi-convex or bi-concave lens, the back (flat) vertex for a plano one. The glass moves, not the origin", nullptr },
 };
 const OpticParam RA_PARAMS[] = {
 	LENGTH("leg", "leg", 25 * MM, 1 * MM, 0.3, nullptr),
@@ -685,6 +690,24 @@ void buildSphericalLens(const SceneOptic& o, const OpticBuildContext& context, O
 	const double n = context.relativeIndex(glass);
 	const double power = (n - 1.0) * (c1 - c2) + (n - 1.0) * (n - 1.0) * center * c1 * c2 / n;
 	r.lengths.push_back({ "edge thickness", edge });
+	// the principal planes by Hecht's Optics (thick lens): h1 = V1H1 = -f (n - 1) d / (R2 n) and h2 = V2H2 = -f (n - 1) d /
+	// (R1 n), each positive to the right of its vertex, along the light, with c1 = 1/R1 and c2 = 1/R2 signed as his R
+	// are (a bi-convex lens has R2 < 0). From the front vertex H1 is at h1 and H2 at d + h2. An afocal lens has none, and
+	// its planes are taken at its faces
+	double planeFirst = 0.0;
+	double planeSecond = center;
+	if (power != 0.0) {
+		const double f = 1.0 / power;
+		const double h1 = -f * (n - 1.0) * center * c2 / n;
+		const double h2 = -f * (n - 1.0) * center * c1 / n;
+		planeFirst = h1;
+		planeSecond = center + h2;
+	}
+	const double zOrigin[] = { 0.0, planeFirst, 0.5 * (planeFirst + planeSecond), planeSecond, center };
+	p.originZ = zOrigin[std::clamp(opticEnum(o, "originAt"), 0, 4)];
+	r.lengths.push_back({ "first principal plane (h1, from the front vertex)", planeFirst });
+	r.lengths.push_back({ "second principal plane (h2, from the back vertex)", planeSecond - center });
+	r.lines.push_back({ "front", "R1, faces the incoming light: the mount's front, where its logo is" });
 	if (power != 0.0) {
 		const double f = 1.0 / power;
 		r.lengths.push_back({ "effective focal length", f });
@@ -902,6 +925,12 @@ const OpticParam* findOpticParam(OpticKind kind, std::string_view name)
 	return nullptr;
 }
 
+int lensDefaultOrigin(int form)
+{
+	// a bi-convex or bi-concave lens at its optical center, a plano one at its flat back face's vertex
+	return form == 1 || form == 3 ? 2 : 4;
+}
+
 OpticValue opticValue(const SceneOptic& optic, std::string_view name)
 {
 	// a size preset decides the values it sets; a custom size keeps what was last set
@@ -975,6 +1004,10 @@ bool setOpticValue(SceneOptic& optic, std::string_view name, OpticValue value)
 		return false;
 	}
 	optic.params[std::string(name)] = std::move(value);
+	// a new form brings its own origin
+	if (optic.kind == OpticKind::SphericalLens && name == "form") {
+		optic.params["originAt"] = lensDefaultOrigin(opticEnum(optic, "form"));
+	}
 	return true;
 }
 

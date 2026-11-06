@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-06
+
+### New
+
+- A spherical lens has an **origin at** setting, under **mount** with the transform controls: its front vertex, first principal plane, optical center (halfway between the two planes), second principal plane or back vertex. A vertex is where a face meets the axis. The gizmo sits at that point and the lens turns about it. Choosing a form sets it: the optical center for a bi-convex or bi-concave lens, the back vertex (the flat face) for a plano-convex or plano-concave one, whose curved face is the front (R1). The planes follow Hecht's h1 = -f(n - 1)d/(R2 n), measured from the front vertex, and h2 = -f(n - 1)d/(R1 n), measured from the back vertex, each positive toward the back. The panel lists both and states that the front is R1, facing the incoming light.
+
+### Changed
+
+- A spherical lens is placed by its origin wherever it stands, free, unmounted or on the bench. The origin stays where it is when you change **origin at**, **form** or anything else the origin depends on, and the glass moves. A lens whose origin is a principal plane or the optical center moves along its axis when you change its glass or the scene's design wavelength, since the planes move with the index.
+- Scene files are payload version 31: a free or unmounted lens's `position` is its origin's, and every lens saves `originAt`. A lens from an older file opens at its optical center, the origin kept where the file put it (the middle between its vertices). Its glass moves along the axis by the difference, 0 for a symmetric lens and d/(2n) for a plano one, about 1.2 mm for a 3.6 mm N-BK7 lens.
+- `tools/verify/beam_probe.py` and `optics_scenes.py` write a lens's `originAt` as `front_vertex`, where its position already was, so the scenes they write keep their glass where it was. `SCENE_VERSION` is 31.
+
+### Internal
+
+- `MountPose::freePosition` holds a spherical lens's origin and every other kind's body frame. `freeBodyTransform()` and `setFreeFromBody()` (`src/optic_bench.h`) convert between the pose and the body frame; `freeTransform()` is the body frame only when `freeAnchor()` is 0. `OpticPrescription::originZ` carries the lens's origin from its builder to `opticOrigin()`.
+
 ## 2026-11-05
 
 ### New

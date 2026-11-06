@@ -173,13 +173,13 @@ void RaytraceSceneEditor::standOnBench(VulkanEngine* engine, SceneOptic& optic, 
 		if (m_bench.snap) {
 			snapFreeToBench(optic, engine->benchContext());
 		}
-		optic.world = optic.mount.freeTransform();
+		optic.world = freeBodyTransform(optic, engine->benchContext());
 		return;
 	}
 	if (optic.mount.isFree()) {
 		optic.mount.freePosition = eye + 0.3 * forward;
 		optic.mount.freeOrientation = glm::dquat(view.orientation * glm::angleAxis(glm::pi<float>(), glm::vec3(0.f, 1.f, 0.f)));
-		optic.world = optic.mount.freeTransform();
+		optic.world = freeBodyTransform(optic, engine->benchContext());
 		return;
 	}
 	// the origin there: the post stands behind it
@@ -585,6 +585,10 @@ bool RaytraceSceneEditor::drawOpticParams(SceneOptic& optic)
 		if (param.visible != nullptr && !param.visible(optic.params)) {
 			continue;
 		}
+		// a lens's origin is drawn with the transform controls, under the mount
+		if (std::string_view(param.name) == "originAt") {
+			continue;
+		}
 		ImGui::PushID(param.name);
 		const OpticValue value = opticValue(optic, param.name);
 		switch (param.kind) {
@@ -684,10 +688,10 @@ bool RaytraceSceneEditor::drawOpticMount(VulkanEngine* engine, SceneOptic& optic
 				if (kind == MountKind::None) {
 					// no stack: only where the optic is
 					optic.mount = MountPose {};
-					optic.mount.setFreeTransform(optic.world);
+					setFreeFromBody(optic, optic.world, context);
 				} else if (wasFree && !optic.mount.freePlacement) {
 					// out of the air and onto the bench, under where the optic was
-					optic.mount.setFreeTransform(optic.world);
+					setFreeFromBody(optic, optic.world, context);
 					dropOntoBench(optic, context, otherStacks(optic.id));
 				} else if (!optic.mount.isFree()) {
 					placeOnBench(optic, optic.mount.origin, optic.mount.height, optic.mount.yaw, false, context, otherStacks(optic.id));
@@ -709,10 +713,10 @@ bool RaytraceSceneEditor::drawOpticMount(VulkanEngine* engine, SceneOptic& optic
 		bool free = optic.mount.freePlacement;
 		if (ImGui::Checkbox("free placement", &free)) {
 			if (free) {
-				optic.mount.setFreeTransform(optic.world);
+				setFreeFromBody(optic, optic.world, context);
 				optic.mount.freePlacement = true;
 			} else {
-				optic.mount.setFreeTransform(optic.world);
+				setFreeFromBody(optic, optic.world, context);
 				dropOntoBench(optic, context, otherStacks(optic.id));
 			}
 			changed = true;
@@ -723,11 +727,27 @@ bool RaytraceSceneEditor::drawOpticMount(VulkanEngine* engine, SceneOptic& optic
 		}
 	}
 
+	// where a lens's origin is, along its axis. The file holds the origin, so the origin stays and the glass moves
+	if (const OpticParam* originParam = findOpticParam(optic.kind, "originAt"); originParam != nullptr) {
+		const int current = std::clamp(opticEnum(optic, "originAt"), 0, (int)originParam->labels.size() - 1);
+		if (ImGui::BeginCombo(originParam->label, originParam->labels[(size_t)current])) {
+			for (int i = 0; i < (int)originParam->labels.size(); i++) {
+				if (ImGui::Selectable(originParam->labels[(size_t)i], i == current) && i != current) {
+					changed |= setOpticValue(optic, originParam->name, i);
+				}
+			}
+			ImGui::EndCombo();
+		}
+		if (originParam->tooltip != nullptr && ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", originParam->tooltip);
+		}
+	}
+
 	TransformGizmo& gizmo = engine->m_transformGizmo;
 	const bool editing = gizmo.isEditing(opticGizmoTarget(optic.id));
 	if (optic.mount.isFree()) {
 		// six degrees of freedom, at the optic's origin: a turn keeps the origin where it is
-		const glm::dvec3 local = opticOrigin(optic, context);
+		const glm::dvec3 local = opticOrigin(optic, context) - freeAnchor(optic, context);
 		glm::dvec3 origin = optic.mount.freePosition + optic.mount.freeOrientation * local;
 		if (dragLength3("origin", origin, 0.001)) {
 			optic.mount.freePosition = origin - optic.mount.freeOrientation * local;
@@ -872,7 +892,10 @@ void RaytraceSceneEditor::beginOpticGizmo(VulkanEngine* engine, TransformGizmo& 
 				if (!ImGuizmo::IsUsing()) {
 					m_laserDragYaw = std::numeric_limits<double>::quiet_NaN();
 				}
-				return glm::mat4(o->mount.freeTransform() * glm::translate(glm::dmat4(1.0), opticOrigin(*o, engine->benchContext())));
+				{
+					const BenchContext context = engine->benchContext();
+					return glm::mat4(freeBodyTransform(*o, context) * glm::translate(glm::dmat4(1.0), opticOrigin(*o, context)));
+				}
 			},
 			[this, id, engine](const glm::mat4& m) {
 				SceneOptic* o = findOptic(id);
@@ -890,7 +913,7 @@ void RaytraceSceneEditor::beginOpticGizmo(VulkanEngine* engine, TransformGizmo& 
 				m_laserDragYaw += wrap(yawOf(glm::dvec3(m[2])) - before);
 				const double target = snap ? 0.5 * PI * std::round(m_laserDragYaw / (0.5 * PI)) : m_laserDragYaw;
 				o->mount.freeOrientation = glm::angleAxis(wrap(target - before), glm::dvec3(0.0, 1.0, 0.0)) * o->mount.freeOrientation;
-				const glm::dvec3 local = opticOrigin(*o, context);
+				const glm::dvec3 local = opticOrigin(*o, context) - freeAnchor(*o, context);
 				glm::dvec3 origin(m[3]);
 				if (snap) {
 					const glm::dvec2 hole = nearestHole(m_bench, glm::dvec2(origin.x, origin.z));
@@ -911,7 +934,10 @@ void RaytraceSceneEditor::beginOpticGizmo(VulkanEngine* engine, TransformGizmo& 
 				if (o == nullptr || !o->mount.isFree()) {
 					return std::nullopt;
 				}
-				return glm::mat4(o->mount.freeTransform() * glm::translate(glm::dmat4(1.0), opticOrigin(*o, engine->benchContext())));
+				{
+					const BenchContext context = engine->benchContext();
+					return glm::mat4(freeBodyTransform(*o, context) * glm::translate(glm::dmat4(1.0), opticOrigin(*o, context)));
+				}
 			},
 			[this, id, engine](const glm::mat4& m) {
 				SceneOptic* o = findOptic(id);
@@ -920,7 +946,10 @@ void RaytraceSceneEditor::beginOpticGizmo(VulkanEngine* engine, TransformGizmo& 
 				}
 				const glm::mat3 r(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])), glm::normalize(glm::vec3(m[2])));
 				o->mount.freeOrientation = glm::dquat(glm::quat_cast(r));
-				o->mount.freePosition = glm::dvec3(m[3]) - o->mount.freeOrientation * opticOrigin(*o, engine->benchContext());
+				{
+					const BenchContext context = engine->benchContext();
+					o->mount.freePosition = glm::dvec3(m[3]) - o->mount.freeOrientation * (opticOrigin(*o, context) - freeAnchor(*o, context));
+				}
 				markChanged();
 			},
 			// an optic is placed and turned; its size is its parameters

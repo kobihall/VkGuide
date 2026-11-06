@@ -137,7 +137,12 @@ namespace {
 //   without the mounts' geometry. "render" gains "renderAllSensors", written when true: light tracing records every
 //   detector, where by default it records the render target and its stack's members. An older file has none of them,
 //   and records its target alone
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 30;
+//31: a spherical lens is placed by its origin, wherever it stands: a free or unmounted lens's "position" is its origin's,
+//   and not its body frame's, and its "params" always carry "originAt" ("front_vertex", "first_principal_plane",
+//   "optical_center", "second_principal_plane" or "back_vertex"), which says where along its axis that origin is. A lens
+//   without "originAt" is from an older file: its position was the body frame's, and it opens with its origin, which was
+//   the middle between its vertices, kept where it was and now its optical center. Every other kind is as before
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 31;
 
 //---------------------------------------------------------------- writing
 
@@ -448,10 +453,13 @@ std::string opticParamsJson(const SceneOptic& optic)
 	std::string params;
 	for (const OpticParam& param : opticTraits(optic.kind).params) {
 		const auto found = optic.params.find(param.name);
-		if (found == optic.params.end() || found->second == param.defaultValue) {
+		// a lens's origin choice is always written: its absence marks a file from before the setting (readOptic())
+		const bool always = optic.kind == OpticKind::SphericalLens && std::string_view(param.name) == "originAt";
+		if (!always && (found == optic.params.end() || found->second == param.defaultValue)) {
 			continue;
 		}
-		params += fmt::format(R"({}"{}":{})", params.empty() ? "" : ",", param.name, opticValueJson(param, found->second));
+		const OpticValue& value = found != optic.params.end() ? found->second : param.defaultValue;
+		params += fmt::format(R"({}"{}":{})", params.empty() ? "" : ",", param.name, opticValueJson(param, value));
 	}
 	return params;
 }
@@ -2043,6 +2051,12 @@ bool readOptic(simdjson::dom::object object, size_t index, SceneOpticRecord& out
 			}
 		}
 	}
+	// a lens saved before its origin was a setting (version 30 and earlier) was placed by the middle between its vertices;
+	// it keeps that point, now as its optical center, once the mount below is read
+	const bool legacyLens = optic.kind == OpticKind::SphericalLens && optic.params.find("originAt") == optic.params.end();
+	if (legacyLens) {
+		optic.params["originAt"] = 2;
+	}
 	//version 23: the mount; an older file's optic is unmounted where the file put it
 	simdjson::dom::object mount;
 	if (object["mount"].get_object().get(mount) == simdjson::SUCCESS) {
@@ -2053,6 +2067,11 @@ bool readOptic(simdjson::dom::object object, size_t index, SceneOpticRecord& out
 	} else {
 		optic.mount = MountPose {};
 		readFreePlacement(object, optic.mount);
+	}
+	// a free legacy lens's position was its body frame's: the origin the file meant is the middle of its thickness along the
+	// axis, which is where the back vertex is halved
+	if (legacyLens && (optic.mount.isFree() || out.standOnBench)) {
+		optic.mount.freePosition += optic.mount.freeOrientation * glm::dvec3(0.0, 0.0, 0.5 * opticNumber(optic, "centerThickness"));
 	}
 	optic.world = optic.mount.freeTransform();
 	simdjson::dom::object materials;

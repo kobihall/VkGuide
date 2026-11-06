@@ -47,7 +47,11 @@ def optic(kind, name, position, z_axis=(0.0, 0.0, 1.0), size=None, params=None, 
     """An element record. A size preset decides the values it sets (a lens's diameter and center thickness): to set those,
     pass size="custom" and give them in `params`"""
     mount = {"kind": "none", "position": [float(c) for c in position], "orientation": [float(c) for c in quat_from_z(z_axis, up)]}
-    record = {"type": kind, "name": name, "params": params or {}, "mount": mount, "materials": materials or {}}
+    params = dict(params or {})
+    if kind == "spherical_lens":
+        # a lens's position is its origin's (scene file version 31): the front vertex is the body frame's origin
+        params.setdefault("originAt", "front_vertex")
+    record = {"type": kind, "name": name, "params": params, "mount": mount, "materials": materials or {}}
     if size is not None:
         record["size"] = size
     return record

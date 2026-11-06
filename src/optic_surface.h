@@ -171,6 +171,9 @@ struct OpticPrescriptionT {
 	std::vector<OpticMedium> media { OpticMedium {} };
 	// conservative, from finishPrescription()
 	OpticBoundsT<Real> bounds;
+	// z of the element's origin (opticOrigin(), optic_bench.h) in the body frame, for a kind whose origin depends on the
+	// glass (a lens's principal planes); the builder sets it, the other kinds leave it 0 and opticOrigin() ignores it
+	Real originZ { 0 };
 	bool operator==(const OpticPrescriptionT&) const = default;
 };
 

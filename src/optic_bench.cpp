@@ -906,6 +906,30 @@ std::vector<MountKind> allowedMounts(const SceneOptic& optic)
 	return out;
 }
 
+glm::dvec3 freeAnchor(const SceneOptic& optic, const OpticPrescription& body)
+{
+	return optic.kind == OpticKind::SphericalLens ? opticOrigin(optic, body) : glm::dvec3(0.0);
+}
+
+glm::dvec3 freeAnchor(const SceneOptic& optic, const BenchContext& context)
+{
+	return freeAnchor(optic, opticBody(optic, context));
+}
+
+glm::dmat4 freeBodyTransform(const SceneOptic& optic, const BenchContext& context)
+{
+	const MountPose& pose = optic.mount;
+	glm::dmat4 m = glm::mat4_cast(pose.freeOrientation);
+	m[3] = glm::dvec4(pose.freePosition - pose.freeOrientation * freeAnchor(optic, context), 1.0);
+	return m;
+}
+
+void setFreeFromBody(SceneOptic& optic, const glm::dmat4& bodyToWorld, const BenchContext& context)
+{
+	optic.mount.setFreeTransform(bodyToWorld);
+	optic.mount.freePosition += optic.mount.freeOrientation * freeAnchor(optic, context);
+}
+
 glm::dmat4 opticWorldTransform(const SceneOptic& optic, const BenchContext& context)
 {
 	return assembleStack(optic, context).opticToWorld;
@@ -914,7 +938,7 @@ glm::dmat4 opticWorldTransform(const SceneOptic& optic, const BenchContext& cont
 OpticStack assembleStack(const SceneOptic& optic, const BenchContext& context)
 {
 	OpticStack stack;
-	stack.opticToWorld = optic.mount.freeTransform();
+	stack.opticToWorld = freeBodyTransform(optic, context);
 	stack.mount = opticMountModel(optic);
 	if (optic.mount.kind == MountKind::None) {
 		return stack;
@@ -935,8 +959,8 @@ OpticStack assembleStack(const SceneOptic& optic, const BenchContext& context)
 	glm::dmat4 mountWorld(1.0);
 	if (optic.mount.freePlacement) {
 		// the mount hangs around the free optic; no post, holder or fork
-		mountWorld = optic.mount.freeTransform() * glm::inverse(opticInMount);
-		stack.opticToWorld = optic.mount.freeTransform();
+		stack.opticToWorld = freeBodyTransform(optic, context);
+		mountWorld = stack.opticToWorld * glm::inverse(opticInMount);
 	} else {
 		const MountPose& pose = optic.mount;
 		stack.minimumHeight = frames.entryHeight + (frames.restOrigin.y - frames.tap.y);
@@ -1141,7 +1165,7 @@ bool refitFork(SceneOptic& optic, const BenchContext& context, std::span<const O
 
 void dropOntoBench(SceneOptic& optic, const BenchContext& context, std::span<const OpticStack> others)
 {
-	const glm::dmat4 world = optic.mount.freeTransform();
+	const glm::dmat4 world = freeBodyTransform(optic, context);
 	MountPose& pose = optic.mount;
 	pose.freePlacement = false;
 	pose.fine = FineAdjust {};
@@ -1168,7 +1192,7 @@ void dropOntoBench(SceneOptic& optic, const BenchContext& context, std::span<con
 void snapFreeToBench(SceneOptic& optic, const BenchContext& context)
 {
 	MountPose& pose = optic.mount;
-	const glm::dvec3 local = opticOrigin(optic, context);
+	const glm::dvec3 local = opticOrigin(optic, context) - freeAnchor(optic, context);
 	const glm::dvec3 origin = pose.freePosition + pose.freeOrientation * local;
 	const glm::dvec2 hole = nearestHole(context.settings, glm::dvec2(origin.x, origin.z));
 	// the axis's direction across the table, rounded to a quarter turn; straight up or down keeps the turn it had
@@ -1192,6 +1216,9 @@ glm::dvec3 opticOrigin(const SceneOptic& optic, const OpticPrescription& body)
 	case OpticKind::EquilateralPrism:
 	case OpticKind::Iris:
 		return glm::dvec3(0.0);
+	// the principal plane or optical center the lens's origin option chose, which the builder put in the body
+	case OpticKind::SphericalLens:
+		return glm::dvec3(0.0, 0.0, body.originZ);
 	default:
 		// halfway from the front, at z = 0, to the back face's center on the axis: surface 1 of every such kind
 		return glm::dvec3(0.0, 0.0, body.surfaces.size() > 1 ? 0.5 * body.surfaces[1].placement.origin.z : 0.0);
