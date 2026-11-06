@@ -15,7 +15,7 @@
 				0
 			],
 			"extras":{
-				"version":28,
+				"version":29,
 				"models":[
 					
 				],
@@ -35,7 +35,7 @@
 					"height":512,
 					"matchViewport":false,
 					"antialiasing":true,
-					"maxSamples":64,
+					"maxSamples":4096,
 					"unlimitedSamples":false,
 					"rayDepth":8,
 					"useFixedSeed":true,
@@ -149,7 +149,8 @@
 					"15":"recursive_mis",
 					"16":"light_vertex_cache",
 					"17":"random_walk",
-					"18":"connect_bdpt"
+					"18":"connect_bdpt",
+					"26":"deposit"
 				},
 				"accel":{
 					"builder":"spatial splits (SBVH)",
@@ -161,39 +162,10 @@
 					"spatialBudget":0.3,
 					"maxDepth":48
 				},
-				"renderCamera":0,
+				"renderDetector":3,
+				"renderCamera":-1,
 				"cameras":[
-					{
-						"name":"bench_camera",
-						"position":[
-							1.7421463,
-							0.1,
-							-1.8817632e-08
-						],
-						"orientation":[
-							0.0,
-							0.7071068,
-							0.0,
-							-0.7071067
-						],
-						"fov":10.0,
-						"aperture":0.0,
-						"focusDistance":6.0,
-						"exposure":1.0,
-						"kind":"perspective",
-						"lensMapping":"concentric",
-						"apertureShape":"circle",
-						"apertureBlades":6,
-						"apertureRotation":0.0,
-						"tilt":[
-							0.0,
-							0.0
-						],
-						"shift":[
-							0.0,
-							0.0
-						]
-					}
+					
 				],
 				"lights":[
 					
@@ -224,20 +196,20 @@
 				],
 				"viewport":{
 					"position":[
-						2.066189,
-						0.15169345,
-						0.465396
+						1.3797204,
+						0.24611509,
+						-0.36011267
 					],
 					"orientation":[
-						-0.16787238,
-						0.16248493,
-						0.028064772,
-						0.9719207
+						0.035392776,
+						0.94746804,
+						0.11283687,
+						-0.29718596
 					],
 					"pivot":[
-						1.9923124,
-						0.07082192,
-						0.25062272
+						1.7135329,
+						0.104899526,
+						0.11965349
 					],
 					"speed":0.5,
 					"fov":70.0,
@@ -319,6 +291,56 @@
 						"materials":{
 							
 						}
+					},
+					{
+						"type":"beam_profiler",
+						"name":"beam_profiler_1",
+						"size":"custom",
+						"params":{
+							"width":0.029999999999999999,
+							"height":0.029999999999999999
+						},
+						"mount":{
+							"kind":"none",
+							"position":[
+								2,
+								0.10000000000000001,
+								0
+							],
+							"orientation":[
+								0,
+								0.70710678118654746,
+								0,
+								0.70710678118654757
+							]
+						},
+						"materials":{
+							
+						}
+					},
+					{
+						"type":"iris",
+						"name":"iris_1",
+						"size":"ID36",
+						"params":{
+							"opening":0.035999999999999997
+						},
+						"mount":{
+							"kind":"iris",
+							"origin":[
+								1.8,
+								0
+							],
+							"yaw":1.5707963267948966,
+							"height":0.10000000000000001,
+							"fork":{
+								"angle":-1.5707963267948966,
+								"reach":0.047631477999999783
+							}
+						},
+						"materials":{
+							
+						}
 					}
 				],
 				"bench":{
@@ -331,24 +353,7 @@
 					"snap":true
 				},
 				"geometry":[
-					{
-						"type":"quad",
-						"name":"quad_1",
-						"position":[
-							2.3030202,
-							0.10000001,
-							0.0
-						],
-						"orientation":[
-							0.0,
-							0.0,
-							0.7071068,
-							0.7071067
-						],
-						"width":0.102036186,
-						"length":0.10278636,
-						"material":0
-					}
+					
 				],
 				"meshObjects":[
 					

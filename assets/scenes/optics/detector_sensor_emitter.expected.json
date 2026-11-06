@@ -1,0 +1,7 @@
+{
+  "power": 7.535066649201317e-05,
+  "tolerance": {
+    "relative": 0.02
+  },
+  "notes": "camera paths from the sensor's pixels and light tracing's deposits each read the power a Lambertian square of radiance 2 sends into the sensor"
+}

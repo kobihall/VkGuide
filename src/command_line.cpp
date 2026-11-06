@@ -61,6 +61,7 @@ std::string commandLineUsage()
 		"  --color-space <space>       the scene's RGB values: srgb, dci-p3, rec2020 or aces2065-1\n"
 		"  --design-wavelength <nm>    the wavelength exact RGB reads a dispersive index at\n"
 		"  --spectral-images <n>       keep n wavelength buckets per pixel (hero) or the bands, as S0.<nm> EXR channels\n"
+		"  --detectors <dir>           write each detector's reading to <dir>/detectors.json and its film to <dir>/<name>.exr\n"
 		"  --help                      this text\n"
 		"\n"
 		"exit code: 0 the file was written, 2 the scene or the options were refused, 3 a timeout\n",
@@ -163,6 +164,11 @@ bool parseCommandLine(int argc, char* const* argv, CommandLine& out, std::string
 			out.captureThroughSpecular = true;
 		} else if (flag == "--light-groups") {
 			out.lightGroups = true;
+		} else if (flag == "--detectors") {
+			if (!value(text)) {
+				return false;
+			}
+			out.detectors = text;
 		} else if (flag == "--half") {
 			out.halfFloat = true;
 		} else if (flag == "--debug-view") {
@@ -265,7 +271,7 @@ bool parseCommandLine(int argc, char* const* argv, CommandLine& out, std::string
 		return false;
 	}
 	if (!out.batch() && (!out.debugView.empty() || out.aoDistance != 0.f || !out.relight.empty() || out.samples != 0 || !out.aov.empty() || out.size.has_value() || out.lightGroups || out.captureThroughSpecular || out.halfFloat
-			|| out.spectralGiven())) {
+			|| out.spectralGiven() || !out.detectors.empty())) {
 		error = "this option only applies to --render";
 		return false;
 	}

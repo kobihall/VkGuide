@@ -1,5 +1,75 @@
 # Changelog
 
+## 2026-11-05
+
+### New
+
+- A sensor stack is a row of identical detectors spaced evenly from a start point to an end point, as one detector slid along a translation stage would read a beam at each stop. **Add** → **Sensor** → **Sensor stack** makes one of any detector kind, and it is a row of the Sensors folder, under **Sensor stacks**, that opens on its members.
+- A stack's panel sets its sensor's kind and parameters, which every member shares, the number of sensors, the start and the end. **align normal to stack axis**, on by default, faces every sensor along the axis and leaves only a turn about it. **Edit Start**, **Edit End** and **Edit Rotation** each show a gizmo in the Viewport. **start** and **end** are typed fields: enter each coordinate and press Enter. While the bench snaps, the start's and the end's gizmos put x and z on the breadboard's hole lines, each only as the drag moves it, so a drag along one line stays on it; Alt inverts the snapping for a drag, and the height is free. Every member is the same size wherever it is along the axis.
+- A stack's members are detectors in every other way: each has readings, a film, **Render to this sensor**, and an entry in the batch mode's `detectors.json`, named `<stack>_0`, `<stack>_1`, and so on. A member is edited, duplicated and deleted with its stack.
+- **Render** records the render target alone: a detector, or every member of a sensor stack. **render all sensors**, under Render Settings' **Render target**, records every detector in the scene beside it, as every render did before; it is off by default and saved with the scene. The Render target combo lists a sensor stack once, and a stack's panel has **Render to this stack**.
+- The Raytraced Output window's **Showing** lists a sensor stack once, and a **sensor** slider under it picks which of its members shows, with the member's name and its distance from the stack's start. The stack shows the member it showed last when you pick it again. A stack's members share the picture's settings: **logarithmic** and its **decades**, **false color**, **auto-normalize** and the **normalization**.
+- While the Raytraced Output window shows a stack's member, **Along the stack**, under **Profiles**, plots a reading of every member against its distance from the stack's start, the shown member marked. **quantity** picks it: an imaging sensor's D4σ radii along its principal axes (the default) or along x and y, its centroid or its peak irradiance; any sensor's power with its standard error (a meter's default); a spectrometer's peak wavelength in a spectral mode. The radii get ISO 11146-1's caustic fit, drawn over them: the waist radius, its distance from the start, and M² at the design wavelength.
+
+### Changed
+
+- Turning off **auto-normalize** sets **normalization** to the peak irradiance it was showing, where it held the value from before it was turned on.
+- **Along the stack** and the slider's distances use the places the render recorded the sensors at. Editing the stack changes them once a render starts with the new places, not before; the readings were always the render's.
+- The verification scenes that measure a beam at several planes along it use a sensor stack: `gaussian_train` (21 planes), `oap_focus` (5), `tilted_spherical_mirror` (5 through each focus), `laser_m2`, `laser_diode` and `laser_iris`. Each stack's planes have the size of its widest plane, where they were sized to the beam at each plane before. `laser_m2`'s middle plane moves from 0.4 m to 0.625 m, so its three planes are evenly spaced.
+- Every scene that `tools/verify/laser_scenes.py`, `detector_scenes.py` and `optics_verification.py` write stands on a breadboard, with every mirror, lens, iris and beamsplitter in its default mount on a post. The laser scenes' beams start 0.9 m back from the breadboard's center, at z = -0.9 m, so a 2 m beam fits on it. `detector_splitter`'s cube reflects toward +x, as its prism mount holds it, and `detector_sensor_sky`'s sensor faces up, so the breadboard hides none of its sky.
+- A render toward a camera records no detector unless **render all sensors** is on, and a scene file from before version 30 records its target alone. The batch mode's `--detectors` turns **render all sensors** on, so it still writes every detector's reading.
+- Scene files are payload version 30: `sensorStacks`, `render.renderAllSensors`, and a mounted optic that a file places by its body's position and orientation, which the load stands in its mount there. A load whose mount turns the body from the file's orientation reports it, and the batch mode then refuses the file.
+
+### Fixed
+
+- Fixed the Raytraced Output window listing "a detector" once for each sensor of the previous scene, with an ImGui ID conflict on each, after you opened or created a scene with fewer sensors than the one you had rendered. **File** → **New** and **Open** now stop the render and clear the window's picture, readings and **Showing** choice, and the combo skips a detector the scene no longer has.
+- Fixed a crash in `vkQueueSubmit2` (MoltenVK binding a freed texture in the ImGui draw) when a scene was opened after a render that showed a detector's picture. The file actions run between the ImGui frame and its draw, and the new clearing destroyed the pictures that frame's draw data still named. The pictures are now destroyed at the start of the next frame.
+
+### Internal
+
+- `SceneOptic::stack` names the stack a detector is a member of. `RaytraceSceneEditor::resolveSensorStacks()` rebuilds the members after the other optics each time the bench resolves. The members are never saved, and they share their stack's slot materials.
+- `fitCaustic()` (`src/optic_detectors.h`) fits w² = a + b z + c z² through second-moment radii, as ISO 11146-1 does, and `bin/optics_test` checks it.
+- `buildSceneAccel()` takes the detectors to record (`recordedDetectors`, null for every one); one left out keeps its sensor's geometry. The renderer's "scene uploaded" log line counts the detectors recorded.
+- `tools/verify/beam_probe.py` gains `detector_stack()`, `breadboard()` and `MOUNTS`, and `free_optic()` writes a kind's default mount unless told otherwise.
+
+## 2026-11-04
+
+### New
+
+- Detectors are sensors, as cameras are (`docs/plans/completed/physoptics-detectors.md`). **Add** → **Sensor** lists a **Perspective**, **Orthographic** or **Spherical camera**. With Optical bench on, it also lists a **Power meter**, **Camera sensor**, **Beam profiler**, **Alignment card**, **Screen**, **Spectrometer**, **Beam dump** and **Probe plane**. Each detector records the light that reaches its front.
+- A power meter, a spectrometer and a beam dump read power, or a spectrum, with no image. A camera sensor, a beam profiler, a card, a screen and a probe plane have a size and the pixels the renderer records. A camera sensor or a beam profiler can also be a **physical sensor**: its own pixels and pitch set the size, and the film may record fewer pixels.
+- A card and a screen scatter what they record as a white diffuse surface, so a camera sees the spot on them. A probe plane lets the light through unchanged and nothing else sees it, so one render can measure a beam at many planes.
+- Render Settings' **Render target** lists the cameras and the detectors. A render can target a detector with no camera in the scene. Light tracing records every detector beside the target. With a detector as the target, its film is its own pixels, and light tracing emits **Light paths per sample** in place of a resolution.
+- The path tracer renders a detector target from its pixels, each ray cosine-weighted over the sensor's front, so a pixel reads its irradiance.
+- While the Raytraced Output window shows a detector, it shows the detector's power, its standard error and the light paths that reached it. A detector with an image also gets its film as a picture, linear or logarithmic, in gray or false color, with the watts and the irradiance under the cursor. **auto-normalize** scales the picture to the film's peak each frame; with it off, **normalization** sets the irradiance at the picture's top, and brighter pixels clip. It also shows the centroid and the ISO 11146 D4σ widths, the peak irradiance, encircled power and profiles, and a spectrometer's spectrum. **Showing** picks any other detector the render recorded.
+- While an edit restarts a render to a detector, the picture shows each frame's film, as a camera's render does. The readings keep their last values until a frame of the new render is read back, one or two frames later.
+- A detector's panel has **Render to this sensor**. A detector is placed and moved as an optic is, and the **Viewport** outlines its housing and dashes a probe plane's outline.
+- The batch mode's `--detectors <dir>` writes every detector's reading to `detectors.json` and its film to `<name>.exr`, in watts per pixel. `--out` writes a light-traced detector target's film.
+- `tools/verify/detector_scenes.py` writes ten detector scenes to `assets/scenes/optics/`, and `tools/verify/detector_check.py` checks them. The checks cover a power meter's reading, a 50:50 split and its noise, a profiler at a focus against ABCD, a card seen by a camera, a diffuse wall read from both sides, a spectrometer's two lines, a beam dump, a render with no camera, and a sensor rendered by the path tracer and by light tracing. `run_all.py` runs it.
+
+### Changed
+
+- The Scene panel's **Cameras** folder is **Sensors**, with a folder per camera projection and per detector kind.
+- The **Optical bench** template adds a HeNe laser and a power meter 200 mm along its beam, and renders with **Light tracing**.
+- The Raytraced Output window is an entry of the **Windows** menu, not of **Windows** → **Images**. **Render** opens it, or brings its tab in front of the Viewport's.
+- `tools/verify/laser_check.py` and `tools/verify/optics_verification.py` measure on probe planes, power meters and a beam profiler in place of white screens, one render a scene. `gaussian_train` is fitted through 21 planes.
+- Scene files are payload version 29: the eight detector types, `renderDetector` and `render.lightPathsPerSample`.
+
+### Fixed
+
+- Fixed a laser rendering nothing in the spectral bands mode. A band was the average of samples 0.25 nm apart, and a laser's 0.002 nm line fell between them.
+
+### Internal
+
+- Stage 26, `deposit_detector` (`shaders/rt/2601_deposit_detector.comp`), runs in light tracing after kernel 02, over the same ray queue, while the scene has a detector. Queue 10 stays reserved. Slots 19 to 25 are named in `KernelSlot` as the roadmap reserves them. Light tracing toward a detector target skips stages 12 and 14 (`GpuRenderSnapshot::cameraConnections`).
+- Bindings 59 `Detectors` and 60 `DetectorFilm` are new: `GpuDetector` records (`src/rt_accel.h`) and the films that `DetectorFilms` (`src/rt_detectors.h`) lays out, folds (`shaders/rt/light/detector_fold.comp`) and reads back. A frame's sums are kept in up to 4096 copies, which the fold adds into Neumaier-compensated running sums.
+- `CameraKind::Sensor` (`src/camera_model.h`, `crt_camera.glsl`) is a detector's sensor as a camera; `CameraTraits::sceneCamera` keeps it out of the scene cameras. `RTCameraSnapshot::sensorSize` is new.
+- `RaytraceRenderer::resolveTarget()` resolves the render target; `setRenderDetector()` names a detector target. `CapabilityInfo` gains `sensorMenu` and `sensorFolders`.
+- `src/optic_detectors.h` (in `rt_optics`): `detectorGeometry()`, `buildDetector()`, and the measurements `imageMoments()`, `iso11146Moments()`, `peakIrradiance()`, `encircledPower()`, `lineProfile()` and `FrameStatistics`, which `bin/optics_test` checks. `src/detectors_ui.h` draws the readings the output window adds.
+- `MaterialType::Detector` (`detector`, `CRT_MATERIAL_DETECTOR` 14) is black and ends every path. `SlotDefault` gains `Sensor` and `WhiteDiffuse`.
+- `projectLineOntoBand()` (`src/spectral.h`) projects a line spectrum onto a band from its profile's closed form.
+- `tools/verify/beam_probe.py` gains `detector()`, `measure_detector()` and a scene with a detector target and no camera, and `vkscene.py` gains `run_detectors()` and `read_exr_channels()`.
+
 ## 2026-11-02
 
 ### New

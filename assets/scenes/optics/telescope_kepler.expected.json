@@ -11,5 +11,6 @@
   "magnification": 4.0,
   "tolerance": {
     "radius": 0.01
-  }
+  },
+  "notes": "a probe plane 0.1 m past the second lens and a 10 mm beam profiler 0.6 m past it"
 }

@@ -1,0 +1,8 @@
+{
+  "power": 0.00015707963267948965,
+  "irradiance": 1.5707963267948966,
+  "tolerance": {
+    "relative": 0.002
+  },
+  "notes": "a uniform sky of 0.5: pi times 0.5 W/m^2 at every pixel"
+}

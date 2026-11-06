@@ -1,6 +1,7 @@
 #include <scene_capabilities.h>
 
 #include <length_unit.h>
+#include <optic_detectors.h>
 #include <optic_laser.h>
 #include <optic_models.h>
 #include <optics_ui.h>
@@ -89,11 +90,23 @@ void opticalBenchDependentObjects(const VulkanEngine* engine, std::vector<Object
 	//the optical elements (physoptics-optical-elements.md) and the lasers (physoptics-laser-sources.md); the beam axes and
 	//detectors follow as their plans land
 	for (const SceneOptic& optic : engine->m_raytraceScene.optics()) {
+		//a stack's members go with their stack
+		if (optic.stack != 0) {
+			continue;
+		}
 		const uint64_t id = optic.id;
 		out.push_back(ObjectRef {
 			.kind = opticTraits(optic.kind).label,
 			.name = optic.name,
 			.erase = [id](VulkanEngine* e) { e->m_raytraceScene.removeOptic(id); },
+		});
+	}
+	for (const SensorStack& stack : engine->m_raytraceScene.sensorStacks()) {
+		const uint64_t id = stack.id;
+		out.push_back(ObjectRef {
+			.kind = "Sensor stack",
+			.name = stack.name,
+			.erase = [id](VulkanEngine* e) { e->m_raytraceScene.removeSensorStack(id); },
 		});
 	}
 }
@@ -106,6 +119,17 @@ void opticalBenchSceneFolders(VulkanEngine* engine)
 void opticalBenchAddMenu(VulkanEngine* engine)
 {
 	engine->m_raytraceScene.drawOpticAddMenu(engine);
+}
+
+// the detectors are sensors, beside the cameras (docs/plans/completed/physoptics-detectors.md)
+void opticalBenchSensorMenu(VulkanEngine* engine)
+{
+	engine->m_raytraceScene.drawDetectorAddItems(engine);
+}
+
+void opticalBenchSensorFolders(VulkanEngine* engine)
+{
+	engine->m_raytraceScene.drawDetectorRows(engine);
 }
 
 void opticalBenchSceneStatus(VulkanEngine* engine)
@@ -126,12 +150,60 @@ void opticalBenchSceneStatus(VulkanEngine* engine)
 	}
 }
 
+// A detector's outline (docs/plans/completed/physoptics-detectors.md): its housing's placeholder box behind the sensor,
+// which the tracer does not see, and a probe plane's rectangle, which is no geometry at all, dashed. Lines over the
+// preview only
+void detectorOverlay(const SceneOptic& optic, const ViewportView& view)
+{
+	const DetectorGeometry g = detectorGeometry(optic);
+	auto world = [&](const glm::dvec3& p) { return glm::vec3(optic.world * glm::dvec4(p, 1.0)); };
+	if (g.action == DetectorAction::Transparent) {
+		const ImU32 color = IM_COL32(120, 220, 255, 220);
+		const glm::dvec3 corners[4] = { { -g.halfWidth, -g.halfHeight, 0.0 }, { g.halfWidth, -g.halfHeight, 0.0 }, { g.halfWidth, g.halfHeight, 0.0 }, { -g.halfWidth, g.halfHeight, 0.0 } };
+		for (int i = 0; i < 4; i++) {
+			const glm::dvec3& a = corners[i];
+			const glm::dvec3& b = corners[(i + 1) % 4];
+			for (int dash = 0; dash < 8; dash += 2) {
+				view.line(world(a + (b - a) * (dash / 8.0)), world(a + (b - a) * ((dash + 1) / 8.0)), color, 1.5f);
+			}
+		}
+		return;
+	}
+	const MountModelInfo* model = g.housing != nullptr ? findMountModel(g.housing) : nullptr;
+	if (model == nullptr) {
+		return;
+	}
+	const glm::dvec3 size(model->nominalSize);
+	// the housing behind the sensor's plane: downstream, along +z
+	const ImU32 outline = IM_COL32(200, 200, 210, 200);
+	glm::vec3 corners[8];
+	for (int i = 0; i < 8; i++) {
+		corners[i] = world(glm::dvec3((i & 1) ? 0.5 * size.x : -0.5 * size.x, (i & 2) ? 0.5 * size.y : -0.5 * size.y, (i & 4) ? size.z : 0.0));
+	}
+	for (int i = 0; i < 8; i++) {
+		for (int bit = 1; bit < 8; bit <<= 1) {
+			if ((i & bit) == 0) {
+				view.line(corners[i], corners[i | bit], outline, 1.f);
+			}
+		}
+	}
+}
+
 // Each laser's housing as an outline, the placeholder model's box behind its output, and an arrow along its beam in
 // the color of its wavelength (docs/plans/completed/physoptics-laser-sources.md): lines over the preview, which neither
 // the raster pass nor the tracer sees. The tracer has the output aperture alone
 void opticalBenchOverlays(VulkanEngine* engine, const ViewportView& view)
 {
+	// a sensor stack's axis, the rail its sensors slide along, from its start to its end; each member draws its own outline
+	for (const SensorStack& stack : engine->m_raytraceScene.sensorStacks()) {
+		const ImU32 rail = IM_COL32(120, 220, 255, 160);
+		view.line(glm::vec3(stack.start), glm::vec3(stack.end), rail, 1.f);
+	}
 	for (const SceneOptic& optic : engine->m_raytraceScene.optics()) {
+		if (isDetectorKind(optic.kind)) {
+			detectorOverlay(optic, view);
+			continue;
+		}
 		if (optic.kind != OpticKind::Laser) {
 			continue;
 		}
@@ -168,8 +240,9 @@ void opticalBenchRasterGeometry(VulkanEngine* engine)
 	engine->m_benchScene.draw(engine);
 }
 
-// Optics: a wider Scene panel for the bench's object tree, the viewport in the middle and the render on the right.
-// The Beam and Detectors windows dock below the viewport when their plans add them
+// Optics: a wider Scene panel for the bench's object tree, the viewport and the render (a detector's film and readings when
+// it is the target) in the middle, the stats and settings on the right. The Beam window docks below the viewport when its
+// plan adds it
 void buildOpticsLayout(uint32_t dockspace, std::vector<std::string>& open)
 {
 	const DockColumns columns = splitDockColumns(dockspace, 0.26f, 0.22f, 0.62f, 0.45f);
@@ -184,7 +257,7 @@ void buildOpticsLayout(uint32_t dockspace, std::vector<std::string>& open)
 	for (const char* name : { "Raytracer Shaders", "Import Report", "GPU self-tests" }) {
 		dockWindow(name, columns.rightBottom);
 	}
-	open = { "Scene", "Materials", "Viewport", "Stats", "Render Settings" };
+	open = { "Scene", "Materials", "Viewport", "Raytraced Output", "Stats", "Render Settings" };
 }
 
 const WorkspaceInfo OPTICS_WORKSPACE { "optics", "Optics", buildOpticsLayout };
@@ -219,6 +292,19 @@ void populateOpticalBench(VulkanEngine* engine)
 	//to show
 	engine->m_backgroundMode = BackgroundMode::Gradient;
 	engine->m_backgroundColor = glm::vec3(0.f);
+	//something to measure (docs/plans/completed/physoptics-detectors.md): the HNL050LB at the beam height on the hole at
+	//x = -100 mm, its beam along +x to a power meter 200 mm on, and light tracing, which renders a laser's light and is the
+	//only integrator that deposits on a detector
+	const glm::dquat alongX = glm::angleAxis(0.5 * glm::pi<double>(), glm::dvec3(0.0, 1.0, 0.0));
+	for (const auto& [kind, x] : { std::pair { OpticKind::Laser, -0.1 }, std::pair { OpticKind::PowerMeter, 0.1 } }) {
+		SceneOptic optic = makeOptic(kind);
+		optic.mount.freePosition = glm::dvec3(x, bench.beamHeight, 0.0);
+		optic.mount.freeOrientation = alongX;
+		optic.world = optic.mount.freeTransform();
+		engine->m_raytraceScene.addOptic(std::move(optic));
+	}
+	engine->m_raytraceScene.resolveBench(engine);
+	engine->m_raytracer.setIntegrator(IntegratorId::Light);
 }
 
 //---------------------------------------------------------------- the registry
@@ -234,6 +320,8 @@ const CapabilityInfo CAPABILITIES[] = {
 		.dependentObjects = opticalBenchDependentObjects,
 		.sceneFolders = opticalBenchSceneFolders,
 		.addMenu = opticalBenchAddMenu,
+		.sensorMenu = opticalBenchSensorMenu,
+		.sensorFolders = opticalBenchSensorFolders,
 		.sceneStatus = opticalBenchSceneStatus,
 		.menus = drawOpticsMenu,
 		.fileMenu = nullptr,
@@ -250,7 +338,8 @@ static_assert(std::size(CAPABILITIES) == (size_t)CapabilityId::Count, "one CAPAB
 const SceneTemplate BUILTIN_TEMPLATES[] = {
 	SceneTemplate { .key = DEFAULT_TEMPLATE_KEY, .name = "Render scene", .description = "One camera and the default settings: what New Scene makes", .path = {}, .populate = nullptr },
 	SceneTemplate { .key = "optical_bench", .name = "Optical bench",
-		.description = "The Optical bench capability on, the breadboard, a camera looking down at it, a fixed seed and an empty environment", .path = {}, .populate = populateOpticalBench },
+		.description = "The Optical bench capability on, the breadboard, a HeNe laser and a power meter on it, light tracing, a camera looking down at it, a fixed seed and an empty environment",
+		.path = {}, .populate = populateOpticalBench },
 };
 
 // a template's file name from its name: lowercase letters, digits and underscores

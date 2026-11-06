@@ -2,7 +2,7 @@
 
 A light path from a laser through a twenty-element setup meets twenty-odd surfaces, and at each the path tracer must find what it hits next and decide whether it reflects or refracts. The beam axis already says what it should hit and which way it should go. This plan lets the path tracer use that, in four modes chosen per beam axis: **Full** ignores the graph; **Seeded** uses it only to speed up the search, and gives the same result as **Full**; **Guided** also biases each reflect-or-refract choice toward the graph and reweights, which stays unbiased and still finds every ghost; **Sequential** traces the graph's surfaces alone, as a lens design program's sequential mode does, which is fast and ignores clipping by anything outside the graph and every ghost.
 
-*Not implemented. Depends on [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-laser-sources.md](completed/physoptics-laser-sources.md), the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md) and [physoptics-detectors.md](physoptics-detectors.md), which measures what the modes change. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-laser-sources.md](completed/physoptics-laser-sources.md), the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md) and [physoptics-detectors.md](completed/physoptics-detectors.md), which measures what the modes change. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
@@ -11,7 +11,7 @@ On 2026-10-18 the user chose all four modes. The request asks for a maximal mode
 ## What the renderer does today
 
 - Kernel 02 traces every ray with `traceScene()` over the full TLAS, through the selected traversal ([pbrt-roadmap.md](pbrt-roadmap.md), integrator layer).
-- [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md)'s light integrator runs stage 11 (emit), the shared 01 and 02, stage 13 (scatter light paths) and the camera connections; [physoptics-detectors.md](physoptics-detectors.md) adds stage 26, which deposits on detectors.
+- [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md)'s light integrator runs stage 11 (emit), the shared 01 and 02, stage 13 (scatter light paths) and the camera connections; [physoptics-detectors.md](completed/physoptics-detectors.md) adds stage 26, which deposits on detectors.
 - A path carries no notion of where it is in an optical layout.
 
 ## What other simulators do
@@ -74,6 +74,10 @@ The mode is a uniform per-dispatch flag, `CRT_FLAG_BEAM_GRAPH`, with the per-axi
 
 The light integrator's counters gain, per frame: paths on the graph and off it, vignetted paths (**Sequential**), and the mean guided weight per branch kind, so a badly chosen guide strength shows as a spread of weights. The render guard prices a ray in **Sequential** at the expected body's surface count, and in **Seeded** and **Guided** at the full traversal's cost, its upper bound.
 
+### Separate stray light
+
+Step 6 of [physoptics-detectors.md](completed/physoptics-detectors.md), which moved here when the detectors were built before guided tracing (2026-11-04). With a beam axis in a mode that tracks the graph, **Separate stray light** doubles a detector film's channels: one set for paths on the graph, one for paths off it (and for every path that struck a bench part, by the bench's instance tags), so a detector shows the main beam and the ghosts and scatter apart. Stage 26 reads the path's `OpticPathState` node to choose the set; `GpuDetector::channels` and the film's offsets (`DetectorFilms`, `src/rt_detectors.h`) double with it, and the detector window shows the two powers and images side by side.
+
 ## Registry, bindings and data
 
 - Binding 57 `OpticPathState`; binding 58 `BeamGraph`; `CrtBinding::OpticPathState`, `CrtBinding::BeamGraph`.
@@ -96,6 +100,7 @@ The light integrator's counters gain, per frame: paths on the graph and off it, 
 3. **Sequential**.
 4. **Guided**, including negative guide strengths.
 5. The counters and the results table.
+6. **Separate stray light** on detectors.
 
 ## Open questions
 

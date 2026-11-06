@@ -106,7 +106,11 @@ void LightSchedule::record(GpuRenderer& renderer, VulkanEngine* engine, VkComman
 			launch(variant, bounce, (MaterialClass)materialClass);
 		}
 	};
-	const KernelVariant* splat = passFor(KernelSlot::TraceCameraConnections);
+	//a detector target has no camera: nothing connects to one or splats (docs/plans/completed/physoptics-detectors.md)
+	const bool connects = renderer.snapshot().cameraConnections;
+	const KernelVariant* splat = connects ? passFor(KernelSlot::TraceCameraConnections) : nullptr;
+	//only while the scene has a detector: a scene without one runs the stages it always did
+	const KernelVariant* deposit = renderer.detectors().deposits() ? passFor(KernelSlot::DepositOnDetectors) : nullptr;
 
 	//---------------------------------------------------------------- 11 emit light rays
 	pool.resetHeader(cmd, CRT_QUEUE_RAY_A);
@@ -151,8 +155,12 @@ void LightSchedule::record(GpuRenderer& renderer, VulkanEngine* engine, VkComman
 			launch(*intersect, bounce);
 		}
 		vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);
-		//---- 12 connect to the camera, before 13 moves the paths on
-		if (const KernelVariant* connect = passFor(KernelSlot::ConnectToCamera)) {
+		//---- 26 deposit on the detectors, and 12 connect to the camera, both before 13 moves the paths on: they read the
+		//paths and the hits and write different buffers, so neither waits for the other
+		if (deposit != nullptr) {
+			launch(*deposit, bounce);
+		}
+		if (const KernelVariant* connect = connects ? passFor(KernelSlot::ConnectToCamera) : nullptr) {
 			launchClasses(*connect, bounce);
 		}
 		vkutil::memory_barrier(cmd, computeStages, computeAccess, computeStages, computeAccess);

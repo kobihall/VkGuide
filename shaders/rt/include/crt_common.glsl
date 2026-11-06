@@ -106,6 +106,8 @@ layout (constant_id = 13) const bool CRT_LASERS = false;
 #define CRT_MATERIAL_OPTICAL_INTERFACE 12u
 // a laser's output aperture (docs/plans/completed/physoptics-laser-sources.md): black, glowing with its instance's beam
 #define CRT_MATERIAL_LASER_APERTURE 13u
+// a detector's sensor (docs/plans/completed/physoptics-detectors.md): black, and no queue takes a hit on it
+#define CRT_MATERIAL_DETECTOR 14u
 
 // PathState.misPdf's sentinel: whatever emission this path's next ray finds counts at full weight,
 // because no light was sampled towards it - a camera ray, a ray leaving a specular surface, or a
@@ -638,6 +640,35 @@ layout (std430, set = 0, binding = 46) readonly buffer SamplerTableBuffer { uint
 // no optics
 layout (std430, set = 0, binding = 55) readonly buffer OpticSurfaceBuffer { vec4 opticData[]; };
 layout (std430, set = 0, binding = 56) readonly buffer OpticCoatingBuffer { vec4 coatingData[]; };
+
+// THE DETECTORS (docs/plans/completed/physoptics-detectors.md, crt_detector.glsl): binding 59 their records (src/rt_accel.h
+// GpuDetector) after a header, the films' size and where their sums are, and the radiometric width of each band of a
+// band representation; binding 60 the films, which stage 26 adds the frame's light paths to with float atomics and
+// shaders/rt/light/detector_fold.comp folds into compensated sums. 16-byte stubs while the scene has no detector
+struct DetectorRecord {
+	// world space: the sensor's center and half width, its x axis and half height, its y axis and a spectrometer's
+	// range, the front's normal (toward the light it records)
+	vec4 origin;
+	vec4 uAxis;
+	vec4 vAxis;
+	vec4 normal;
+	// the sensor's instance slot (CRT_DETECTOR_NO_INSTANCE for a probe plane), CRT_DETECTOR_* flags, the film
+	uint instance;
+	uint flags;
+	uint pixelsX;
+	uint pixelsY;
+	uint channels;
+	uint imageOffset;
+	uint spectrumOffset;
+	uint bins;
+};
+layout (std430, set = 0, binding = 59) readonly buffer DetectorBuffer {
+	// the detectors, the floats of their frame sums, where the frame totals and the paths reached start
+	uvec4 detectorHeader;
+	vec4 detectorBandWidths[8];
+	DetectorRecord detectors[];
+};
+layout (std430, set = 0, binding = 60) buffer DetectorFilmBuffer { float detectorFilm[]; };
 
 layout (std430, set = 0, binding = 62) buffer FilmCascadeBuffer { vec4 filmCascade[]; };
 // each mesh triangle's TEXCOORD_1 uvs, six floats by global attribute record, while CRT_FLAG_UV1 says a mesh has them

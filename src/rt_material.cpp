@@ -515,6 +515,24 @@ glm::vec3 laserPreview(const MaterialDef&)
 	return glm::vec3(0.9f, 0.1f, 0.1f);
 }
 
+// black, with neither the scatter nor the emit flag: kernel 02 queues a hit on it nowhere, so every path ends there
+void packDetector(const MaterialDef&, const PackContext&, MaterialRecordWriter& writer)
+{
+	CrtClassicMaterial out {};
+	out.type = (uint32_t)MaterialType::Detector;
+	out.albedoLayer = -1;
+	out.normalLayer = -1;
+	out.metalRoughLayer = -1;
+	out.emissiveLayer = -1;
+	out.normalScale = 1.f;
+	writer.write(&out, sizeof(out));
+}
+
+glm::vec3 detectorPreview(const MaterialDef&)
+{
+	return glm::vec3(0.02f, 0.02f, 0.025f);
+}
+
 //---------------------------------------------------------------- the table
 
 // by MaterialType
@@ -534,6 +552,7 @@ const MaterialTraits MATERIAL_TRAITS[] = {
 	{ "optical_interface", "Optical interface", OPTICAL_INTERFACE_PARAMS, MATERIAL_TYPE_SCATTERS | MATERIAL_TYPE_COMPLEX | MATERIAL_TYPE_DELTA, packOpticalInterface,
 		noEmission, glassPreview },
 	{ "laser_aperture", "Laser aperture", {}, MATERIAL_TYPE_EMISSIVE, packLaserAperture, noEmission, laserPreview },
+	{ "detector", "Detector sensor", {}, 0, packDetector, noEmission, detectorPreview },
 };
 static_assert(sizeof(MATERIAL_TRAITS) / sizeof(MATERIAL_TRAITS[0]) == MATERIAL_TYPE_COUNT);
 
@@ -656,7 +675,8 @@ void MaterialRecordWriter::write(const void* data, size_t bytes)
 
 bool usesEmissionBlock(MaterialType type)
 {
-	return type != MaterialType::Emissive && type != MaterialType::Pbr && type != MaterialType::OpticalInterface && type != MaterialType::LaserAperture;
+	return type != MaterialType::Emissive && type != MaterialType::Pbr && type != MaterialType::OpticalInterface && type != MaterialType::LaserAperture
+		&& type != MaterialType::Detector;
 }
 
 uint32_t textureTarget(const MaterialDef& material, std::string_view name)
@@ -743,6 +763,7 @@ uint32_t textureTarget(const MaterialDef& material, std::string_view name)
 		//the ABg lobe's B and g shape a table the CPU integrates, so only its total scatter can vary over the surface
 		return name == "tis" ? CRT_TEX_TARGET_TIS : CRT_TEX_TARGET_NONE;
 	case MaterialType::LaserAperture:
+	case MaterialType::Detector:
 		return CRT_TEX_TARGET_NONE;
 	}
 	return CRT_TEX_TARGET_NONE;

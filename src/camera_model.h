@@ -6,7 +6,9 @@
 // both sides together.
 //
 // Every kind is a thin lens: perspective (PBR 4ed 5.2.2 and 5.2.3, Ray Tracing in One Weekend's camera), orthographic
-// (5.2.1) and spherical (5.3, without a lens). The aperture is a circle, a regular polygon or an image, and the film of
+// (5.2.1) and spherical (5.3, without a lens); and a detector's bare sensor (docs/plans/completed/physoptics-detectors.md),
+// whose rays leave each point of the sensor over its front hemisphere, cosine-weighted, so a pixel's mean radiance times
+// pi is the irradiance there. The aperture is a circle, a regular polygon or an image, and the film of
 // a perspective or orthographic camera can be shifted, and its plane of focus tilted (Kensler 2021). A ray's weight is
 // always 1: the thin lens is normalized for exposure, so the aperture's size and shape change the depth of field and the
 // bokeh and never the brightness, as pbrt's thin lens does.
@@ -31,6 +33,8 @@ enum class CameraKind : uint32_t {
 	Perspective,
 	Orthographic,
 	Spherical,
+	// a detector rendered by camera paths: never a SceneCamera's kind, made from the render target's detector
+	Sensor,
 	Count
 };
 
@@ -87,13 +91,18 @@ struct CameraTraits {
 	bool lens;
 	// what light tracing and the bidirectional integrators can connect to (pbrt's PerspectiveCamera alone)
 	bool importance;
+	// a scene camera may be of this kind (the projection combo lists it); a sensor is a detector's
+	bool sceneCamera;
 };
 
 inline constexpr CameraTraits CAMERA_TRAITS[] = {
-	{ CameraKind::Perspective, true, false, false, true, true },
-	{ CameraKind::Orthographic, false, true, false, true, false },
-	{ CameraKind::Spherical, false, false, true, false, false },
+	{ CameraKind::Perspective, true, false, false, true, true, true },
+	{ CameraKind::Orthographic, false, true, false, true, false, true },
+	{ CameraKind::Spherical, false, false, true, false, false, true },
+	{ CameraKind::Sensor, false, false, false, false, false, false },
 };
+// the kinds a scene camera can be: the first SCENE_CAMERA_KINDS of CameraKind
+inline constexpr uint32_t SCENE_CAMERA_KINDS = 3;
 static_assert(std::size(CAMERA_TRAITS) == (size_t)CameraKind::Count);
 
 inline const CameraTraits& cameraTraits(CameraKind kind)
@@ -131,6 +140,8 @@ struct RTCameraSnapshot {
 	glm::vec2 tiltDegrees { 0.f };
 	// the film moved across the image plane, in units of the image's height, x right and y up
 	glm::vec2 shift { 0.f };
+	// a sensor: its width and height. lookFrom is its center, lookAt a point in front of it, vUp its +y
+	glm::vec2 sensorSize { 0.f };
 
 	bool operator==(const RTCameraSnapshot&) const = default;
 };

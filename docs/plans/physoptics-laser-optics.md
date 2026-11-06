@@ -4,7 +4,7 @@ This plan turns the path tracer into a simulator of optical experiments on a las
 
 The request this plan answers is `docs/00-laser-optics.md`. It takes its approach from femtoPro, the University of Würzburg's virtual ultrafast laser laboratory, without copying its feature list. The 18 `physoptics-*.md` plans below implement it, on top of the `pbrt-*.md` plans of the [pbrt roadmap](pbrt-roadmap.md). This file holds the decisions that shape all of them, the resources they reserve, and one linear order to build everything in.
 
-*Written 2026-10-18. The optomechanical models (2026-10-28), scene capabilities, the optical surfaces, materials and elements (2026-10-29), the bench and mounts (2026-10-30), and the laser sources (2026-11-02) are implemented; `docs/physical-optics-overview.md` describes what is built. Read the [pbrt roadmap](pbrt-roadmap.md), `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan here assumes them.*
+*Written 2026-10-18. The optomechanical models (2026-10-28), scene capabilities, the optical surfaces, materials and elements (2026-10-29), the bench and mounts (2026-10-30), the laser sources (2026-11-02) and the detectors (2026-11-04) are implemented; `docs/physical-optics-overview.md` describes what is built. Read the [pbrt roadmap](pbrt-roadmap.md), `docs/raytracing-overview.md` and `docs/codebase-map.md` §8 first; every plan here assumes them.*
 
 ## What femtoPro does, and what this plan takes from it
 
@@ -15,7 +15,7 @@ What this plan keeps:
 - The beam as a few rays per segment for interactive work, with Gaussian beam parameters attached, solved on the CPU, and recomputed only downstream of a change ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)).
 - The split between coarse placement and fine adjustment ([physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md)).
 - A beam that is visible as a volume in the viewport, colored by its spectrum ([physoptics-beam-preview.md](physoptics-beam-preview.md)).
-- Detectors that measure rather than display: power meters, cameras, cards ([physoptics-detectors.md](physoptics-detectors.md)).
+- Detectors that measure rather than display: power meters, cameras, cards ([physoptics-detectors.md](completed/physoptics-detectors.md)).
 
 What it does differently:
 
@@ -94,7 +94,7 @@ Two consumers read the same optics. The solver traces one chief ray per segment 
 | [physoptics-beam-preview.md](physoptics-beam-preview.md) | Beams in the raster viewport as at most three conical sections per segment |
 | [physoptics-locked-transforms.md](physoptics-locked-transforms.md) | Moving one degree of freedom while the beam path holds still: carry, re-aim, fixed |
 | [physoptics-guided-tracing.md](physoptics-guided-tracing.md) | The four trace modes in the path tracer, and the per-path beam state |
-| [physoptics-detectors.md](physoptics-detectors.md) | Detector elements, the detector film, the deposit stage, measurement readouts |
+| [physoptics-detectors.md](completed/physoptics-detectors.md) | Detector elements, the detector film, the deposit stage, measurement readouts |
 | [physoptics-prescription-import.md](physoptics-prescription-import.md) | `.zmx` and pbrt lens `.dat` import into optics and assemblies, with the glass catalogs they name |
 | [physoptics-data-export.md](physoptics-data-export.md) | ZBF, ZRD and array exports, and the comparison scripts for OpticStudio, Optiland and LightPipes |
 | [physoptics-polarization-optics.md](physoptics-polarization-optics.md) | Wave plates, polarizers, polarizing beamsplitters, Brewster windows, birefringent crystals |
@@ -139,7 +139,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 21. [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md). Implemented 2026-10-21. Image export and the batch mode the verification scripts use.
 22. [pbrt-display-and-color.md](pbrt-display-and-color.md). The sRGB curve and false color for wavelengths outside the visible range.
 23. [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md). Its light tracing integrator (steps 1 and 2 of that plan) is what renders laser light; `lvc` and `bdpt` can follow at any later point.
-24. [physoptics-detectors.md](physoptics-detectors.md)
+24. [physoptics-detectors.md](completed/physoptics-detectors.md). Implemented 2026-11-04 but for the solver's prediction, which moves to item 18, and **Separate stray light**, which moves to item 25. Detectors are placed freely, as lasers are.
 25. [physoptics-guided-tracing.md](physoptics-guided-tracing.md)
 26. [physoptics-data-export.md](physoptics-data-export.md)
 
@@ -147,7 +147,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 27. [physoptics-prescription-import.md](physoptics-prescription-import.md)
 28. [pbrt-cameras.md](completed/pbrt-cameras.md). Its realistic camera traces through a lens assembly from item 27.
-29. [physoptics-verification-scenes.md](physoptics-verification-scenes.md). Five of its geometric scenes (the Gaussian train, both telescopes, the off-axis parabola and the tilted mirror) were built with the laser sources on 2026-11-02 and checked on screens; their detector and solver checks remain. The geometric section: a 35 mm prime lens, a telescope, a microscope, Gaussian beam propagation through mirrors and lenses, an off-axis parabola's focal spot. Its spectral and polarization sections are verified as milestones 5 and 6 land.
+29. [physoptics-verification-scenes.md](physoptics-verification-scenes.md). Five of its geometric scenes (the Gaussian train, both telescopes, the off-axis parabola and the tilted mirror) were built with the laser sources on 2026-11-02, checked on screens, and moved to detectors on 2026-11-04; their solver checks remain. The geometric section: a 35 mm prime lens, a telescope, a microscope, Gaussian beam propagation through mirrors and lenses, an off-axis parabola's focal spot. Its spectral and polarization sections are verified as milestones 5 and 6 land.
 
 ### Milestone 5: the spectral goals
 
@@ -233,7 +233,7 @@ The limit of 31 storage buffers per stage still applies. Kernel 02 gains three b
 | Kind | Number | Name | Plan |
 |---|---|---|---|
 | Queue | 10 | `CRT_QUEUE_DETECTOR` | detectors |
-| Stage | 26 | deposit on detectors | detectors |
+| Stage | 26 | deposit on detectors (implemented, over the ray queue: queue 10 stays unused) | detectors |
 
 The realistic camera's trace through its lens runs inside kernel 00, which [pbrt-cameras.md](completed/pbrt-cameras.md) already owns, so it needs no stage.
 

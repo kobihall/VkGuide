@@ -126,6 +126,7 @@ Verification:
 ## Not built
 
 - **The realistic camera**, step 6, waits for [physoptics-beam-axis.md](../physoptics-beam-axis.md) and [physoptics-prescription-import.md](../physoptics-prescription-import.md). A pbrt `realistic` camera still imports as a perspective camera with its pose, and the report says so.
+- **The realistic camera's shape, as the user set it on 2026-11-04.** It is not a new kind of scene camera. It is a **camera sensor** detector ([physoptics-detectors.md](physoptics-detectors.md)) standing behind a beam axis of lens elements, and the sensor is what the render targets. The sensor already renders two ways. Light tracing deposits on it, through whatever optics stand in front, so a laser imaged by a lens already lands on it. Camera paths start at its pixels (`CameraKind::Sensor`, `generateCameraRay()` in `src/camera_model.cpp`), today cosine-weighted over the front hemisphere, a bare irradiance sensor. The realistic camera replaces that hemisphere with pbrt's exit pupil: a direction toward the rear element's bounds, traced sequentially through the assembly in kernel 00 as "Realistic lens systems" above describes, with the camera weight of PBR 3ed §6.4.7. The sensor's size and pixels are the film; its physical-sensor section is a real camera's. Nothing else the plan describes changes.
 - A color aperture image: the aperture is the image's luminance.
 - pbrt's equirectangular layout, and pbrt's orthographic lens.
 

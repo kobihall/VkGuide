@@ -2,12 +2,12 @@
 
 A simulator is believed when it agrees with one people already trust. The user can run Zemax OpticStudio, open-source Python ray tracers (Optiland, RayOptics) and open-source wave optics codes (LightPipes, POPPY). This plan writes what the renderer computes in formats those programs read, and adds the scripts that run the same setup in both and report the difference: detector images and beam fields as ZBF beam files and arrays, ray sets as ZRD ray databases and arrays, and the solver's beam as tables.
 
-*Not implemented. Depends on [physoptics-detectors.md](physoptics-detectors.md) and [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) for what is exported, [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) for the readback and file plumbing and its batch mode, and [physoptics-prescription-import.md](physoptics-prescription-import.md) for the shared `.zmx` setups. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [physoptics-detectors.md](completed/physoptics-detectors.md) and [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) for what is exported, [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) for the readback and file plumbing and its batch mode, and [physoptics-prescription-import.md](physoptics-prescription-import.md) for the shared `.zmx` setups. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What exists today
 
 - [pbrt-aovs-and-image-output.md](completed/pbrt-aovs-and-image-output.md) is implemented: EXR, PFM, HDR and PNG export of the camera image, `src/vk_readback.h` (`readbackImage()` and `readbackBuffer()`, which wait for the device and call `vmaInvalidateAllocation()`), and a batch mode (`--render`, `--spp`, `--out`, parsed by `src/command_line.h`).
-- Detector films live in binding 60 ([physoptics-detectors.md](physoptics-detectors.md)).
+- Detector films live in binding 60 ([physoptics-detectors.md](completed/physoptics-detectors.md)). The batch mode's `--detectors <dir>` already writes every detector's reading, frame, moments and spectrum to `detectors.json` and its film to `<name>.exr` in watts per pixel (`writeDetectorReadings()`, `src/rt_detectors.h`), which the verification scripts read (`vkscene.run_detectors()`). This plan adds ZBF, NPY with its sidecar and **File** → **Export Optical Data...** beside it.
 
 ## Design
 

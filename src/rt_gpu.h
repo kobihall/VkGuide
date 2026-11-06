@@ -28,6 +28,7 @@
 #include <aov.h>
 #include <image_io.h>
 #include <rt_accel.h>
+#include <rt_detectors.h>
 #include <rt_gpu_types.h>
 #include <vk_tonemap.h>
 #include <rt_kernels.h>
@@ -148,6 +149,11 @@ struct GpuRenderSnapshot {
 	// group the background belongs to. The groups of the lights and materials are in the light list
 	uint32_t lightGroupCount { 0 };
 	uint32_t environmentGroup { 0 };
+	// THE RENDER TARGET when it is a detector (docs/plans/completed/physoptics-detectors.md): its optic's id, 0 for a camera.
+	// Light tracing deposits on it with no camera to connect to (cameraConnections false); a camera-path integrator renders
+	// it through its sensor camera (CameraKind::Sensor), its film the detector's
+	uint64_t detectorTarget { 0 };
+	bool cameraConnections { true };
 };
 
 // The renderer's device memory by owner, in bytes (GpuRenderer::memoryUse()), for the Stats window
@@ -222,6 +228,8 @@ public:
 	static VkDeviceSize geometryUploadBytes(const RaytraceGeometry* geometry, VkDeviceSize alignment);
 	// keeps the image
 	void stop();
+	// a new scene: the finished render's picture and every detector's readings go, so nothing shows until the next render
+	void discardResult(VulkanEngine* engine);
 
 	bool isRunning() const { return m_running; }
 	uint32_t samplesAccumulated() const { return m_samplesAccumulated; }
@@ -340,6 +348,9 @@ public:
 	// bindings 52 and 53 back to their stub, for a schedule that published its own and is giving it up
 	void publishBidirectionalStubs();
 	WavefrontPool& wavefrontPool() { return m_pool; }
+	// the scene's detectors' films (docs/plans/completed/physoptics-detectors.md), which light tracing's stage 26 adds to
+	DetectorFilms& detectors() { return m_detectors; }
+	const DetectorFilms& detectors() const { return m_detectors; }
 	// the pipeline of `variant`, built on first use. A kernel that traces is built for the
 	// snapshot's traversal, with the traversal's bindings added to its own; a kernel built per
 	// material class, for `materialClass`
@@ -424,6 +435,9 @@ private:
 	bool m_scheduleActive { false };
 
 	WavefrontPool m_pool;
+	DetectorFilms m_detectors;
+	// when the detectors' running sums were last copied back, for the readings' images
+	double m_lastDetectorCopy { 0.0 };
 
 	// the outputs' buffers: AovImages (a layer per kept AovLayer, or a 1 x 1 stub), the light groups' sums (or a
 	// stub) and, for Relight, the rebuilt picture. Sized by ensureOutputs() when a render starts

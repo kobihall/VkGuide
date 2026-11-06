@@ -17,12 +17,17 @@
 //  - lasers (docs/plans/completed/physoptics-laser-sources.md): the HNL050LB preset's beam against its data sheet, the
 //    data sheet's diameter and divergence back to the waist and M^2, the aperture square to a pointed beam, its color,
 //    the design wavelength following one laser and not two, and a laser snapped onto a hole with its beam along the grid
+//  - detectors (docs/plans/completed/physoptics-detectors.md): every kind's sensor and film (the cameras binned), its one
+//    face square to the light at z = 0; ISO 11146's moments and D4 sigma diameters of synthetic Gaussian, rotated
+//    elliptical and top-hat images against their closed forms, the iterative integration area against a far hot pixel,
+//    encircled power and peak irradiance of a Gaussian, and the per-frame standard error
 //
 // Run from the repository root:  ./bin/optics_test [--rays N] [--root dir] [--selfcheck]
 
 #include <optic_bench.h>
 #include <optic_catalog.h>
 #include <optic_coating.h>
+#include <optic_detectors.h>
 #include <optic_glass.h>
 #include <optic_laser.h>
 #include <optic_library.h>
@@ -32,6 +37,7 @@
 #include <bxdf.h>
 
 #include <cmath>
+#include <functional>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -1198,6 +1204,203 @@ void testLasers()
 		fmt::format("snapped laser at ({:.4f}, {:.4f}, {:.4f}) along ({:.3f}, {:.3f}, {:.3f})", placed.mount.freePosition.x, placed.mount.freePosition.y, placed.mount.freePosition.z, axis.x, axis.y, axis.z));
 }
 
+// a film of `pixels` square pixels of `pitch`, each holding the power of `irradiance` over it (by `sub` x `sub` samples)
+DetectorImage syntheticImage(uint32_t pixels, double pitch, const std::function<double(double, double)>& irradiance, int sub = 8)
+{
+	DetectorImage image;
+	image.width = image.height = pixels;
+	image.pixelWidth = image.pixelHeight = pitch;
+	image.watts.assign((size_t)pixels * pixels, 0.0);
+	for (uint32_t y = 0; y < pixels; y++) {
+		for (uint32_t x = 0; x < pixels; x++) {
+			double sum = 0.0;
+			for (int j = 0; j < sub; j++) {
+				for (int i = 0; i < sub; i++) {
+					sum += irradiance(image.centerX(x) + pitch * ((i + 0.5) / sub - 0.5), image.centerY(y) + pitch * ((j + 0.5) / sub - 0.5));
+				}
+			}
+			image.watts[(size_t)y * pixels + x] = sum * pitch * pitch / (sub * sub);
+		}
+	}
+	return image;
+}
+
+void testDetectors()
+{
+	fmt::println("detectors: sensors, films and ISO 11146 widths");
+	// every kind: one face at z = 0 facing the light along +z, and the film the kind's sizes give
+	struct Expected {
+		OpticKind kind;
+		uint32_t pixelsX;
+		uint32_t pixelsY;
+		double width;
+	};
+	const Expected expected[] = {
+		{ OpticKind::PowerMeter, 1, 1, 10e-3 },
+		{ OpticKind::CameraSensor, 512, 512, 10e-3 },
+		{ OpticKind::BeamProfiler, 512, 512, 10e-3 },
+		{ OpticKind::AlignmentCard, 428, 270, 85.6e-3 },
+		{ OpticKind::Screen, 400, 400, 0.1 },
+		{ OpticKind::Spectrometer, 1, 1, 3e-3 },
+		{ OpticKind::BeamDump, 1, 1, 10e-3 },
+		{ OpticKind::ProbePlane, 256, 256, 10e-3 },
+	};
+	const OpticBuildContext ctx = context();
+	for (const Expected& e : expected) {
+		const SceneOptic optic = makeOptic(e.kind);
+		const DetectorGeometry g = detectorGeometry(optic);
+		const char* name = opticTraits(e.kind).name;
+		check(isDetectorKind(e.kind) && g.pixelsX == e.pixelsX && g.pixelsY == e.pixelsY, fmt::format("{}: film {} x {}, expected {} x {}", name, g.pixelsX, g.pixelsY, e.pixelsX, e.pixelsY));
+		check(std::abs(2.0 * g.halfWidth - e.width) < 1e-12 + (g_plant ? 1.0 : 0.0), fmt::format("{}: sensor {} m across, expected {}", name, 2.0 * g.halfWidth, e.width));
+		OpticReadout readout;
+		const OpticPrescription body = buildOptic(optic, ctx, readout);
+		check(readout.error.empty() && body.surfaces.size() == 1, fmt::format("{}: one sensor surface", name));
+		if (body.surfaces.size() != 1) {
+			continue;
+		}
+		const OpticSurface& s = body.surfaces[0];
+		const glm::dvec3 n = toBodyVector(s, surfaceNormalLocal(s, glm::dvec3(0.0)));
+		OpticHitT<double> hit;
+		const glm::dvec3 from(0.25 * g.halfWidth, -0.2 * g.halfHeight, -0.5);
+		const bool found = intersectOpticBody(body, from, glm::dvec3(0.0, 0.0, 1.0), 1e-12, 1e30, hit);
+		check(found && std::abs(hit.t - 0.5) < 1e-12 && glm::length(n - glm::dvec3(0.0, 0.0, -1.0)) < 1e-12, fmt::format("{}: the sensor faces the light at z = 0", name));
+	}
+	check(!isDetectorKind(OpticKind::Laser) && !isDetectorKind(OpticKind::PlanarMirror), "a laser and a mirror are not detectors");
+	// a physical sensor: its pixels and pitch set the size, and the film downsamples them, never finer
+	{
+		SceneOptic camera = makeOptic(OpticKind::CameraSensor);
+		setOpticValue(camera, "physicalSensor", true);
+		setOpticValue(camera, "nativeX", 1440.0);
+		setOpticValue(camera, "nativeY", 1080.0);
+		setOpticValue(camera, "pitch", 3.45e-6);
+		setOpticValue(camera, "pixelsX", 360.0);
+		setOpticValue(camera, "pixelsY", 4000.0);
+		const DetectorGeometry g = detectorGeometry(camera);
+		check(g.physical && std::abs(2.0 * g.halfWidth - 1440 * 3.45e-6) < 1e-12 && std::abs(2.0 * g.halfHeight - 1080 * 3.45e-6) < 1e-12 + (g_plant ? 1.0 : 0.0)
+			&& g.pixelsX == 360 && g.pixelsY == 1080 && std::abs(g.pixelWidth - 4.0 * 3.45e-6) < 1e-15,
+			fmt::format("a 1440 x 1080 sensor of 3.45 um: {:.4g} x {:.4g} mm, film {} x {}", 2e3 * g.halfWidth, 2e3 * g.halfHeight, g.pixelsX, g.pixelsY));
+	}
+
+	// a round Gaussian of radius w (1/e^2) off center: its centroid, and D4 sigma = 2 w
+	const double w = 1e-3;
+	const glm::dvec2 c(0.3e-3, -0.2e-3);
+	const double power = 5e-3;
+	auto gaussian = [&](double wx, double wy, double angle, glm::dvec2 center) {
+		return [=](double x, double y) {
+			const double u = (x - center.x) * std::cos(angle) + (y - center.y) * std::sin(angle);
+			const double v = -(x - center.x) * std::sin(angle) + (y - center.y) * std::cos(angle);
+			return 2.0 * power / (PI * wx * wy) * std::exp(-2.0 * (u * u / (wx * wx) + v * v / (wy * wy)));
+		};
+	};
+	const DetectorImage round = syntheticImage(256, 20e-6, gaussian(w, w, 0.0, c));
+	const BeamMoments m = iso11146Moments(round);
+	// the film is 5.12 mm across: 1e-5 of the power falls past its edge
+	check(std::abs(m.power / power - 1.0) < 1e-5, fmt::format("a Gaussian's power: {:.9g} W", m.power));
+	check(glm::length(glm::dvec2(m.centroidX, m.centroidY) - c) + (g_plant ? 1e-5 : 0.0) < 1e-8, fmt::format("a Gaussian's centroid ({:.4g}, {:.4g}) m", m.centroidX, m.centroidY));
+	check(std::abs(m.diameterX / (2.0 * w) - 1.0) + (g_plant ? 1e-2 : 0.0) < 1e-3 && std::abs(m.diameterY / (2.0 * w) - 1.0) < 1e-3,
+		fmt::format("a Gaussian of w = 1 mm: D4 sigma {:.6g} and {:.6g} m", m.diameterX, m.diameterY));
+	check(m.converged, "the integration area settles on a Gaussian");
+	// the same beam over coarse pixels: Sheppard's correction keeps the width the beam's
+	const DetectorImage coarse = syntheticImage(32, 0.25e-3, gaussian(w, w, 0.0, glm::dvec2(0.0)), 16);
+	const BeamMoments mc = imageMoments(coarse);
+	check(std::abs(mc.diameterX / (2.0 * w) - 1.0) < 2e-3, fmt::format("a Gaussian over pixels of w / 4: D4 sigma {:.6g} m of {:.6g}", mc.diameterX, 2.0 * w));
+	// a rotated elliptical beam: the principal widths and their angle
+	const double angle = 30.0 * PI / 180.0;
+	const DetectorImage ellipse = syntheticImage(256, 20e-6, gaussian(1.2e-3, 0.5e-3, angle, glm::dvec2(0.0)));
+	const BeamMoments me = iso11146Moments(ellipse);
+	check(std::abs(me.diameterMajor / 2.4e-3 - 1.0) < 1e-3 && std::abs(me.diameterMinor / 1.0e-3 - 1.0) < 2e-3 && std::abs(me.angle - angle) + (g_plant ? 0.01 : 0.0) < 1e-3,
+		fmt::format("an elliptical beam at 30 deg: {:.6g} and {:.6g} m at {:.3f} deg", me.diameterMajor, me.diameterMinor, me.angle * 180.0 / PI));
+	// a top hat of radius R: sigma^2 = R^2 / 4 per axis, so D4 sigma = 2 R
+	const double r = 1e-3;
+	const DetectorImage hat = syntheticImage(256, 20e-6, [&](double x, double y) { return x * x + y * y <= r * r ? power / (PI * r * r) : 0.0; }, 16);
+	const BeamMoments mh = iso11146Moments(hat);
+	check(std::abs(mh.diameterX / (2.0 * r) - 1.0) + (g_plant ? 1e-2 : 0.0) < 2e-3, fmt::format("a top hat of R = 1 mm: D4 sigma {:.6g} m", mh.diameterX));
+	// stray light far from the beam biases the whole image's moments; ISO 11146-3's integration area leaves it out
+	DetectorImage stray = syntheticImage(512, 20e-6, gaussian(w, w, 0.0, c), 2);
+	stray.watts[5] += 0.01 * power;
+	const BeamMoments whole = imageMoments(stray);
+	const BeamMoments cut = iso11146Moments(stray);
+	check(whole.diameterX > 2.2 * w && std::abs(cut.diameterX / (2.0 * w) - 1.0) < 1e-3,
+		fmt::format("a 1 % hot pixel 7 mm out: the whole image's D4 sigma {:.4g} m, the integration area's {:.6g} m", whole.diameterX, cut.diameterX));
+	// encircled power at r = w is 1 - e^-2; the peak is 2 P / (pi w^2)
+	const EncircledPower curve = encircledPower(round, c.x, c.y, 2.0 * w, 201);
+	const double atW = curve.power[100] / power;
+	check(std::abs(atW - (1.0 - std::exp(-2.0))) + (g_plant ? 1e-2 : 0.0) < 2e-3, fmt::format("encircled power at r = w: {:.5f}, 1 - e^-2 = {:.5f}", atW, 1.0 - std::exp(-2.0)));
+	const double peak = peakIrradiance(syntheticImage(256, 20e-6, gaussian(w, w, 0.0, glm::dvec2(0.0)), 1));
+	check(std::abs(peak / (2.0 * power / (PI * w * w)) - 1.0) < 1e-3, fmt::format("peak irradiance {:.6g} W/m^2 of {:.6g}", peak, 2.0 * power / (PI * w * w)));
+	// a lineout through a Gaussian's center is its profile
+	const Profile profile = lineProfile(round, c.x, c.y, 0.0, 257);
+	double worstProfile = 0.0;
+	for (size_t i = 0; i < profile.position.size(); i++) {
+		const double t = profile.position[i];
+		if (std::abs(t) < 1.5 * w) {
+			worstProfile = std::max(worstProfile, std::abs(profile.irradiance[i] - gaussian(w, w, 0.0, c)(c.x + t, c.y)) / (2.0 * power / (PI * w * w)));
+		}
+	}
+	check(worstProfile < 5e-3, fmt::format("a lineout through a Gaussian is {:.2e} of its peak off its profile", worstProfile));
+
+	// the standard error of per-frame readings: three frames of 1, 2 and 3 of equal weight have a mean of 2 and an error
+	// of sqrt(1 / 3)
+	FrameStatistics frames;
+	for (const double reading : { 1.0, 2.0, 3.0 }) {
+		frames.add(reading, 10.0);
+	}
+	check(std::abs(frames.mean - 2.0) < 1e-12 && std::abs(frames.standardError() - std::sqrt(1.0 / 3.0)) + (g_plant ? 0.1 : 0.0) < 1e-12,
+		fmt::format("frames 1, 2, 3: mean {:.6g}, standard error {:.6g}", frames.mean, frames.standardError()));
+}
+
+void testSensorStacks()
+{
+	fmt::println("sensor stacks: places and orientations");
+	// five sensors 0.4 m along x: 0.1 m apart, the last exactly at the end
+	SensorStack stack = makeSensorStack(OpticKind::ProbePlane);
+	stack.start = glm::dvec3(0.1, 0.1, 0.3);
+	stack.end = glm::dvec3(0.5, 0.1, 0.3);
+	const glm::dvec3 third = sensorStackPosition(stack, 2);
+	check(glm::length(third - glm::dvec3(0.3, 0.1, 0.3)) + (g_plant ? 1e-3 : 0.0) < 1e-15 && sensorStackPosition(stack, 4) == stack.end,
+		fmt::format("the middle of five at ({:.17g}, {:.17g}, {:.17g})", third.x, third.y, third.z));
+	// aligned, each sensor's +z runs along the axis and its x stays level: the frame a laser's x has along +x
+	glm::dquat q = sensorStackOrientation(stack);
+	const glm::dvec3 z = q * glm::dvec3(0.0, 0.0, 1.0);
+	const glm::dvec3 x = q * glm::dvec3(1.0, 0.0, 0.0);
+	check(glm::length(z - glm::dvec3(1.0, 0.0, 0.0)) + (g_plant ? 1e-3 : 0.0) < 1e-12 && std::abs(x.y) < 1e-12,
+		fmt::format("aligned along +x: normal ({:.3g}, {:.3g}, {:.3g}), x ({:.3g}, {:.3g}, {:.3g})", z.x, z.y, z.z, x.x, x.y, x.z));
+	// a turn about the axis survives the alignment; one about another axis does not
+	const double roll = 0.3;
+	stack.orientation = glm::angleAxis(roll, glm::dvec3(1.0, 0.0, 0.0)) * q;
+	const glm::dquat rolled = sensorStackOrientation(stack);
+	const double kept = 2.0 * std::acos(std::clamp(std::abs(glm::dot(rolled, stack.orientation)), 0.0, 1.0));
+	check(kept + (g_plant ? 1e-3 : 0.0) < 1e-9, fmt::format("a turn about the axis is kept: {:.3g} rad off", kept));
+	stack.orientation = glm::angleAxis(0.2, glm::dvec3(0.0, 1.0, 0.0)) * stack.orientation;
+	const glm::dvec3 still = sensorStackOrientation(stack) * glm::dvec3(0.0, 0.0, 1.0);
+	check(glm::length(still - glm::dvec3(1.0, 0.0, 0.0)) < 1e-12, "a turn off the axis is not: the normal stays along it");
+	// unaligned, the orientation is the members' as it is
+	stack.alignToAxis = false;
+	check(sensorStackOrientation(stack) == glm::normalize(stack.orientation), "unaligned, the orientation is the stack's own");
+	// a stack of one is at its start, and members are named after the stack
+	stack.count = 1;
+	stack.name = "train";
+	check(sensorStackPosition(stack, 0) == stack.start && sensorStackMemberName(stack, 0) == "train_0", "a stack of one is its start, named train_0");
+
+	// ISO 11146-1's caustic fit through 21 planes a meter down the table recovers the beam: a waist of 45 um 0.1025 m past
+	// the first plane, M^2 = 1.3 at 632.8 nm
+	const double lambda = 632.8e-9;
+	const double w0 = 45e-6;
+	const double m2 = 1.3;
+	const double zR = PI * w0 * w0 / (m2 * lambda);
+	std::vector<double> planes;
+	std::vector<double> radii;
+	for (int i = 0; i < 21; i++) {
+		planes.push_back(1.0 + 0.1025 + zR * (-3.0 + 0.3 * i));
+		radii.push_back(w0 * std::sqrt(1.0 + std::pow((planes.back() - 1.1025) / zR, 2.0)) * (g_plant && i == 10 ? 1.05 : 1.0));
+	}
+	const std::optional<CausticFit> fit = fitCaustic(planes, radii);
+	check(fit && std::abs(fit->waist / w0 - 1.0) < 1e-9 && std::abs(fit->position - 1.1025) < 1e-12 && std::abs(fit->m2(lambda) / m2 - 1.0) < 1e-9,
+		fit ? fmt::format("caustic fit: waist {:.6g} um at {:.9g} m, M^2 {:.6g}", fit->waist * 1e6, fit->position, fit->m2(lambda)) : std::string("caustic fit: none"));
+	// radii whose squares bend the wrong way (w^2 = 9, 8, 1) are no beam's
+	check(!fitCaustic(std::vector<double> { 0.0, 1.0, 2.0 }, std::vector<double> { 3.0, std::sqrt(8.0), 1.0 }), "no fit for a caustic that does not open");
+}
+
 int main(int argc, char** argv)
 {
 	int rays = 200000;
@@ -1231,6 +1434,8 @@ int main(int argc, char** argv)
 		testElements();
 		testBench(root);
 		testLasers();
+		testDetectors();
+		testSensorStacks();
 	};
 	runAll();
 	const int failures = g_failures;

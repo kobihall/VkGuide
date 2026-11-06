@@ -709,6 +709,12 @@ struct RenderSettings {
 	AovSettings aov;
 	// keep the sums of each light group, so the groups can be exported and relit after the render
 	bool lightGroups { false };
+	// light tracing toward a detector render target, with no camera to give the render its resolution
+	// (docs/plans/completed/physoptics-detectors.md): the light paths each sample emits, a square of a power of two a side
+	uint32_t lightPathsPerSample { 512u * 512u };
+	// what light tracing records: the render target alone, or every member of the target's sensor stack (false), or every
+	// detector in the scene (true). A camera target records no detector unless this is on
+	bool renderAllSensors { false };
 	// SPECTRAL (docs/plans/completed/pbrt-spectral-rendering.md). What a path carries: exact RGB by default, or one
 	// wavelength, three Gaussian bands, N fixed bands or N hero wavelengths; the range, the working space the scene's RGB
 	// values are in, and the design wavelength. Any change restarts the render

@@ -69,7 +69,10 @@ enum class MaterialType : uint8_t {
 	OpticalInterface,
 	// a laser's output aperture (docs/plans/completed/physoptics-laser-sources.md): black, and glowing with its instance's
 	// laser beam toward the directions the beam leaves in (crt_laser.glsl). On anything that is not a laser it is black
-	LaserAperture
+	LaserAperture,
+	// a detector's sensor (docs/plans/completed/physoptics-detectors.md): black, and it ends every path that reaches it, so a
+	// light path deposits its power there (stage 26) and goes no further. Cards and screens scatter with a diffuse material
+	Detector
 };
 
 inline constexpr MaterialType MATERIAL_TYPES[] = {
@@ -87,6 +90,7 @@ inline constexpr MaterialType MATERIAL_TYPES[] = {
 	MaterialType::Mix,
 	MaterialType::OpticalInterface,
 	MaterialType::LaserAperture,
+	MaterialType::Detector,
 };
 
 inline constexpr size_t MATERIAL_TYPE_COUNT = sizeof(MATERIAL_TYPES) / sizeof(MATERIAL_TYPES[0]);

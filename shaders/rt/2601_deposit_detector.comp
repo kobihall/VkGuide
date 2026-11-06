@@ -1,0 +1,94 @@
+#version 460
+
+// 26 DEPOSIT ON DETECTORS (docs/plans/completed/physoptics-detectors.md). Runs after kernel 02 in every bounce of light
+// tracing while the scene has a detector, over the same ray queue, and reads each light path's segment as kernel 02 left
+// it: from the path's origin to its hit, or on to infinity for a miss. A segment that ends on a sensor's front, or
+// crosses a probe plane's front on its way, adds the path's power there (crt_detector.glsl). It changes nothing else:
+// kernel 02 has already sent a hit on an absorbing sensor nowhere, which ends the path, and a hit on a card or a
+// screen to the surface queue, where kernels 12 and 13 connect it to the camera and scatter it. A probe plane is no
+// geometry, so no ray ever stops at it, and it costs no bounce.
+//
+// The light a detector records is what arrives at its front: a path reaching it from behind passes a probe plane
+// unrecorded, and is absorbed or scattered by a sensor unrecorded, as its housing would.
+
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_atomic_float : require
+#include "include/crt_common.glsl"
+#include "include/crt_spectrum.glsl"
+#include "include/crt_detector.glsl"
+
+layout (local_size_x = CRT_WORKGROUP) in;
+
+// the paths of the workgroup that reached each detector, added to its count once
+shared uint s_reached[CRT_MAX_DETECTORS];
+
+// crt_light.glsl's range window of a point or spot light, which kernel 11 keeps in a light path's first misPdf
+float firstSegmentWindow(float distance, float range)
+{
+	if (range <= 0.0) {
+		return 1.0;
+	}
+	const float ratio = distance / range;
+	const float ratio2 = ratio * ratio;
+	return clamp(1.0 - ratio2 * ratio2, 0.0, 1.0);
+}
+
+void main()
+{
+	const uint index = gl_GlobalInvocationID.x;
+	const uint queue = rayQueueFor(pc.bounce);
+	const uint count = min(detectorHeader.x, CRT_MAX_DETECTORS);
+
+	if (gl_LocalInvocationID.x < CRT_MAX_DETECTORS) {
+		s_reached[gl_LocalInvocationID.x] = 0u;
+	}
+	memoryBarrierShared();
+	barrier();
+
+	if (index < headers[queue].rayCount) {
+		const uint pathIndex = queues[queueSlot(queue, index)];
+		const PathState path = paths[pathIndex];
+		const HitRecord hit = hits[index];
+		const vec3 direction = normalize(path.direction);
+		const float end = hit.t < 0.0 ? CRT_INFINITY : hit.t;
+#ifndef CRT_SPECTRAL
+		const Spectrum beta = path.throughput;
+#else
+		spectralBegin(path.lambdaU);
+		const Spectrum beta = pathSpectra[pathIndex];
+#endif
+		for (uint i = 0u; i < count; i++) {
+			const DetectorRecord d = detectors[i];
+			const float facing = dot(direction, d.normal.xyz);
+			if (!(facing < 0.0)) {
+				continue;
+			}
+			float t;
+			if ((d.flags & CRT_DETECTOR_PROBE) != 0u) {
+				t = dot(d.origin.xyz - path.origin, d.normal.xyz) / facing;
+				if (!(t > 0.0 && t < end)) {
+					continue;
+				}
+			} else {
+				if (hit.t < 0.0 || hit.instance != d.instance) {
+					continue;
+				}
+				t = hit.t;
+			}
+			const vec3 p = path.origin + t * direction - d.origin.xyz;
+			const vec2 local = vec2(dot(p, d.uAxis.xyz), dot(p, d.vAxis.xyz));
+			if (!detectorCovers(d, local)) {
+				continue;
+			}
+			const float window = path.bounce == 0u && path.misPdf > 0.0 ? firstSegmentWindow(t, path.misPdf) : 1.0;
+			detectorDeposit(d, local, spectrumScale(beta, window), pathIndex);
+			atomicAdd(s_reached[i], 1u);
+		}
+	}
+
+	memoryBarrierShared();
+	barrier();
+	if (gl_LocalInvocationID.x < count && s_reached[gl_LocalInvocationID.x] > 0u) {
+		atomicAdd(detectorFilm[detectorHeader.w + gl_LocalInvocationID.x], float(s_reached[gl_LocalInvocationID.x]));
+	}
+}

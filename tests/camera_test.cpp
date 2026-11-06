@@ -355,6 +355,62 @@ void testSpherical()
 	check(roundTrip < 1e-4f, fmt::format("an equal-area pixel's direction maps back to it ({:.3g})", roundTrip));
 }
 
+//---------------------------------------------------------------- a detector's sensor
+
+// the mean cosine of a sensor's rays to its front, and the chi-square of their cos^2, uniform for a cosine-weighted
+// hemisphere: the lens sample through `warp` first, which a selfcheck bends
+bool sensorCosines(const CameraFrame& frame, const glm::vec3& front, const std::function<glm::vec2(glm::vec2)>& warp, const std::string& name)
+{
+	std::mt19937 rng(11);
+	std::uniform_real_distribution<float> uniform(0.f, 1.f);
+	constexpr int BINS = 20;
+	std::vector<double> observed(BINS, 0.0);
+	const uint32_t samples = 200000;
+	double meanCos = 0.0;
+	bool behind = false;
+	for (uint32_t i = 0; i < samples; i++) {
+		const CameraRay ray = generateCameraRay(frame, glm::vec2(uniform(rng), uniform(rng)), warp(glm::vec2(uniform(rng), uniform(rng))), nullptr);
+		const float c = glm::dot(glm::normalize(ray.direction), front);
+		behind |= c < 0.f;
+		meanCos += c;
+		observed[std::clamp((int)(c * c * BINS), 0, BINS - 1)] += 1.0;
+	}
+	meanCos /= samples;
+	const ChiSquare test = chiSquareTest(observed, std::vector<double>(BINS, (double)samples / BINS));
+	const bool ok = !behind && std::abs(meanCos - 2.0 / 3.0) < 3e-3 && test.pValue > 1e-4;
+	check(ok, fmt::format("{}: rays cosine-weighted over the front hemisphere (mean cosine {:.4f} of 2/3, p = {:.3g}{})", name, meanCos, test.pValue, behind ? ", some behind" : ""));
+	return ok;
+}
+
+void testSensor()
+{
+	fmt::println("sensor");
+	RTCameraSnapshot camera;
+	camera.kind = CameraKind::Sensor;
+	camera.lookFrom = glm::vec3(0.1f, 0.2f, 0.3f);
+	const glm::vec3 front = glm::normalize(glm::vec3(0.3f, 0.f, -1.f));
+	camera.lookAt = camera.lookFrom + front;
+	camera.vUp = glm::vec3(0.f, 1.f, 0.f);
+	camera.sensorSize = glm::vec2(0.012f, 0.008f);
+	const CameraFrame frame = buildCameraFrame(camera, 300, 200);
+	check(frame.lensRadius == 0.f && frame.needsModel() && !cameraConnects(frame), "a sensor has no lens, needs the camera model and takes no connections");
+	check(!cameraTraits(CameraKind::Sensor).sceneCamera && cameraKindFromId("sensor") == CameraKind::Sensor, "a sensor is no scene camera's kind");
+	//its film is the sensor: x along the sensor's +x (vUp x front, seen from behind), y up, centered on lookFrom
+	const glm::vec3 x = glm::normalize(glm::cross(front, camera.vUp));
+	const glm::vec3 y = glm::cross(x, front);
+	float worst = 0.f;
+	for (const glm::vec2 film : { glm::vec2(0.f), glm::vec2(1.f, 0.f), glm::vec2(0.f, 1.f), glm::vec2(1.f), glm::vec2(0.25f, 0.75f) }) {
+		const CameraRay ray = generateCameraRay(frame, film, glm::vec2(0.5f), nullptr);
+		const glm::vec3 expected = camera.lookFrom + (film.x - 0.5f) * camera.sensorSize.x * x + (film.y - 0.5f) * camera.sensorSize.y * y;
+		const float lead = glm::dot(ray.origin - expected, front);
+		worst = std::max(worst, glm::length(ray.origin - expected - lead * front));
+		check(lead > 5e-6f && lead < 2e-5f, fmt::format("a sensor ray starts just in front of the sensor ({:.3g} m)", lead));
+	}
+	check(worst < 1e-6f, fmt::format("a sensor's film is the sensor, x right and y up ({:.3g} m off)", worst));
+	check(glm::length(generateCameraRay(frame, glm::vec2(0.5f), glm::vec2(0.5f), nullptr).direction - front) < 1e-5f, "the lens sample's center leaves along the front's normal");
+	sensorCosines(frame, front, [](glm::vec2 u) { return u; }, "sensor");
+}
+
 //---------------------------------------------------------------- camera importance
 
 void testImportance()
@@ -459,11 +515,18 @@ bool selfcheck()
 	const glm::vec3 axis = glm::normalize(camera.lookFrom - camera.lookAt);
 	const glm::vec3 pivot = camera.lookFrom - camera.focusDistance * axis;
 	const bool focusCaught = !raysMeetOnFocusPlane(buildCameraFrame(camera, 64, 64), axis, glm::dot(axis, pivot), "planted", 1e-3f);
+	//a sensor whose rays are uniform over the hemisphere instead of cosine-weighted (the disk's radius squared)
+	RTCameraSnapshot sensor;
+	sensor.kind = CameraKind::Sensor;
+	sensor.lookAt = glm::vec3(0.f, 0.f, -1.f);
+	sensor.sensorSize = glm::vec2(0.01f);
+	const bool sensorCaught = !sensorCosines(buildCameraFrame(sensor, 64, 64), glm::vec3(0.f, 0.f, -1.f), [](glm::vec2 u) { return glm::vec2(u.x * u.x, u.y); }, "planted");
 	g_quiet = false;
 	g_failures = before;
 	fmt::println("    a polygon sampler favoring one triangle: {}", polygonCaught ? "caught" : "NOT caught");
 	fmt::println("    a focus point a millimeter off: {}", focusCaught ? "caught" : "NOT caught");
-	return polygonCaught && focusCaught;
+	fmt::println("    a sensor's rays not cosine-weighted: {}", sensorCaught ? "caught" : "NOT caught");
+	return polygonCaught && focusCaught && sensorCaught;
 }
 
 }
@@ -485,6 +548,7 @@ int main(int argc, char** argv)
 	testFocus();
 	testOrthographicAndShift();
 	testSpherical();
+	testSensor();
 	testImportance();
 
 	if (selfcheckOnly && !selfcheck()) {

@@ -3,5 +3,5 @@
   "tolerance": {
     "power": 0.01
   },
-  "notes": "the same 5 mW from the luminance in the spectral modes"
+  "notes": "the same 5 mW on the power meter in the spectral modes (W/nm at the line's peak density in the monochromatic one)"
 }

@@ -505,6 +505,19 @@ const std::vector<KernelVariant>& registry()
 			.readsCamera = true,
 		});
 
+		//---------------------------------------------------------------- 26: the detectors
+		//docs/plans/completed/physoptics-detectors.md. Light tracing runs it after kernel 02 while the scene has a detector
+		v.push_back(KernelVariant {
+			.slot = KernelSlot::DepositOnDetectors,
+			.id = "deposit",
+			.name = "Deposit on detectors",
+			.description = "Reads each light path's segment as kernel 02 left it, and adds the path's power to every detector film it ends on or crosses: a sensor it hit from the front, a probe plane on its way.",
+			.shader = "rt/2601_deposit_detector.comp",
+			.domain = KernelDomain::CurrentRayQueue,
+			.bindings = withCore({ CrtBinding::Hits, CrtBinding::Detectors, CrtBinding::DetectorFilm }),
+			.laneDependent = true,
+		});
+
 		return v;
 	}();
 	return variants;
@@ -536,6 +549,14 @@ constexpr std::array<SlotInfo, (size_t)KernelSlot::Count> SLOT_INFO { {
 	{ "16", "Scatter and connect", "Samples a light and connects to vertices of the light vertex cache at each surface a camera path reaches, then scatters it." },
 	{ "17", "Store vertices and scatter", "Records each vertex of a camera or light subpath, and scatters it in its transport mode." },
 	{ "18", "Connect subpaths", "Evaluates every strategy joining a pixel sample's camera and light subpaths, with pbrt's MIS weights." },
+	{ "19", "Store visible points", "Reserved for photon mapping." },
+	{ "20", "Deposit photons", "Reserved for photon mapping." },
+	{ "21", "Update photon statistics", "Reserved for photon mapping." },
+	{ "22", "Mutate chains", "Reserved for Metropolis light transport." },
+	{ "23", "Accept and splat", "Reserved for Metropolis light transport." },
+	{ "24", "Regenerate paths", "Reserved for the wavefront's performance work." },
+	{ "25", "Film per finished path", "Reserved for the wavefront's performance work." },
+	{ "26", "Deposit on detectors", "Adds the power of each light path that reaches a detector's front, or crosses a probe plane, to the detector's film. Runs after kernel 02 while the scene has a detector." },
 } };
 
 // The traversals, in the order the panel lists them. Each id is a CRT_TRAVERSAL_<ID> branch of
@@ -606,6 +627,7 @@ const std::vector<IntegratorInfo>& integratorRegistry()
 				KernelSlot::GenerateSamples,
 				KernelSlot::EmitLightRays,
 				KernelSlot::IntersectClosest,
+				KernelSlot::DepositOnDetectors,
 				KernelSlot::ConnectToCamera,
 				KernelSlot::ScatterLightPaths,
 				KernelSlot::TraceCameraConnections,

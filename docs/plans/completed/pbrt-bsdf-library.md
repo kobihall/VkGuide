@@ -63,7 +63,7 @@ float bxdfPdf(BxDFParams b, vec3 wo, vec3 wi, uint mode);
 uint bxdfFlags(BxDFParams b);
 ```
 
-`mode` is radiance or importance transport (PBR 4ed §9.5.2), which matters only for the dielectric's η² factor and for the bidirectional integrators. Light paths from lasers to detectors are importance transport, so a detector reads power with no η² factor, as [physoptics-detectors.md](../physoptics-detectors.md) requires.
+`mode` is radiance or importance transport (PBR 4ed §9.5.2), which matters only for the dielectric's η² factor and for the bidirectional integrators. Light paths from lasers to detectors are importance transport, so a detector reads power with no η² factor, as [physoptics-detectors.md](physoptics-detectors.md) requires.
 
 `crt_material.glsl` evaluates a material's parameters at the interaction into `BxDFParams` and switches on the type. The existing six types keep their world-space code in `crt_scatter.glsl`, called exactly as today, so they stay bit-identical. Kernel 06's body branches once, on whether the material is one of the original six.
 

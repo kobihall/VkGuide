@@ -5,6 +5,7 @@
 
 #include <fmt/format.h>
 
+#include <optic_detectors.h>
 #include <optic_glass.h>
 #include <optic_laser.h>
 #include <optic_library.h>
@@ -383,6 +384,56 @@ const OpticParam LASER_PARAMS[] = {
 	LENGTH("offsetY", "offset y", 0.0, -0.01, 0.01, "The beam's center along the housing's y"),
 };
 
+// THE DETECTORS (docs/plans/completed/physoptics-detectors.md): a sensor's size and the film pixels the renderer records,
+// and for a camera sensor or a beam profiler, optionally, the physical sensor it stands for (its own pixels and their
+// pitch, which then set the size, the film downsampling them). No kind has presets: the user chose plain defaults on
+// 2026-11-04, with named sensor models to come
+bool physicalSensor(const OpticParams& params)
+{
+	const auto found = params.find("physicalSensor");
+	const bool* b = found != params.end() ? std::get_if<bool>(&found->second) : nullptr;
+	return b != nullptr && *b;
+}
+bool sizedByHand(const OpticParams& params)
+{
+	return !physicalSensor(params);
+}
+
+#define SHEET(name, w, h, px, py) const OpticParam name[] = { \
+	OpticParam { "width", "width", OpticParamKind::Length, OpticValue((double)(w)), 0.1 * MM, 2.0, {}, {}, nullptr, nullptr }, \
+	OpticParam { "height", "height", OpticParamKind::Length, OpticValue((double)(h)), 0.1 * MM, 2.0, {}, {}, nullptr, nullptr }, \
+	NUMBER("pixelsX", "pixels x", px, 1, 4096, "The film the renderer records: its pixels across", nullptr), \
+	NUMBER("pixelsY", "pixels y", py, 1, 4096, nullptr, nullptr), \
+}
+SHEET(CARD_PARAMS, 85.6 * MM, 54 * MM, 428, 270);
+SHEET(SCREEN_PARAMS, 100 * MM, 100 * MM, 400, 400);
+SHEET(PROBE_PARAMS, 10 * MM, 10 * MM, 256, 256);
+#undef SHEET
+
+const OpticParam SENSOR_PARAMS[] = {
+	{ "width", "width", OpticParamKind::Length, 10 * MM, 0.1 * MM, 0.2, {}, {}, nullptr, sizedByHand },
+	{ "height", "height", OpticParamKind::Length, 10 * MM, 0.1 * MM, 0.2, {}, {}, nullptr, sizedByHand },
+	NUMBER("pixelsX", "pixels x", 512, 1, 16384, "The film the renderer records: its pixels across", nullptr),
+	NUMBER("pixelsY", "pixels y", 512, 1, 16384, nullptr, nullptr),
+	{ "physicalSensor", "physical sensor", OpticParamKind::Bool, false, 0, 0, {}, {},
+		"A real sensor's own pixels and pitch, which set the size: the film then records at most as many pixels, downsampling them", nullptr },
+	{ "nativeX", "sensor pixels x", OpticParamKind::Number, 2048.0, 1, 16384, {}, {}, nullptr, physicalSensor },
+	{ "nativeY", "sensor pixels y", OpticParamKind::Number, 2048.0, 1, 16384, {}, {}, nullptr, physicalSensor },
+	{ "pitch", "pixel pitch", OpticParamKind::Length, 5e-6, 0.1e-6, 1 * MM, {}, {}, nullptr, physicalSensor },
+};
+const OpticParam POWER_METER_PARAMS[] = {
+	LENGTH("diameter", "sensor aperture", 10 * MM, 0.1 * MM, 0.1, "The diameter of the sensor the meter reads: its power, with no image"),
+};
+const OpticParam SPECTROMETER_PARAMS[] = {
+	LENGTH("diameter", "entrance", 3 * MM, 0.01 * MM, 0.05, "The entrance a fiber or a slit would collect from: its spectrum, with no image"),
+	WAVELENGTH("lambdaMin", "from", 350e-9, 1e-9, 20e-6, nullptr),
+	WAVELENGTH("lambdaMax", "to", 700e-9, 1e-9, 20e-6, nullptr),
+	NUMBER("bins", "bins", 3500, 1, 16384, "The spectrum's pixels over the range", nullptr),
+};
+const OpticParam DUMP_PARAMS[] = {
+	LENGTH("diameter", "entrance", 10 * MM, 0.5 * MM, 0.1, "An ideal dump: whatever enters is absorbed and its power counted"),
+};
+
 #undef NUMBER
 #undef WAVELENGTH
 #undef LENGTH
@@ -393,6 +444,8 @@ const MaterialSlot MIRROR_SLOTS[] = { { "front", SlotDefault::Polished, "thorlab
 const MaterialSlot TRANSMISSIVE_SLOTS[] = { { "front", SlotDefault::Polished, "uncoated" }, { "back", SlotDefault::Polished, "uncoated" }, { "edge", SlotDefault::Ground, "uncoated" } };
 const MaterialSlot IRIS_SLOTS[] = { { "blades", SlotDefault::Black, "uncoated" } };
 const MaterialSlot LASER_SLOTS[] = { { "aperture", SlotDefault::LaserAperture, "uncoated" } };
+const MaterialSlot SENSOR_SLOTS[] = { { "sensor", SlotDefault::Sensor, "uncoated" } };
+const MaterialSlot FACE_SLOTS[] = { { "face", SlotDefault::WhiteDiffuse, "uncoated" } };
 const MaterialSlot PLATE_BS_SLOTS[] = { { "front", SlotDefault::Polished, "thorlabs_BSW" }, { "back", SlotDefault::Polished, "thorlabs_A" }, { "edge", SlotDefault::Ground, "uncoated" } };
 const MaterialSlot CUBE_SLOTS[] = { { "faces", SlotDefault::Polished, "thorlabs_A" }, { "diagonal", SlotDefault::Polished, "ideal_50_50" } };
 const MaterialSlot RA_SLOTS[] = { { "legs", SlotDefault::Polished, "uncoated" }, { "hypotenuse", SlotDefault::Polished, "uncoated" }, { "caps", SlotDefault::Ground, "uncoated" } };
@@ -779,6 +832,14 @@ const OpticTraits OPTIC_TRAITS[] = {
 	{ "plate_wedge", "Plate wedge prism", "Plate wedges", PLATE_WEDGE_SIZES, PLATE_WEDGE_PARAMS, TRANSMISSIVE_SLOTS, PLATE_MOUNTS, TRANSMITTED_PORTS, false, buildPlateWedge, true },
 	{ "round_wedge", "Round wedge prism", "Round wedges", WEDGE_SIZES, ROUND_WEDGE_PARAMS, TRANSMISSIVE_SLOTS, ROTATION_MOUNTS, TRANSMITTED_PORTS, false, buildRoundWedge, true },
 	{ "laser", "Laser", "Lasers", LASER_PRESETS, LASER_PARAMS, LASER_SLOTS, {}, LASER_PORTS, false, buildLaser, false, "preset", true },
+	{ "power_meter", "Power meter", "Power meters", {}, POWER_METER_PARAMS, SENSOR_SLOTS, {}, {}, false, buildDetector, false, "size", true },
+	{ "camera_sensor", "Camera sensor", "Camera sensors", {}, SENSOR_PARAMS, SENSOR_SLOTS, {}, {}, false, buildDetector, false, "size", true },
+	{ "beam_profiler", "Beam profiler", "Beam profilers", {}, SENSOR_PARAMS, SENSOR_SLOTS, {}, {}, false, buildDetector, false, "size", true },
+	{ "alignment_card", "Alignment card", "Alignment cards", {}, CARD_PARAMS, FACE_SLOTS, {}, {}, false, buildDetector, false, "size", true },
+	{ "screen", "Screen", "Screens", {}, SCREEN_PARAMS, FACE_SLOTS, {}, {}, false, buildDetector, false, "size", true },
+	{ "spectrometer", "Spectrometer", "Spectrometers", {}, SPECTROMETER_PARAMS, SENSOR_SLOTS, {}, {}, false, buildDetector, false, "size", true },
+	{ "beam_dump", "Beam dump", "Beam dumps", {}, DUMP_PARAMS, SENSOR_SLOTS, {}, {}, false, buildDetector, false, "size", true },
+	{ "probe_plane", "Probe plane", "Probe planes", {}, PROBE_PARAMS, {}, {}, {}, false, buildDetector, false, "size", true },
 };
 static_assert(std::size(OPTIC_TRAITS) == OPTIC_KIND_COUNT);
 
@@ -939,6 +1000,10 @@ SceneOptic makeOptic(OpticKind kind)
 	optic.kind = kind;
 	// the first preset; a 1 in part where the kind has one, as most benches use
 	optic.sizePreset = opticTraits(kind).sizes.size() >= 2 ? 1 : 0;
+	// a kind without presets is its parameters' own size
+	if (opticTraits(kind).sizes.empty()) {
+		optic.sizePreset = -1;
+	}
 	if (kind == OpticKind::Iris) {
 		optic.sizePreset = 4;
 	}
@@ -1000,6 +1065,16 @@ MaterialDef defaultSlotMaterial(const SceneOptic& optic, size_t slot)
 	const SlotDefault kind = slot < traits.slots.size() ? traits.slots[slot].kind : SlotDefault::Polished;
 	if (kind == SlotDefault::LaserAperture) {
 		material.type = MaterialType::LaserAperture;
+		return material;
+	}
+	if (kind == SlotDefault::Sensor) {
+		material.type = MaterialType::Detector;
+		return material;
+	}
+	if (kind == SlotDefault::WhiteDiffuse) {
+		// a card's face is a paper white; a screen is the ideal white of the screen checks (tools/verify/beam_probe.py)
+		material.type = MaterialType::Diffuse;
+		material.params["albedo"] = rgbSpectrum(glm::vec3(optic.kind == OpticKind::AlignmentCard ? 0.8f : 1.f));
 		return material;
 	}
 	if (kind == SlotDefault::Black) {

@@ -103,7 +103,7 @@ A polished optic scatters about 0.1 % of what hits it, enough to matter for stra
     - every lossless stack has `R + T = 1` to 1e-9, and swapping the incident and substrate media leaves T unchanged (reciprocity);
     - bare silver reflects 0.95 to 0.97 at 633 nm, from pbrt's η and k;
     - the GPU table interpolation matches the exact transfer matrix to 1e-3 in R at any (λ, θ) between grid points.
-- Rendering, with the light integrator and a detector ([physoptics-detectors.md](../physoptics-detectors.md)): an ideal 50:50 splitter divides the power on two detectors 50/50 within Monte Carlo noise; a neutral density filter of optical density 1 transmits 10 % ± noise; a long-pass dichroic at 45° splits a two-line source by wavelength.
+- Rendering, with the light integrator and a detector ([physoptics-detectors.md](physoptics-detectors.md)): an ideal 50:50 splitter divides the power on two detectors 50/50 within Monte Carlo noise; a neutral density filter of optical density 1 transmits 10 % ± noise; a long-pass dichroic at 45° splits a two-line source by wavelength.
 
 ## Order of work
 
@@ -190,7 +190,7 @@ Verification (the plan's list, with what each gave):
     - a CSV curve in percent reads as its fraction.
 - **Optic parity** (GPU self-tests): the table lookup within 3.6e-7 of the C++ lookup, and `coatingExact()` within 1.3e-6
   of the transfer matrix.
-- The detector renders wait for [physoptics-detectors.md](../physoptics-detectors.md), which does not exist yet.
+- The detector renders wait for [physoptics-detectors.md](physoptics-detectors.md), which does not exist yet. Since 2026-11-04 it does: `tools/verify/detector_check.py` measures an ideal 50:50 cube's split on two power meters. The neutral density filter and the dichroic on detectors remain.
   `tools/verify/optics_check.py` checks the same things in images instead. With `--quick`:
     - a lossless polished lens in a white furnace reads 1 against the background in exact RGB, monochromatic and
       exact coatings, and within 0.6% in hero 4 and bands 8;

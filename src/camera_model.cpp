@@ -18,6 +18,7 @@ constexpr NamedId CAMERA_KINDS[] = {
 	{ "perspective", "Perspective" },
 	{ "orthographic", "Orthographic" },
 	{ "spherical", "Spherical" },
+	{ "sensor", "Sensor" },
 };
 constexpr NamedId SPHERICAL_MAPPINGS[] = {
 	{ "equirect", "Equirectangular" },
@@ -97,6 +98,12 @@ CameraFrame buildCameraFrame(const RTCameraSnapshot& camera, uint32_t width, uin
 		vertical = camera.orthoHeight * b;
 	}
 	glm::vec3 lowerLeft = camera.lookFrom - horizontal / 2.f - vertical / 2.f - camera.focusDistance * t;
+	if (frame.kind == CameraKind::Sensor) {
+		//the sensor itself is the film: its x along camera x, its y along camera y, centered on lookFrom
+		horizontal = camera.sensorSize.x * n;
+		vertical = camera.sensorSize.y * b;
+		lowerLeft = camera.lookFrom - horizontal / 2.f - vertical / 2.f;
+	}
 	//the shift slides the film across its plane, in units of its height on both axes
 	if (camera.shift != glm::vec2(0.f)) {
 		lowerLeft += camera.shift.x * glm::length(vertical) * n + camera.shift.y * vertical;
@@ -124,13 +131,19 @@ CameraFrame buildCameraFrame(const RTCameraSnapshot& camera, uint32_t width, uin
 		                                                                   : CAMERA_PI / (float)frame.height;
 		frame.filmArea = 4.f * CAMERA_PI;
 		break;
+	case CameraKind::Sensor:
+		//a ray cone starts a pixel wide and spreads over the hemisphere
+		frame.pixelWidth = camera.sensorSize.y / (float)frame.height;
+		frame.pixelSpread = 0.5f * CAMERA_PI;
+		frame.filmArea = camera.sensorSize.x * camera.sensorSize.y;
+		break;
 	default:
 		break;
 	}
 
-	//the lens. A spherical camera has none
+	//the lens. A spherical camera and a sensor have none
 	const ApertureShape shape = camera.apertureShape < ApertureShape::Count ? camera.apertureShape : ApertureShape::Circle;
-	frame.lensRadius = frame.kind == CameraKind::Spherical ? 0.f : camera.aperture / 2.f;
+	frame.lensRadius = frame.kind == CameraKind::Spherical || frame.kind == CameraKind::Sensor ? 0.f : camera.aperture / 2.f;
 	frame.blades = std::clamp(camera.apertureBlades, MIN_APERTURE_BLADES, MAX_APERTURE_BLADES);
 	frame.apertureTable = apertureTable;
 	const float rotation = glm::radians(camera.apertureRotationDegrees);
@@ -141,7 +154,7 @@ CameraFrame buildCameraFrame(const RTCameraSnapshot& camera, uint32_t width, uin
 
 	//the tilted plane of focus, through the point on the axis at the focus distance: its normal is the axis turned by
 	//the tilt about camera x, then about camera y
-	if (frame.kind != CameraKind::Spherical && (camera.tiltDegrees.x != 0.f || camera.tiltDegrees.y != 0.f)) {
+	if (frame.kind != CameraKind::Spherical && frame.kind != CameraKind::Sensor && (camera.tiltDegrees.x != 0.f || camera.tiltDegrees.y != 0.f)) {
 		const float a = glm::radians(std::clamp(camera.tiltDegrees.x, -MAX_CAMERA_TILT, MAX_CAMERA_TILT));
 		const float c = glm::radians(std::clamp(camera.tiltDegrees.y, -MAX_CAMERA_TILT, MAX_CAMERA_TILT));
 		const glm::vec3 local(std::sin(c) * std::cos(a), std::sin(a), std::cos(a) * std::cos(c));
@@ -235,6 +248,15 @@ CameraRay generateCameraRay(const CameraFrame& frame, const glm::vec2& film, con
 		}
 		ray.origin = frame.origin;
 		ray.direction = d.x * frame.lensU + d.y * frame.lensV + d.z * frame.backward;
+		return ray;
+	}
+	if (frame.kind == CameraKind::Sensor) {
+		//from the point of the sensor, 10 um (and 1e-6 of its distance from the origin) in front of it so that the ray
+		//never meets the sensor's own surface, over the front hemisphere by the cosine (the lens sample)
+		const glm::vec3 point = frame.lowerLeft + film.x * frame.horizontal + film.y * frame.vertical;
+		const glm::vec3 local = sampleCosineHemisphere(lens);
+		ray.origin = point - (1e-5f + 1e-6f * glm::length(point)) * frame.backward;
+		ray.direction = local.x * frame.lensU + local.y * frame.lensV - local.z * frame.backward;
 		return ray;
 	}
 

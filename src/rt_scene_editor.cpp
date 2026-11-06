@@ -2,6 +2,7 @@
 #include <rt_scene_editor.h>
 
 #include <length_unit.h>
+#include <optic_detectors.h>
 #include <optics_ui.h>
 
 #include <algorithm>
@@ -218,7 +219,7 @@ bool drawCameraParams(SceneCamera& camera, bool& displayChanged, bool& loadApert
 
 	//the projection (src/camera_model.h): the traits say which of the fields a kind uses
 	int kind = (int)camera.kind;
-	if (ImGui::Combo("projection", &kind, [](void*, int i) { return cameraKindName((CameraKind)i); }, nullptr, (int)CameraKind::Count)) {
+	if (ImGui::Combo("projection", &kind, [](void*, int i) { return cameraKindName((CameraKind)i); }, nullptr, (int)SCENE_CAMERA_KINDS)) {
 		camera.kind = (CameraKind)kind;
 		changed = true;
 	}
@@ -1019,6 +1020,20 @@ std::optional<Aabb> RaytraceSceneEditor::selectionBounds(const VulkanEngine* eng
 			}
 		}
 		break;
+	case SelectionKind::SensorStack:
+		if (const SensorStack* stack = findSensorStack(m_selectionId)) {
+			box.grow(glm::vec3(stack->start));
+			box.grow(glm::vec3(stack->end));
+			for (const SceneOptic& optic : m_optics) {
+				if (optic.stack == stack->id) {
+					const Aabb member = opticBox(engine, optic);
+					if (!boxEmpty(member)) {
+						box.grow(member);
+					}
+				}
+			}
+		}
+		break;
 	case SelectionKind::Bench:
 		if (m_bench.table) {
 			box = benchBox(m_bench);
@@ -1076,10 +1091,12 @@ void RaytraceSceneEditor::createShape(ShapeKind kind)
 	select(SelectionKind::Shape, m_shapes.back().id);
 }
 
-void RaytraceSceneEditor::createCamera(VulkanEngine* engine)
+void RaytraceSceneEditor::createCamera(VulkanEngine* engine, CameraKind kind)
 {
 	//where the viewport is looking right now, so the new camera frames what the user sees
-	const uint64_t id = addCamera(engine->cameraFromViewport());
+	SceneCamera camera = engine->cameraFromViewport();
+	camera.kind = kind;
+	const uint64_t id = addCamera(std::move(camera));
 	select(SelectionKind::Camera, id);
 }
 
@@ -1146,7 +1163,8 @@ void RaytraceSceneEditor::duplicateSelection()
 	}
 	case SelectionKind::Optic: {
 		const SceneOptic* source = findOptic(m_selectionId);
-		if (source == nullptr) {
+		//a stack's member is copied with its stack
+		if (source == nullptr || source->stack != 0) {
 			return;
 		}
 		//the copy owns copies of the slots' materials, so editing one element's coating never changes the other's
@@ -1171,6 +1189,31 @@ void RaytraceSceneEditor::duplicateSelection()
 			}
 		}
 		select(SelectionKind::Optic, id);
+		break;
+	}
+	case SelectionKind::SensorStack: {
+		const SensorStack* source = findSensorStack(m_selectionId);
+		if (source == nullptr) {
+			return;
+		}
+		//beside the original, two holes along x, with copies of its materials
+		SensorStack copy = *source;
+		copy.name = fmt::format("{}_copy", source->name);
+		copy.start.x += 2.0 * BREADBOARD_PITCH;
+		copy.end.x += 2.0 * BREADBOARD_PITCH;
+		std::array<std::optional<MaterialDef>, MAX_OPTIC_MATERIAL_SLOTS> slots;
+		for (size_t slot = 0; slot < MAX_OPTIC_MATERIAL_SLOTS; slot++) {
+			if (const MaterialDef* material = findMaterial(source->sensor.materials[slot])) {
+				slots[slot] = *material;
+			}
+		}
+		const uint64_t id = addSensorStack(std::move(copy));
+		for (size_t slot = 0; slot < MAX_OPTIC_MATERIAL_SLOTS; slot++) {
+			if (slots[slot]) {
+				setSensorStackSlotMaterial(id, slot, *slots[slot]);
+			}
+		}
+		select(SelectionKind::SensorStack, id);
 		break;
 	}
 	case SelectionKind::Light: {
@@ -1212,7 +1255,14 @@ void RaytraceSceneEditor::deleteSelection()
 		std::erase_if(m_meshObjects, [this](const SceneMeshObject& o) { return o.id == m_selectionId; });
 		break;
 	case SelectionKind::Optic:
+		//a stack's member goes with its stack, not alone
+		if (const SceneOptic* optic = findOptic(m_selectionId); optic != nullptr && optic->stack != 0) {
+			return;
+		}
 		removeOptic(m_selectionId);
+		break;
+	case SelectionKind::SensorStack:
+		removeSensorStack(m_selectionId);
 		break;
 	case SelectionKind::Bench:
 		m_bench.table = false;
@@ -1355,11 +1405,21 @@ void RaytraceSceneEditor::drawToolbar(VulkanEngine* engine)
 			}
 			ImGui::EndMenu();
 		}
-		if (ImGui::MenuItem("Camera")) {
-			createCamera(engine);
-		}
-		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-			ImGui::SetTooltip("Placed at the viewport's current pose");
+		//every kind of render target: the cameras by projection, then the sensors a capability adds (the detectors)
+		if (ImGui::BeginMenu("Sensor")) {
+			for (uint32_t k = 0; k < SCENE_CAMERA_KINDS; k++) {
+				if (ImGui::MenuItem(fmt::format("{} camera", cameraKindName((CameraKind)k)).c_str())) {
+					createCamera(engine, (CameraKind)k);
+				}
+				ImGui::SetItemTooltip("Placed at the viewport's current pose");
+			}
+			forEachEnabledCapability(engine->m_capabilities, [engine](const CapabilityInfo& capability) {
+				if (capability.sensorMenu != nullptr) {
+					ImGui::Separator();
+					capability.sensorMenu(engine);
+				}
+			});
+			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Light")) {
 			for (const LightKind kind : LIGHT_KINDS) {
@@ -1412,7 +1472,7 @@ void RaytraceSceneEditor::drawObjectTree(VulkanEngine* engine)
 	//own parameters off the bottom of the panel
 	const float height = 12 * ImGui::GetTextLineHeightWithSpacing();
 	if (ImGui::BeginChild("##objects", ImVec2(0, height), ImGuiChildFlags_Borders)) {
-		drawCameraRows();
+		drawSensorRows(engine);
 		drawLightRows();
 		drawGeometryRows();
 		drawModelRows(engine);
@@ -1473,6 +1533,11 @@ bool RaytraceSceneEditor::drawObjectRow(SelectionKind kind, uint64_t id, const s
 					target = &optic->name;
 				}
 				break;
+			case SelectionKind::SensorStack:
+				if (SensorStack* stack = findSensorStack(id)) {
+					target = &stack->name;
+				}
+				break;
 			case SelectionKind::Bench:
 			case SelectionKind::None:
 				break;
@@ -1518,19 +1583,40 @@ bool RaytraceSceneEditor::drawObjectRow(SelectionKind kind, uint64_t id, const s
 	return alive;
 }
 
-void RaytraceSceneEditor::drawCameraRows()
+void RaytraceSceneEditor::drawSensorRows(VulkanEngine* engine)
 {
-	if (!ImGui::TreeNodeEx("Cameras", ImGuiTreeNodeFlags_DefaultOpen)) {
+	//every render target: the cameras, a folder per projection the scene has, then the sensors a capability adds
+	if (!ImGui::TreeNodeEx("Sensors", ImGuiTreeNodeFlags_DefaultOpen)) {
 		return;
 	}
-	if (m_cameras.empty()) {
-		ImGui::TextDisabled("none");
-	}
-	for (size_t i = 0; i < m_cameras.size(); i++) {
-		//a deleting row invalidates the vector, so the walk stops there and picks up next frame
-		if (!drawObjectRow(SelectionKind::Camera, m_cameras[i].id, m_cameras[i].name)) {
-			break;
+	bool any = !m_cameras.empty();
+	bool alive = true;
+	for (uint32_t k = 0; k < SCENE_CAMERA_KINDS && alive; k++) {
+		const CameraKind kind = (CameraKind)k;
+		if (std::none_of(m_cameras.begin(), m_cameras.end(), [kind](const SceneCamera& c) { return c.kind == kind; })) {
+			continue;
 		}
+		if (!ImGui::TreeNodeEx(fmt::format("{} cameras", cameraKindName(kind)).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+			continue;
+		}
+		for (size_t i = 0; i < m_cameras.size() && alive; i++) {
+			//a deleting row invalidates the vector, so the walk stops there and picks up next frame
+			if (m_cameras[i].kind == kind) {
+				alive = drawObjectRow(SelectionKind::Camera, m_cameras[i].id, m_cameras[i].name);
+			}
+		}
+		ImGui::TreePop();
+	}
+	if (alive) {
+		forEachEnabledCapability(engine->m_capabilities, [engine](const CapabilityInfo& capability) {
+			if (capability.sensorFolders != nullptr) {
+				capability.sensorFolders(engine);
+			}
+		});
+		any |= std::any_of(m_optics.begin(), m_optics.end(), [](const SceneOptic& o) { return isDetectorKind(o.kind); });
+	}
+	if (!any) {
+		ImGui::TextDisabled("none - Add > Sensor");
 	}
 	ImGui::TreePop();
 }
@@ -1710,6 +1796,11 @@ void RaytraceSceneEditor::drawSelection(VulkanEngine* engine)
 	case SelectionKind::Optic:
 		if (SceneOptic* optic = findOptic(m_selectionId)) {
 			drawSelectedOptic(engine, *optic);
+		}
+		break;
+	case SelectionKind::SensorStack:
+		if (SensorStack* stack = findSensorStack(m_selectionId)) {
+			drawSelectedSensorStack(engine, *stack);
 		}
 		break;
 	case SelectionKind::Bench:

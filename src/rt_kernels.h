@@ -74,6 +74,18 @@ enum class KernelSlot : uint32_t {
 	ScatterAndConnect = 16,
 	StoreVertices = 17,
 	ConnectSubpaths = 18,
+	// reserved by docs/plans/pbrt-roadmap.md: 19 to 21 for photon mapping, 22 and 23 for Metropolis light transport, 24
+	// and 25 for the wavefront's performance work. No variant yet
+	StoreVisiblePoints = 19,
+	DepositPhotons = 20,
+	UpdatePhotonStatistics = 21,
+	MutateChains = 22,
+	AcceptAndSplat = 23,
+	RegeneratePaths = 24,
+	FilmPerPath = 25,
+	// the detectors' (docs/plans/completed/physoptics-detectors.md): light tracing's paths deposit their power on the
+	// detectors they reach, after kernel 02 in every bounce
+	DepositOnDetectors = 26,
 	Count
 };
 
@@ -135,7 +147,7 @@ enum class CrtBinding : uint32_t {
 	ChannelSums = 45,
 	// pbrt's Sobol matrices and the other tables the samplers read, uploaded once
 	SamplerTables = 46,
-	// 47 to 54 and 57 to 61 are reserved by docs/plans/pbrt-roadmap.md and the laser optics plan for plans not built yet
+	// 47 to 54, 57, 58 and 61 are reserved by docs/plans/pbrt-roadmap.md and the laser optics plan for plans not built yet
 	// the optical bodies' surface records, payloads and media tables, and the coatings' tables
 	// (docs/plans/completed/physoptics-optical-surfaces.md, -materials.md). Every kernel that reads Instances declares both
 	// (GpuRenderer::bindingsOf()), as it may meet an optic; a scene without one binds stubs
@@ -154,6 +166,9 @@ enum class CrtBinding : uint32_t {
 	// the light vertex cache of lvc, and the vertices of bdpt's subpaths
 	LightVertexCache = 52,
 	BdptVertices = 53,
+	// the detectors' records and their films (docs/plans/completed/physoptics-detectors.md): stubs without a detector
+	Detectors = 59,
+	DetectorFilm = 60,
 	// piecewise-constant 2D distributions over images (src/light_sampling.h packPiecewiseConstant2D()): the punctual lights'
 	// words and emission tables, then the camera's aperture image's (docs/plans/completed/pbrt-cameras.md); a stub without any
 	ImageDistributions = 65,

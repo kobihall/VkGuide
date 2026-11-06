@@ -135,6 +135,38 @@ static_assert(sizeof(GpuInstance) == 128);
 
 inline constexpr uint32_t GPU_INSTANCE_SHAPE = 0xFFFFFFFFu;
 
+// one detector as stage 26 reads it (crt_common.glsl DetectorRecord, docs/plans/completed/physoptics-detectors.md): its
+// sensor's frame in world space, which instance it is, and where its film is in binding 60
+struct GpuDetector {
+	// the sensor's center and its half width, its x axis and half height, its y axis and a spectrometer's lowest
+	// wavelength (nm), the front's normal toward the light and the highest
+	glm::vec4 origin { 0.f };
+	glm::vec4 uAxis { 0.f };
+	glm::vec4 vAxis { 0.f };
+	glm::vec4 normal { 0.f };
+	// the sensor's slot in the GPU's instances, GPU_DETECTOR_NO_INSTANCE for a probe plane
+	uint32_t instance { 0 };
+	uint32_t flags { 0 };
+	uint32_t pixelsX { 1 };
+	uint32_t pixelsY { 1 };
+	// floats per pixel: 3 in exact RGB, 1 in a spectral mode
+	uint32_t channels { 3 };
+	// where the image's and the spectrum's frame sums start in binding 60 (src/rt_detectors.h); the image's copies
+	// follow one another, GPU_DETECTOR_COPIES_SHIFT of `flags` saying how many
+	uint32_t imageOffset { 0 };
+	uint32_t spectrumOffset { 0 };
+	// a spectrometer's bins in a spectral mode; 0 otherwise
+	uint32_t bins { 0 };
+};
+static_assert(sizeof(GpuDetector) == 96);
+
+inline constexpr uint32_t GPU_DETECTOR_DISK = 1u;
+inline constexpr uint32_t GPU_DETECTOR_PROBE = 2u;
+inline constexpr uint32_t GPU_DETECTOR_SPECTROMETER = 4u;
+inline constexpr uint32_t GPU_DETECTOR_NO_INSTANCE = 0xFFFFFFFFu;
+// bits 8 to 11 of GpuDetector::flags: log2 of the image's frame copies (src/optic_detectors.h frameCopies())
+inline constexpr uint32_t GPU_DETECTOR_COPIES_SHIFT = 8;
+
 // Where each BLAS sits in the shared geometry buffers: nodes (in nodes, not words), triangles and
 // attributes, all concatenated in RaytraceBlasSet order
 struct BlasPlacement {
@@ -237,6 +269,11 @@ struct RaytraceSceneAccel {
 	// THE BENCH: per entry of `instances`, its index in benchTags, or -1 for an instance that is not the bench's
 	std::vector<BenchTag> benchTags;
 	std::vector<int32_t> instanceBenchTag;
+	// THE DETECTORS (docs/plans/completed/physoptics-detectors.md): binding 59's records, in the order of the scene's
+	// optics, each its optic's id beside it; DetectorFilms places their films. A detector past MAX_DETECTORS is left out
+	std::vector<GpuDetector> detectors;
+	std::vector<uint64_t> detectorOptics;
+	uint32_t detectorsLeftOut { 0 };
 };
 
 // what the scene's records are read in: the working space RGB values are in, and the wavelength exact RGB reads a
@@ -307,9 +344,10 @@ struct SceneTextureContext {
 // Builds the top level over the visible mesh objects, the shapes, the optics and the bench, and the light list over them,
 // the punctual lights and the environment, with every material they reference packed from the
 // library. `geometry` must be packGeometry(*blases); it is passed in so it is packed once per BLAS
-// set, not per edit
+// set, not per edit. `recordedDetectors` names the detectors whose readings the render keeps, by optic id, null for every
+// one: a detector left out has no record, but its sensor still absorbs or scatters what reaches it
 std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const RaytraceBlasSet> blases, std::shared_ptr<const RaytraceGeometry> geometry,
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
 	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures,
 	const SpectralSceneContext& spectral = {}, const std::vector<SceneOptic>& optics = {}, const OpticalLibrary* library = nullptr, const BenchTrace* bench = nullptr,
-	const SceneTextureContext& textureContext = {});
+	const SceneTextureContext& textureContext = {}, const std::vector<uint64_t>* recordedDetectors = nullptr);

@@ -14,6 +14,7 @@
 #include <fmt/format.h>
 #include <glm/gtc/packing.hpp>
 
+#include <optic_detectors.h>
 #include <optic_laser.h>
 #include <optic_library.h>
 #include <rt_textures.h>
@@ -439,7 +440,7 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	const RaytraceMeshData& meshData, const std::vector<SceneMeshObject>& objects, const std::vector<SceneShape>& shapes, const std::vector<SceneLight>& lights,
 	const std::vector<MaterialDef>& materials, const ModelMaterialIds& modelMaterialIds, const EnvironmentLight& environment, const RaytraceTextureArray& textures,
 	const SpectralSceneContext& spectral, const std::vector<SceneOptic>& optics, const OpticalLibrary* library, const BenchTrace* bench,
-	const SceneTextureContext& textureContext)
+	const SceneTextureContext& textureContext, const std::vector<uint64_t>* recordedDetectors)
 {
 	auto accel = std::make_shared<RaytraceSceneAccel>();
 	//the bench's finishes are not library entries: an id from BENCH_MATERIAL_ID up is one of them
@@ -615,6 +616,34 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 				found = bodies.emplace(key, std::move(body)).first;
 			}
 			const Body& body = found->second;
+			//a detector's record: its sensor's frame in world space and its film's size. A probe plane is not geometry: the
+			//record alone, which stage 26 intersects analytically. One the render does not record keeps its sensor
+			const bool recorded = recordedDetectors == nullptr || std::find(recordedDetectors->begin(), recordedDetectors->end(), optic.id) != recordedDetectors->end();
+			if (isDetectorKind(optic.kind)) {
+				if (recorded && accel->detectors.size() >= MAX_DETECTORS) {
+					accel->detectorsLeftOut++;
+				} else if (recorded) {
+					const DetectorGeometry g = detectorGeometry(optic);
+					const glm::dmat4& world = optic.world;
+					GpuDetector d;
+					d.origin = glm::vec4(glm::vec3(world * glm::dvec4(0.0, 0.0, 0.0, 1.0)), (float)g.halfWidth);
+					d.uAxis = glm::vec4(glm::normalize(glm::vec3(world * glm::dvec4(1.0, 0.0, 0.0, 0.0))), (float)g.halfHeight);
+					d.vAxis = glm::vec4(glm::normalize(glm::vec3(world * glm::dvec4(0.0, 1.0, 0.0, 0.0))), (float)g.lambdaMin);
+					d.normal = glm::vec4(glm::normalize(glm::vec3(world * glm::dvec4(0.0, 0.0, -1.0, 0.0))), (float)g.lambdaMax);
+					d.instance = g.action == DetectorAction::Transparent ? GPU_DETECTOR_NO_INSTANCE : (uint32_t)instances.size();
+					d.flags = (g.shape == SensorShape::Disk ? GPU_DETECTOR_DISK : 0u) | (g.action == DetectorAction::Transparent ? GPU_DETECTOR_PROBE : 0u)
+						| (g.spectrometer ? GPU_DETECTOR_SPECTROMETER : 0u);
+					d.pixelsX = g.pixelsX;
+					d.pixelsY = g.pixelsY;
+					d.channels = spectral.exactRgb ? 3u : 1u;
+					d.bins = detectorSpectrumBins(g, !spectral.exactRgb);
+					accel->detectors.push_back(d);
+					accel->detectorOptics.push_back(optic.id);
+				}
+				if (optic.kind == OpticKind::ProbePlane) {
+					continue;
+				}
+			}
 			const OpticTraits& traits = opticTraits(optic.kind);
 			const uint32_t tableBase = (uint32_t)accel->instanceMaterials.size();
 			for (size_t slot = 0; slot < traits.slots.size(); slot++) {
@@ -882,6 +911,12 @@ std::shared_ptr<const RaytraceSceneAccel> buildSceneAccel(std::shared_ptr<const 
 	}
 	for (const auto& [instance, ordinal] : laserOrdinals) {
 		accel->instances[gpuSlot[instance]].lightBase = accel->lights.header.laserBase + 2u * ordinal;
+	}
+	//a detector's record names its sensor's instance by the GPU's order, which the hit records carry
+	for (GpuDetector& detector : accel->detectors) {
+		if (detector.instance != GPU_DETECTOR_NO_INSTANCE) {
+			detector.instance = detector.instance < gpuSlot.size() ? gpuSlot[detector.instance] : GPU_DETECTOR_NO_INSTANCE;
+		}
 	}
 	for (GpuLight& light : accel->lights.lights) {
 		if ((light.kind & GPU_LIGHT_FLAG_TEXTURED) == 0) {

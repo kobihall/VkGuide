@@ -63,9 +63,10 @@ void main()
 			const float u = (float(x) + jx) / float(pc.width);
 			const float v = (float(pc.height - 1u - y) + jy) / float(pc.height);
 
-			// the lens sample only for a lens: a pinhole draws nothing from the path's stream here
+			// the lens sample only for a lens, or a sensor's direction: a pinhole draws nothing from the path's stream here
 			vec2 lensSample = vec2(0.0);
-			if (cameraLensRadius() > 0.0) {
+			// a sensor draws its direction from the lens's dimensions
+			if (cameraLensRadius() > 0.0 || (CRT_CAMERA_MODEL && pc.cameraKind == CRT_CAMERA_SENSOR)) {
 				lensSample = sampleDimension2D(index, rng, CRT_SAMPLE_CAMERA_LENS);
 			}
 			vec3 origin;

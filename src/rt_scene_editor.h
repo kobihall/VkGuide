@@ -21,6 +21,7 @@
 #include <bvh.h>
 #include <optic_bench.h>
 #include <optic_catalog.h>
+#include <optic_detectors.h>
 #include <rt_lights.h>
 #include <rt_scene_types.h>
 #include <vk_types.h>
@@ -103,8 +104,29 @@ public:
 	// Add menu's Optic entries
 	void drawOpticRows(VulkanEngine* engine);
 	void drawOpticAddMenu(VulkanEngine* engine);
+	// the detectors as sensors (docs/plans/completed/physoptics-detectors.md): + Add -> Sensor's items, and the Sensors folder's
+	void drawDetectorAddItems(VulkanEngine* engine);
+	void drawDetectorRows(VulkanEngine* engine);
 	// the Materials window's Optics folder: each element's slot materials
 	void drawOpticMaterialRows();
+	// a mounted optic of a loaded file that gave where its body stands rather than its stack (the verification scripts
+	// write them so): stands it on the bench there, in its mount (dropOntoBench()). Returns how far the mount turned its
+	// body about its own axis from the file's orientation, in radians, or nullopt when it found no stack for it
+	std::optional<double> standOpticOnBench(VulkanEngine* engine, uint64_t id);
+
+	// THE SENSOR STACKS (src/optic_detectors.h): each a row of the Sensors folder, deriving its members, which are optics
+	// (SceneOptic::stack) the editor keeps in optics() after the others, a stack's in order, as resolveBench() makes them
+	const std::vector<SensorStack>& sensorStacks() const { return m_sensorStacks; }
+	SensorStack* findSensorStack(uint64_t id);
+	const SensorStack* findSensorStack(uint64_t id) const;
+	// a new stack, with its sensor's default slot materials, and its members; returns its id
+	uint64_t addSensorStack(SensorStack stack);
+	// removes a stack, its members and the materials it owns
+	void removeSensorStack(uint64_t id);
+	// the stacks of a loaded file, each given an id, its slots' default materials and its members; the load path then
+	// sets the slots the file changed (setSensorStackSlotMaterial())
+	void replaceSensorStacks(std::vector<SensorStack>&& stacks);
+	void setSensorStackSlotMaterial(uint64_t stackId, size_t slot, MaterialDef material);
 
 	// THE BENCH (docs/plans/completed/physoptics-bench-and-mounts.md): the breadboard and the settings every stack is placed by, and
 	// each optic's stack as the last resolveBench() assembled it, in the order of optics()
@@ -197,6 +219,7 @@ private:
 		Light,
 		MeshObject,
 		Optic,
+		SensorStack,
 		// the breadboard, which has no id of its own
 		Bench
 	};
@@ -205,7 +228,7 @@ private:
 	void drawBackground(VulkanEngine* engine);
 	void drawToolbar(VulkanEngine* engine);
 	void drawObjectTree(VulkanEngine* engine);
-	void drawCameraRows();
+	void drawSensorRows(VulkanEngine* engine);
 	// the Lights folder: every punctual light, whatever its kind
 	void drawLightRows();
 	// the Geometry folder: every shape, in one sub-folder per kind
@@ -220,6 +243,19 @@ private:
 	void drawSelectedLight(VulkanEngine* engine, SceneLight& light);
 	void drawSelectedMeshObject(VulkanEngine* engine, SceneMeshObject& object);
 	void drawSelectedOptic(VulkanEngine* engine, SceneOptic& optic);
+	// an optic's parameters by its kind's traits; whether one changed
+	bool drawOpticParams(SceneOptic& optic);
+	// a stack's member: what it is, its readings' target button, and the way back to its stack
+	void drawSelectedStackMember(VulkanEngine* engine, SceneOptic& member);
+	void drawSelectedSensorStack(VulkanEngine* engine, SensorStack& stack);
+	// the stacks' rows in the Sensors folder, each opening on its members
+	void drawSensorStackRows();
+	// the gizmos of a stack: its start (0), its end (1) or its sensors' rotation at its middle (2)
+	void beginSensorStackGizmo(TransformGizmo& gizmo, uint64_t id, int part);
+	void createSensorStack(VulkanEngine* engine, OpticKind kind);
+	// re-derives every stack's members from it: their number, kind, parameters, materials, names and places. Called by
+	// resolveBench() before it places anything, and marks the scene changed when a member changed
+	void resolveSensorStacks();
 	// the breadboard's panel: the bench's settings
 	void drawSelectedBench(VulkanEngine* engine);
 	// the mount section of an optic's panel: its kind, free placement, the stack's pose and readouts, the fine adjustment
@@ -255,7 +291,7 @@ private:
 	void addShape(SceneShape shape);
 	// the Add menu's creating entries
 	void createShape(ShapeKind kind);
-	void createCamera(VulkanEngine* engine);
+	void createCamera(VulkanEngine* engine, CameraKind kind = CameraKind::Perspective);
 	void createLight(VulkanEngine* engine, LightKind kind);
 	void addLight(SceneLight light);
 	void duplicateSelection();
@@ -276,6 +312,8 @@ private:
 	std::vector<SceneLight> m_lights;
 	std::vector<SceneMeshObject> m_meshObjects;
 	std::vector<SceneOptic> m_optics;
+	std::vector<SensorStack> m_sensorStacks;
+	int m_nextStackNumber { 1 };
 	BenchSettings m_bench;
 	std::vector<OpticStack> m_stacks;
 	// a laser's turn about the vertical over the gizmo drag so far, unsnapped, which the snapped turn steps after; NaN

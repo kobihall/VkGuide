@@ -1,0 +1,8 @@
+{
+  "power": 0.005,
+  "paths_per_sample": 262144,
+  "tolerance": {
+    "power": 0.005
+  },
+  "notes": "the meter as the render target and no camera: 512 x 512 light paths a sample, the same 5 mW"
+}

@@ -8,6 +8,8 @@
 #include <length_unit.h>
 #include <optic_laser.h>
 #include <optic_library.h>
+#include <detectors_ui.h>
+#include <optic_detectors.h>
 #include <optics_ui.h>
 #include <vk_engine.h>
 #include <vk_gizmo.h>
@@ -71,7 +73,11 @@ void RaytraceSceneEditor::removeOptic(uint64_t id)
 	if (optic == nullptr) {
 		return;
 	}
-	const std::array<uint64_t, MAX_OPTIC_MATERIAL_SLOTS> owned = optic->materials;
+	// a stack's member shares the stack's materials, which go with the stack
+	std::array<uint64_t, MAX_OPTIC_MATERIAL_SLOTS> owned = optic->materials;
+	if (optic->stack != 0) {
+		owned.fill(0);
+	}
 	std::erase_if(m_optics, [id](const SceneOptic& o) { return o.id == id; });
 	std::erase_if(m_materials, [&owned](const MaterialDef& m) { return m.id != 0 && std::find(owned.begin(), owned.end(), m.id) != owned.end(); });
 	if (m_selectionKind == SelectionKind::Optic && m_selectionId == id) {
@@ -203,6 +209,7 @@ void RaytraceSceneEditor::setBench(const BenchSettings& bench)
 
 void RaytraceSceneEditor::resolveBench(VulkanEngine* engine)
 {
+	resolveSensorStacks();
 	const BenchContext context = engine->benchContext();
 	// a post that moved under its origin (a thicker optic, another mount) takes its fork to a hole again, and a fork another
 	// stack was put on moves out from under it. In order, against the stacks as each refit leaves them, so that two forks
@@ -270,15 +277,61 @@ void RaytraceSceneEditor::drawOpticAddMenu(VulkanEngine* engine)
 		setBench(bench);
 		select(SelectionKind::Bench, 0);
 	}
+	// the optics and the laser; the detectors are sensors, in + Add -> Sensor (drawDetectorAddItems())
 	if (!ImGui::BeginMenu("Optic")) {
 		return;
 	}
 	for (size_t k = 0; k < OPTIC_KIND_COUNT; k++) {
-		if (ImGui::MenuItem(opticTraits((OpticKind)k).label)) {
+		if (!isDetectorKind((OpticKind)k) && ImGui::MenuItem(opticTraits((OpticKind)k).label)) {
 			createOptic(engine, (OpticKind)k);
 		}
 	}
 	ImGui::EndMenu();
+}
+
+void RaytraceSceneEditor::drawDetectorAddItems(VulkanEngine* engine)
+{
+	for (size_t k = 0; k < OPTIC_KIND_COUNT; k++) {
+		if (isDetectorKind((OpticKind)k) && ImGui::MenuItem(opticTraits((OpticKind)k).label)) {
+			createOptic(engine, (OpticKind)k);
+		}
+		if (isDetectorKind((OpticKind)k)) {
+			ImGui::SetItemTooltip("Placed on the bench as an optic is, facing you");
+		}
+	}
+	if (ImGui::BeginMenu("Sensor stack")) {
+		for (size_t k = 0; k < OPTIC_KIND_COUNT; k++) {
+			if (isDetectorKind((OpticKind)k) && ImGui::MenuItem(opticTraits((OpticKind)k).plural)) {
+				createSensorStack(engine, (OpticKind)k);
+			}
+		}
+		ImGui::EndMenu();
+	}
+	ImGui::SetItemTooltip("Identical detectors spaced evenly from a start to an end point, as one detector slid along a translation stage");
+}
+
+void RaytraceSceneEditor::drawDetectorRows(VulkanEngine*)
+{
+	// a folder per detector kind the scene has, after the cameras', and the stacks'; a stack's members are under it
+	bool alive = true;
+	for (size_t k = 0; k < OPTIC_KIND_COUNT && alive; k++) {
+		const OpticKind kind = (OpticKind)k;
+		if (!isDetectorKind(kind) || std::none_of(m_optics.begin(), m_optics.end(), [kind](const SceneOptic& o) { return o.kind == kind && o.stack == 0; })) {
+			continue;
+		}
+		if (!ImGui::TreeNodeEx(opticTraits(kind).plural, ImGuiTreeNodeFlags_DefaultOpen)) {
+			continue;
+		}
+		for (size_t i = 0; i < m_optics.size() && alive; i++) {
+			if (m_optics[i].kind == kind && m_optics[i].stack == 0) {
+				alive = drawObjectRow(SelectionKind::Optic, m_optics[i].id, m_optics[i].name);
+			}
+		}
+		ImGui::TreePop();
+	}
+	if (alive) {
+		drawSensorStackRows();
+	}
 }
 
 void RaytraceSceneEditor::drawOpticRows(VulkanEngine*)
@@ -301,19 +354,18 @@ void RaytraceSceneEditor::drawOpticRows(VulkanEngine*)
 		}
 		ImGui::PopID();
 	}
-	if (m_optics.empty()) {
+	if (std::all_of(m_optics.begin(), m_optics.end(), [](const SceneOptic& o) { return isDetectorKind(o.kind); })) {
 		ImGui::TextDisabled("none - Add > Optic");
 	}
-	// a folder per kind the scene has, in the kinds' order, as the shapes have
+	// a folder per kind the scene has, in the kinds' order, as the shapes have; the detectors are in the Sensors folder
 	bool alive = true;
-	for (size_t k = 0; k < OPTIC_KIND_COUNT && alive; k++) {
-		const OpticKind kind = (OpticKind)k;
+	auto drawKind = [&](OpticKind kind) {
 		const auto ofKind = [kind](const SceneOptic& optic) { return optic.kind == kind; };
-		if (std::none_of(m_optics.begin(), m_optics.end(), ofKind)) {
-			continue;
+		if (!alive || std::none_of(m_optics.begin(), m_optics.end(), ofKind)) {
+			return;
 		}
 		if (!ImGui::TreeNodeEx(opticTraits(kind).plural, ImGuiTreeNodeFlags_DefaultOpen)) {
-			continue;
+			return;
 		}
 		for (size_t i = 0; i < m_optics.size() && alive; i++) {
 			if (m_optics[i].kind == kind) {
@@ -321,16 +373,37 @@ void RaytraceSceneEditor::drawOpticRows(VulkanEngine*)
 			}
 		}
 		ImGui::TreePop();
+	};
+	for (size_t k = 0; k < OPTIC_KIND_COUNT; k++) {
+		if (!isDetectorKind((OpticKind)k)) {
+			drawKind((OpticKind)k);
+		}
 	}
 	ImGui::TreePop();
 }
 
 void RaytraceSceneEditor::drawOpticMaterialRows()
 {
-	if (m_optics.empty() || !ImGui::TreeNodeEx("Optics")) {
+	if ((m_optics.empty() && m_sensorStacks.empty()) || !ImGui::TreeNodeEx("Optics")) {
 		return;
 	}
+	// a stack's members share its materials: the stack's sensor stands for them
+	std::vector<const SceneOptic*> owners;
 	for (const SceneOptic& optic : m_optics) {
+		if (optic.stack == 0) {
+			owners.push_back(&optic);
+		}
+	}
+	std::vector<SceneOptic> stackSensors;
+	for (const SensorStack& stack : m_sensorStacks) {
+		stackSensors.push_back(stack.sensor);
+		stackSensors.back().name = stack.name;
+	}
+	for (const SceneOptic& sensor : stackSensors) {
+		owners.push_back(&sensor);
+	}
+	for (const SceneOptic* owner : owners) {
+		const SceneOptic& optic = *owner;
 		if (!ImGui::TreeNodeEx(optic.name.c_str())) {
 			continue;
 		}
@@ -397,6 +470,10 @@ static bool drawLaserDataSheet(SceneOptic& optic)
 
 void RaytraceSceneEditor::drawSelectedOptic(VulkanEngine* engine, SceneOptic& optic)
 {
+	if (optic.stack != 0) {
+		drawSelectedStackMember(engine, optic);
+		return;
+	}
 	const OpticTraits& traits = opticTraits(optic.kind);
 	ImGui::SeparatorText(optic.name.c_str());
 	ImGui::TextDisabled("%s", traits.label);
@@ -406,7 +483,8 @@ void RaytraceSceneEditor::drawSelectedOptic(VulkanEngine* engine, SceneOptic& op
 
 	// the size: a preset (Thorlabs' part at that size) or custom
 	const char* sizeLabel = optic.sizePreset >= 0 && optic.sizePreset < (int)traits.sizes.size() ? traits.sizes[(size_t)optic.sizePreset].label : "Custom";
-	if (ImGui::BeginCombo(traits.sizeLabel, sizeLabel)) {
+	// a kind without presets (the detectors) is sized by its parameters alone
+	if (!traits.sizes.empty() && ImGui::BeginCombo(traits.sizeLabel, sizeLabel)) {
 		for (int i = 0; i < (int)traits.sizes.size(); i++) {
 			if (ImGui::Selectable(traits.sizes[(size_t)i].label, i == optic.sizePreset) && i != optic.sizePreset) {
 				setOpticSize(optic, i);
@@ -420,77 +498,13 @@ void RaytraceSceneEditor::drawSelectedOptic(VulkanEngine* engine, SceneOptic& op
 		ImGui::EndCombo();
 	}
 
-	for (const OpticParam& param : traits.params) {
-		if (param.visible != nullptr && !param.visible(optic.params)) {
-			continue;
-		}
-		ImGui::PushID(param.name);
-		const OpticValue value = opticValue(optic, param.name);
-		switch (param.kind) {
-		case OpticParamKind::Length: {
-			double meters = opticNumber(optic, param.name);
-			if (inputLength(param.label, meters, param.min, param.max)) {
-				changed |= setOpticValue(optic, param.name, meters);
-			}
-			break;
-		}
-		case OpticParamKind::Angle: {
-			double degrees = opticNumber(optic, param.name) * 180.0 / PI;
-			if (ImGui::InputDouble(param.label, &degrees, 0.0, 0.0, "%.4f deg", ImGuiInputTextFlags_EnterReturnsTrue)) {
-				changed |= setOpticValue(optic, param.name, degrees * PI / 180.0);
-			}
-			break;
-		}
-		case OpticParamKind::Number: {
-			double number = opticNumber(optic, param.name);
-			if (ImGui::InputDouble(param.label, &number, 0.0, 0.0, "%.6g", ImGuiInputTextFlags_EnterReturnsTrue)) {
-				changed |= setOpticValue(optic, param.name, number);
-			}
-			break;
-		}
-		case OpticParamKind::Enum: {
-			const int current = std::clamp(opticEnum(optic, param.name), 0, (int)param.labels.size() - 1);
-			if (!param.labels.empty() && ImGui::BeginCombo(param.label, param.labels[(size_t)current])) {
-				for (int i = 0; i < (int)param.labels.size(); i++) {
-					if (ImGui::Selectable(param.labels[(size_t)i], i == current) && i != current) {
-						changed |= setOpticValue(optic, param.name, i);
-					}
-				}
-				ImGui::EndCombo();
-			}
-			break;
-		}
-		case OpticParamKind::Bool: {
-			bool b = opticBool(optic, param.name);
-			if (ImGui::Checkbox(param.label, &b)) {
-				changed |= setOpticValue(optic, param.name, b);
-			}
-			break;
-		}
-		case OpticParamKind::Glass: {
-			std::string name = opticString(optic, param.name);
-			if (drawGlassCombo(param.label, name, true)) {
-				changed |= setOpticValue(optic, param.name, name);
-			}
-			break;
-		}
-		case OpticParamKind::Wavelength: {
-			double nm = opticNumber(optic, param.name) * 1e9;
-			if (ImGui::InputDouble(param.label, &nm, 0.0, 0.0, "%.6g nm", ImGuiInputTextFlags_EnterReturnsTrue)) {
-				changed |= setOpticValue(optic, param.name, nm * 1e-9);
-			}
-			break;
-		}
-		}
-		(void)value;
-		if (param.tooltip != nullptr && ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("%s", param.tooltip);
-		}
-		ImGui::PopID();
-	}
+	changed |= drawOpticParams(optic);
 
 	if (optic.kind == OpticKind::Laser) {
 		changed |= drawLaserDataSheet(optic);
+	}
+	if (isDetectorKind(optic.kind)) {
+		drawDetectorTargetButton(engine, optic);
 	}
 
 	// what follows from the parameters, at the design wavelength, or why they make no body
@@ -560,6 +574,87 @@ void RaytraceSceneEditor::drawSelectedOptic(VulkanEngine* engine, SceneOptic& op
 		markChanged();
 	}
 	ImGui::PopID();
+}
+
+bool RaytraceSceneEditor::drawOpticParams(SceneOptic& optic)
+{
+	const OpticTraits& traits = opticTraits(optic.kind);
+	const bool wasPhysical = findOpticParam(optic.kind, "physicalSensor") != nullptr && opticBool(optic, "physicalSensor");
+	bool changed = false;
+	for (const OpticParam& param : traits.params) {
+		if (param.visible != nullptr && !param.visible(optic.params)) {
+			continue;
+		}
+		ImGui::PushID(param.name);
+		const OpticValue value = opticValue(optic, param.name);
+		switch (param.kind) {
+		case OpticParamKind::Length: {
+			double meters = opticNumber(optic, param.name);
+			if (inputLength(param.label, meters, param.min, param.max)) {
+				changed |= setOpticValue(optic, param.name, meters);
+			}
+			break;
+		}
+		case OpticParamKind::Angle: {
+			double degrees = opticNumber(optic, param.name) * 180.0 / PI;
+			if (ImGui::InputDouble(param.label, &degrees, 0.0, 0.0, "%.4f deg", ImGuiInputTextFlags_EnterReturnsTrue)) {
+				changed |= setOpticValue(optic, param.name, degrees * PI / 180.0);
+			}
+			break;
+		}
+		case OpticParamKind::Number: {
+			double number = opticNumber(optic, param.name);
+			if (ImGui::InputDouble(param.label, &number, 0.0, 0.0, "%.6g", ImGuiInputTextFlags_EnterReturnsTrue)) {
+				changed |= setOpticValue(optic, param.name, number);
+			}
+			break;
+		}
+		case OpticParamKind::Enum: {
+			const int current = std::clamp(opticEnum(optic, param.name), 0, (int)param.labels.size() - 1);
+			if (!param.labels.empty() && ImGui::BeginCombo(param.label, param.labels[(size_t)current])) {
+				for (int i = 0; i < (int)param.labels.size(); i++) {
+					if (ImGui::Selectable(param.labels[(size_t)i], i == current) && i != current) {
+						changed |= setOpticValue(optic, param.name, i);
+					}
+				}
+				ImGui::EndCombo();
+			}
+			break;
+		}
+		case OpticParamKind::Bool: {
+			bool b = opticBool(optic, param.name);
+			if (ImGui::Checkbox(param.label, &b)) {
+				changed |= setOpticValue(optic, param.name, b);
+			}
+			break;
+		}
+		case OpticParamKind::Glass: {
+			std::string name = opticString(optic, param.name);
+			if (drawGlassCombo(param.label, name, true)) {
+				changed |= setOpticValue(optic, param.name, name);
+			}
+			break;
+		}
+		case OpticParamKind::Wavelength: {
+			double nm = opticNumber(optic, param.name) * 1e9;
+			if (ImGui::InputDouble(param.label, &nm, 0.0, 0.0, "%.6g nm", ImGuiInputTextFlags_EnterReturnsTrue)) {
+				changed |= setOpticValue(optic, param.name, nm * 1e-9);
+			}
+			break;
+		}
+		}
+		(void)value;
+		if (param.tooltip != nullptr && ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", param.tooltip);
+		}
+		ImGui::PopID();
+	}
+	// turning a physical sensor on records every one of its pixels, until the film is set coarser
+	if (findOpticParam(optic.kind, "physicalSensor") != nullptr && opticBool(optic, "physicalSensor") && !wasPhysical) {
+		changed |= setOpticValue(optic, "pixelsX", opticNumber(optic, "nativeX"));
+		changed |= setOpticValue(optic, "pixelsY", opticNumber(optic, "nativeY"));
+	}
+	return changed;
 }
 
 bool RaytraceSceneEditor::drawOpticMount(VulkanEngine* engine, SceneOptic& optic)
@@ -855,4 +950,440 @@ void RaytraceSceneEditor::beginOpticGizmo(VulkanEngine* engine, TransformGizmo& 
 			markChanged();
 		},
 		ImGuizmo::TRANSLATE_X | ImGuizmo::TRANSLATE_Y | ImGuizmo::TRANSLATE_Z | ImGuizmo::ROTATE_Y, ImGuizmo::WORLD);
+}
+
+std::optional<double> RaytraceSceneEditor::standOpticOnBench(VulkanEngine* engine, uint64_t id)
+{
+	SceneOptic* optic = findOptic(id);
+	if (optic == nullptr || optic->mount.isFree()) {
+		return std::nullopt;
+	}
+	const glm::dquat placed = optic->mount.freeOrientation;
+	const BenchContext context = engine->benchContext();
+	dropOntoBench(*optic, context, otherStacks(id));
+	const OpticStack stack = assembleStack(*optic, context);
+	if (stack.mount == nullptr) {
+		return std::nullopt;
+	}
+	optic->world = stack.opticToWorld;
+	markChanged();
+	const glm::dquat stood = glm::normalize(glm::quat_cast(glm::dmat3(stack.opticToWorld)));
+	return 2.0 * std::acos(std::clamp(std::abs(glm::dot(placed, stood)), 0.0, 1.0));
+}
+
+//---------------------------------------------------------------- sensor stacks
+
+namespace {
+
+// a stack's three gizmos, apart from every object's own id
+const void* stackGizmoTarget(uint64_t id, int part)
+{
+	return reinterpret_cast<const void*>(static_cast<uintptr_t>((1ull << 60) | (id << 2) | (uint64_t)part));
+}
+
+// the frame a sensor facing along `z` has with no turn about it: x level, as near horizontal as the axis allows
+glm::dvec3 levelX(const glm::dvec3& z)
+{
+	glm::dvec3 x = glm::cross(glm::dvec3(0.0, 1.0, 0.0), z);
+	if (glm::length(x) < 1e-9) {
+		x = glm::cross(glm::dvec3(1.0, 0.0, 0.0), z);
+	}
+	return glm::normalize(x);
+}
+
+}
+
+SensorStack* RaytraceSceneEditor::findSensorStack(uint64_t id)
+{
+	auto found = std::find_if(m_sensorStacks.begin(), m_sensorStacks.end(), [id](const SensorStack& s) { return s.id == id; });
+	return found == m_sensorStacks.end() ? nullptr : &(*found);
+}
+
+const SensorStack* RaytraceSceneEditor::findSensorStack(uint64_t id) const
+{
+	return const_cast<RaytraceSceneEditor*>(this)->findSensorStack(id);
+}
+
+uint64_t RaytraceSceneEditor::addSensorStack(SensorStack stack)
+{
+	stack.id = m_nextId++;
+	if (stack.name.empty()) {
+		stack.name = fmt::format("{}_stack_{}", opticTraits(stack.sensor.kind).name, m_nextStackNumber++);
+	}
+	stack.count = std::clamp(stack.count, 1, MAX_STACK_SENSORS);
+	const size_t slots = opticTraits(stack.sensor.kind).slots.size();
+	for (size_t slot = 0; slot < MAX_OPTIC_MATERIAL_SLOTS; slot++) {
+		stack.sensor.materials[slot] = slot < slots ? addMaterial(defaultSlotMaterial(stack.sensor, slot)) : 0;
+	}
+	const uint64_t id = stack.id;
+	m_sensorStacks.push_back(std::move(stack));
+	resolveSensorStacks();
+	markChanged();
+	return id;
+}
+
+void RaytraceSceneEditor::removeSensorStack(uint64_t id)
+{
+	const SensorStack* stack = findSensorStack(id);
+	if (stack == nullptr) {
+		return;
+	}
+	const std::array<uint64_t, MAX_OPTIC_MATERIAL_SLOTS> owned = stack->sensor.materials;
+	std::erase_if(m_sensorStacks, [id](const SensorStack& s) { return s.id == id; });
+	std::erase_if(m_optics, [id](const SceneOptic& o) { return o.stack == id; });
+	std::erase_if(m_materials, [&owned](const MaterialDef& m) { return m.id != 0 && std::find(owned.begin(), owned.end(), m.id) != owned.end(); });
+	if ((m_selectionKind == SelectionKind::SensorStack && m_selectionId == id) || (m_selectionKind == SelectionKind::Optic && findOptic(m_selectionId) == nullptr)) {
+		m_selectionKind = SelectionKind::None;
+		m_selectionId = 0;
+	}
+	markChanged();
+}
+
+void RaytraceSceneEditor::replaceSensorStacks(std::vector<SensorStack>&& stacks)
+{
+	while (!m_sensorStacks.empty()) {
+		removeSensorStack(m_sensorStacks.back().id);
+	}
+	m_nextStackNumber = (int)stacks.size() + 1;
+	for (SensorStack& stack : stacks) {
+		addSensorStack(std::move(stack));
+	}
+	markChanged();
+}
+
+void RaytraceSceneEditor::setSensorStackSlotMaterial(uint64_t stackId, size_t slot, MaterialDef material)
+{
+	const SensorStack* stack = findSensorStack(stackId);
+	if (stack == nullptr || slot >= MAX_OPTIC_MATERIAL_SLOTS) {
+		return;
+	}
+	MaterialDef* current = findMaterial(stack->sensor.materials[slot]);
+	if (current == nullptr) {
+		return;
+	}
+	material.id = current->id;
+	material.name = current->name;
+	material.opticOrigin = current->opticOrigin;
+	material.origin.reset();
+	*current = std::move(material);
+	markChanged();
+}
+
+void RaytraceSceneEditor::resolveSensorStacks()
+{
+	// the members as they were, each keeping its id while its stack keeps its place, so a selection, a render target and
+	// a reading follow it through any edit of the stack
+	std::map<std::pair<uint64_t, int>, uint64_t> ids;
+	std::map<uint64_t, int> counted;
+	std::vector<SceneOptic> others;
+	std::vector<SceneOptic> before;
+	for (SceneOptic& optic : m_optics) {
+		if (optic.stack == 0) {
+			others.push_back(std::move(optic));
+		} else {
+			ids[{ optic.stack, counted[optic.stack]++ }] = optic.id;
+			before.push_back(std::move(optic));
+		}
+	}
+	std::vector<SceneOptic> members;
+	for (SensorStack& stack : m_sensorStacks) {
+		stack.count = std::clamp(stack.count, 1, MAX_STACK_SENSORS);
+		const glm::dquat orientation = sensorStackOrientation(stack);
+		for (int i = 0; i < stack.count; i++) {
+			SceneOptic member = stack.sensor;
+			const auto found = ids.find({ stack.id, i });
+			member.id = found != ids.end() ? found->second : m_nextId++;
+			member.stack = stack.id;
+			member.name = sensorStackMemberName(stack, i);
+			member.sizePreset = -1;
+			member.mount = MountPose {};
+			member.mount.freePosition = sensorStackPosition(stack, i);
+			member.mount.freeOrientation = orientation;
+			member.world = member.mount.freeTransform();
+			members.push_back(std::move(member));
+		}
+	}
+	const bool changed = members != before;
+	m_optics = std::move(others);
+	m_optics.insert(m_optics.end(), std::make_move_iterator(members.begin()), std::make_move_iterator(members.end()));
+	if (changed) {
+		markChanged();
+	}
+}
+
+void RaytraceSceneEditor::createSensorStack(VulkanEngine* engine, OpticKind kind)
+{
+	// on the table under the middle of the view at the beam height, running across the view, as a new laser's beam does;
+	// from a hole, along the grid, while the bench snaps
+	SensorStack stack = makeSensorStack(kind);
+	const SceneCamera view = engine->cameraFromViewport();
+	const glm::dvec3 eye(view.position);
+	const glm::dvec3 forward(view.forward());
+	glm::dvec3 ahead = eye + 0.3 * forward;
+	if (forward.y < -1e-3) {
+		const double t = -eye.y / forward.y;
+		if (t > 0.0 && t < 3.0) {
+			ahead = eye + t * forward;
+		}
+	}
+	const glm::dvec3 right = glm::dvec3(view.orientation * glm::vec3(1.f, 0.f, 0.f));
+	double across = std::hypot(right.x, right.z) > 1e-9 ? std::atan2(right.x, right.z) : 0.0;
+	glm::dvec2 start(ahead.x, ahead.z);
+	if (m_bench.snap) {
+		across = 0.5 * PI * std::round(across / (0.5 * PI));
+		start = nearestHole(m_bench, start);
+	}
+	const double length = glm::length(stack.end - stack.start);
+	stack.start = glm::dvec3(start.x, m_bench.beamHeight, start.y);
+	stack.end = stack.start + length * glm::dvec3(std::sin(across), 0.0, std::cos(across));
+	select(SelectionKind::SensorStack, addSensorStack(std::move(stack)));
+	resolveBench(engine);
+}
+
+void RaytraceSceneEditor::drawSensorStackRows()
+{
+	if (m_sensorStacks.empty() || !ImGui::TreeNodeEx("Sensor stacks", ImGuiTreeNodeFlags_DefaultOpen)) {
+		return;
+	}
+	bool alive = true;
+	for (size_t s = 0; s < m_sensorStacks.size() && alive; s++) {
+		// the stack's own row, which renames, duplicates and deletes it, beside the arrow that opens its members
+		const uint64_t id = m_sensorStacks[s].id;
+		const std::string name = m_sensorStacks[s].name;
+		ImGui::PushID((int)id);
+		const bool open = ImGui::TreeNodeEx("##members", ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_AllowOverlap);
+		ImGui::SameLine();
+		alive = drawObjectRow(SelectionKind::SensorStack, id, name);
+		if (open) {
+			for (size_t i = 0; alive && i < m_optics.size(); i++) {
+				if (m_optics[i].stack != id) {
+					continue;
+				}
+				ImGui::PushID((int)m_optics[i].id);
+				if (ImGui::Selectable(m_optics[i].name.c_str(), m_selectionKind == SelectionKind::Optic && m_selectionId == m_optics[i].id)) {
+					select(SelectionKind::Optic, m_optics[i].id);
+				}
+				ImGui::PopID();
+			}
+			ImGui::TreePop();
+		}
+		ImGui::PopID();
+	}
+	ImGui::TreePop();
+}
+
+void RaytraceSceneEditor::drawSelectedStackMember(VulkanEngine* engine, SceneOptic& member)
+{
+	ImGui::SeparatorText(member.name.c_str());
+	ImGui::TextDisabled("%s, one of a sensor stack", opticTraits(member.kind).label);
+	const SensorStack* stack = findSensorStack(member.stack);
+	if (stack != nullptr) {
+		ImGui::TextDisabled("%s from the stack's start", formatLength(glm::length(member.mount.freePosition - stack->start)).c_str());
+		if (ImGui::SmallButton(fmt::format("Edit {}", stack->name).c_str())) {
+			select(SelectionKind::SensorStack, stack->id);
+			return;
+		}
+		ImGui::SetItemTooltip("A member is its stack's sensor at one of its places: the stack sets its size, film and placement");
+	}
+	// the stack is one render target: a member of the target's stack is recorded with it
+	const SceneOptic* target = findOptic(engine->m_raytracer.renderDetectorId());
+	if (target != nullptr && target->stack == member.stack) {
+		ImGui::Spacing();
+		ImGui::TextDisabled("Its stack is the render target: light tracing records every member");
+	} else {
+		drawDetectorTargetButton(engine, member);
+	}
+}
+
+void RaytraceSceneEditor::drawSelectedSensorStack(VulkanEngine* engine, SensorStack& stack)
+{
+	ImGui::SeparatorText(stack.name.c_str());
+	ImGui::TextDisabled("Sensor stack");
+	ImGui::PushID((int)stack.id);
+	const SensorStack before = stack;
+	bool changed = false;
+
+	// the sensor every member copies: a new kind starts over with its defaults and its slots' default materials
+	if (ImGui::BeginCombo("sensor", opticTraits(stack.sensor.kind).label)) {
+		for (size_t k = 0; k < OPTIC_KIND_COUNT; k++) {
+			const OpticKind kind = (OpticKind)k;
+			if (isDetectorKind(kind) && ImGui::Selectable(opticTraits(kind).label, kind == stack.sensor.kind) && kind != stack.sensor.kind) {
+				const std::array<uint64_t, MAX_OPTIC_MATERIAL_SLOTS> owned = stack.sensor.materials;
+				std::erase_if(m_materials, [&owned](const MaterialDef& m) { return m.id != 0 && std::find(owned.begin(), owned.end(), m.id) != owned.end(); });
+				stack.sensor = makeOptic(kind);
+				const size_t slots = opticTraits(kind).slots.size();
+				for (size_t slot = 0; slot < MAX_OPTIC_MATERIAL_SLOTS; slot++) {
+					stack.sensor.materials[slot] = slot < slots ? addMaterial(defaultSlotMaterial(stack.sensor, slot)) : 0;
+				}
+				changed = true;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	changed |= drawOpticParams(stack.sensor);
+	OpticReadout readout;
+	buildOptic(stack.sensor, engine->opticBuildContext(), readout);
+	for (const auto& [label, meters] : readout.lengths) {
+		ImGui::TextDisabled("%s: %s", label.c_str(), formatLength(meters).c_str());
+	}
+	for (const auto& [label, text] : readout.lines) {
+		ImGui::TextDisabled("%s: %s", label.c_str(), text.c_str());
+	}
+
+	ImGui::SeparatorText("Along the axis");
+	int count = stack.count;
+	if (ImGui::InputInt("sensors", &count)) {
+		stack.count = std::clamp(count, 1, MAX_STACK_SENSORS);
+		changed = true;
+	}
+	ImGui::SetItemTooltip("Spaced evenly from the start to the end, each the same size: one sensor slid along the axis");
+	changed |= inputLength3("start", stack.start);
+	ImGui::SetItemTooltip("Type each coordinate and press Enter. The start's and the end's gizmos snap to the breadboard's hole lines while the bench snaps");
+	changed |= inputLength3("end", stack.end);
+	const double length = glm::length(stack.end - stack.start);
+	ImGui::TextDisabled("%s long, %s between sensors", formatLength(length).c_str(), formatLength(stack.count > 1 ? length / (stack.count - 1) : 0.0).c_str());
+	const size_t detectors = (size_t)std::count_if(m_optics.begin(), m_optics.end(), [](const SceneOptic& o) { return isDetectorKind(o.kind); });
+	if (detectors > MAX_DETECTORS) {
+		ImGui::PushTextWrapPos(0.f);
+		ImGui::TextColored(ImVec4(1.f, 0.7f, 0.2f, 1.f), "The scene has %zu detectors; a render records the first %u", detectors, MAX_DETECTORS);
+		ImGui::PopTextWrapPos();
+	}
+
+	ImGui::SeparatorText("Rotation");
+	TransformGizmo& gizmo = engine->m_transformGizmo;
+	bool align = stack.alignToAxis;
+	if (ImGui::Checkbox("align normal to stack axis", &align)) {
+		// where the sensors face now, so turning it off moves nothing
+		stack.orientation = sensorStackOrientation(stack);
+		stack.alignToAxis = align;
+		if (gizmo.isEditing(stackGizmoTarget(stack.id, 2))) {
+			gizmo.endEditing();
+		}
+		changed = true;
+	}
+	ImGui::SetItemTooltip("Each sensor faces along the axis from the start to the end, light travelling that way reaching its front; the rotation turns it about the axis only");
+	const glm::dvec3 axis = sensorStackAxis(stack);
+	if (stack.alignToAxis && axis != glm::dvec3(0.0)) {
+		// the turn about the axis, from the sensor whose x is level
+		const glm::dvec3 x0 = levelX(axis);
+		const glm::dvec3 y0 = glm::cross(axis, x0);
+		const glm::dvec3 x = sensorStackOrientation(stack) * glm::dvec3(1.0, 0.0, 0.0);
+		double degrees = std::atan2(glm::dot(x, y0), glm::dot(x, x0)) * 180.0 / PI;
+		if (ImGui::DragScalar("turn about the axis", ImGuiDataType_Double, &degrees, 0.25f, nullptr, nullptr, "%.3f deg")) {
+			const double a = degrees * PI / 180.0;
+			const glm::dvec3 turned = std::cos(a) * x0 + std::sin(a) * y0;
+			stack.orientation = glm::normalize(glm::quat_cast(glm::dmat3(turned, glm::cross(axis, turned), axis)));
+			changed = true;
+		}
+	} else {
+		glm::vec3 euler = glm::degrees(glm::eulerAngles(glm::quat(stack.orientation)));
+		if (ImGui::DragFloat3("rotation", &euler.x, 0.5f, 0.f, 0.f, "%.2f deg")) {
+			stack.orientation = glm::dquat(glm::quat(glm::radians(euler)));
+			changed = true;
+		}
+	}
+
+	// the whole stack as the render target, through the member the output window shows first
+	const auto first = std::find_if(m_optics.begin(), m_optics.end(), [&](const SceneOptic& o) { return o.stack == stack.id; });
+	const SceneOptic* target = findOptic(engine->m_raytracer.renderDetectorId());
+	if (target != nullptr && target->stack == stack.id) {
+		ImGui::TextDisabled("The render target: light tracing records every member");
+	} else if (first != m_optics.end() && ImGui::SmallButton("Render to this stack")) {
+		engine->m_raytracer.setRenderDetector(first->id);
+	}
+
+	// a gizmo each for the start, the end and the rotation, at the stack's middle
+	const char* parts[3] = { "Start", "End", "Rotation" };
+	for (int part = 0; part < 3; part++) {
+		const bool editing = gizmo.isEditing(stackGizmoTarget(stack.id, part));
+		if (part > 0) {
+			ImGui::SameLine();
+		}
+		if (ImGui::Button(fmt::format("{} {}", editing ? "Stop" : "Edit", parts[part]).c_str())) {
+			if (editing) {
+				gizmo.endEditing();
+			} else {
+				beginSensorStackGizmo(gizmo, stack.id, part);
+			}
+		}
+	}
+
+	// the slots: one material each, which every member shares
+	if (!opticTraits(stack.sensor.kind).slots.empty()) {
+		ImGui::SeparatorText("Materials");
+	}
+	for (size_t slot = 0; slot < opticTraits(stack.sensor.kind).slots.size(); slot++) {
+		const MaterialDef* material = findMaterial(stack.sensor.materials[slot]);
+		if (material == nullptr) {
+			continue;
+		}
+		ImGui::PushID((int)slot);
+		ImGui::TextUnformatted(opticTraits(stack.sensor.kind).slots[slot].name);
+		ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.3f);
+		ImGui::TextDisabled("%s", materialTraits(material->type).label);
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Edit")) {
+			openMaterial(material->id);
+		}
+		ImGui::PopID();
+	}
+
+	if (changed || !(stack == before)) {
+		resolveSensorStacks();
+		markChanged();
+	}
+	ImGui::PopID();
+}
+
+void RaytraceSceneEditor::beginSensorStackGizmo(TransformGizmo& gizmo, uint64_t id, int part)
+{
+	const SensorStack* stack = findSensorStack(id);
+	if (stack == nullptr) {
+		return;
+	}
+	// the start and the end move in world axes; the rotation turns about the axis alone while the sensors face along it
+	const bool aligned = stack->alignToAxis && sensorStackAxis(*stack) != glm::dvec3(0.0);
+	gizmo.beginEditing(
+		stackGizmoTarget(id, part),
+		[this, id, part]() -> std::optional<glm::mat4> {
+			const SensorStack* s = findSensorStack(id);
+			if (s == nullptr) {
+				return std::nullopt;
+			}
+			glm::dmat4 m = glm::mat4_cast(sensorStackOrientation(*s));
+			m[3] = glm::dvec4(part == 0 ? s->start : part == 1 ? s->end : 0.5 * (s->start + s->end), 1.0);
+			return glm::mat4(m);
+		},
+		[this, id, part](const glm::mat4& m) {
+			SensorStack* s = findSensorStack(id);
+			if (s == nullptr) {
+				return;
+			}
+			if (part < 2) {
+				// while the bench snaps (Alt inverts it) x and z fall on the breadboard's hole lines, each only as the drag moves
+				// it, so a drag along one line keeps to it; the height is free
+				glm::dvec3& point = part == 0 ? s->start : s->end;
+				const bool snap = m_bench.snap != ImGui::GetIO().KeyAlt;
+				const BenchGrid grid = benchGrid(m_bench);
+				const glm::dvec3 moved(m[3]);
+				const glm::vec3 was(point);
+				for (int axis = 0; axis < 3; axis++) {
+					if (was[axis] == m[3][axis]) {
+						continue;
+					}
+					if (snap && axis != 1) {
+						const int line = axis == 0 ? 0 : 1;
+						point[axis] = grid.first[line] + BREADBOARD_PITCH * std::round((moved[axis] - grid.first[line]) / BREADBOARD_PITCH);
+					} else {
+						point[axis] = moved[axis];
+					}
+				}
+			} else {
+				const glm::mat3 r(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])), glm::normalize(glm::vec3(m[2])));
+				s->orientation = glm::dquat(glm::quat_cast(r));
+			}
+			resolveSensorStacks();
+			markChanged();
+		},
+		part < 2 ? ImGuizmo::TRANSLATE : (aligned ? ImGuizmo::ROTATE_Z : ImGuizmo::ROTATE), part < 2 ? ImGuizmo::WORLD : ImGuizmo::LOCAL);
 }

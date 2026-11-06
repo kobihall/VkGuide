@@ -1,5 +1,8 @@
 #include <rt_renderer.h>
 
+#include <detectors_ui.h>
+#include <optic_detectors.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -9,6 +12,7 @@
 #include <implot.h>
 
 #include <file_dialog.h>
+#include <length_unit.h>
 #include <optic_laser.h>
 #include <render_export.h>
 #include <vk_readback.h>
@@ -42,6 +46,66 @@ const SceneCamera* RaytraceRenderer::resolveCamera(const RaytraceSceneEditor& ed
 	return camera;
 }
 
+namespace {
+
+// a detector's sensor as a camera (docs/plans/completed/physoptics-detectors.md): its center, facing the light it records
+// (its body's -z), its +y up, its size
+RTCameraSnapshot sensorSnapshot(const SceneOptic& detector)
+{
+	const DetectorGeometry g = detectorGeometry(detector);
+	const glm::dmat4& world = detector.world;
+	RTCameraSnapshot camera;
+	camera.kind = CameraKind::Sensor;
+	camera.lookFrom = glm::vec3(world * glm::dvec4(0.0, 0.0, 0.0, 1.0));
+	camera.lookAt = camera.lookFrom + glm::normalize(glm::vec3(world * glm::dvec4(0.0, 0.0, -1.0, 0.0)));
+	camera.vUp = glm::normalize(glm::vec3(world * glm::dvec4(0.0, 1.0, 0.0, 0.0)));
+	camera.sensorSize = glm::vec2((float)(2.0 * g.halfWidth), (float)(2.0 * g.halfHeight));
+	return camera;
+}
+
+// light tracing toward a detector with no camera: the square of pixel samples that emits the asked-for light paths a sample
+uint32_t lightPathSide(uint32_t paths)
+{
+	uint32_t side = 64;
+	while (side < 4096 && (uint64_t)side * side < paths) {
+		side *= 2;
+	}
+	return side;
+}
+
+}
+
+RaytraceRenderer::RenderTarget RaytraceRenderer::resolveTarget(VulkanEngine* engine, const RaytraceSceneEditor& editor, const RenderSettings& settings)
+{
+	RenderTarget target;
+	const SceneOptic* detector = m_renderDetectorId != 0 ? editor.findOptic(m_renderDetectorId) : nullptr;
+	if (detector != nullptr && isDetectorKind(detector->kind)) {
+		target.detector = detector;
+		if (m_kernels.integrator == IntegratorId::Light) {
+			//no camera: the light paths are the render's whole work, and its size only their count
+			const uint32_t side = lightPathSide(settings.lightPathsPerSample);
+			target.width = target.height = side;
+			if (const SceneCamera* camera = editor.findCamera(m_renderCameraId); camera != nullptr) {
+				target.snapshot = cameraSnapshot(*camera);
+			}
+		} else {
+			const DetectorGeometry g = detectorGeometry(*detector);
+			target.snapshot = sensorSnapshot(*detector);
+			target.width = g.pixelsX;
+			target.height = g.pixelsY;
+		}
+		return target;
+	}
+	m_renderDetectorId = 0;
+	target.camera = resolveCamera(editor);
+	if (target.camera != nullptr) {
+		target.snapshot = cameraSnapshot(*target.camera);
+	}
+	target.width = settings.matchViewport ? engine->m_drawExtent.width : (uint32_t)settings.width;
+	target.height = settings.matchViewport ? engine->m_drawExtent.height : (uint32_t)settings.height;
+	return target;
+}
+
 std::shared_ptr<const PiecewiseConstant2D> RaytraceRenderer::apertureTable(VulkanEngine* engine, const SceneCamera& camera)
 {
 	if (camera.apertureShape != ApertureShape::Image || camera.apertureImage.empty()) {
@@ -59,11 +123,12 @@ std::shared_ptr<const PiecewiseConstant2D> RaytraceRenderer::apertureTable(Vulka
 	return table;
 }
 
-RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const SceneCamera& camera)
+RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const RenderTarget& target)
 {
 	RenderKey key;
-	key.camera = cameraSnapshot(camera);
-	key.aperture = apertureTable(engine, camera).get();
+	key.camera = target.snapshot;
+	key.aperture = target.camera != nullptr ? apertureTable(engine, *target.camera).get() : nullptr;
+	key.detectorTarget = target.detector != nullptr ? target.detector->id : 0;
 	key.settings = m_settings;
 	//toggling the watch itself is not a reason to start over
 	key.settings.restartOnChange = false;
@@ -77,8 +142,8 @@ RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, c
 	key.environmentRotation = engine->m_environmentRotation;
 	key.background = engine->m_backgroundMode;
 	key.backgroundColor = engine->m_backgroundColor;
-	key.width = m_settings.matchViewport ? engine->m_drawExtent.width : (uint32_t)m_settings.width;
-	key.height = m_settings.matchViewport ? engine->m_drawExtent.height : (uint32_t)m_settings.height;
+	key.width = target.width;
+	key.height = target.height;
 	key.lightGroupCount = (uint32_t)editor.lightGroupNames().size();
 	key.environmentGroup = editor.environmentGroup();
 	return key;
@@ -86,6 +151,10 @@ RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, c
 
 void RaytraceRenderer::update(VulkanEngine* engine, const RaytraceSceneEditor& editor)
 {
+	if (m_discardPending) {
+		m_discardPending = false;
+		m_gpu.discardResult(engine);
+	}
 	//the render ends inside record(), by reaching maxSamples or by Stop; report it here
 	if (m_wasRunning && !m_gpu.isRunning()) {
 		m_lastRenderMs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - m_renderStart).count() / 1000.f;
@@ -104,6 +173,9 @@ void RaytraceRenderer::update(VulkanEngine* engine, const RaytraceSceneEditor& e
 	if (m_startRequested) {
 		m_startRequested = false;
 		startRender(engine, editor);
+		//Render shows what it renders: the output window opens, or its tab comes in front of the Viewport's
+		m_focusOutputWindow = !m_showOutputWindow || !m_outputWindowShown;
+		m_showOutputWindow = true;
 	}
 	m_wasRunning = m_gpu.isRunning();
 	if (m_gpu.isRunning()) {
@@ -114,8 +186,8 @@ void RaytraceRenderer::update(VulkanEngine* engine, const RaytraceSceneEditor& e
 	//environment is edited, a setting changes or the viewport is resized under "Match viewport",
 	//the render starts over. A finished or stopped render is left alone until the next Render
 	if (m_gpu.isRunning() && m_settings.restartOnChange) {
-		const SceneCamera* camera = resolveCamera(editor);
-		if (camera != nullptr && !(currentKey(engine, editor, *camera) == m_renderKey)) {
+		const RenderTarget target = resolveTarget(engine, editor, m_settings);
+		if (target.valid() && !(currentKey(engine, editor, target) == m_renderKey)) {
 			startRender(engine, editor);
 		}
 	}
@@ -202,7 +274,7 @@ RaytraceRenderer::RenderEstimate RaytraceRenderer::estimate(VulkanEngine* engine
 void RaytraceRenderer::drawMenuBarControls(VulkanEngine* engine, RaytraceSceneEditor& editor)
 {
 	const bool running = m_gpu.isRunning();
-	const SceneCamera* camera = resolveCamera(editor);
+	const bool hasTarget = resolveTarget(engine, editor, m_settings).valid();
 	const RenderEstimate cost = estimate(engine, editor);
 	const ImVec4 warning(1.f, 0.5f, 0.3f, 1.f);
 
@@ -217,7 +289,7 @@ void RaytraceRenderer::drawMenuBarControls(VulkanEngine* engine, RaytraceSceneEd
 			cancelRender();
 		}
 	} else {
-		ImGui::BeginDisabled(camera == nullptr);
+		ImGui::BeginDisabled(!hasTarget);
 		//over the budget the button warns, and asks before it starts: a frame that long does not fail as a slow render,
 		//it trips the GPU watchdog and takes the display driver down with it
 		if (cost.blocked) {
@@ -236,8 +308,8 @@ void RaytraceRenderer::drawMenuBarControls(VulkanEngine* engine, RaytraceSceneEd
 			ImGui::SetItemTooltip("Over the GPU watchdog budget: %.1e steps/frame against %.0e. Click to decide", cost.work, WORK_PER_FRAME_BUDGET);
 		}
 		ImGui::EndDisabled();
-		if (camera == nullptr) {
-			ImGui::SetItemTooltip("Add a camera in the Scene panel to render");
+		if (!hasTarget) {
+			ImGui::SetItemTooltip("Add a sensor in the Scene panel to render: a camera, or a detector");
 		}
 	}
 
@@ -298,21 +370,254 @@ void RaytraceRenderer::drawMenuBarControls(VulkanEngine* engine, RaytraceSceneEd
 	}
 }
 
+void RaytraceRenderer::drawOutputWindow(VulkanEngine* engine, const RaytraceSceneEditor& editor)
+{
+	DetectorFilms& films = m_gpu.detectors();
+	auto releasePictures = [&]() {
+		for (const DetectorFilms::Entry& entry : films.entries()) {
+			films.setPictureWanted(engine, entry.opticId, false);
+		}
+	};
+	m_outputWindowShown = false;
+	if (!m_showOutputWindow) {
+		releasePictures();
+		return;
+	}
+	ImGui::SetNextWindowSize(ImVec2(640.f, 480.f), ImGuiCond_FirstUseEver);
+	if (m_focusOutputWindow) {
+		ImGui::SetNextWindowFocus();
+		m_focusOutputWindow = false;
+	}
+	m_outputWindowShown = ImGui::Begin(OUTPUT_IMAGE_NAME, &m_showOutputWindow);
+	if (!m_outputWindowShown) {
+		releasePictures();
+		ImGui::End();
+		return;
+	}
+
+	//what it can show: the render's target, and every other detector light tracing recorded beside it
+	const bool rendered = m_hasDisplayImage && (m_gpu.isRunning() || m_gpu.hasImage());
+	const uint64_t target = rendered ? m_gpu.snapshot().detectorTarget : 0;
+	std::vector<uint64_t> others;
+	if (rendered && films.deposits()) {
+		for (const DetectorFilms::Entry& entry : films.entries()) {
+			//a detector the scene no longer has is not one to show
+			if (entry.opticId != target && editor.findOptic(entry.opticId) != nullptr) {
+				others.push_back(entry.opticId);
+			}
+		}
+	}
+	if (std::find(others.begin(), others.end(), m_shownDetector) == others.end()) {
+		m_shownDetector = 0;
+	}
+	auto label = [&](uint64_t id) -> std::string {
+		if (const SceneOptic* optic = editor.findOptic(id)) {
+			return fmt::format("{} ({})", optic->name, opticTraits(optic->kind).label);
+		}
+		if (id == 0) {
+			const SceneCamera* camera = editor.findCamera(m_renderCameraId);
+			return camera != nullptr ? camera->name : std::string("the render camera");
+		}
+		return "a detector";
+	};
+	// a sensor stack is one entry, and a slider below picks the member: the stack an id is a member of, 0 for none, and
+	// the stack's members the render recorded, in order
+	auto stackOf = [&](uint64_t id) -> uint64_t {
+		const SceneOptic* optic = id != 0 ? editor.findOptic(id) : nullptr;
+		return optic != nullptr ? optic->stack : 0;
+	};
+	auto recordedMembers = [&](uint64_t stackId) {
+		std::vector<uint64_t> members;
+		for (const SceneOptic& optic : editor.optics()) {
+			if (optic.stack == stackId && (optic.id == target || std::find(others.begin(), others.end(), optic.id) != others.end())) {
+				members.push_back(optic.id);
+			}
+		}
+		return members;
+	};
+	auto stackLabel = [&](uint64_t stackId) -> std::string {
+		const SensorStack* stack = editor.findSensorStack(stackId);
+		return stack != nullptr ? fmt::format("{} (Sensor stack, {} {})", stack->name, stack->count, opticTraits(stack->sensor.kind).plural)
+								: std::string("a sensor stack");
+	};
+	// shows a member: the target as 0, so that the combo's first entry stays selected for it
+	auto showMember = [&](uint64_t id) {
+		m_shownDetector = id == target ? 0 : id;
+		if (const uint64_t stackId = stackOf(id)) {
+			m_shownStackMember[stackId] = id;
+		}
+	};
+	const uint64_t current = m_shownDetector != 0 ? m_shownDetector : target;
+	const uint64_t currentStack = stackOf(current);
+	if (!others.empty()) {
+		const uint64_t targetStack = stackOf(target);
+		const std::string preview = currentStack != 0 ? stackLabel(currentStack) : label(current);
+		if (ImGui::BeginCombo("Showing", preview.c_str())) {
+			const std::string targetLabel = targetStack != 0 ? stackLabel(targetStack) : label(target);
+			if (ImGui::Selectable(fmt::format("{} (the render target)", targetLabel).c_str(), m_shownDetector == 0 || (targetStack != 0 && currentStack == targetStack))) {
+				m_shownDetector = 0;
+			}
+			std::vector<uint64_t> listedStacks { targetStack };
+			for (const uint64_t id : others) {
+				const uint64_t stackId = stackOf(id);
+				if (stackId == 0) {
+					if (ImGui::Selectable(label(id).c_str(), m_shownDetector == id)) {
+						m_shownDetector = id;
+					}
+					continue;
+				}
+				if (std::find(listedStacks.begin(), listedStacks.end(), stackId) != listedStacks.end()) {
+					continue;
+				}
+				listedStacks.push_back(stackId);
+				ImGui::PushID((int)stackId);
+				if (ImGui::Selectable(stackLabel(stackId).c_str(), currentStack == stackId)) {
+					// the member it showed last, else its first the render recorded
+					const std::vector<uint64_t> members = recordedMembers(stackId);
+					const auto last = m_shownStackMember.find(stackId);
+					const bool kept = last != m_shownStackMember.end() && std::find(members.begin(), members.end(), last->second) != members.end();
+					showMember(kept ? last->second : members.front());
+				}
+				ImGui::PopID();
+			}
+			ImGui::EndCombo();
+		}
+		ImGui::SetItemTooltip("What light tracing recorded: the render target, its sensor stack, and with render all sensors on every other detector");
+	}
+	// a stack's slider: which of its members shows
+	if (currentStack != 0) {
+		const std::vector<uint64_t> members = recordedMembers(currentStack);
+		const auto at = std::find(members.begin(), members.end(), current);
+		if (members.size() > 1 && at != members.end()) {
+			int index = (int)(at - members.begin());
+			if (ImGui::SliderInt("sensor", &index, 0, (int)members.size() - 1, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+				showMember(members[(size_t)index]);
+			}
+			// its place as the render recorded it, from the first member's
+			const SceneOptic* member = editor.findOptic(members[(size_t)index]);
+			const DetectorFilms::Entry* here = films.find(members[(size_t)index]);
+			const DetectorFilms::Entry* first = films.find(members.front());
+			if (member != nullptr && here != nullptr && first != nullptr) {
+				ImGui::SameLine();
+				ImGui::TextDisabled("%s, %s from the start%s", member->name.c_str(), formatLength(glm::length(glm::dvec3(here->record.origin) - glm::dvec3(first->record.origin))).c_str(),
+					member->id == target ? " (the render target)" : "");
+			}
+		}
+	}
+	const uint64_t shown = m_shownDetector != 0 ? m_shownDetector : target;
+	DetectorFilms::Entry* entry = shown != 0 ? films.find(shown) : nullptr;
+	//a light-traced detector's picture is made from its film while it shows; a camera-path target's is the render's
+	const bool detectorPicture = entry != nullptr && !entry->cameraPaths && entry->geometry.imaging;
+	for (const DetectorFilms::Entry& e : films.entries()) {
+		films.setPictureWanted(engine, e.opticId, detectorPicture && e.opticId == shown);
+	}
+
+	if (!rendered) {
+		ImGui::TextDisabled("Nothing rendered yet: Render in the menu bar");
+		ImGui::End();
+		return;
+	}
+	ImTextureID texture = 0;
+	ImVec2 pixels(0.f, 0.f);
+	if (entry == nullptr || entry->cameraPaths) {
+		texture = engine->m_displayRegistry.textureId(OUTPUT_IMAGE_NAME);
+		pixels = ImVec2((float)m_displayImage.imageExtent.width, (float)m_displayImage.imageExtent.height);
+	} else if (detectorPicture) {
+		drawDetectorPictureSettings(*entry);
+		// a sensor stack is one sensor slid along an axis: every member's picture shows as the one in front does
+		if (const uint64_t stackId = stackOf(shown)) {
+			for (const SceneOptic& optic : editor.optics()) {
+				DetectorFilms::Entry* member = optic.stack == stackId && optic.id != shown ? films.find(optic.id) : nullptr;
+				if (member != nullptr) {
+					member->view = entry->view;
+				}
+			}
+		}
+		texture = films.pictureTexture(engine, shown);
+		pixels = ImVec2((float)entry->record.pixelsX, (float)entry->record.pixelsY);
+	}
+	//the picture over the window's width, or above the readings when a detector shows
+	int hoverX = -1;
+	int hoverY = -1;
+	if (texture != 0 && pixels.x > 0.f && pixels.y > 0.f) {
+		const ImVec2 avail = ImGui::GetContentRegionAvail();
+		const float room = entry != nullptr ? avail.y * 0.6f : avail.y;
+		const float scale = std::max(std::min(avail.x / pixels.x, room / pixels.y), 1e-3f);
+		const ImVec2 size(pixels.x * scale, pixels.y * scale);
+		const ImVec2 corner = ImGui::GetCursorScreenPos();
+		ImGui::Image(texture, size);
+		if (ImGui::IsItemHovered() && entry != nullptr) {
+			const ImVec2 mouse = ImGui::GetIO().MousePos;
+			hoverX = std::clamp((int)((mouse.x - corner.x) / scale), 0, (int)pixels.x - 1);
+			hoverY = std::clamp((int)pixels.y - 1 - (int)((mouse.y - corner.y) / scale), 0, (int)pixels.y - 1);
+		}
+	}
+	if (entry != nullptr && ImGui::BeginChild("##readings")) {
+		drawDetectorReadout(engine, *entry, hoverX, hoverY);
+	}
+	if (entry != nullptr) {
+		ImGui::EndChild();
+	}
+	ImGui::End();
+}
+
 void RaytraceRenderer::drawCameraCombo(const RaytraceSceneEditor& editor)
 {
-	//which scene camera to render from; a change restarts under restart-on-change like any other
-	const SceneCamera* camera = resolveCamera(editor);
-	if (ImGui::BeginCombo("Camera", camera != nullptr ? camera->name.c_str() : "(no camera in scene)")) {
+	//what the render looks through: a scene camera, or a detector (docs/plans/completed/physoptics-detectors.md), the Scene
+	//panel's Sensors. A change restarts under restart-on-change like any other
+	const SceneOptic* detector = m_renderDetectorId != 0 ? editor.findOptic(m_renderDetectorId) : nullptr;
+	const SceneCamera* camera = detector == nullptr ? resolveCamera(editor) : nullptr;
+	// a sensor stack is one target: its entry targets the member the output window shows first, and records them all
+	auto stackLabel = [&](const SensorStack& stack) { return fmt::format("{} (Sensor stack, {} {})", stack.name, stack.count, opticTraits(stack.sensor.kind).plural); };
+	const SensorStack* targetStack = detector != nullptr && detector->stack != 0 ? editor.findSensorStack(detector->stack) : nullptr;
+	const std::string current = targetStack != nullptr ? stackLabel(*targetStack)
+	                            : detector != nullptr ? fmt::format("{} ({})", detector->name, opticTraits(detector->kind).label)
+	                            : camera != nullptr ? camera->name : std::string("(no sensor in scene)");
+	if (ImGui::BeginCombo("Render target", current.c_str())) {
 		for (const SceneCamera& candidate : editor.cameras()) {
 			ImGui::PushID((int)candidate.id);
-			if (ImGui::Selectable(candidate.name.c_str(), candidate.id == m_renderCameraId)) {
-				m_renderCameraId = candidate.id;
+			if (ImGui::Selectable(candidate.name.c_str(), detector == nullptr && candidate.id == m_renderCameraId)) {
+				setRenderCamera(candidate.id);
+			}
+			ImGui::PopID();
+		}
+		bool first = true;
+		for (const SceneOptic& candidate : editor.optics()) {
+			if (!isDetectorKind(candidate.kind) || candidate.stack != 0) {
+				continue;
+			}
+			if (first && !editor.cameras().empty()) {
+				ImGui::Separator();
+			}
+			first = false;
+			ImGui::PushID((int)candidate.id);
+			if (ImGui::Selectable(fmt::format("{} ({})", candidate.name, opticTraits(candidate.kind).label).c_str(), candidate.id == m_renderDetectorId)) {
+				setRenderDetector(candidate.id);
+			}
+			ImGui::PopID();
+		}
+		for (const SensorStack& stack : editor.sensorStacks()) {
+			const auto member = std::find_if(editor.optics().begin(), editor.optics().end(), [&](const SceneOptic& o) { return o.stack == stack.id; });
+			if (member == editor.optics().end()) {
+				continue;
+			}
+			if (first && !editor.cameras().empty()) {
+				ImGui::Separator();
+			}
+			first = false;
+			ImGui::PushID((int)stack.id);
+			if (ImGui::Selectable(stackLabel(stack).c_str(), targetStack == &stack) && targetStack != &stack) {
+				setRenderDetector(member->id);
 			}
 			ImGui::PopID();
 		}
 		ImGui::EndCombo();
 	}
-	ImGui::SetItemTooltip("The scene camera the render looks through. Its lens and exposure are in the Scene panel");
+	ImGui::SetItemTooltip("The sensor the render records: a camera, whose lens and exposure are in the Scene panel, a detector, whose\n"
+		"film is its own pixels, or a sensor stack, whose members light tracing records together");
+	ImGui::Checkbox("render all sensors", &m_settings.renderAllSensors);
+	ImGui::SetItemTooltip("Light tracing records every detector in the scene beside the render target. Off, it records the target alone,\n"
+		"or every member of the target's sensor stack, and a camera target records no detector");
 }
 
 void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEditor& editor)
@@ -325,8 +630,16 @@ void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEdit
 		return;
 	}
 
-	if (const SceneCamera* camera = resolveCamera(editor)) {
-		m_cameraConnects = cameraConnects(buildCameraFrame(cameraSnapshot(*camera), (uint32_t)m_settings.width, (uint32_t)m_settings.height));
+	{
+		const RenderTarget target = resolveTarget(engine, editor, m_settings);
+		m_targetIsDetector = target.detector != nullptr;
+		m_detectorTargetPixels = glm::uvec2(0u);
+		if (target.detector != nullptr) {
+			const DetectorGeometry g = detectorGeometry(*target.detector);
+			m_detectorTargetPixels = glm::uvec2(g.pixelsX, g.pixelsY);
+		} else if (target.camera != nullptr) {
+			m_cameraConnects = cameraConnects(buildCameraFrame(target.snapshot, target.width, target.height));
+		}
 	}
 	drawIntegratorCombo();
 	//only light tracing starts paths at a laser (docs/plans/completed/physoptics-laser-sources.md)
@@ -376,6 +689,30 @@ void RaytraceRenderer::drawSettingsPanel(VulkanEngine* engine, RaytraceSceneEdit
 }
 
 void RaytraceRenderer::drawSettings(VulkanEngine* engine)
+{
+	//a detector target's film is its own pixels; light tracing toward one, with no camera, emits a set number of paths
+	if (m_targetIsDetector) {
+		ImGui::TextDisabled("Film: %u x %u pixels, the detector's own", m_detectorTargetPixels.x, m_detectorTargetPixels.y);
+		if (m_kernels.integrator == IntegratorId::Light) {
+			static const uint32_t SIDES[] = { 256, 512, 1024, 2048 };
+			const uint32_t side = lightPathSide(m_settings.lightPathsPerSample);
+			if (ImGui::BeginCombo("Light paths per sample", fmt::format("{} x {} ({:.2g} million)", side, side, side * side / 1e6).c_str())) {
+				for (const uint32_t candidate : SIDES) {
+					if (ImGui::Selectable(fmt::format("{} x {} ({:.2g} million)", candidate, candidate, candidate * candidate / 1e6).c_str(), candidate == side)) {
+						m_settings.lightPathsPerSample = candidate * candidate;
+					}
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SetItemTooltip("With no camera to size the render, how many light paths each sample emits. Every detector in the scene records them");
+		}
+	} else {
+		drawResolution(engine);
+	}
+	drawSamplingSettings(engine);
+}
+
+void RaytraceRenderer::drawResolution(VulkanEngine* engine)
 {
 	std::string resolutionLabel;
 	if (m_resolutionChoice == RESOLUTION_VIEWPORT) {
@@ -428,7 +765,11 @@ void RaytraceRenderer::drawSettings(VulkanEngine* engine)
 		}
 		ImGui::TextDisabled("Width x height, %d to %d", MIN_RENDER_DIMENSION, MAX_RENDER_DIMENSION);
 	}
+}
 
+void RaytraceRenderer::drawSamplingSettings(VulkanEngine* engine)
+{
+	(void)engine;
 	ImGui::Checkbox("Anti-aliasing", &m_settings.antialiasing);
 	if (!m_settings.antialiasing) {
 		ImGui::SameLine();
@@ -557,18 +898,30 @@ RenderSettings RaytraceRenderer::renderSettings(VulkanEngine* engine) const
 
 void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEditor& editor)
 {
-	const SceneCamera* camera = resolveCamera(editor);
-	if (camera == nullptr) {
+	//a render of the new scene replaces the old one's readings itself
+	m_discardPending = false;
+	//the settings as this render will use them, the film the target's
+	RenderSettings settings = renderSettings(engine);
+	const RenderTarget target = resolveTarget(engine, editor, settings);
+	if (!target.valid()) {
 		return;
 	}
-
-	//the settings as this render will use them
-	const RenderSettings settings = renderSettings(engine);
+	settings.width = (int)target.width;
+	settings.height = (int)target.height;
+	settings.matchViewport = false;
 
 	//light paths reach the camera through its importance, which only a perspective camera without a tilt has, as only
-	//pbrt's perspective camera has (src/camera_model.h cameraConnects())
+	//pbrt's perspective camera has (src/camera_model.h cameraConnects()). A detector target has none: light tracing
+	//deposits on it, and the camera-path integrators render it through its sensor
 	const IntegratorInfo& integrator = m_kernels.selectedIntegrator();
-	if (integrator.bidirectional && !cameraConnects(buildCameraFrame(cameraSnapshot(*camera), (uint32_t)settings.width, (uint32_t)settings.height))) {
+	if (target.detector != nullptr && integrator.bidirectional && integrator.id != IntegratorId::Light) {
+		m_blockedReason = fmt::format("{} needs a camera to connect to, and the render target is a detector. Render it with Light tracing or the path tracer",
+			integrator.name);
+		fmt::println("RaytraceRenderer: render refused - {}", m_blockedReason);
+		m_gpu.stop();
+		return;
+	}
+	if (target.camera != nullptr && integrator.bidirectional && !cameraConnects(buildCameraFrame(target.snapshot, (uint32_t)settings.width, (uint32_t)settings.height))) {
 		m_blockedReason = fmt::format("{} connects light paths to the camera, which needs a perspective camera without a tilt. Choose another camera or integrator",
 			integrator.name);
 		fmt::println("RaytraceRenderer: render refused - {}", m_blockedReason);
@@ -612,8 +965,10 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	GpuRenderSnapshot snapshot;
 	snapshot.width = (uint32_t)settings.width;
 	snapshot.height = (uint32_t)settings.height;
-	snapshot.camera = cameraSnapshot(*camera);
-	snapshot.apertureTable = apertureTable(engine, *camera);
+	snapshot.camera = target.snapshot;
+	snapshot.apertureTable = target.camera != nullptr ? apertureTable(engine, *target.camera) : nullptr;
+	snapshot.detectorTarget = target.detector != nullptr ? target.detector->id : 0;
+	snapshot.cameraConnections = target.camera != nullptr;
 	//shared, not copied: the tracer compares it by pointer to decide whether it needs re-uploading
 	snapshot.scene = m_sceneAccel;
 	snapshot.settings = settings;
@@ -636,7 +991,7 @@ void RaytraceRenderer::startRender(VulkanEngine* engine, const RaytraceSceneEdit
 	keepConvergenceCurve();
 	m_curveLabel = convergenceLabel();
 
-	m_renderKey = currentKey(engine, editor, *camera);
+	m_renderKey = currentKey(engine, editor, target);
 	m_hasRender = true;
 	m_renderStart = std::chrono::steady_clock::now();
 	m_throughput.clear();
@@ -655,7 +1010,7 @@ void RaytraceRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const R
 
 	//the render camera's exposure, live: it is display-only, so it changes the picture without
 	//restarting the render
-	const SceneCamera* camera = editor.findCamera(m_renderCameraId);
+	const SceneCamera* camera = m_renderDetectorId == 0 ? editor.findCamera(m_renderCameraId) : nullptr;
 	const float exposure = camera != nullptr ? std::max(camera->exposure, 0.f) : 1.f;
 	//Relight's gains are the camera's, display only, read every frame whether or not the panel is open
 	if (camera != nullptr) {
@@ -738,8 +1093,21 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 	textureContext.library = &engine->m_textureLibrary;
 	textureContext.modelTexturesFromLibrary = m_settings.textureStorage == TextureStorage::Native;
 	textureContext.revision = engine->m_textureLibrary.revision();
+	//the detectors the render records: every one, or the target and its sensor stack's members (none for a camera)
+	std::optional<std::vector<uint64_t>> recorded;
+	if (!m_settings.renderAllSensors) {
+		recorded.emplace();
+		const SceneOptic* target = m_renderDetectorId != 0 ? editor.findOptic(m_renderDetectorId) : nullptr;
+		if (target != nullptr && isDetectorKind(target->kind)) {
+			for (const SceneOptic& optic : editor.optics()) {
+				if (optic.id == target->id || (target->stack != 0 && optic.stack == target->stack)) {
+					recorded->push_back(optic.id);
+				}
+			}
+		}
+	}
 	const bool sameBuild = m_hasSceneAccel && m_sceneAccelModelRevision == engine->m_sceneRevision && m_sceneAccelRevision == m_accelRevision
-		&& m_sceneAccelEnvironment == environment && m_sceneAccelSpectral == spectral && m_sceneAccelTextures == textureContext;
+		&& m_sceneAccelEnvironment == environment && m_sceneAccelSpectral == spectral && m_sceneAccelTextures == textureContext && m_sceneAccelRecorded == recorded;
 	if (sameBuild && m_sceneAccelContentRevision == editor.contentRevision()) {
 		return;
 	}
@@ -768,7 +1136,9 @@ void RaytraceRenderer::ensureSceneAccel(VulkanEngine* engine, const RaytraceScen
 		}
 	}
 	m_sceneAccel = buildSceneAccel(m_blasSet, m_geometry, meshData, editor.meshObjects(), editor.shapes(), editor.lights(), editor.materials(), modelMaterialIds,
-		environment, engine->m_raytraceTextures, spectral, editor.optics(), &engine->m_opticalLibrary, bench.empty() ? nullptr : &bench, textureContext);
+		environment, engine->m_raytraceTextures, spectral, editor.optics(), &engine->m_opticalLibrary, bench.empty() ? nullptr : &bench, textureContext,
+		recorded ? &*recorded : nullptr);
+	m_sceneAccelRecorded = std::move(recorded);
 	m_sceneAccelSpectral = spectral;
 	m_sceneAccelTextures = textureContext;
 	m_sceneAccelOptics = editor.optics();
@@ -911,6 +1281,32 @@ IoResult RaytraceRenderer::exportRender(VulkanEngine* engine, const RaytraceScen
 			return IoResult::failure("There is no render to save");
 		}
 		const ImageIoStatus status = saveImage8(path, display);
+		return status.ok ? IoResult::success(status.message) : IoResult::failure(status.message);
+	}
+
+	//light tracing toward a detector has no camera picture: the file is the detector's film, in watts per pixel (its
+	//channels, or its one channel in each of R, G and B), row 0 at the sensor's top (docs/plans/completed/physoptics-detectors.md)
+	DetectorFilms& films = m_gpu.detectors();
+	if (m_gpu.snapshot().detectorTarget != 0 && films.deposits()) {
+		const DetectorFilms::Entry* entry = films.readNow(engine) ? films.find(m_gpu.snapshot().detectorTarget) : nullptr;
+		if (entry == nullptr) {
+			return IoResult::failure("There is no detector film to save");
+		}
+		Image film;
+		film.width = entry->record.pixelsX;
+		film.height = entry->record.pixelsY;
+		film.rgb.assign(film.pixelCount() * 3, 0.f);
+		const uint32_t channels = entry->record.channels;
+		for (uint32_t row = 0; row < film.height; row++) {
+			for (uint32_t x = 0; x < film.width; x++) {
+				const size_t pixel = (size_t)(film.height - 1 - row) * film.width + x;
+				for (uint32_t c = 0; c < 3; c++) {
+					const size_t f = pixel * channels + (channels == 3 ? c : 0);
+					film.rgb[((size_t)row * film.width + x) * 3 + c] = f < entry->channels.size() ? (float)entry->channels[f] : 0.f;
+				}
+			}
+		}
+		const ImageIoStatus status = saveImage(path, film);
 		return status.ok ? IoResult::success(status.message) : IoResult::failure(status.message);
 	}
 
@@ -1163,8 +1559,9 @@ bool RaytraceRenderer::drawIntegratorCombo()
 	const IntegratorInfo& selected = m_kernels.selectedIntegrator();
 	if (ImGui::BeginCombo("Integrator", selected.name)) {
 		for (const IntegratorInfo& info : integrators()) {
-			//a light path reaches the camera only through a perspective one without a tilt
-			const bool blocked = info.bidirectional && !m_cameraConnects;
+			//a light path reaches the camera only through a perspective one without a tilt; to a detector target only through
+			//light tracing's deposits, which the light vertex cache and pbrt 3's BDPT do not make
+			const bool blocked = m_targetIsDetector ? (info.bidirectional && info.id != IntegratorId::Light) : (info.bidirectional && !m_cameraConnects);
 			ImGui::BeginDisabled(blocked && info.id != m_kernels.integrator);
 			if (ImGui::Selectable(info.name, info.id == m_kernels.integrator)) {
 				changed = info.id != m_kernels.integrator;
@@ -1172,7 +1569,9 @@ bool RaytraceRenderer::drawIntegratorCombo()
 			}
 			ImGui::EndDisabled();
 			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-				ImGui::SetTooltip("%s%s", info.description, blocked ? "\n\nConnects light paths to the camera, which needs a perspective camera without a tilt: the render camera is not one." : "");
+				ImGui::SetTooltip("%s%s", info.description, !blocked ? ""
+					: m_targetIsDetector ? "\n\nNeeds a camera to connect to: the render target is a detector, which light tracing and the path tracer render."
+					: "\n\nConnects light paths to the camera, which needs a perspective camera without a tilt: the render camera is not one.");
 			}
 		}
 		ImGui::EndCombo();
@@ -1987,7 +2386,19 @@ void RaytraceRenderer::ensureDisplayImage(VulkanEngine* engine, uint32_t width, 
 		vkutil::transition_image(cmd, m_displayImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	});
 
-	engine->m_displayRegistry.registerImage(OUTPUT_IMAGE_NAME, m_displayImage.imageView, { width, height });
+	//the Raytraced Output window draws it (drawOutputWindow()), with a detector's readings when it shows one
+	engine->m_displayRegistry.registerTexture(OUTPUT_IMAGE_NAME, m_displayImage.imageView, { width, height });
+}
+
+void RaytraceRenderer::discardRender(VulkanEngine*)
+{
+	//the file actions run between the imgui frame and the draw, whose draw data already names the detector pictures: they are
+	//destroyed at the next update(), before the next frame's ui is built. A render stops now
+	m_gpu.stop();
+	m_discardPending = true;
+	m_shownDetector = 0;
+	m_shownStackMember.clear();
+	m_renderDetectorId = 0;
 }
 
 void RaytraceRenderer::destroyDisplayImage(VulkanEngine* engine)

@@ -617,6 +617,34 @@ double projectOntoBand(const std::function<double(double)>& f, const Band& band)
 	return weight > 0.0 ? sum / weight : 0.0;
 }
 
+double projectLineOntoBand(LineProfile profile, double center, double fwhm, double scale, const Band& band)
+{
+	constexpr double PI_D = 3.14159265358979323846;
+	if (!(fwhm > 0.0)) {
+		return 0.0;
+	}
+	if (band.sigma > 0.f) {
+		const double sb = band.sigma;
+		const double x = center - band.center;
+		// the line's width adds to the basis's in quadrature: exactly so for a Gaussian line
+		const double s = profile == LineProfile::Gaussian ? fwhm / 2.3548200450309493 : 0.0;
+		const double var = sb * sb + s * s;
+		return scale * std::exp(-0.5 * x * x / var) / std::sqrt(2.0 * PI_D * var);
+	}
+	const double width = band.hi - band.lo;
+	if (!(width > 0.0)) {
+		return 0.0;
+	}
+	auto cdf = [&](double lambda) {
+		const double x = lambda - center;
+		if (profile == LineProfile::Lorentzian) {
+			return 0.5 + std::atan(x / (0.5 * fwhm)) / PI_D;
+		}
+		return 0.5 * (1.0 + std::erf(x / (fwhm / 2.3548200450309493 * std::sqrt(2.0))));
+	};
+	return scale * (cdf(band.hi) - cdf(band.lo)) / width;
+}
+
 //---------------------------------------------------------------- to the film
 
 glm::vec3 lanesToRgb(std::span<const float> values, const SampledWavelengths& wavelengths, const SpectralSettings& settings, std::span<const Band> bands)
@@ -710,8 +738,14 @@ std::vector<uint32_t> packSpectrumRef(const SpectrumRef& ref, SpectrumRole role,
 	//a band representation projects every reference on the CPU; a scalar (an index) is read at the band's center
 	auto bandValues = [&](std::vector<uint32_t>& out) {
 		for (const Band& band : bands) {
-			const double value = role == SpectrumRole::Scalar ? evalSpectrumRef(ref, role, context, band.center)
-															: projectOntoBand([&](double l) { return evalSpectrumRef(ref, role, context, l); }, band);
+			double value = role == SpectrumRole::Scalar ? evalSpectrumRef(ref, role, context, band.center)
+														: projectOntoBand([&](double l) { return evalSpectrumRef(ref, role, context, l); }, band);
+			//a line from its closed form, times whatever the role normalizes it by (evalSpectrumRef()'s over the raw line's)
+			if (ref.kind == SpectrumKind::Line && role != SpectrumRole::Scalar) {
+				const double raw = evalSpectrumRefRaw(ref, ref.value);
+				const double normalization = raw > 0.0 ? evalSpectrumRef(ref, role, context, ref.value) / raw : 1.0;
+				value = normalization * projectLineOntoBand(ref.profile, ref.value, ref.width, ref.scale, band);
+			}
 			out.push_back(bitsOf((float)value));
 		}
 	};

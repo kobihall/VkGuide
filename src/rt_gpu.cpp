@@ -374,6 +374,8 @@ void GpuRenderer::init(VulkanEngine* engine)
 	}
 	//and the outputs' bindings: stubs until a render keeps any
 	ensureOutputs(engine, 1, 1);
+	//the detectors' records and films: stubs until a scene has a detector
+	m_detectors.init(engine, m_resources);
 	//the environment tables' binding must always name a buffer, a map or no map
 	uploadEnvironment(engine, nullptr);
 	uploadImageDistributions(engine, nullptr, nullptr);
@@ -390,6 +392,7 @@ void GpuRenderer::destroy(VulkanEngine* engine)
 		m_scheduleActive = false;
 	}
 	m_pool.destroy(engine, m_resources);
+	m_detectors.destroy(engine, m_resources);
 	freeFilm(engine);
 
 	if (m_opticBuffer.buffer != VK_NULL_HANDLE) {
@@ -1335,8 +1338,9 @@ void GpuRenderer::uploadScene(VulkanEngine* engine)
 	}
 
 	m_uploadedScene = scene;
-	fmt::println("GpuRenderer: scene uploaded - {} instance(s) ({} shape(s), {} unbounded), {} material(s), {} TLAS node(s), {} light(s), {:.2f} MB",
-		instances, scene != nullptr ? scene->shapeCount : 0, m_unboundedCount, materials, tlasWords / 4, scene != nullptr ? scene->lights.header.count : 0, double(totalBytes) / (1024.0 * 1024.0));
+	fmt::println("GpuRenderer: scene uploaded - {} instance(s) ({} shape(s), {} unbounded), {} material(s), {} TLAS node(s), {} light(s), {} detector(s) recorded, {:.2f} MB",
+		instances, scene != nullptr ? scene->shapeCount : 0, m_unboundedCount, materials, tlasWords / 4, scene != nullptr ? scene->lights.header.count : 0,
+		scene != nullptr ? scene->detectors.size() : 0, double(totalBytes) / (1024.0 * 1024.0));
 }
 
 void GpuRenderer::uploadEnvironment(VulkanEngine* engine, const std::shared_ptr<const EnvironmentDistribution>& environment)
@@ -1679,6 +1683,11 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 	uploadEnvironment(engine, m_snapshot.environment);
 	uploadImageDistributions(engine, m_snapshot.scene, m_snapshot.camera.apertureShape == ApertureShape::Image ? m_snapshot.apertureTable : nullptr);
 	uploadSpectral(engine);
+	//light tracing alone deposits on detectors: the only integrator whose paths start at the lasers
+	//a detector target the camera paths render is the render's own film (CameraKind::Sensor)
+	const bool deposits = integratorRunsStage(m_activeIntegrator, KernelSlot::DepositOnDetectors);
+	m_detectors.start(engine, m_resources, m_snapshot.scene, m_snapshot.settings.spectral, deposits, deposits ? 0 : m_snapshot.detectorTarget);
+	m_lastDetectorCopy = 0.0;
 	preparePipelines(engine, m_snapshot.kernels);
 	m_schedules[(size_t)m_activeIntegrator]->start(*this, engine);
 	m_scheduleActive = true;
@@ -1701,6 +1710,13 @@ void GpuRenderer::start(VulkanEngine* engine, GpuRenderSnapshot snapshot)
 void GpuRenderer::stop()
 {
 	m_running = false;
+}
+
+void GpuRenderer::discardResult(VulkanEngine* engine)
+{
+	m_running = false;
+	m_hasImage = false;
+	m_detectors.discard(engine);
 }
 
 uint32_t GpuRenderer::samplesPerFrame() const
@@ -1899,6 +1915,8 @@ void GpuRenderer::recordReference(VkCommandBuffer cmd, VulkanEngine* engine, uin
 
 void GpuRenderer::collectReadbacks(VulkanEngine* engine, uint32_t slot)
 {
+	m_detectors.collect(engine, slot);
+
 	//the reference measurement is read whether or not a render ran in the slot: a finished render
 	//is still measured against a reference captured after it
 	if (m_slotErrorGroups[slot] > 0) {
@@ -2073,6 +2091,7 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 			if (m_lightGroupCount > 0 || m_spectralBuckets > 0) {
 				vkCmdFillBuffer(cmd, m_channelSums.buffer, 0, VK_WHOLE_SIZE, 0);
 			}
+			m_detectors.recordClear(cmd);
 		}
 		//every kernel that traces adds its work to these, per frame
 		vkCmdFillBuffer(cmd, m_traversalStats.buffer, 0, VK_WHOLE_SIZE, 0);
@@ -2106,9 +2125,24 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 
 		m_slotRender[slot] = m_renderSerial;
 
-		m_samplesAccumulated += samplesPerFrame();
+		const uint32_t frameSamples = samplesPerFrame();
+		m_samplesAccumulated += frameSamples;
 		if (m_maxSamples > 0 && m_samplesAccumulated >= m_maxSamples) {
 			m_running = false;
+		}
+		//the detectors fold the frame's light paths, one a pixel sample, and copy their films back twice a second and when
+		//the render ends
+		if (m_detectors.deposits() || m_detectors.cameraPathTarget() != 0) {
+			const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+			const bool copy = !m_running || m_detectors.filmRequested() || now - m_lastDetectorCopy >= 0.5;
+			if (copy) {
+				m_lastDetectorCopy = now;
+			}
+			if (m_detectors.deposits()) {
+				m_detectors.recordFrame(cmd, engine, slot, (double)frameSamples * m_snapshot.width * m_snapshot.height, copy);
+			} else {
+				m_detectors.recordSensorCopy(cmd, engine, slot, m_accumulation, copy);
+			}
 		}
 	}
 
@@ -2122,6 +2156,7 @@ void GpuRenderer::record(VkCommandBuffer cmd, VulkanEngine* engine, const Alloca
 		}
 		engine->m_tonemapPass.dispatch(cmd, engine->m_device, engine->getCurrentFrame().frameDescriptors, relit ? m_relit : m_accumulation, displayImage, exposure, tonemapDisplay());
 		recordAovViews(cmd, engine);
+		m_detectors.recordViews(cmd, engine);
 		if (analysisView != CrtAnalysisView::None) {
 			recordAnalysis(cmd, engine, displayImage);
 		}
@@ -2154,5 +2189,6 @@ GpuMemoryUse GpuRenderer::memoryUse(VmaAllocator allocator) const
 	use.scene = sum({ m_geometryBuffer.allocation, m_sceneBuffer.allocation, m_opticBuffer.allocation, m_environmentBuffer.allocation });
 	use.other = sum({ m_spectralData.allocation, m_upliftBuffer.allocation, m_samplerTableBuffer.allocation, m_reference.allocation, m_errorPartials.allocation,
 		m_errorReadback.allocation, m_traversalStats.allocation, m_statsReadback.allocation });
+	use.other += m_detectors.deviceBytes(allocator);
 	return use;
 }

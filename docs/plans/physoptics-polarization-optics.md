@@ -50,7 +50,7 @@ Nothing new is needed for a polarizing beamsplitter beyond the coating tables of
 
 ### Measuring polarization
 
-- A detector option, **Polarimeter**, makes a film store all four Stokes components per pixel per channel, and its window shows `s₀`, the degree of polarization, the azimuth and the ellipticity as images ([physoptics-detectors.md](physoptics-detectors.md)).
+- A detector option, **Polarimeter**, makes a film store all four Stokes components per pixel per channel, and its window shows `s₀`, the degree of polarization, the azimuth and the ellipticity as images ([physoptics-detectors.md](completed/physoptics-detectors.md)).
 - The Beam window shows the solver's polarization ellipse at the probe, and its power in each port of a splitter.
 
 ## Registry, bindings and data

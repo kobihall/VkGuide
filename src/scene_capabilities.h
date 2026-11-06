@@ -72,6 +72,9 @@ struct CapabilityInfo {
 	// the Scene panel: folders after Models in the object tree, entries in + Add, and lines under the status line
 	void (*sceneFolders)(VulkanEngine*);
 	void (*addMenu)(VulkanEngine*);
+	// the sensors it adds: items after the cameras in + Add -> Sensor, and folders after the cameras' in the Sensors folder
+	void (*sensorMenu)(VulkanEngine*);
+	void (*sensorFolders)(VulkanEngine*);
 	void (*sceneStatus)(VulkanEngine*);
 	// the menu bar: whole menus after Windows, and items in File before Export Render
 	void (*menus)(VulkanEngine*);

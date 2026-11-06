@@ -46,9 +46,19 @@ enum class OpticKind : uint8_t {
 	PlateWedge,
 	RoundWedge,
 	// a source (docs/plans/completed/physoptics-laser-sources.md): its body is its output aperture, and it is a light
-	Laser
+	Laser,
+	// the detectors (docs/plans/completed/physoptics-detectors.md, src/optic_detectors.h): each body is one flat sensor
+	// that records the light paths reaching its front. A probe plane is not geometry at all
+	PowerMeter,
+	CameraSensor,
+	BeamProfiler,
+	AlignmentCard,
+	Screen,
+	Spectrometer,
+	BeamDump,
+	ProbePlane
 };
-inline constexpr size_t OPTIC_KIND_COUNT = 14;
+inline constexpr size_t OPTIC_KIND_COUNT = 22;
 
 // the most material slots a kind has
 inline constexpr size_t MAX_OPTIC_MATERIAL_SLOTS = 4;
@@ -110,7 +120,11 @@ enum class SlotDefault : uint8_t {
 	// black anodized metal: diffuse, reflectance 0.04 (an iris's blades)
 	Black,
 	// a laser's output aperture (MaterialType::LaserAperture), which emits the element's beam
-	LaserAperture
+	LaserAperture,
+	// a detector's sensor (MaterialType::Detector), which ends every path that reaches it
+	Sensor,
+	// a card's or a screen's face: pbrt's diffuse, white
+	WhiteDiffuse
 };
 struct MaterialSlot {
 	const char* name;
@@ -144,8 +158,12 @@ struct SceneOptic {
 	// the body frame -> world, derived from the mount by opticWorldTransform() (src/optic_bench.h) each time the editor
 	// resolves the bench; never saved. Rounded to float for the GPU
 	glm::dmat4 world { 1.0 };
-	// the library entries the element owns, by slot; 0 for a slot the kind does not have
+	// the library entries the element owns, by slot; 0 for a slot the kind does not have. A sensor stack's member shares
+	// its stack's, which the stack owns
 	std::array<uint64_t, MAX_OPTIC_MATERIAL_SLOTS> materials {};
+	// the sensor stack (src/optic_detectors.h) this detector is a member of, by the stack's id, 0 for none. The editor
+	// derives a member from its stack and never saves it
+	uint64_t stack { 0 };
 
 	glm::dmat4 bodyToWorld() const { return world; }
 	bool operator==(const SceneOptic&) const = default;

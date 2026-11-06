@@ -1,0 +1,17 @@
+{
+  "lines": [
+    [
+      632.8,
+      0.005
+    ],
+    [
+      532.0,
+      0.002
+    ]
+  ],
+  "tolerance": {
+    "wavelength": 0.2,
+    "power": 0.01
+  },
+  "notes": "two lines at their wavelengths, each of its laser's power"
+}

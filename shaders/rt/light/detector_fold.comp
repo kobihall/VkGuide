@@ -1,0 +1,107 @@
+#version 460
+
+// THE DETECTOR FILMS' FOLD (docs/plans/completed/physoptics-detectors.md), once a frame after light tracing's last bounce
+// and once per detector: each of the detector's running sums takes the frame's sum, its copies added (stage 26 adds a
+// path to the copy its index picks), by Neumaier's compensated add, and the copies are cleared, so a reading keeps
+// improving past 10^9 paths. The image's frame sums are also totalled per channel, a workgroup at a time, into the frame
+// totals the CPU reads back each frame for the standard error of the power. Not a stage: a plain pass of the light
+// integrator's schedule, its own bindings.
+
+#extension GL_EXT_shader_atomic_float : require
+
+layout (local_size_x = 256) in;
+
+// binding 60: the frame sums' copies, then the running sums and their compensations, then the frame totals
+// (src/rt_detectors.h)
+layout (std430, set = 0, binding = 0) buffer DetectorFilmBuffer { float film[]; };
+
+// src/rt_detectors.cpp FoldPushConstants
+layout (push_constant) uniform constants {
+	// the image's first frame sum and its floats (a copy's), how many copies follow one another
+	uint frameImage;
+	uint imageCount;
+	uint copies;
+	// the spectrum's first frame sum (8 copies a bin, side by side) and its bins
+	uint frameSpectrum;
+	uint bins;
+	// the detector's first running sum (the image's, then the bins'), and how far a compensation is from its sum
+	uint running;
+	uint compensation;
+	uint channels;
+	// this detector's four frame totals
+	uint totals;
+} pc;
+
+// src/optic_detectors.h SPECTRUM_COPIES
+#define SPECTRUM_COPIES 8u
+
+shared float s_total[3][256];
+
+// Neumaier's add, as crt_film.glsl compensatedAdd(): `precise` keeps the compiler from reassociating it away
+void compensatedAdd(inout float total, inout float compensation, float x)
+{
+	precise float t = total + x;
+	if (abs(total) >= abs(x)) {
+		precise float lost = (total - t) + x;
+		compensation += lost;
+	} else {
+		precise float lost = (x - t) + total;
+		compensation += lost;
+	}
+	total = t;
+}
+
+void main()
+{
+	const uint i = gl_GlobalInvocationID.x;
+	const uint local = gl_LocalInvocationID.x;
+	const bool image = i < pc.imageCount;
+	float value = 0.0;
+	uint channel = 0u;
+	if (i < pc.imageCount + pc.bins) {
+		if (image) {
+			for (uint k = 0u; k < pc.copies; k++) {
+				const uint f = pc.frameImage + k * pc.imageCount + i;
+				value += film[f];
+				film[f] = 0.0;
+			}
+			channel = i % max(pc.channels, 1u);
+		} else {
+			const uint b = i - pc.imageCount;
+			for (uint k = 0u; k < SPECTRUM_COPIES; k++) {
+				const uint f = pc.frameSpectrum + b * SPECTRUM_COPIES + k;
+				value += film[f];
+				film[f] = 0.0;
+			}
+		}
+		if (value != 0.0) {
+			const uint r = pc.running + i;
+			float total = film[r];
+			float compensation = film[r + pc.compensation];
+			compensatedAdd(total, compensation, value);
+			film[r] = total;
+			film[r + pc.compensation] = compensation;
+		}
+	}
+	for (uint c = 0u; c < 3u; c++) {
+		s_total[c][local] = image && c == channel ? value : 0.0;
+	}
+	memoryBarrierShared();
+	barrier();
+	for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+		if (local < stride) {
+			for (uint c = 0u; c < 3u; c++) {
+				s_total[c][local] += s_total[c][local + stride];
+			}
+		}
+		memoryBarrierShared();
+		barrier();
+	}
+	if (local == 0u) {
+		for (uint c = 0u; c < min(pc.channels, 3u); c++) {
+			if (s_total[c][0] != 0.0) {
+				atomicAdd(film[pc.totals + c], s_total[c][0]);
+			}
+		}
+	}
+}

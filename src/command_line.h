@@ -60,6 +60,9 @@ struct CommandLine {
 	float designWavelength { 0.f };
 	// --spectral-images <n>: keep n wavelength buckets per pixel (hero) or the bands, written as S0.<l>nm channels
 	uint32_t spectralImages { 0 };
+	// --detectors <dir>: write every detector's reading to <dir>/detectors.json and its film to <dir>/<name>.exr
+	// (docs/plans/completed/physoptics-detectors.md)
+	std::filesystem::path detectors;
 	// --help
 	bool help { false };
 

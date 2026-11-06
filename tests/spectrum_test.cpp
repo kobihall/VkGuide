@@ -480,6 +480,35 @@ void testBands()
 			check(near3(rgb, expected, 1e-5), fmt::format("{} {} bands: a constant comes back exactly, {} against {}", bandBasisKey(basis), lanes, str(rgb), str(expected)));
 		}
 	}
+	//a line onto the bands from its closed form (projectLineOntoBand()): against the dense quadrature for a line wide
+	//enough for it, and for a laser's 0.002 nm line, which the quadrature's samples miss, its power over a box basis
+	for (const BandBasis basis : { BandBasis::Box, BandBasis::Gaussian }) {
+		SpectralSettings settings;
+		settings.representation = SpectralRepresentation::SpectralBands;
+		settings.lanes = 8;
+		settings.bandBasis = basis;
+		const std::vector<Band> bands = buildBands(settings);
+		for (const LineProfile profile : { LineProfile::Gaussian, LineProfile::Lorentzian }) {
+			double worst = 0.0;
+			for (const Band& band : bands) {
+				const double closed = projectLineOntoBand(profile, 551.3, 4.0, 2.0, band);
+				const double dense = projectOntoBand([&](double l) { return 2.0 * evalLineProfile(profile, 551.3, 4.0, l); }, band);
+				worst = std::max(worst, std::abs(closed - dense));
+			}
+			//a Lorentzian's far wings are where a Gaussian basis's narrow-line limit and the quadrature part
+			const double tolerance = basis == BandBasis::Gaussian && profile == LineProfile::Lorentzian ? 2e-3 : 1e-4;
+			check(worst < tolerance, fmt::format("a 4 nm {} line onto {} bands matches the quadrature: {:.2g} off", profile == LineProfile::Gaussian ? "Gaussian" : "Lorentzian",
+				bandBasisKey(basis), worst));
+		}
+		if (basis == BandBasis::Box) {
+			double power = 0.0;
+			for (const Band& band : bands) {
+				power += projectLineOntoBand(LineProfile::Gaussian, 632.8, 0.002, 5e-3, band) * (band.hi - band.lo);
+			}
+			check(std::abs(power / 5e-3 - 1.0) < 1e-6, fmt::format("a 0.002 nm line's power comes back from box bands: {:.9g} W of 0.005 W", power));
+		}
+	}
+
 	//the RGB Gaussians: an sRGB color, uplifted as a reflectance under the white light and projected, against itself
 	SpectralSettings gaussians;
 	gaussians.representation = SpectralRepresentation::RgbGaussians;

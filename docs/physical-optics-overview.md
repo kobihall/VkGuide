@@ -1,6 +1,6 @@
 # Physical optics, end to end
 
-*A readable account of the laser optics simulator as it is built so far: what exists, how the parts fit, and the rules that keep them consistent. What is still to come, and in what order, is in the [laser optics plan](plans/physoptics-laser-optics.md); the file-by-file detail is in `docs/codebase-map.md` §8.27, §8.28, §8.30 and §8.35. Every physoptics plan updates this file when it lands: its row in the status table, its section, and the cross-plan list at the end.*
+*A readable account of the laser optics simulator as it is built so far: what exists, how the parts fit, and the rules that keep them consistent. What is still to come, and in what order, is in the [laser optics plan](plans/physoptics-laser-optics.md); the file-by-file detail is in `docs/codebase-map.md` §8.27, §8.28, §8.30, §8.35 and §8.36. Every physoptics plan updates this file when it lands: its row in the status table, its section, and the cross-plan list at the end.*
 
 ---
 
@@ -13,7 +13,7 @@ The optics have two consumers, which read the same data:
 - A CPU solver traces one chief ray per beam segment, in double precision, fast enough to run on every gizmo drag. It gives the beam's path and its Gaussian size everywhere.
 - The GPU path tracer traces millions of light paths from the lasers. It gives what detectors and cameras record, and the stray light, ghosts and clipping a single beam misses.
 
-Neither exists yet. Today the bench has its place in the scene, its workspace and its template, and the optics themselves: thirteen kinds of element, each an exact surface prescription the path tracer traces, made of catalog glasses and coated with thin-film stacks or metals. Each optic stands in its Thorlabs mount on a post, a post holder and a clamping fork, on a breadboard with holes on a 25 mm grid, and every part of that stack is geometry the preview draws and the tracer hits.
+The solver does not exist yet; light tracing does, with lasers to start its paths and detectors to measure where they land. The bench has its place in the scene, its workspace and its template, and the optics themselves: thirteen kinds of element, each an exact surface prescription the path tracer traces, made of catalog glasses and coated with thin-film stacks or metals. Each optic stands in its Thorlabs mount on a post, a post holder and a clamping fork, on a breadboard with holes on a 25 mm grid, and every part of that stack is geometry the preview draws and the tracer hits.
 
 ```text
 scene file ──► capabilities ──► which folders, menus, windows, settings and workspace appear
@@ -32,6 +32,7 @@ scene file ──► capabilities ──► which folders, menus, windows, setti
 | [physoptics-optical-elements](plans/completed/physoptics-optical-elements.md) | 2026-10-29 | Thirteen kinds of element in Thorlabs sizes, the **Optics** folder, their panel and preview, and the scene's length unit |
 | [physoptics-bench-and-mounts](plans/completed/physoptics-bench-and-mounts.md) | 2026-10-30 | The breadboard, the stack of fork, holder, post and mount under every optic, placement on the table, the fork's hole, the adjusters' kinematics, and the bench in the preview and the tracer |
 | [physoptics-laser-sources](plans/completed/physoptics-laser-sources.md) | 2026-11-02 | The laser: a Gaussian beam of any M², astigmatic or round, as an element and as a light that light tracing starts paths at; the wave reference, the beam checks, and five of the geometric verification scenes |
+| [physoptics-detectors](plans/completed/physoptics-detectors.md) | 2026-11-04 | Power meters, camera sensors, beam profilers, alignment cards, screens, spectrometers, beam dumps and probe planes as sensors a render targets; light tracing's stage 26, which deposits on them; camera paths from a sensor's pixels; readings with ISO 11146 widths in the Raytraced Output window; the batch mode's readings; the verification checks on detectors |
 
 Every other physoptics plan is unbuilt. The laser optics plan's roadmap gives their order: the beam axis and the Gaussian beam solver come next.
 
@@ -86,7 +87,7 @@ Nothing changes until **Apply**. Opening a file that already has the capability 
 
 ### Templates
 
-**File** → **New Scene** makes the Render scene template: one camera and the default settings, as it always has. **File** → **New from Template** lists the others. The built-in templates are code, `BUILTIN_TEMPLATES`, so they always match the current defaults and payload. Each is `newScene()` followed by its `populate` function. The Optical bench template turns the capability on, applies its recommended settings (a 1 mm near plane for the **Viewport** among them), adds the 300 × 300 mm breadboard, puts a camera 0.55 m above it looking at the beam height, and sets an empty, black environment.
+**File** → **New Scene** makes the Render scene template: one camera and the default settings, as it always has. **File** → **New from Template** lists the others. The built-in templates are code, `BUILTIN_TEMPLATES`, so they always match the current defaults and payload. Each is `newScene()` followed by its `populate` function. The Optical bench template turns the capability on, applies its recommended settings (a 1 mm near plane for the **Viewport** among them), adds the 300 × 300 mm breadboard, puts a camera 0.55 m above it looking at the beam height, sets an empty, black environment, and stands the HNL050LB and a power meter 200 mm apart on the beam height, with light tracing to render them. A new bench measures 5 mW the moment it renders.
 
 **File** → **Save as Template...** writes the scene to `assets/templates/<name>.gltf`, with a name and description in its payload. That folder's templates follow the built-ins in the menu. A template opens untitled, so **Save** asks for a path instead of overwriting it. The template a scene started from is a label in the window title, `<file> - <template> - VkGuide`, and gates nothing.
 
@@ -265,17 +266,42 @@ Its beam is two independent transverse axes, each a Gaussian beam of its own wai
 
 As rays, the beam is its Wigner function: per axis a position at the waist and a slope, each normal, the position carried along the slope to the aperture. That distribution is positive for a Gaussian beam and free space only shears it, so the rays reproduce the beam's second moments through any paraxial system, focus included. What rays cannot carry is diffraction at a hard edge.
 
-Only light tracing starts paths at a laser: next-event estimation never samples one (its light leaves in a cone of milliradians), so lasers sit after every other light in the list, outside both next-event tables, with a table of their own (`crt_laser.glsl`). The path tracer sees a laser's aperture glow when it looks into it, with the beam's radiance, and nothing its beam lights. Exact RGB gives a laser the display color of its wavelength, scaled so its channels average to 1, so a screen's channel mean reads watts. The design wavelength follows the scene's one laser.
+Only light tracing starts paths at a laser: next-event estimation never samples one (its light leaves in a cone of milliradians), so lasers sit after every other light in the list, outside both next-event tables, with a table of their own (`crt_laser.glsl`). The path tracer sees a laser's aperture glow when it looks into it, with the beam's radiance, and nothing its beam lights. Exact RGB gives a laser the display color of its wavelength, scaled so its channels average to 1, so a detector's channel mean reads watts. The design wavelength follows the scene's one laser.
 
-### Measuring a beam without detectors
+### Measuring a beam on a screen
 
-`tools/verify/beam_probe.py` measures a beam on a white Lambertian screen, seen square-on by a pinhole camera on the beam's axis. The camera has no geometry, so it can stand in the beam. The image maps to the screen linearly, so its sum is the power and its second moments are the beam's. `tools/verify/laser_check.py` and `tools/verify/optics_verification.py` build every beam check on it; the detectors replace the screen when they land.
+Before detectors, `tools/verify/beam_probe.py` measured a beam on a white Lambertian screen seen square-on by a pinhole camera on the beam's axis. The camera has no geometry, so it can stand in the beam. The image maps to the screen linearly, so its sum is the power and its second moments are the beam's. The checks now read detectors (§9); `tools/verify/detector_check.py` keeps the screen measurement as a cross-check, with an alignment card as the screen.
 
 ### The wave reference
 
 `tools/verify/wave_optics.py` propagates the same beam by diffraction: diffractsim's angular spectrum method on a grid, with Matsushima's band limit, a beam of $M^2 > 1$ as a Gaussian Schell-model beam (an incoherent sum of Hermite-Gaussian modes with geometric weights, whose Wigner function is the rays' Gaussian), astigmatism, circular apertures, any mask and thin lenses. In free space the rays and the waves must agree to within the rays' noise; past a mask they part, and the comparison images show where. Its self-test checks it against the closed forms and, under diffractsim's venv, against diffractsim itself.
 
-## 9. Where things live
+## 9. Detectors
+
+A detector is a sensor, as a camera is: **Add** → **Sensor** lists both, the Scene panel's **Sensors** folder holds both, and Render Settings' **Render target** picks one of them. Its body is one flat sensor at z = 0 facing the light that arrives along its +z, placed on the bench and moved as an optic is. Eight kinds, with plain default sizes:
+
+- A **power meter** (10 mm), a **beam dump** (10 mm) and a **spectrometer** (3 mm entrance, 350 to 700 nm in 0.1 nm bins) absorb, and read power, or a spectrum, with no image.
+- A **camera sensor** and a **beam profiler** (10 × 10 mm, 512 × 512 pixels) absorb, and record an image. Either can be a **physical sensor** instead: its own pixels and pitch set its size, and the film may record fewer of them.
+- An **alignment card** (85.6 × 54 mm, white 0.8) and a **screen** (white 1.0) scatter what they record as pbrt's diffuse, so a camera sees the spot on them.
+- A **probe plane** records the light crossing it and is not geometry: no ray stops at it, and neither camera paths nor shadow rays see it.
+
+A **sensor stack** is one detector copied evenly from a start point to an end point, as one sensor slid along a translation stage would read a beam at each stop. Every member has the same size and film, faces along the axis unless you turn **align normal to stack axis** off, and is an ordinary detector with its own readings. The Raytraced Output window lists a stack once, with a slider that picks the member it shows, and plots a reading of every member along the axis: the beam's radii with ISO 11146-1's caustic fit (its waist, where it is and M²), its centroid, peak irradiance or power, or a spectrometer's peak wavelength. The verification scripts measure a beam through a focus on stacks of probe planes.
+
+### Recording
+
+Under light tracing, stage 26 runs after kernel 02 in every bounce while the scene has a detector. For each light path it takes the segment kernel 02 traced, and where the segment ends on a sensor's front or crosses a probe plane's, it adds the path's power to that pixel of the detector's film. A light path carries the power of the laser it left over its chance of being picked, so a pixel's sum over the paths emitted is watts. Each frame's sums are kept in copies and folded into Neumaier-compensated running sums, so a reading keeps improving past 10^9 paths. Exact RGB films have three channels whose mean is the power; spectral films have one, the lanes integrated over wavelength (exact for hero wavelengths and box bands; a monochromatic render reads W/nm). A spectrometer bins its lanes by wavelength.
+
+Light tracing records the target, and every member of the target's sensor stack, and with **render all sensors** on every detector in the scene at once. A camera target records no detector unless it is on, and the batch mode's `--detectors` turns it on. With a detector as the target there need be no camera: the render emits **Light paths per sample** and connects nothing to a camera. The path tracer renders a detector target from its own pixels instead, each camera ray cosine-weighted over the sensor's front, so a pixel reads π times its mean radiance, its irradiance. That is the bare form of the realistic camera to come, a camera sensor behind a lens assembly.
+
+### Reading
+
+The Raytraced Output window shows the target. While it shows a detector it adds the readings below the picture: the power, its standard error from the per-frame readings, the paths that reached it; for a detector with an image, its film with a cursor readout, the centroid and D4σ widths (ISO 11146-1, with ISO 11146-3's iterative integration area and Sheppard's correction for the pixels' size), the peak irradiance, encircled power and lineouts; a spectrometer's spectrum. **Showing** picks any other detector the render recorded. `--detectors <dir>` writes the same readings and the films for scripts.
+
+### What the checks found
+
+On the HNL050LB, a power meter reads 5.0001 mW of 5 mW, and a probe plane matches w(z) to 0.1 %. An ideal 50:50 cube splits the beam within the noise the meters report, and over seeds that noise is what they report. A profiler at an f = 500 mm lens's focus reads ABCD's waist to 0.03 %. A diffuse wall sends each meter what a Lambertian spot would, on both sides. A camera sensor before a glowing square reads the closed form's power both from its pixels and by light tracing. The checks also found two bugs of their own: a float pixel summing a million equal terms in one frame lost 0.1 % of them, and pixel-center moments widened a beam by pitch² / 12. The frame copies and Sheppard's correction fix them.
+
+## 10. Where things live
 
 ```text
 src/scene_capabilities.{h,cpp}   the capability registry, the Optical bench entry, templates, the capability windows
@@ -313,9 +339,18 @@ tools/verify/wave_optics.py      the wave reference
 tools/verify/laser_scenes.py     writes assets/scenes/optics/laser_*.gltf
 tools/verify/laser_check.py      renders them against the closed forms and the wave reference
 tools/verify/optics_verification.py  the geometric verification scenes, assets/scenes/optics/*.gltf
+src/optic_detectors.{h,cpp}      rt_optics: the detectors' sensors and films, and the ISO 11146 measurements
+src/rt_detectors.{h,cpp}         the detector films on the GPU: records, fold, readbacks, pictures, --detectors
+src/detectors_ui.{h,cpp}         the readings the Raytraced Output window adds while it shows a detector
+shaders/rt/2601_deposit_detector.comp  stage 26: light paths deposit on the detectors they reach
+shaders/rt/include/crt_detector.glsl   the pixel a path lands in, and what it adds there
+shaders/rt/light/detector_fold.comp    the per-frame fold into compensated sums, and the frame totals
+shaders/rt/light/detector_view.comp    a film as a picture for the Raytraced Output window
+tools/verify/detector_scenes.py  writes assets/scenes/optics/detector_*.gltf
+tools/verify/detector_check.py   renders them and checks what the detectors read
 ```
 
-## 10. Across plans
+## 11. Across plans
 
 ### Checks every physoptics plan runs before it is done
 
@@ -326,7 +361,7 @@ Each plan that adds bench UI or objects keeps the bench consistent with the rest
 1. Every object kind the plan adds is listed by `opticalBenchDependentObjects()` with its kind, name and an `erase` function. With one in the scene, turning the capability off is refused and names it. **Delete them and turn off** leaves a scene that saves as one that never had the capability, apart from the version.
 1. A file from the plan's own build, edited to drop `"capabilities"`, opens with **Optical bench** on and says so.
 1. Its recommended settings join `opticalBenchRecommendedSettings()`, listing only settings that differ. None is ever applied without **Apply**, except by the Optical bench template.
-1. What the plan adds to a new bench joins `populateOpticalBench()`. The plan's table lists the target contents: the breadboard, a HeNe laser at beam height, a power meter, a beam axis from the laser, and the light integrator. The laser and the light integrator wait for the power meter, so that a new bench measures something.
+1. What the plan adds to a new bench joins `populateOpticalBench()`. The plan's table lists the target contents: the breadboard, a HeNe laser at beam height, a power meter, a beam axis from the laser, and the light integrator. All but the beam axis are there.
 1. A new window docks in `buildOpticsLayout()`, and in `buildRenderLayout()` if a render scene wants it too. A user's saved layout has no place for a new window, so it opens as a tab in the center the first time. Check both a fresh `imgui.ini` and one saved before the plan.
 1. Panels show lengths through `src/length_unit.h`, in the scene's unit, and angles in degrees or microradians. The file stores SI units.
 1. Anything that stands on the bench is placed through `opticWorldTransform()` or a stack of its own built the same way, never by a free transform the panel edits directly.
@@ -337,10 +372,12 @@ Each plan that adds bench UI or objects keeps the bench consistent with the rest
 
 - The raster viewport ignores the scene's solid background, so the Optical bench template's black environment shows the viewport's sky gradient. The path tracer renders it black.
 - The Optics workspace in the laser optics plan has a top-down viewport beside the main one. That needs a second raster view: its own camera, draw image and `ViewportView`.
-- Nothing reads the bench's tags yet. The beam solver and the detectors are to name a clipping part and count a path that strikes a mount as stray light.
+- Nothing reads the bench's tags yet. The beam solver is to name a clipping part, and guided tracing's **Separate stray light** to count a path that strikes a mount as stray light on a detector.
 - Stacks other than forks do not collide: two post holders in neighboring holes overlap.
 - Mounts trace in their plain finishes: the decals are the preview's alone, since the path tracer's texture array holds 512 × 512 layers.
-- No detector exists, so the checks of the optics plans that need one (a 50:50 split measured as power on two detectors, a dichroic's split by wavelength) render images instead. [physoptics-detectors.md](plans/physoptics-detectors.md) runs them.
+- Detectors record under light tracing, as lasers render only there; the path tracer renders only the target, from its pixels. Their housings are outlines, so a beam that misses a sensor passes its housing.
+- The RGB Gaussians mode cannot read a detector's power in watts: its three bases are no partition of unity over a narrow line, and a 632.8 nm laser reads 60 % of its power. Exact RGB, hero wavelengths and box bands read it exactly.
+- A dichroic's split by wavelength, which the optical materials plan wanted on detectors, waits for a two-line source scene ([physoptics-verification-scenes.md](plans/physoptics-verification-scenes.md), `dichroic.gltf`).
 - A laser's light renders only under light tracing. The light vertex cache and pbrt 3's BDPT need their MIS taught that a laser cannot be sampled by next-event estimation.
 - The scene file clamps a camera's field of view to at least 1 degree, so a check that resolves a 20 µm focus puts its camera a few millimeters from the screen.
 - The coating tables keep power, not phase. [pbrt-polarization.md](plans/pbrt-polarization.md) adds the phases, and the polarizing cube's s and p split, which the renderer averages today.
@@ -348,6 +385,6 @@ Each plan that adds bench UI or objects keeps the bench consistent with the rest
 - An off-axis parabola's thin edge is 0.75 of its diameter. At 1 in and 90 degrees that gives 30.95 mm, where MPD149's drawing gives 31.75 mm. A per-part table would match each drawing.
 - Whether a capability may hide UI its scenes do not need, such as the environment map controls in a bench scene, is open. So far capabilities only add, and hiding is a workspace's job.
 
-## 11. Sources
+## 12. Sources
 
 The [laser optics plan](plans/physoptics-laser-optics.md) and its sources; the [bench and mounts plan](plans/completed/physoptics-bench-and-mounts.md); the [scene capabilities plan](plans/completed/physoptics-scene-capabilities.md) and its survey of OpticStudio, COMSOL, Unreal, Blender and FreeCAD; the Mitsuba 3 documentation, "Variants" and "Scene format"; the Dear ImGui docking branch, `DockBuilder` and the `.ini` settings handlers. For the lasers: the sources of the [laser sources plan](plans/completed/physoptics-laser-sources.md), chiefly Siegman 1986, *Lasers*; Bastiaans 1979 on the Wigner function; Gori 1980 and Mandel and Wolf 1995 on Gaussian Schell-model beams; and diffractsim. For the optics: the sources of the [optical surfaces](plans/completed/physoptics-optical-surfaces.md), [optical materials](plans/completed/physoptics-optical-materials.md) and [optical elements](plans/completed/physoptics-optical-elements.md) plans, chiefly Macleod 2010, *Thin-film optical filters*; Ciddor 1996, *Refractive index of air*; the Zemax OpticStudio manual's "Glass catalogs"; Stover 2012, *Optical scattering*; and the Thorlabs product pages and drawings.

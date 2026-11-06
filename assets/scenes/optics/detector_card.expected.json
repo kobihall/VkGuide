@@ -1,0 +1,11 @@
+{
+  "power": 0.005,
+  "reflected": 0.004,
+  "radius": 0.0005692319386682373,
+  "tolerance": {
+    "power": 0.005,
+    "radius": 0.01,
+    "reflected": 0.02
+  },
+  "notes": "the card's film reads the beam; the camera sees the card's white (0.8) spot of the same radius"
+}

@@ -9,6 +9,8 @@
 #include <file_dialog.h>
 #include <vk_ui.h>
 #include <optics_ui.h>
+#include <detectors_ui.h>
+#include <optic_detectors.h>
 #include <optic_laser.h>
 #include <optic_mesh.h>
 
@@ -885,6 +887,8 @@ void VulkanEngine::registerWindows()
 	m_workspaces.addWindow({ "Scene", m_raytraceScene.visibilityFlag(), [this]() { m_raytraceScene.drawPanel(this); } });
 	m_workspaces.addWindow({ "Materials", m_raytraceScene.materialsVisibilityFlag(), [this]() { m_raytraceScene.drawMaterialsWindow(this); } });
 	m_workspaces.addWindow({ "Render Settings", m_raytracer.settingsVisibilityFlag(), [this]() { m_raytracer.drawSettingsPanel(this, m_raytraceScene); } });
+	//the render's picture, and a detector's film and readings when the render target is one (docs/plans/completed/physoptics-detectors.md)
+	m_workspaces.addWindow({ "Raytraced Output", m_raytracer.outputVisibilityFlag(), [this]() { m_raytracer.drawOutputWindow(this, m_raytraceScene); } });
 	m_workspaces.addWindow({ "Raytracer Shaders", m_raytracer.kernelPanelVisibilityFlag(), [this]() { m_raytracer.drawKernelPanel(this); } });
 	m_workspaces.addWindow({ "Import Report", &m_showImportReport, [this]() { drawImportReport(); } });
 	m_workspaces.addWindow({ "Scene Capabilities", &m_showCapabilities, [this]() { drawCapabilitiesWindow(this, &m_showCapabilities); } });
@@ -1968,13 +1972,15 @@ void VulkanEngine::clearModels()
 
 void VulkanEngine::newScene()
 {
+	m_raytracer.discardRender(this);
 	clearModels();
 	clearEnvironmentMap();
 	m_firstPersonCameraId = 0;
 	m_raytraceScene.replaceShapes({});
 	m_raytraceScene.replaceLights({});
-	//the optics before the materials: an optic removes the slot materials it owns
+	//the optics and the sensor stacks before the materials: each removes the slot materials it owns
 	m_raytraceScene.replaceOptics({});
+	m_raytraceScene.replaceSensorStacks({});
 	m_raytraceScene.replaceMaterials({});
 	m_raytraceScene.setBench(BenchSettings {});
 	m_opticalLibrary.clearScene();
@@ -1990,6 +1996,7 @@ void VulkanEngine::newScene()
 	m_raytraceScene.setLightGroups({}, 0);
 	m_raytracer.setKernels(defaultKernelSelection());
 	m_raytracer.setAccelSettings(this, defaultAccelSettings());
+	m_raytracer.setRenderDetector(0);
 	m_environmentIntensity = 1.f;
 	m_environmentRotation = 0.f;
 	m_backgroundMode = BackgroundMode::Gradient;
@@ -2165,6 +2172,28 @@ SceneDescription VulkanEngine::describeScene()
 			scene.renderCamera = (int)i;
 		}
 	}
+	//the detector render target, counted over the optics and then the sensor stacks' members, each stack's in order, as
+	//the load makes them
+	{
+		std::vector<uint64_t> detectorOrder;
+		for (const SceneOptic& optic : m_raytraceScene.optics()) {
+			if (optic.stack == 0) {
+				detectorOrder.push_back(optic.id);
+			}
+		}
+		for (const SensorStack& stack : m_raytraceScene.sensorStacks()) {
+			for (const SceneOptic& optic : m_raytraceScene.optics()) {
+				if (optic.stack == stack.id) {
+					detectorOrder.push_back(optic.id);
+				}
+			}
+		}
+		for (size_t i = 0; i < detectorOrder.size(); i++) {
+			if (m_raytracer.renderDetectorId() != 0 && detectorOrder[i] == m_raytracer.renderDetectorId()) {
+				scene.renderDetector = (int)i;
+			}
+		}
+	}
 	scene.render = m_raytracer.settings();
 	scene.lightGroupNames = m_raytraceScene.lightGroupNames();
 	scene.environmentGroup = m_raytraceScene.environmentGroup();
@@ -2181,6 +2210,10 @@ SceneDescription VulkanEngine::describeScene()
 	scene.templateKey = m_sceneTemplate;
 	//the optical elements, with only the slots that differ from the kind's defaults; the library's scene-owned part
 	for (const SceneOptic& optic : m_raytraceScene.optics()) {
+		//a stack's members are its stack's, saved below
+		if (optic.stack != 0) {
+			continue;
+		}
 		SceneOpticRecord record;
 		record.optic = optic;
 		record.optic.id = 0;
@@ -2192,6 +2225,19 @@ SceneDescription VulkanEngine::describeScene()
 			}
 		}
 		scene.optics.push_back(std::move(record));
+	}
+	for (const SensorStack& stack : m_raytraceScene.sensorStacks()) {
+		SceneSensorStackRecord record;
+		record.stack = stack;
+		record.stack.id = 0;
+		for (size_t slot = 0; slot < opticTraits(stack.sensor.kind).slots.size(); slot++) {
+			const MaterialDef* material = m_raytraceScene.findMaterial(stack.sensor.materials[slot]);
+			const MaterialDef fallback = defaultSlotMaterial(stack.sensor, slot);
+			if (material != nullptr && (material->type != fallback.type || material->params != fallback.params || material->lightGroup != fallback.lightGroup)) {
+				record.slots[slot] = *material;
+			}
+		}
+		scene.sensorStacks.push_back(std::move(record));
 	}
 	scene.glassCatalogs = m_opticalLibrary.loadedCatalogPaths();
 	scene.userGlasses = m_opticalLibrary.userGlasses();
@@ -2215,12 +2261,14 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	//only now that the file itself is known good does the current scene go. A model or map the
 	//file refers to may still be missing; the rest of the scene loads regardless and the
 	//problems are reported together
+	m_raytracer.discardRender(this);
 	clearModels();
 	clearEnvironmentMap();
 	//the previous scene's lights go too: a file older than lights has only what its models bring.
 	//So do its user materials; each import below brings its model's
 	m_raytraceScene.replaceLights({});
 	m_raytraceScene.replaceOptics({});
+	m_raytraceScene.replaceSensorStacks({});
 	m_raytraceScene.replaceMaterials({});
 	std::vector<std::string> problems;
 	//the optical library's scene-owned part before anything names its glasses or coatings
@@ -2411,11 +2459,41 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 			optics.push_back(record.optic);
 		}
 		m_raytraceScene.replaceOptics(std::move(optics));
+		std::vector<uint64_t> ids;
 		for (size_t i = 0; i < scene.optics.size() && i < m_raytraceScene.optics().size(); i++) {
-			const uint64_t id = m_raytraceScene.optics()[i].id;
+			ids.push_back(m_raytraceScene.optics()[i].id);
+		}
+		for (size_t i = 0; i < ids.size(); i++) {
 			for (size_t slot = 0; slot < MAX_OPTIC_MATERIAL_SLOTS; slot++) {
 				if (scene.optics[i].slots[slot]) {
-					m_raytraceScene.setOpticSlotMaterial(id, slot, *scene.optics[i].slots[slot]);
+					m_raytraceScene.setOpticSlotMaterial(ids[i], slot, *scene.optics[i].slots[slot]);
+				}
+			}
+		}
+		//a mounted optic the file placed by its body stands in its mount there, in the file's order. Only a turn of the body
+		//is left to report: the stack keeps its origin where the file put it
+		for (size_t i = 0; i < ids.size(); i++) {
+			if (!scene.optics[i].standOnBench) {
+				continue;
+			}
+			const std::optional<double> turned = m_raytraceScene.standOpticOnBench(this, ids[i]);
+			if (!turned) {
+				problems.push_back(fmt::format("optic \"{}\" has no mount model to stand in; it stays where the file put it", scene.optics[i].optic.name));
+			} else if (*turned > 1e-6) {
+				problems.push_back(fmt::format("optic \"{}\" stands in its mount turned {:.6g} deg from the orientation the file gave it", scene.optics[i].optic.name, *turned * 180.0 / 3.14159265358979323846));
+			}
+		}
+		//the sensor stacks, which add their members after the optics
+		std::vector<SensorStack> stacks;
+		for (const SceneSensorStackRecord& record : scene.sensorStacks) {
+			stacks.push_back(record.stack);
+		}
+		m_raytraceScene.replaceSensorStacks(std::move(stacks));
+		for (size_t i = 0; i < scene.sensorStacks.size() && i < m_raytraceScene.sensorStacks().size(); i++) {
+			const uint64_t id = m_raytraceScene.sensorStacks()[i].id;
+			for (size_t slot = 0; slot < MAX_OPTIC_MATERIAL_SLOTS; slot++) {
+				if (scene.sensorStacks[i].slots[slot]) {
+					m_raytraceScene.setSensorStackSlotMaterial(id, slot, *scene.sensorStacks[i].slots[slot]);
 				}
 			}
 		}
@@ -2443,6 +2521,12 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	}
 	if (scene.renderCamera >= 0 && scene.renderCamera < (int)m_raytraceScene.cameras().size()) {
 		m_raytracer.setRenderCamera(m_raytraceScene.cameras()[scene.renderCamera].id);
+	}
+	//a detector render target, which the optics above made
+	if (scene.renderDetector >= 0 && scene.renderDetector < (int)m_raytraceScene.optics().size() && isDetectorKind(m_raytraceScene.optics()[scene.renderDetector].kind)) {
+		m_raytracer.setRenderDetector(m_raytraceScene.optics()[scene.renderDetector].id);
+	} else {
+		m_raytracer.setRenderDetector(0);
 	}
 	m_environmentIntensity = scene.environmentIntensity;
 	m_environmentRotation = scene.environmentRotation;
@@ -2870,6 +2954,10 @@ bool VulkanEngine::beginBatch()
 	settings.useFixedSeed = true;
 	settings.seed = m_commandLine.seed;
 	settings.restartOnChange = false;
+	//--detectors asks for every detector's reading, so the render records them all
+	if (!m_commandLine.detectors.empty()) {
+		settings.renderAllSensors = true;
+	}
 	settings.matchViewport = false;
 	if (m_commandLine.size.has_value()) {
 		settings.width = m_commandLine.size->first;
@@ -3001,7 +3089,12 @@ void VulkanEngine::stepBatch()
 		if (m_frameNumber < run.settleFrame) {
 			break;
 		}
-		const IoResult saved = m_raytracer.exportRender(this, m_raytraceScene, run.output);
+		IoResult saved = m_raytracer.exportRender(this, m_raytraceScene, run.output);
+		//the detectors' readings and films beside it (docs/plans/completed/physoptics-detectors.md)
+		if (saved.ok && !m_commandLine.detectors.empty()) {
+			const IoResult detectors = writeDetectorReadings(this, m_commandLine.detectors);
+			saved = detectors.ok ? IoResult::success(saved.message + "; " + detectors.message) : detectors;
+		}
 		const std::string summary = fmt::format("{} samples, {} dropped, {:.0f} ms of GPU time, {:.1f} s wall", m_raytracer.samplesAccumulated(), m_raytracer.droppedSamples(), m_raytracer.totalGpuMs(), elapsed);
 		finish(saved.ok ? 0 : 2, saved.message + "; " + summary);
 		break;
@@ -4098,6 +4191,10 @@ void VulkanEngine::drawOpticPreviews(PreviewShapeSlot& slot, size_t firstMateria
 		const glm::mat4 transform(optic.bodyToWorld());
 		//a mounted iris's blades are its housing model's, which the bench draws turned to the opening
 		if (optic.kind == OpticKind::Iris && i < stacks.size() && !stacks[i].parts.empty()) {
+			continue;
+		}
+		//a probe plane is no geometry: the Optical bench overlays outline it
+		if (optic.kind == OpticKind::ProbePlane) {
 			continue;
 		}
 		//a planar mirror at one of Thorlabs' sizes is its blank's model, which shares its frame (the front's center)

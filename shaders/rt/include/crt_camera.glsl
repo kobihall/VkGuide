@@ -2,7 +2,8 @@
 // of its lens into a ray. Mirrored line for line by src/camera_model.cpp, which bin/camera_test checks and the camera
 // self-test compares with this file. Change both together.
 //
-// Every kind is a thin lens: perspective (PBR 4ed 5.2.2, 5.2.3), orthographic (5.2.1) and spherical (5.3, no lens). The
+// Every kind is a thin lens: perspective (PBR 4ed 5.2.2, 5.2.3), orthographic (5.2.1) and spherical (5.3, no lens); and a
+// detector's bare sensor, whose rays leave its points over its front hemisphere, cosine-weighted. The
 // aperture is a circle, a regular polygon or an image, a perspective or orthographic film can be shifted, and its plane
 // of focus tilted (Kensler 2021). Every ray's weight is 1. The film rectangle (pc.lowerLeft, horizontal, vertical) lies
 // on the plane of focus before the tilt; a camera ray leaves its point of the lens towards where the chief ray, from the
@@ -23,6 +24,7 @@
 #define CRT_CAMERA_PERSPECTIVE 0u
 #define CRT_CAMERA_ORTHOGRAPHIC 1u
 #define CRT_CAMERA_SPHERICAL 2u
+#define CRT_CAMERA_SENSOR 3u
 #define CRT_CAMERA_FLAG_CONCENTRIC 1u
 #define CRT_CAMERA_FLAG_TILTED 2u
 #define CRT_CAMERA_FLAG_EQUAL_AREA 4u
@@ -98,6 +100,16 @@ void generateCameraRay(vec2 film, vec2 lens, out vec3 rayOrigin, out vec3 rayDir
 		}
 		rayOrigin = pc.origin.xyz;
 		rayDirection = d.x * pc.lensU.xyz + d.y * pc.lensV.xyz + d.z * pc.cameraBackward.xyz;
+		return;
+	}
+	if (pc.cameraKind == CRT_CAMERA_SENSOR) {
+		// a detector's sensor (docs/plans/completed/physoptics-detectors.md): from the point of the sensor, 10 um (and 1e-6
+		// of its distance from the origin) in front of it, over the front hemisphere by the cosine (the lens sample)
+		const vec3 point = pc.lowerLeft.xyz + film.x * pc.horizontal.xyz + film.y * pc.vertical.xyz;
+		const vec2 d = sampleUniformDiskConcentric(lens);
+		const float z = sqrt(max(0.0, 1.0 - d.x * d.x - d.y * d.y));
+		rayOrigin = point - (1e-5 + 1e-6 * length(point)) * pc.cameraBackward.xyz;
+		rayDirection = d.x * pc.lensU.xyz + d.y * pc.lensV.xyz - z * pc.cameraBackward.xyz;
 		return;
 	}
 

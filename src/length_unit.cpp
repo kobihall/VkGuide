@@ -135,6 +135,17 @@ bool sliderLength(const char* label, float& meters, float min, float max, bool l
 	return false;
 }
 
+bool inputLength3(const char* label, glm::dvec3& meters)
+{
+	const double scale = lengthScale();
+	glm::dvec3 shown = meters * scale;
+	if (ImGui::InputScalarN(label, ImGuiDataType_Double, &shown.x, 3, nullptr, nullptr, s_unit == LengthUnit::Millimeters ? "%.4f mm" : "%.6f m", ImGuiInputTextFlags_EnterReturnsTrue)) {
+		meters = shown / scale;
+		return true;
+	}
+	return false;
+}
+
 bool inputLength(const char* label, double& meters, double min, double max)
 {
 	const double scale = lengthScale();

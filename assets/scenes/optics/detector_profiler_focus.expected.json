@@ -1,0 +1,8 @@
+{
+  "radius": 0.00023443719018092585,
+  "position": 0.6007011841389465,
+  "tolerance": {
+    "radius": 0.01
+  },
+  "notes": "ABCD's waist after an f = 500 mm lens, the embedded Gaussian of M^2 = 1.005"
+}

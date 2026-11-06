@@ -3,7 +3,10 @@
 // THE LIGHT TRACER'S SCHEDULE: the `light` integrator (docs/plans/completed/pbrt-bidirectional-path-tracing.md;
 // pbrt-v4's LightPathIntegrator), recorded on the renderer's wavefront pool as
 //
-//     11 emit -> 14 splat -> [01 samples -> 02 intersect -> 12 connect to the camera -> 13 scatter -> 14 splat] x depth -> 09 film
+//     11 emit -> 14 splat -> [01 samples -> 02 intersect -> 26 deposit, 12 connect to the camera -> 13 scatter -> 14 splat] x depth -> 09 film
+//
+// with stage 26 only while the scene has a detector (docs/plans/completed/physoptics-detectors.md), and the detectors' fold
+// after 09 (GpuRenderer::record(), src/rt_detectors.h).
 //
 // One light path per pixel sample, from a light picked by its power: every vertex connects to the camera, and the
 // unoccluded connections splat onto the film, which kernel 09 folds into each pixel's value over its sample count. The

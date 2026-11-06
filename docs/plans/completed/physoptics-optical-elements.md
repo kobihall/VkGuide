@@ -64,7 +64,7 @@ struct OpticTraits {
 };
 ```
 
-`OPTIC_TRAITS` is indexed by `OpticKind` and is the only place outside the builders that knows anything about a kind. Later plans add kinds by appending rows: the laser ([physoptics-laser-sources.md](physoptics-laser-sources.md)), detectors ([physoptics-detectors.md](../physoptics-detectors.md)), wave plates, polarizers and crystals ([physoptics-polarization-optics.md](../physoptics-polarization-optics.md)), gratings and toroidal mirrors ([physoptics-gratings-and-xuv.md](../physoptics-gratings-and-xuv.md)).
+`OPTIC_TRAITS` is indexed by `OpticKind` and is the only place outside the builders that knows anything about a kind. Later plans add kinds by appending rows: the laser ([physoptics-laser-sources.md](physoptics-laser-sources.md)), detectors ([physoptics-detectors.md](physoptics-detectors.md)), wave plates, polarizers and crystals ([physoptics-polarization-optics.md](../physoptics-polarization-optics.md)), gratings and toroidal mirrors ([physoptics-gratings-and-xuv.md](../physoptics-gratings-and-xuv.md)).
 
 `OpticBuildContext` carries what a builder needs from outside the element: the glass catalog and the design wavelength, which a wedge needs to turn a deviation into an angle.
 

@@ -1,0 +1,93 @@
+#version 460
+
+// A DETECTOR'S PICTURE for its window (docs/plans/completed/physoptics-detectors.md): the film's running sums as an rgba8
+// image, the irradiance linear from 0 to the peak or logarithmic over a number of decades below it, in gray or in false
+// color. Its x axis to the right and its y axis up, the film's row 0 at the bottom. Display only: it reads the films and
+// changes nothing. It runs twice a frame: first to find the film's peak (mode bit 2), then to draw by it, so the picture
+// of a render's first frame is drawn by that frame's peak rather than by a reading the CPU has yet to read back. A picture
+// normalized by hand (mode bit 3) is drawn once, by its normalization, and clips above it.
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (std430, set = 0, binding = 0) readonly buffer DetectorFilmBuffer { float film[]; };
+layout (rgba8, set = 0, binding = 1) uniform writeonly image2D picture;
+// each picture's peak irradiance as the bits of a float, which order as the floats do while they are not negative; zeroed
+// before the first pass
+layout (std430, set = 0, binding = 2) buffer DetectorPeakBuffer { uint peaks[]; };
+
+// src/rt_detectors.cpp ViewPushConstants
+layout (push_constant) uniform constants {
+	// the image's first running sum, and every detector's floats (where its compensation is)
+	uint first;
+	uint floats;
+	uint pixelsX;
+	uint pixelsY;
+	uint channels;
+	// bit 0 logarithmic, bit 1 false color, bit 2 the peak's pass, bit 3 normalized by hand
+	uint mode;
+	// a running sum times this is W/m^2; the peak's place in peaks[], and the decades a logarithmic picture spans
+	float scale;
+	uint peakIndex;
+	float decades;
+	// the picture's top in W/m^2 while normalized by hand
+	float normalization;
+} pc;
+
+shared float groupPeak[256];
+
+// a perceptually ordered dark-to-bright map (a polynomial fit of matplotlib's inferno, Matt Zucker, CC0)
+vec3 inferno(float t)
+{
+	const vec3 c0 = vec3(0.0002189403691192265, 0.001651004631001012, -0.01948089843709184);
+	const vec3 c1 = vec3(0.1065134194856116, 0.5639564367884091, 3.932712388889277);
+	const vec3 c2 = vec3(11.60249308247187, -3.972853965665698, -15.9423941062914);
+	const vec3 c3 = vec3(-41.70399613139459, 17.43639888205313, 44.35414519872813);
+	const vec3 c4 = vec3(77.162935699427, -33.40235894210092, -81.80730925738993);
+	const vec3 c5 = vec3(-71.31942824499214, 32.62606426397723, 73.20951985803202);
+	const vec3 c6 = vec3(25.13112622477341, -12.24266895238567, -23.07032500287172);
+	return clamp(c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6))))), 0.0, 1.0);
+}
+
+void main()
+{
+	const ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+	const bool inside = coord.x < int(pc.pixelsX) && coord.y < int(pc.pixelsY);
+	float irradiance = 0.0;
+	if (inside) {
+		const uint row = pc.pixelsY - 1u - uint(coord.y);
+		const uint base = pc.first + (row * pc.pixelsX + uint(coord.x)) * pc.channels;
+		float sum = 0.0;
+		for (uint c = 0u; c < pc.channels; c++) {
+			sum += film[base + c] + film[pc.floats + base + c];
+		}
+		irradiance = sum / float(max(pc.channels, 1u)) * pc.scale;
+	}
+
+	if ((pc.mode & 4u) != 0u) {
+		//the workgroup's largest, then one atomic a workgroup. A negative sum (a compensation's rounding) counts as 0
+		groupPeak[gl_LocalInvocationIndex] = irradiance > 0.0 ? irradiance : 0.0;
+		barrier();
+		for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+			if (gl_LocalInvocationIndex < stride) {
+				groupPeak[gl_LocalInvocationIndex] = max(groupPeak[gl_LocalInvocationIndex], groupPeak[gl_LocalInvocationIndex + stride]);
+			}
+			barrier();
+		}
+		if (gl_LocalInvocationIndex == 0u) {
+			atomicMax(peaks[pc.peakIndex], floatBitsToUint(groupPeak[0]));
+		}
+		return;
+	}
+
+	if (!inside) {
+		return;
+	}
+	const float peak = (pc.mode & 8u) != 0u ? pc.normalization : uintBitsToFloat(peaks[pc.peakIndex]);
+	float t = peak > 0.0 ? irradiance / peak : 0.0;
+	if ((pc.mode & 1u) != 0u) {
+		t = t > 0.0 ? 1.0 + log(t) / (log(10.0) * max(pc.decades, 0.1)) : 0.0;
+	}
+	t = clamp(t, 0.0, 1.0);
+	const vec3 color = (pc.mode & 2u) != 0u ? inferno(t) : vec3(t);
+	imageStore(picture, coord, vec4(color, 1.0));
+}

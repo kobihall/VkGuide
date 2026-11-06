@@ -1,0 +1,14 @@
+{
+  "transmitted": 0.0024873195509574997,
+  "reflected": 0.0024873195509574997,
+  "glass": 0.9949278203829999,
+  "tolerance": {
+    "sigmas": 4.0,
+    "probe": 1e-06,
+    "spread": [
+      0.6,
+      1.6
+    ]
+  },
+  "notes": "an ideal 50:50 split, each half through 25.4 mm of N-BK7: each meter within 4 of its standard errors, the probe plane changes neither, and over seeds the readings spread as their errors say"
+}

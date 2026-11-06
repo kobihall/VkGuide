@@ -105,7 +105,7 @@ Other plans add types through the same table, and none needs more than a traits 
 | `interface` | [pbrt-participating-media.md](../pbrt-participating-media.md): no BSDF; kernels 02 and 05 continue the ray into the next medium instead of queueing it | neither |
 | `linear_polarizer`, `retarder` | [pbrt-polarization.md](../pbrt-polarization.md) | basic |
 | `optical_interface` | [physoptics-optical-materials.md](physoptics-optical-materials.md): every optical surface of an optical body; its two indices come from the surface's media, its reflectance and transmittance from a coating | basic |
-| `detector` | [physoptics-detectors.md](../physoptics-detectors.md): a sensor surface, absorbing, diffuse or transparent by detector kind; kernel 02 sends light paths that hit it to the detector queue | basic |
+| `detector` | [physoptics-detectors.md](physoptics-detectors.md): a sensor surface, absorbing, diffuse or transparent by detector kind; kernel 02 sends light paths that hit it to the detector queue | basic |
 | `laser_aperture` | [physoptics-laser-sources.md](physoptics-laser-sources.md): a laser's output aperture, emitting the beam's phase-space radiance toward a camera ray that hits it | basic |
 
 ### Two surface queues

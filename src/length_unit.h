@@ -39,3 +39,5 @@ bool dragLength3(const char* label, glm::vec3& meters, float speedMeters = 0.01f
 bool dragLength3(const char* label, glm::dvec3& meters, double speedMeters = 0.01);
 bool sliderLength(const char* label, float& meters, float min, float max, bool logarithmic = false);
 bool inputLength(const char* label, double& meters, double min, double max);
+// a point typed in as three lengths, committed with Enter or by leaving the field
+bool inputLength3(const char* label, glm::dvec3& meters);

@@ -76,7 +76,7 @@ The laser gives the solver its root segment: the chief ray from the aperture's c
     - 10⁶ emitted rays, propagated to z = 0, z_R and 10 z_R, have second-moment radii within 0.5 % of `w(z)`, for M² = 1 and 2, and for an astigmatic diode beam with separate x and y waists;
     - `pdfLe()` integrates to 1 over the aperture and directions, and matches the histogram of samples (χ²);
     - the emitted Stokes vectors average to the laser's.
-- A detector covering the whole beam, a meter away, reads the laser's power within 0.5 % after 10⁶ light paths ([physoptics-detectors.md](../physoptics-detectors.md)).
+- A detector covering the whole beam, a meter away, reads the laser's power within 0.5 % after 10⁶ light paths ([physoptics-detectors.md](physoptics-detectors.md)).
 - A camera looking into the aperture from on axis, a distance L from the waist, sees the irradiance `2 P / (π w(L)²)` there, summed over its image. Its spot is not the beam's radius at that distance: a pinhole at L sees the waist plane's points x along the slopes −x / L, whose density falls off with the half angle `w0 θ0 / w(L)`, the size of the waist seen from L. The plan first said the beam's radius, which the Wigner function shows is wrong. Off axis by five radii, the camera sees nothing.
 
 ## Order of work

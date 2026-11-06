@@ -1,0 +1,7 @@
+{
+  "power": 0.005,
+  "tolerance": {
+    "power": 0.005
+  },
+  "notes": "the whole beam on the meter: every path deposits the laser's power, so the reading is exact and its error 0"
+}

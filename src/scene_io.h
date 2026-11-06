@@ -23,7 +23,8 @@
 // spectral settings that a file without them never uses). Version 20 adds the scene's capabilities and its template, and
 // 21 the optical elements, the optical library's catalogs, glasses and coatings, the optics settings and the length unit,
 // 22 the viewport's camera, 23 the bench and each optic's mount, which an older file's optics open without, and 24 the
-// background mode, which an older file implied.
+// background mode, which an older file implied. Each later version is described where the payload is written
+// (SCENE_FILE_FORMAT_VERSION in scene_io.cpp), up to 30's sensor stacks.
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -36,6 +37,7 @@
 #include <optic_bench.h>
 #include <optic_catalog.h>
 #include <optic_coating.h>
+#include <optic_detectors.h>
 #include <optic_glass.h>
 #include <rt_accel.h>
 #include <rt_kernels.h>
@@ -98,6 +100,16 @@ struct SceneLightRecord {
 struct SceneOpticRecord {
 	SceneOptic optic;
 	std::array<std::optional<MaterialDef>, MAX_OPTIC_MATERIAL_SLOTS> slots;
+	// version 30: a mounted optic whose file gave its body's position and orientation, and not its stack: the engine
+	// stands it on the bench there (RaytraceSceneEditor::standOpticOnBench())
+	bool standOnBench { false };
+};
+
+// version 30: a sensor stack (src/optic_detectors.h), without an id, and the material of each of its sensor's slots that
+// differs from the kind's default
+struct SceneSensorStackRecord {
+	SensorStack stack;
+	std::array<std::optional<MaterialDef>, MAX_OPTIC_MATERIAL_SLOTS> slots;
 };
 
 // version 22: the raster viewport's free camera, how it moves and where it is, so a scene opens at the speed and clip
@@ -151,6 +163,10 @@ struct SceneDescription {
 	// into cameras; -1 for none). Ids are not saved - the editor assigns them on load
 	std::vector<SceneCamera> cameras;
 	int renderCamera { -1 };
+	// version 29: the render target when it is a detector (docs/plans/completed/physoptics-detectors.md), an index into
+	// optics and then the sensor stacks' members, each stack's in order (version 30); -1 when the target is the render
+	// camera
+	int renderDetector { -1 };
 	// version 10: the punctual lights. `hasLights` tells an older file, whose models' own lights the
 	// imports recreate, from a scene whose lights were all deleted
 	std::vector<SceneLightRecord> lights;
@@ -198,6 +214,8 @@ struct SceneDescription {
 	BenchSettings bench;
 	// version 25: the image files the materials' textures read, which TextureBinding::fileTexture indexes
 	std::vector<SceneTextureRecord> textures;
+	// version 30: the sensor stacks
+	std::vector<SceneSensorStackRecord> sensorStacks;
 };
 
 IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);

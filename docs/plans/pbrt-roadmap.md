@@ -220,7 +220,7 @@ Binding numbers are global and append-only (`CrtBinding`, `crt_common.glsl`). Nu
 | 53 | `BdptVertices` | bidirectional-path-tracing (implemented) |
 | 54 | `VisiblePoints` | photon-mapping |
 
-Bindings 55 to 61 are reserved by the [laser optics plan](physoptics-laser-optics.md): 55 `OpticSurfaces`, 56 `OpticCoatings`, 57 `OpticPathState`, 58 `BeamGraph`, 59 `Detectors`, 60 `DetectorFilm`, 61 `RayRecords`. Binding 62, `FilmCascade`, is the outlier-reweighted film's cascade of buffers by brightness, which the film plan added. Binding 63, `PathSpectra`, is a spectral build's path throughputs, which spectral rendering added. Binding 64, `TriangleUv1`, is the meshes' second uv sets, which textures added. Binding 65, `ImageDistributions`, holds piecewise-constant 2D tables over images, the camera's aperture image first, which cameras added. Specialization constant 7, `CRT_CAMERA_MODEL`, is the cameras' too.
+Bindings 55 to 61 are reserved by the [laser optics plan](physoptics-laser-optics.md): 55 `OpticSurfaces`, 56 `OpticCoatings`, 57 `OpticPathState`, 58 `BeamGraph`, 59 `Detectors`, 60 `DetectorFilm` (both implemented by physoptics-detectors), 61 `RayRecords`. Binding 62, `FilmCascade`, is the outlier-reweighted film's cascade of buffers by brightness, which the film plan added. Binding 63, `PathSpectra`, is a spectral build's path throughputs, which spectral rendering added. Binding 64, `TriangleUv1`, is the meshes' second uv sets, which textures added. Binding 65, `ImageDistributions`, holds piecewise-constant 2D tables over images, the camera's aperture image first, which cameras added. Specialization constant 7, `CRT_CAMERA_MODEL`, is the cameras' too.
 
 The Radeon Pro 560X allows 31 storage buffers per stage (`maxPerStageDescriptorStorageBuffers`). No kernel may declare more; the per-variant subsets keep every kernel well under it today (kernel 02 declares 14).
 
@@ -236,7 +236,7 @@ The queue set (`crt_common.glsl`) grows by appending. Each queue costs `poolSize
 | 7 | `CRT_QUEUE_MEDIUM_SAMPLE` | participating-media |
 | 8 | `CRT_QUEUE_MEDIUM_SCATTER` | participating-media |
 | 9 | `CRT_QUEUE_SUBSURFACE` | subsurface-scattering |
-| 10 | `CRT_QUEUE_DETECTOR` | physoptics-detectors |
+| 10 | `CRT_QUEUE_DETECTOR`, unused: the detectors' stage 26 runs over the ray queue instead (implemented) | physoptics-detectors |
 
 ### Path state
 
@@ -288,7 +288,7 @@ The stage library ([integrator-layer.md](completed/integrator-layer.md)) is shar
 | 19 to 21 | photon-mapping: 19 store visible points, 20 deposit photons, 21 update photon statistics |
 | 22, 23 | metropolis-light-transport: 22 mutate chain samples, 23 accept and splat |
 | 24, 25 | wavefront-performance: 24 regenerate paths, 25 film per finished path |
-| 26 | physoptics-detectors: deposit on detectors |
+| 26 | physoptics-detectors (implemented): deposit on detectors |
 
 New variants of a stage take the next free `VV` in it; the plans name the ones they add, and a clash between two plans is settled by whichever lands second taking the next number.
 

@@ -121,7 +121,23 @@ namespace {
 //   laser is placed freely, as an unmounted optic is. "spectral" gains "designFollowsLaser", written only when false.
 //   A user glass gains "absolute", written when its index is not relative to air (a catalog formula is). An older
 //   file has no laser, and its glasses are read relative to air, as catalog glasses now are
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 28;
+//29: the detectors (docs/plans/completed/physoptics-detectors.md), each an optic placed freely as a laser is: the types
+//   "power_meter", "beam_dump" (a "diameter"), "spectrometer" (a "diameter", "lambdaMin" and "lambdaMax" in meters and
+//   "bins"), each one pixel, "camera_sensor", "beam_profiler", "alignment_card", "screen" and
+//   "probe_plane" ("width", "height", "pixelsX", "pixelsY"), a camera sensor and a profiler also "physicalSensor" with
+//   its "nativeX", "nativeY" and "pitch". Their "size" is "custom": no kind has presets. The sensor's slot is "sensor", a
+//   "detector" material, or a card's and a screen's "face", a "diffuse" one; a probe plane has none. Films are not saved.
+//   "renderDetector", the optic index of the render target when it is a detector rather than "renderCamera", and
+//   "render" gains "lightPathsPerSample" when it differs from 512 x 512. An older file has no detector
+//30: adds "sensorStacks" (src/optic_detectors.h): each a "name", its "sensor" (a detector's "type", "params" and
+//   "materials", as an optic has them), the "start" and "end" of its axis and its "count" of sensors, the "orientation"
+//   every sensor has and "alignToAxis". Its members are not in "optics": "renderDetector" counts them after the optics,
+//   each stack's in order. A mounted optic's "mount" may give the "position" and "orientation" of its body, with no
+//   "origin": the optic then stands in its mount on the bench where they put it, which a script writing a scene can do
+//   without the mounts' geometry. "render" gains "renderAllSensors", written when true: light tracing records every
+//   detector, where by default it records the render target and its stack's members. An older file has none of them,
+//   and records its target alone
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 30;
 
 //---------------------------------------------------------------- writing
 
@@ -425,6 +441,35 @@ std::string benchJson(const SceneDescription& scene)
 		jsonDouble(bench.beamHeight), bench.snap);
 }
 
+// an optic's "params" that differ from its kind's defaults and the "materials" of the slots that differ from theirs,
+// each the inside of its object
+std::string opticParamsJson(const SceneOptic& optic)
+{
+	std::string params;
+	for (const OpticParam& param : opticTraits(optic.kind).params) {
+		const auto found = optic.params.find(param.name);
+		if (found == optic.params.end() || found->second == param.defaultValue) {
+			continue;
+		}
+		params += fmt::format(R"({}"{}":{})", params.empty() ? "" : ",", param.name, opticValueJson(param, found->second));
+	}
+	return params;
+}
+
+std::string opticMaterialsJson(OpticKind kind, const std::array<std::optional<MaterialDef>, MAX_OPTIC_MATERIAL_SLOTS>& slots)
+{
+	const OpticTraits& traits = opticTraits(kind);
+	std::string materials;
+	for (size_t slot = 0; slot < traits.slots.size(); slot++) {
+		const std::optional<MaterialDef>& material = slots[slot];
+		if (!material) {
+			continue;
+		}
+		materials += fmt::format(R"({}"{}":{{"type":"{}"{}}})", materials.empty() ? "" : ",", traits.slots[slot].name, materialTypeName(material->type), materialParamsJson(*material, nullptr));
+	}
+	return materials;
+}
+
 std::string opticsJson(const SceneDescription& scene)
 {
 	if (scene.optics.empty()) {
@@ -435,24 +480,27 @@ std::string opticsJson(const SceneDescription& scene)
 		const SceneOptic& optic = scene.optics[i].optic;
 		const OpticTraits& traits = opticTraits(optic.kind);
 		const std::string size = optic.sizePreset >= 0 && optic.sizePreset < (int)traits.sizes.size() ? traits.sizes[(size_t)optic.sizePreset].key : "custom";
-		std::string params;
-		for (const OpticParam& param : traits.params) {
-			const auto found = optic.params.find(param.name);
-			if (found == optic.params.end() || found->second == param.defaultValue) {
-				continue;
-			}
-			params += fmt::format(R"({}"{}":{})", params.empty() ? "" : ",", param.name, opticValueJson(param, found->second));
-		}
-		std::string materials;
-		for (size_t slot = 0; slot < traits.slots.size(); slot++) {
-			const std::optional<MaterialDef>& material = scene.optics[i].slots[slot];
-			if (!material) {
-				continue;
-			}
-			materials += fmt::format(R"({}"{}":{{"type":"{}"{}}})", materials.empty() ? "" : ",", traits.slots[slot].name, materialTypeName(material->type), materialParamsJson(*material, nullptr));
-		}
 		json += fmt::format(R"({}{{"type":"{}","name":{},"size":"{}","params":{{{}}},"mount":{},"materials":{{{}}}}})", i > 0 ? "," : "", traits.name,
-			jsonString(optic.name), size, params, mountJson(optic.mount), materials);
+			jsonString(optic.name), size, opticParamsJson(optic), mountJson(optic.mount), opticMaterialsJson(optic.kind, scene.optics[i].slots));
+	}
+	return json + "]";
+}
+
+//version 30: the sensor stacks
+std::string sensorStacksJson(const SceneDescription& scene)
+{
+	if (scene.sensorStacks.empty()) {
+		return {};
+	}
+	std::string json = R"(,"sensorStacks":[)";
+	for (size_t i = 0; i < scene.sensorStacks.size(); i++) {
+		const SensorStack& stack = scene.sensorStacks[i].stack;
+		const glm::dquat& q = stack.orientation;
+		json += fmt::format(R"({}{{"name":{},"sensor":{{"type":"{}","params":{{{}}},"materials":{{{}}}}},"start":[{},{},{}],"end":[{},{},{}],"count":{},"orientation":[{},{},{},{}],"alignToAxis":{}}})",
+			i > 0 ? "," : "", jsonString(stack.name), opticTraits(stack.sensor.kind).name, opticParamsJson(stack.sensor),
+			opticMaterialsJson(stack.sensor.kind, scene.sensorStacks[i].slots), jsonDouble(stack.start.x), jsonDouble(stack.start.y), jsonDouble(stack.start.z),
+			jsonDouble(stack.end.x), jsonDouble(stack.end.y), jsonDouble(stack.end.z), stack.count, jsonDouble(q.x), jsonDouble(q.y), jsonDouble(q.z),
+			jsonDouble(q.w), stack.alignToAxis);
 	}
 	return json + "]";
 }
@@ -521,6 +569,16 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		}
 	}
 	json += fmt::format(R"(],"captureThroughSpecular":{}}},"lightGroups":{}}})", r.aov.captureThroughSpecular, r.lightGroups);
+	//version 29: light tracing's paths toward a detector render target, when not the default
+	if (r.lightPathsPerSample != RenderSettings {}.lightPathsPerSample) {
+		json.pop_back();
+		json += fmt::format(R"(,"lightPathsPerSample":{}}})", r.lightPathsPerSample);
+	}
+	//version 30: whether light tracing records every detector, when it does
+	if (r.renderAllSensors) {
+		json.pop_back();
+		json += R"(,"renderAllSensors":true})";
+	}
 	//version 18: the spectral settings, still inside "render"
 	{
 		const SpectralSettings& s = r.spectral;
@@ -585,6 +643,9 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 		jsonString(bvhBuilderName(a.builder)), a.maxLeafSize, a.binCount,
 		jsonNumber(a.traversalCost), jsonNumber(a.intersectionCost), jsonNumber(a.spatialAlpha), jsonNumber(a.spatialBudget), a.maxDepth);
 
+	if (scene.renderDetector >= 0) {
+		json += fmt::format(R"(,"renderDetector":{})", scene.renderDetector);
+	}
 	json += fmt::format(R"(,"renderCamera":{},"cameras":[)", scene.renderCamera);
 	for (size_t i = 0; i < scene.cameras.size(); i++) {
 		const SceneCamera& c = scene.cameras[i];
@@ -717,6 +778,7 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	}
 	json += opticalLibraryJson(scene, sceneDirectory);
 	json += opticsJson(scene);
+	json += sensorStacksJson(scene);
 	//version 23: the bench
 	json += benchJson(scene);
 
@@ -1281,6 +1343,15 @@ void readRenderSettings(JsonElement element, RenderSettings& out)
 		readOptionalBool(aov["captureThroughSpecular"], out.aov.captureThroughSpecular);
 	}
 	readOptionalBool(object["lightGroups"], out.lightGroups);
+	{
+		int64_t paths = 0;
+		if (object["lightPathsPerSample"].get_int64().get(paths) == simdjson::SUCCESS && paths > 0) {
+			out.lightPathsPerSample = (uint32_t)std::min<int64_t>(paths, 4096ll * 4096ll);
+		}
+	}
+	if (object["renderAllSensors"].get_bool().get(out.renderAllSensors) != simdjson::SUCCESS) {
+		out.renderAllSensors = false;
+	}
 	readOpticsSettings(object["optics"], out.optics);
 	readBidirectionalSettings(object["bidirectional"], out.bidirectional);
 	//version 18: the spectral settings; an older file renders in exact RGB with sRGB colors
@@ -1413,7 +1484,7 @@ bool readCamera(simdjson::dom::object object, const std::filesystem::path& scene
 	std::string_view text;
 	if (object["kind"].get_string().get(text) == simdjson::SUCCESS) {
 		const CameraKind kind = cameraKindFromId(text);
-		if (kind == CameraKind::Count) {
+		if (kind == CameraKind::Count || !cameraTraits(kind).sceneCamera) {
 			warnings.push_back(fmt::format("camera \"{}\" has kind '{}', which this build does not know; it is a perspective camera", out.name, text));
 		} else {
 			out.kind = kind;
@@ -1976,6 +2047,9 @@ bool readOptic(simdjson::dom::object object, size_t index, SceneOpticRecord& out
 	simdjson::dom::object mount;
 	if (object["mount"].get_object().get(mount) == simdjson::SUCCESS) {
 		readMount(mount, optic, warnings);
+		//version 30: a mounted optic placed by its body rather than its stack
+		simdjson::dom::element element;
+		out.standOnBench = !optic.mount.isFree() && mount["origin"].get(element) != simdjson::SUCCESS && mount["position"].get(element) == simdjson::SUCCESS;
 	} else {
 		optic.mount = MountPose {};
 		readFreePlacement(object, optic.mount);
@@ -2279,6 +2353,10 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 		if (root["renderCamera"].get_int64().get(renderCamera) == simdjson::SUCCESS && renderCamera >= 0 && renderCamera < (int64_t)ctx.scene.cameras.size()) {
 			ctx.scene.renderCamera = (int)renderCamera;
 		}
+		int64_t renderDetector = -1;
+		if (root["renderDetector"].get_int64().get(renderDetector) == simdjson::SUCCESS && renderDetector >= 0) {
+			ctx.scene.renderDetector = (int)renderDetector;
+		}
 	} else {
 		SceneCamera camera;
 		camera.name = "render_camera";
@@ -2470,6 +2548,54 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 				ctx.scene.optics.push_back(std::move(record));
 			}
 			opticIndex++;
+		}
+	}
+	//version 30: the sensor stacks, each sensor read as an optic is
+	simdjson::dom::array stacks;
+	if (root["sensorStacks"].get_array().get(stacks) == simdjson::SUCCESS) {
+		size_t stackIndex = 0;
+		for (simdjson::dom::element entry : stacks) {
+			simdjson::dom::object stackObject;
+			simdjson::dom::object sensorObject;
+			SceneOpticRecord sensor;
+			if (entry.get_object().get(stackObject) != simdjson::SUCCESS || stackObject["sensor"].get_object().get(sensorObject) != simdjson::SUCCESS
+				|| !readOptic(sensorObject, stackIndex, sensor, ctx.scene.kernelWarnings)) {
+				stackIndex++;
+				continue;
+			}
+			SceneSensorStackRecord record;
+			SensorStack& stack = record.stack;
+			stack.name = readOptionalString(stackObject["name"]);
+			if (!isDetectorKind(sensor.optic.kind)) {
+				ctx.scene.kernelWarnings.push_back(fmt::format("sensor stack \"{}\" has a {}, which is no detector; it is skipped", stack.name, opticTraits(sensor.optic.kind).name));
+				stackIndex++;
+				continue;
+			}
+			stack.sensor = std::move(sensor.optic);
+			stack.sensor.name.clear();
+			stack.sensor.mount = MountPose {};
+			record.slots = sensor.slots;
+			std::vector<double> values;
+			if (readDoubles(stackObject["start"], values) && values.size() == 3) {
+				stack.start = glm::dvec3(values[0], values[1], values[2]);
+			}
+			values.clear();
+			if (readDoubles(stackObject["end"], values) && values.size() == 3) {
+				stack.end = glm::dvec3(values[0], values[1], values[2]);
+			}
+			values.clear();
+			if (readDoubles(stackObject["orientation"], values) && values.size() == 4) {
+				const glm::dquat q(values[3], values[0], values[1], values[2]);
+				stack.orientation = glm::length(q) > 0.0 ? glm::normalize(q) : glm::dquat(1.0, 0.0, 0.0, 0.0);
+			}
+			double count = (double)stack.count;
+			readDouble(stackObject["count"], count);
+			stack.count = std::clamp((int)std::lround(count), 1, MAX_STACK_SENSORS);
+			if (stackObject["alignToAxis"].get_bool().get(stack.alignToAxis) != simdjson::SUCCESS) {
+				stack.alignToAxis = true;
+			}
+			ctx.scene.sensorStacks.push_back(std::move(record));
+			stackIndex++;
 		}
 	}
 

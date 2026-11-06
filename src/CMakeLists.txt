@@ -185,7 +185,8 @@ endif()
 # line-for-line mirror of shaders/rt/include/crt_optic.glsl), the AGF glass reader, the thin-film transfer matrix, the
 # element traits and builders and their preview meshes, and the bench (docs/plans/completed/physoptics-bench-and-mounts.md): the
 # breadboard, the stack of fork, holder, post and mount under every optic by the mount models' mates, and the kinematic
-# mounts' adjusters, and what a laser element's parameters make of its beam (docs/plans/completed/physoptics-laser-sources.md).
+# mounts' adjusters, what a laser element's parameters make of its beam (docs/plans/completed/physoptics-laser-sources.md), and
+# the detectors' films and the measurements made from them (docs/plans/completed/physoptics-detectors.md).
 # Checked by tests/optics_test.cpp; the CPU traversal in rt_bvh intersects optics through it
 add_library(rt_optics STATIC
     optic_bench.cpp
@@ -194,6 +195,8 @@ add_library(rt_optics STATIC
     optic_catalog.h
     optic_coating.cpp
     optic_coating.h
+    optic_detectors.cpp
+    optic_detectors.h
     optic_glass.cpp
     optic_glass.h
     optic_laser.cpp
@@ -257,6 +260,8 @@ add_executable(vulkan_guide
     length_unit.h
     optics_ui.cpp
     optics_ui.h
+    detectors_ui.cpp
+    detectors_ui.h
     rt_textures.cpp
     rt_textures.h
     scene_io.cpp
@@ -291,6 +296,8 @@ add_executable(vulkan_guide
     rt_path_schedule.h
     rt_accel.cpp
     rt_accel.h
+    rt_detectors.cpp
+    rt_detectors.h
     rt_lights.cpp
     rt_lights.h
     texture_library.cpp

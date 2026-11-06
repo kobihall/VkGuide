@@ -1,0 +1,8 @@
+{
+  "dump": 0.005,
+  "behind": 0.0,
+  "tolerance": {
+    "power": 0.005
+  },
+  "notes": "the dump absorbs the beam; nothing reaches the meter behind it"
+}

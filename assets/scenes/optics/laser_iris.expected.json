@@ -1,4 +1,8 @@
 {
+  "planes": [
+    0.20500000000000002,
+    2.0
+  ],
   "transmitted": 0.004717397085886721,
   "tolerance": {
     "transmitted": 0.01

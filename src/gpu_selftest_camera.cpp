@@ -63,6 +63,12 @@ std::vector<CameraCase> cameraCases()
 	cases.push_back({ "spherical, equirectangular", c, true });
 	c.mapping = SphericalMapping::EqualArea;
 	cases.push_back({ "spherical, equal-area", c, true });
+	//a detector's sensor (docs/plans/completed/physoptics-detectors.md), facing a little off the z axis
+	c = base;
+	c.kind = CameraKind::Sensor;
+	c.lookAt = c.lookFrom + glm::vec3(0.3f, 0.f, -1.f);
+	c.sensorSize = glm::vec2(0.012f, 0.008f);
+	cases.push_back({ "sensor", c, true });
 	return cases;
 }
 

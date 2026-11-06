@@ -19,6 +19,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <unordered_map>
 
@@ -65,6 +66,10 @@ public:
 	void shutdown(VulkanEngine* engine);
 
 	bool* settingsVisibilityFlag() { return &m_showSettingsPanel; }
+	// THE RAYTRACED OUTPUT WINDOW: the render's picture, or a detector's film and readings while it shows a detector, with
+	// a choice of what it shows when light tracing recorded detectors beside the target
+	bool* outputVisibilityFlag() { return &m_showOutputWindow; }
+	void drawOutputWindow(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 
 	// the models changed (an import, a removal, a scene load): builds the BLAS of every mesh not
 	// already built. Called from the engine's scene-change path, so the BVH work happens at load
@@ -94,7 +99,15 @@ public:
 
 	// which scene camera renders. An id the scene no longer has falls back to its first camera
 	uint64_t renderCameraId() const { return m_renderCameraId; }
-	void setRenderCamera(uint64_t id) { m_renderCameraId = id; }
+	void setRenderCamera(uint64_t id)
+	{
+		m_renderCameraId = id;
+		m_renderDetectorId = 0;
+	}
+	// THE RENDER TARGET (docs/plans/completed/physoptics-detectors.md): a camera, or a detector, whose optic id this is (0
+	// while the target is a camera). Only one is the target; light tracing records it, the rest of its sensor stack, and with RenderSettings::renderAllSensors every other detector
+	uint64_t renderDetectorId() const { return m_renderDetectorId; }
+	void setRenderDetector(uint64_t opticId) { m_renderDetectorId = opticId; }
 
 	// Reference images and render exports as files. They wait for the device, so a running render stalls for the
 	// readback
@@ -128,6 +141,8 @@ public:
 	// the integrator, the traversal and the variant of each stage (src/rt_kernels.h). Saved with
 	// the scene; changing one restarts a running render, exactly like a setting
 	const KernelSelection& kernels() const { return m_kernels; }
+	// what the Render Settings' Use Light tracing switches to
+	void setIntegrator(IntegratorId id) { m_kernels.integrator = id; }
 	void setKernels(const KernelSelection& selection);
 
 	// the BVH builder and layout, saved with the scene alongside the kernel selection because
@@ -174,12 +189,23 @@ private:
 		uint32_t environmentGroup { 0 };
 		// the camera's aperture image's distribution, once its image has loaded: a render started before restarts
 		const PiecewiseConstant2D* aperture { nullptr };
+		uint64_t detectorTarget { 0 };
 
 		bool operator==(const RenderKey&) const = default;
 	};
 
 	// the camera the next render would use, or null when the scene has none
 	const SceneCamera* resolveCamera(const RaytraceSceneEditor& editor);
+	// what the render looks through: the camera, or the detector and its sensor camera, with the film's size
+	struct RenderTarget {
+		const SceneCamera* camera { nullptr };
+		const SceneOptic* detector { nullptr };
+		RTCameraSnapshot snapshot;
+		uint32_t width { 0 };
+		uint32_t height { 0 };
+		bool valid() const { return camera != nullptr || detector != nullptr; }
+	};
+	RenderTarget resolveTarget(VulkanEngine* engine, const RaytraceSceneEditor& editor, const RenderSettings& settings);
 	// what a render started now would cost a frame, against WORK_PER_FRAME_BUDGET: `blocked` is over it and not
 	// accepted for this cost through Render anyway
 	struct RenderEstimate {
@@ -192,7 +218,9 @@ private:
 	RenderEstimate estimate(VulkanEngine* engine, const RaytraceSceneEditor& editor);
 	// the "Camera" combo of Render Settings
 	void drawCameraCombo(const RaytraceSceneEditor& editor);
-	RenderKey currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const SceneCamera& camera);
+	void drawResolution(VulkanEngine* engine);
+	void drawSamplingSettings(VulkanEngine* engine);
+	RenderKey currentKey(VulkanEngine* engine, const RaytraceSceneEditor& editor, const RenderTarget& target);
 	// the distribution of the camera's aperture image, built from the texture library's luminance copy the first time it
 	// is asked for once the image has loaded; null for any other aperture, or before then
 	std::shared_ptr<const PiecewiseConstant2D> apertureTable(VulkanEngine* engine, const SceneCamera& camera);
@@ -240,6 +268,12 @@ private:
 	EnvironmentLight environmentLight(VulkanEngine* engine) const;
 	void ensureDisplayImage(VulkanEngine* engine, uint32_t width, uint32_t height);
 	void destroyDisplayImage(VulkanEngine* engine);
+public:
+	// a new scene: stops the render and clears the Raytraced Output window: its picture, its readings and what it shows
+	void discardRender(VulkanEngine* engine);
+private:
+	// a new scene asked for discardRender(): its pictures and readings are destroyed at the next update()
+	bool m_discardPending { false };
 	void drawSettings(VulkanEngine* engine);
 
 	// the Resolution combo's selection: RESOLUTION_VIEWPORT is "Match viewport",
@@ -257,6 +291,9 @@ private:
 	int m_customWidth { RESOLUTION_PRESETS[DEFAULT_RESOLUTION_PRESET].width };
 	int m_customHeight { RESOLUTION_PRESETS[DEFAULT_RESOLUTION_PRESET].height };
 	uint64_t m_renderCameraId { 0 };
+	uint64_t m_renderDetectorId { 0 };
+	// the detector target's film, for the resolution section; 0 while a camera is the target
+	glm::uvec2 m_detectorTargetPixels { 0u };
 
 	GpuRenderer m_gpu;
 
@@ -287,6 +324,8 @@ private:
 	std::vector<SceneMeshObject> m_sceneAccelObjects;
 	std::vector<SceneShape> m_sceneAccelShapes;
 	std::vector<SceneOptic> m_sceneAccelOptics;
+	// the detectors the last build recorded, by optic id; nullopt for every one
+	std::optional<std::vector<uint64_t>> m_sceneAccelRecorded;
 	BenchTrace m_sceneAccelBench;
 	std::vector<SceneLight> m_sceneAccelLights;
 	std::vector<MaterialDef> m_sceneAccelMaterials;
@@ -337,8 +376,18 @@ private:
 	// whether the render camera can take a connection from a light path (src/camera_model.h cameraConnects()), which the
 	// integrator combo greys the bidirectional integrators by; set each frame the Render Settings window draws
 	bool m_cameraConnects { true };
+	bool m_targetIsDetector { false };
 	// Render was pressed: update() starts it next frame, before the image windows record the display image
 	bool m_startRequested { false };
 
 	bool m_showSettingsPanel { true };
+	bool m_showOutputWindow { true };
+	// whether the Raytraced Output window drew its contents last frame (open, and its tab in front), and whether the next
+	// frame brings it to the front: Render does when it is not
+	bool m_outputWindowShown { false };
+	bool m_focusOutputWindow { false };
+	// what the output window shows: 0 the render target, else a detector the render recorded beside it. A sensor stack is
+	// one entry of the window's combo, and its slider picks the member: the member each stack showed last, by stack id
+	uint64_t m_shownDetector { 0 };
+	std::map<uint64_t, uint64_t> m_shownStackMember;
 };

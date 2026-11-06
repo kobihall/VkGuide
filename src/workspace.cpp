@@ -92,7 +92,7 @@ void buildRenderLayout(uint32_t dockspace, std::vector<std::string>& open)
 	for (const char* name : { "Raytracer Shaders", "Scene Capabilities", "Import Report", "GPU self-tests" }) {
 		dockWindow(name, columns.rightBottom);
 	}
-	open = { "Scene", "Materials", "Viewport", "Stats", "Render Settings" };
+	open = { "Scene", "Materials", "Viewport", "Raytraced Output", "Stats", "Render Settings" };
 }
 
 // named Raytracing, so its tab is not mistaken for the Render button beside it; the key stays "render", which saved

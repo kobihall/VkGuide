@@ -240,6 +240,10 @@ std::vector<Band> buildBands(const SpectralSettings& settings);
 // a spectrum's value in a band: the average over it, weighted by the basis (a box or the Gaussian). Reconstructing
 // from the averages uses the partition of unity sum(phi_b) = 1, so a constant spectrum comes back exactly
 double projectOntoBand(const std::function<double(double)>& f, const Band& band);
+// a line's value in a band, from its profile's closed form: a line narrower than the quadrature's 0.25 nm (a laser's) falls
+// between projectOntoBand()'s samples. Its integral over a box, its convolution with a Gaussian basis (exact for a Gaussian
+// line, the narrow-line limit for a Lorentzian), each over the basis's own integral; times `scale`, the line's
+double projectLineOntoBand(LineProfile profile, double center, double fwhm, double scale, const Band& band);
 
 //---------------------------------------------------------------- to the film
 

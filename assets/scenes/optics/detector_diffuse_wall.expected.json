@@ -1,0 +1,10 @@
+{
+  "reflected": 1.7502643637547156e-05,
+  "transmitted": 1.0501586182528295e-05,
+  "share": 0.007001057455018863,
+  "tolerance": {
+    "sigmas": 4.0,
+    "relative": 0.03
+  },
+  "notes": "a Lambertian spot's radiance into a 10 mm meter 50 mm away at 45 degrees, on the reflected and the transmitted side"
+}

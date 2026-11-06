@@ -186,6 +186,32 @@ def run_render(scene, samples, *, size=None, seed=None, workdir=None, timeout=90
     return out, dropped
 
 
+def read_exr_channels(path, workdir):
+    """Every channel of an EXR file as a float array (height, width), row 0 at the top, through bin/exr_dump"""
+    out = Path(workdir) / (Path(path).stem + "_npy")
+    result = subprocess.run([str(BIN / "exr_dump"), str(path), "--npy", str(out)], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stdout + result.stderr)
+    return {npy.stem: np.load(npy).astype(np.float64) for npy in out.glob("*.npy")}
+
+
+def run_detectors(scene, samples, *, workdir=None, seed=None, extra_args=(), timeout=900, size=None):
+    """Renders `scene` (a dict, or a path) with --detectors (docs/plans/completed/physoptics-detectors.md) and returns
+    {name: (reading, film)}: each detector's entry of detectors.json, and its film in watts per pixel (the channels' mean
+    in exact RGB), row 0 at the top (the sensor's +y), its columns along its +x; and the render's linear image"""
+    workdir = Path(workdir or tempfile.mkdtemp(prefix="vkdetect_"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    folder = workdir / "detectors"
+    image, _ = run_render(scene, samples, workdir=workdir, seed=seed, extra_args=list(extra_args) + ["--detectors", str(folder)], timeout=timeout, size=size)
+    data = json.loads((folder / "detectors.json").read_text())
+    readings = {}
+    for entry in data["detectors"]:
+        channels = read_exr_channels(folder / entry["film"], workdir)
+        film = np.mean([channels[c] for c in sorted(channels)], axis=0)
+        readings[entry["name"]] = (entry, film)
+    return readings, image, data
+
+
 def save_png(path, image, exposure=1.0):
     """A quick look at a linear image: sRGB-encoded 8 bit, through a PPM and sips (macOS)."""
     srgb = np.clip(image * exposure, 0, 1)
