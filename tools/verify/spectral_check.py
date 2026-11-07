@@ -12,7 +12,7 @@
                 differ from RGB by the uplift's round trip (under 1 percent), the bands by their resolution, the
                 RGB Gaussians by their three bands
   monochrome    the furnace in the monochromatic mode at three wavelengths, the infrared one beyond the RGB data
-  dispersion    assets/scenes/prism_dispersion.gltf, a dense flint prism against a white slit: exact RGB shows one
+  dispersion    assets/scenes/tests/core/prism_dispersion.gltf, a dense flint prism against a white slit: exact RGB shows one
                 white slit, and hero and the bands spread it with red deviated least and blue most, the bands as
                 one slit per band, the two agreeing on each channel's light
 
@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from make_scenes import furnace_scene, write_uniform_hdr
-from vkscene import ROOT, run_render
+from vkscene import ROOT, TEST_SCENES, run_render
 
 UNIFORM_MAP = ROOT / "assets" / "environment_maps" / "uniform_white.hdr"
 SIZE = 64
@@ -130,7 +130,7 @@ def furnace(args, failures):
 
 def convergence(args, failures):
     print("convergence on the Cornell box")
-    scene = ROOT / "assets" / "scenes" / "cornell_box.gltf"
+    scene = TEST_SCENES / "core" / "cornell_box.gltf"
     reference, _ = run_render(scene, args.spp * 4, size=(128, 128), seed=5)
     ref = reference.reshape(-1, 3).mean(axis=0)
     limits = {"RGB Gaussians": 0.06, "bands 8 box": 0.04, "bands 16 Gaussian": 0.02, "bands 32": 0.02, "hero 4 visible": 0.01, "hero 8 uniform": 0.01, "hero 32": 0.01}
@@ -163,7 +163,7 @@ def monochrome(args, failures):
 
 def dispersion(args, failures):
     print("dispersion through a prism")
-    scene = ROOT / "assets" / "scenes" / "prism_dispersion.gltf"
+    scene = TEST_SCENES / "core" / "prism_dispersion.gltf"
     results = {}
     for rep, extra in (("exact RGB", []), ("hero 8", ["--spectral", "hero", "--lanes", "8"]), ("bands 16", ["--spectral", "bands", "--lanes", "16"])):
         # the slit is a few pixels wide, and each wavelength lights only part of it: four times the samples

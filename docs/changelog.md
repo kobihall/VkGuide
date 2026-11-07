@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-07
+
+### Changed
+
+- `assets/scenes/` is split in two. `assets/scenes/tests/` holds the scenes `tools/verify/` writes and renders, one folder per suite (`core`, `bidirectional`, `cameras`, `lights_and_textures`, `optics`, `lasers`, `detectors`, `optics_verification`), with each `<name>.expected.json` beside its scene. No script reads or writes the rest of `assets/scenes/`, which is yours to edit.
+- Your scenes are `sphere_scene.gltf` (still the startup scene), `cornell_box.gltf`, `veach_mis.gltf`, `all_materials.gltf`, `thin_glass.gltf`, `Sponza.gltf`, `caustic_glass.gltf` and `prism_dispersion.gltf`, with copies of verification scenes in `cameras/`, `lights_and_textures/` and `optics/`. The `optics_prism.gltf` and `caustic_glass.gltf` you edited are these copies now, and the checks render freshly generated versions under `tests/`.
+- A scene saved in a folder of `assets/scenes/`, such as `optics/`, names the textures, environment maps and models in `assets/` by a relative path, as a scene in `assets/scenes/` itself does. A save went one folder up and wrote a path two folders up as an absolute one.
+
+### Fixed
+
+- Fixed `tools/verify/spectral_check.py`'s dispersion check failing to render: `assets/scenes/prism_dispersion.gltf` had been deleted since 2026-10-31. `make_scenes.py` writes it again, to `assets/scenes/tests/core/`.
+- Fixed `tools/verify/optics_check.py` and `aov_check.py` rendering `optics_prism.gltf` and `caustic_glass.gltf` as edited by hand for other uses instead of as their generators write them.
+
+### Internal
+
+- `vkscene.TEST_SCENES` is `assets/scenes/tests/`, and every generator and check in `tools/verify/` names its suite's folder through it. A test scene names an asset three folders up: `../../../textures/checker.png`.
+
 ## 2026-11-06
 
 ### New

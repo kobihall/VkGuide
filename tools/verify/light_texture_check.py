@@ -28,7 +28,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vkscene  # noqa: E402
 
-SCENES = vkscene.ROOT / "assets" / "scenes"
+SCENES = vkscene.TEST_SCENES / "lights_and_textures"
 failures = []
 
 
@@ -39,7 +39,7 @@ def check(ok, message):
 
 
 def render(name, samples, *, seed=1, edit=None):
-    """Renders a scene of assets/scenes, after `edit` changes its payload's extras when given (written beside it in a
+    """Renders a scene of assets/scenes/tests/lights_and_textures, after `edit` changes its payload's extras when given (written beside it in a
     temporary folder, its relative paths made absolute first)"""
     path = SCENES / name
     if edit is None:

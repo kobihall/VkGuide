@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Writes the verification scenes and the uniform environment map they use:
 
-  assets/scenes/white_furnace.gltf     a gallery of spheres of every material under a white background
-  assets/scenes/cornell_reference.gltf the Cornell box, diffuse, with its two boxes
-  assets/scenes/cornell_empty.gltf     the Cornell box without them, which radiosity.py solves exactly
-  assets/scenes/caustic_glass.gltf     a glass sphere on a floor under a small lamp: a caustic made of fireflies
-  assets/scenes/prism_dispersion.gltf  a dense flint prism against a white slit, which the spectral modes spread
+  assets/scenes/tests/core/white_furnace.gltf     a gallery of spheres of every material under a white background
+  assets/scenes/tests/core/cornell_reference.gltf the Cornell box, diffuse, with its two boxes
+  assets/scenes/tests/core/cornell_empty.gltf     the Cornell box without them, which radiosity.py solves exactly
+  assets/scenes/tests/core/caustic_glass.gltf     a glass sphere on a floor under a small lamp: a caustic made of fireflies
+  assets/scenes/tests/core/prism_dispersion.gltf  a dense flint prism against a white slit, which the spectral modes spread
                                        into a spectrum (assets/models/prism.gltf is its prism)
   assets/environment_maps/uniform_white.hdr   radiance 1 in every direction
 
@@ -20,7 +20,7 @@ import numpy as np
 import cornell
 from caustic_scene import caustic_scene
 from prism_scene import prism_scene, write_prism_model
-from vkscene import ROOT, camera, make_scene, sphere, write_scene
+from vkscene import ROOT, TEST_SCENES, camera, make_scene, sphere, write_scene
 
 # the materials of the gallery and of furnace_check.py, all with a white base colour
 FURNACE_MATERIALS = [
@@ -67,14 +67,14 @@ def gallery():
 
 
 def main():
-    scenes = ROOT / "assets" / "scenes"
+    scenes = TEST_SCENES / "core"
     write_uniform_hdr(ROOT / "assets" / "environment_maps" / "uniform_white.hdr")
     write_scene(scenes / "white_furnace.gltf", gallery())
     write_scene(scenes / "cornell_reference.gltf", cornell.scene(True))
     write_scene(scenes / "cornell_empty.gltf", cornell.scene(False))
     write_scene(scenes / "caustic_glass.gltf", caustic_scene())
     write_prism_model(ROOT / "assets" / "models" / "prism.gltf")
-    write_scene(scenes / "prism_dispersion.gltf", prism_scene("../models/prism.gltf"))
+    write_scene(scenes / "prism_dispersion.gltf", prism_scene("../../../models/prism.gltf"))
     print("wrote white_furnace.gltf, cornell_reference.gltf, cornell_empty.gltf, caustic_glass.gltf, prism_dispersion.gltf, prism.gltf and uniform_white.hdr")
 
 

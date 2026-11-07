@@ -22,9 +22,9 @@ from pathlib import Path
 
 import numpy as np
 
-from vkscene import ROOT, box, camera, make_scene, quad, run_render, save_png, LAMBERTIAN
+from vkscene import TEST_SCENES, box, camera, make_scene, quad, run_render, save_png, LAMBERTIAN
 
-CORNELL = ROOT / "assets" / "scenes" / "cornell_box.gltf"
+CORNELL = TEST_SCENES / "core" / "cornell_box.gltf"
 
 
 def kernel_variant(scene, camera_id, film_id, pixel_filter=None):

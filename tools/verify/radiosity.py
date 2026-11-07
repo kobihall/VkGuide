@@ -1,4 +1,4 @@
-"""An independent solution of the empty Cornell box (assets/scenes/cornell_empty.gltf): classical
+"""An independent solution of the empty Cornell box (assets/scenes/tests/core/cornell_empty.gltf): classical
 radiosity with exact point-to-polygon form factors, and nothing from the renderer. It shares the scene's
 geometry (cornell.py) and nothing else, so an error the renderer's own tests share (a wrong factor of pi
 in a light's power, a cosine in the wrong place) shows up as a difference here.

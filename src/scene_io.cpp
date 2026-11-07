@@ -304,10 +304,11 @@ std::string materialRefJson(const SceneMaterialRef& ref)
 	return fmt::format("{}", ref.user);
 }
 
-//relative to the scene file when the target sits inside the scene's folder or its parent (the
-//project's own assets/scenes -> assets layout), so an assets folder moves as a unit; absolute
-//otherwise, since on posix everything shares a root and a "relative" path to another volume
-//would be a long, fragile ../../.. chain. Forward slashes either way
+//relative to the scene file when the target sits inside the scene's folder, its parent or its
+//grandparent (the project's own assets/scenes -> assets layout, and a scene in a folder of
+//assets/scenes such as optics/), so an assets folder moves as a unit; absolute otherwise, since
+//on posix everything shares a root and a "relative" path to another volume would be a long,
+//fragile ../../.. chain. Forward slashes either way
 std::string portablePath(const std::filesystem::path& absolutePath, const std::filesystem::path& sceneDirectory)
 {
 	std::filesystem::path relative = absolutePath.lexically_relative(sceneDirectory);
@@ -318,7 +319,7 @@ std::string portablePath(const std::filesystem::path& absolutePath, const std::f
 		}
 		climbs++;
 	}
-	if (relative.empty() || climbs > 1) {
+	if (relative.empty() || climbs > 2) {
 		relative = absolutePath;
 	}
 	return relative.generic_string();

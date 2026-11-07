@@ -71,7 +71,7 @@ Their references no longer need LightPipes alone: `tools/verify/wave_optics.py` 
 
 ## Registry, bindings and data
 
-- `assets/scenes/optics/*.gltf`, each with a short notes file of its expected values.
+- `assets/scenes/tests/optics_verification/*.gltf`, each with a short notes file of its expected values.
 - `tools/verify_optics.py`; the results tables, filled in this file when the scenes run.
 
 ## Verification

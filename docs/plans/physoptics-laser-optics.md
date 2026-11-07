@@ -260,7 +260,7 @@ The plans add, each in the payload version it lands in: `"capabilities"` and `"t
 - `shaders/rt/include/crt_optic.glsl`, `crt_coating.glsl`, `crt_detector.glsl`; `shaders/rt/2601_deposit_detector.comp`; `shaders/optics/beam_preview.vert` and `.frag` for the raster beams.
 - `tools/optical_models/` for the FreeCAD conversion scripts, and `assets/optical_models/meshes/` for their committed output.
 - `assets/glass/` for the bundled glass catalog, and `assets/lenses/` for lens prescriptions. The coating presets are code (`presetCoatings()`), so no `assets/coatings/` exists.
-- `assets/scenes/optics/` for the verification scenes.
+- `assets/scenes/tests/optics_verification/` for the verification scenes.
 
 ## Notes on the request's source files
 

@@ -1,4 +1,4 @@
-"""Renders the optical element scenes (tools/verify/optics_scenes.py, assets/scenes/optics_*.gltf) and checks what each
+"""Renders the optical element scenes (tools/verify/optics_scenes.py, assets/scenes/tests/optics/optics_*.gltf) and checks what each
 must show. Exact RGB, and the spectral builds where the answer does not depend on the wavelength:
 
   optics_furnace     a lossless lens in a white furnace: 1 everywhere it is polished (the ground edge loses what a
@@ -22,7 +22,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vkscene  # noqa: E402
 
-SCENES = vkscene.ROOT / "assets" / "scenes"
+SCENES = vkscene.TEST_SCENES / "optics"
 failures = []
 
 

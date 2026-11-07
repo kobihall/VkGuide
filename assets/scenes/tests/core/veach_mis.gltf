@@ -1,0 +1,365 @@
+{
+	"asset": {
+		"generator": "vulkan_guide",
+		"version": "2.0"
+	},
+	"nodes": [
+		{
+			"name": "vulkan_guide_scene"
+		}
+	],
+	"scene": 0,
+	"scenes": [
+		{
+			"nodes": [
+				0
+			],
+			"extras": {
+				"version": 10,
+				"models": [],
+				"environmentIntensity": 1.0,
+				"background": [
+					0.0,
+					0.0,
+					0.0
+				],
+				"render": {
+					"width": 768,
+					"height": 512,
+					"matchViewport": false,
+					"antialiasing": true,
+					"maxSamples": 64,
+					"unlimitedSamples": false,
+					"rayDepth": 2,
+					"useFixedSeed": false,
+					"seed": 1,
+					"samplesPerFrame": 1,
+					"russianRoulette": false,
+					"minBouncesBeforeRoulette": 4,
+					"restartOnChange": true
+				},
+				"kernels": {
+					"00": "thin_lens",
+					"01": "pcg_hash",
+					"02": "bvh_binary",
+					"03": "background",
+					"04": "direct",
+					"05": "none",
+					"06": "mis_power",
+					"07": "none",
+					"08": "bvh_binary",
+					"09": "running_mean"
+				},
+				"renderCamera": 0,
+				"cameras": [
+					{
+						"name": "veach_camera",
+						"position": [
+							0.0,
+							2.0,
+							15.0
+						],
+						"orientation": [
+							-0.1542334,
+							0.0,
+							0.0,
+							0.9880344
+						],
+						"fov": 28.0,
+						"aperture": 0.0,
+						"focusDistance": 13.1,
+						"exposure": 1.0
+					}
+				],
+				"lights": [
+					{
+						"type": "spot",
+						"name": "overhead_spotlight",
+						"position": [
+							0.0,
+							9.0,
+							9.0
+						],
+						"orientation": [
+							-0.3605967,
+							0.0,
+							0.0,
+							0.9327218
+						],
+						"color": [
+							1.0,
+							1.0,
+							1.0
+						],
+						"intensity": 300.0,
+						"range": 0.0,
+						"innerCone": 11.0,
+						"outerCone": 17.0
+					}
+				],
+				"geometry": [
+					{
+						"type": "quad",
+						"name": "plate_smooth",
+						"position": [
+							0.0,
+							-2.39513,
+							-0.135117
+						],
+						"orientation": [
+							0.3298386,
+							0.0,
+							0.0,
+							0.9440373
+						],
+						"width": 8.0,
+						"length": 1.0,
+						"material": {
+							"type": "pbr",
+							"albedo": [
+								0.07,
+								0.09,
+								0.13
+							],
+							"metallic": 0.0,
+							"roughness": 0.070711,
+							"emission": [
+								0.0,
+								0.0,
+								0.0
+							],
+							"strength": 1.0
+						}
+					},
+					{
+						"type": "quad",
+						"name": "plate_glossy",
+						"position": [
+							0.0,
+							-3.063405,
+							0.923128
+						],
+						"orientation": [
+							0.2311011,
+							0.0,
+							0.0,
+							0.9729297
+						],
+						"width": 8.0,
+						"length": 0.999999,
+						"material": {
+							"type": "pbr",
+							"albedo": [
+								0.07,
+								0.09,
+								0.13
+							],
+							"metallic": 0.0,
+							"roughness": 0.141421,
+							"emission": [
+								0.0,
+								0.0,
+								0.0
+							],
+							"strength": 1.0
+						}
+					},
+					{
+						"type": "quad",
+						"name": "plate_rough",
+						"position": [
+							0.0,
+							-3.58237,
+							2.22305
+						],
+						"orientation": [
+							0.1502975,
+							0.0,
+							0.0,
+							0.9886408
+						],
+						"width": 8.0,
+						"length": 0.999999,
+						"material": {
+							"type": "pbr",
+							"albedo": [
+								0.07,
+								0.09,
+								0.13
+							],
+							"metallic": 0.0,
+							"roughness": 0.223607,
+							"emission": [
+								0.0,
+								0.0,
+								0.0
+							],
+							"strength": 1.0
+						}
+					},
+					{
+						"type": "quad",
+						"name": "plate_rougher",
+						"position": [
+							0.0,
+							-3.90842,
+							3.574455
+						],
+						"orientation": [
+							0.0880719,
+							0.0,
+							0.0,
+							0.9961141
+						],
+						"width": 8.0,
+						"length": 1.000003,
+						"material": {
+							"type": "pbr",
+							"albedo": [
+								0.07,
+								0.09,
+								0.13
+							],
+							"metallic": 0.0,
+							"roughness": 0.316228,
+							"emission": [
+								0.0,
+								0.0,
+								0.0
+							],
+							"strength": 1.0
+						}
+					},
+					{
+						"type": "sphere",
+						"name": "light_pink",
+						"position": [
+							-3.75,
+							0.0,
+							0.0
+						],
+						"radius": 0.03333,
+						"material": {
+							"type": "emissive",
+							"color": [
+								1.0,
+								0.75,
+								0.85
+							],
+							"strength": 1112.8287
+						}
+					},
+					{
+						"type": "sphere",
+						"name": "light_cream",
+						"position": [
+							-1.25,
+							0.0,
+							0.0
+						],
+						"radius": 0.1,
+						"material": {
+							"type": "emissive",
+							"color": [
+								1.0,
+								0.95,
+								0.75
+							],
+							"strength": 105.687
+						}
+					},
+					{
+						"type": "sphere",
+						"name": "light_green",
+						"position": [
+							1.25,
+							0.0,
+							0.0
+						],
+						"radius": 0.3,
+						"material": {
+							"type": "emissive",
+							"color": [
+								0.8,
+								1.0,
+								0.75
+							],
+							"strength": 11.8275
+						}
+					},
+					{
+						"type": "sphere",
+						"name": "light_blue",
+						"position": [
+							3.75,
+							0.0,
+							0.0
+						],
+						"radius": 0.9,
+						"material": {
+							"type": "emissive",
+							"color": [
+								0.7,
+								0.85,
+								1.0
+							],
+							"strength": 1.4893
+						}
+					},
+					{
+						"type": "quad",
+						"name": "floor",
+						"position": [
+							0.0,
+							-4.14615,
+							0.0
+						],
+						"orientation": [
+							0.0,
+							0.0,
+							0.0,
+							1.0
+						],
+						"width": 20.0,
+						"length": 20.0,
+						"material": {
+							"type": "lambertian",
+							"albedo": [
+								0.4,
+								0.4,
+								0.4
+							]
+						}
+					},
+					{
+						"type": "quad",
+						"name": "back_wall",
+						"position": [
+							0.0,
+							0.0,
+							-2.0
+						],
+						"orientation": [
+							0.7071068,
+							0.0,
+							0.0,
+							0.7071068
+						],
+						"width": 20.0,
+						"length": 20.0,
+						"material": {
+							"type": "lambertian",
+							"albedo": [
+								0.4,
+								0.4,
+								0.4
+							]
+						}
+					}
+				],
+				"meshObjects": []
+			},
+			"name": "vulkan_guide scene"
+		}
+	]
+}

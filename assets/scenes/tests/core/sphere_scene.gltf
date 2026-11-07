@@ -15,25 +15,26 @@
 				0
 			],
 			"extras":{
-				"version":23,
+				"version":30,
 				"models":[
 					
 				],
-				"capabilities":[
-					"optical_bench"
-				],
-				"template":"optical_bench",
-				"environmentMap":"../environment_maps/wooden_studio_15_4k.hdr",
 				"environmentIntensity":1.0,
+				"backgroundMode":"sky",
+				"background":[
+					0.0,
+					0.0,
+					0.0
+				],
 				"render":{
-					"width":1600,
-					"height":900,
+					"width":1920,
+					"height":1080,
 					"matchViewport":false,
 					"antialiasing":true,
-					"maxSamples":4096,
+					"maxSamples":64,
 					"unlimitedSamples":false,
 					"rayDepth":8,
-					"useFixedSeed":true,
+					"useFixedSeed":false,
 					"seed":1,
 					"samplesPerFrame":1,
 					"russianRoulette":true,
@@ -42,9 +43,12 @@
 					"errorBoundedOffsets":true,
 					"watertightTriangles":true,
 					"samplerRandomization":"owen",
+					"textureStorage":"legacy",
+					"maxTextureSize":4096,
+					"textureFilter":"trilinear",
 					"pixelFilter":{
-						"kind":"gaussian",
-						"radius":1.5,
+						"kind":"box",
+						"radius":0.5,
 						"sigma":0.5,
 						"b":0.33333334,
 						"c":0.33333334,
@@ -61,7 +65,7 @@
 					},
 					"lightGroups":false,
 					"spectral":{
-						"representation":"hero",
+						"representation":"rgb",
 						"lanes":4,
 						"range":[
 							360.0,
@@ -124,8 +128,8 @@
 				"integrator":"path",
 				"traversal":"bvh_binary",
 				"kernels":{
-					"00":"filter_importance",
-					"01":"zsobol",
+					"00":"thin_lens",
+					"01":"pcg_hash",
 					"02":"closest",
 					"03":"background",
 					"04":"direct",
@@ -133,7 +137,16 @@
 					"06":"mis_power",
 					"07":"none",
 					"08":"occlusion",
-					"09":"compensated_mean"
+					"09":"running_mean",
+					"11":"emit",
+					"12":"camera",
+					"13":"importance",
+					"14":"splat",
+					"15":"recursive_mis",
+					"16":"light_vertex_cache",
+					"17":"random_walk",
+					"18":"connect_bdpt",
+					"26":"deposit"
 				},
 				"accel":{
 					"builder":"spatial splits (SBVH)",
@@ -148,36 +161,104 @@
 				"renderCamera":0,
 				"cameras":[
 					{
-						"name":"bench_camera",
+						"name":"render_camera",
 						"position":[
-							-0.07930732,
-							0.1,
-							0.12424306
+							0.0,
+							0.0,
+							5.0
 						],
 						"orientation":[
 							0.0,
-							-0.28218195,
 							0.0,
-							0.959361
+							0.0,
+							1.0
 						],
-						"fov":13.0,
+						"fov":70.0,
 						"aperture":0.0,
 						"focusDistance":6.0,
-						"exposure":1.0
+						"exposure":1.0,
+						"kind":"perspective",
+						"lensMapping":"polar",
+						"apertureShape":"circle",
+						"apertureBlades":6,
+						"apertureRotation":0.0,
+						"tilt":[
+							0.0,
+							0.0
+						],
+						"shift":[
+							0.0,
+							0.0
+						]
 					}
 				],
 				"lights":[
 					
 				],
+				"textures":[
+					
+				],
 				"materials":[
 					{
-						"name":"quad_1",
-						"type":"emissive",
-						"albedo":{
-							"blackbody":12056.0,
-							"scale":1.0
-						},
-						"strength":0.753
+						"name":"ground",
+						"type":"lambertian",
+						"albedo":[
+							1.0,
+							1.0,
+							1.0
+						],
+						"emission":[
+							0.0,
+							0.0,
+							0.0
+						],
+						"strength":1.0,
+						"twoSided":true
+					},
+					{
+						"name":"center_sphere",
+						"type":"lambertian",
+						"albedo":[
+							0.7,
+							0.3,
+							0.3
+						],
+						"emission":[
+							0.0,
+							0.0,
+							0.0
+						],
+						"strength":1.0,
+						"twoSided":true
+					},
+					{
+						"name":"left_sphere",
+						"type":"dielectric",
+						"ir":1.5,
+						"emission":[
+							0.0,
+							0.0,
+							0.0
+						],
+						"strength":1.0,
+						"twoSided":true
+					},
+					{
+						"name":"right_sphere",
+						"type":"phong",
+						"albedo":[
+							0.8,
+							0.6,
+							0.2
+						],
+						"smoothness":0.3,
+						"emission":[
+							0.0,
+							0.0,
+							0.0
+						],
+						"strength":1.0,
+						"twoSided":true
 					}
 				],
 				"materialOverrides":[
@@ -185,80 +266,70 @@
 				],
 				"viewport":{
 					"position":[
-						-0.47114164,
-						0.3072378,
-						0.35739797
+						0.0,
+						0.0,
+						5.0
 					],
 					"orientation":[
-						-0.1655094,
-						-0.41433302,
-						-0.07691009,
-						0.89163876
+						0.0,
+						0.0,
+						0.0,
+						1.0
 					],
 					"pivot":[
-						-0.028744448,
-						0.08469054,
-						-0.015829831
+						0.0,
+						0.0,
+						0.0
 					],
-					"speed":0.5,
+					"speed":5.0,
 					"fov":70.0,
-					"near":0.001,
+					"near":0.1,
 					"far":10000.0
-				},
-				"lengthUnit":"mm",
-				"optics":[
-					{
-						"type":"equilateral_prism",
-						"name":"equilateral_prism_1",
-						"size":"25mm",
-						"params":{
-							"glass":"F_SILICA"
-						},
-						"mount":{
-							"kind":"prism",
-							"origin":[
-								0,
-								0
-							],
-							"yaw":-0.20507618710933384,
-							"height":0.10023978352546692,
-							"fork":{
-								"angle":-1.3476915218813947,
-								"reach":0.032500877350085847
-							}
-						},
-						"materials":{
-							
-						}
-					}
-				],
-				"bench":{
-					"table":true,
-					"size":[
-						0.29999999999999999,
-						0.29999999999999999
-					],
-					"beamHeight":0.10000000000000001,
-					"snap":true
 				},
 				"geometry":[
 					{
-						"type":"quad",
-						"name":"quad_1",
+						"type":"sphere",
+						"name":"ground",
+						"position":[
+							0.0,
+							-100.5,
+							-1.0
+						],
+						"radius":100.0,
+						"material":0
+					},
+					{
+						"type":"sphere",
+						"name":"center_sphere",
 						"position":[
 							0.0,
 							0.0,
 							-1.0
 						],
-						"orientation":[
-							0.7071068,
+						"radius":0.5,
+						"material":1
+					},
+					{
+						"type":"sphere",
+						"name":"left_sphere",
+						"position":[
+							-1.0,
 							0.0,
-							0.0,
-							0.7071067
+							-1.0
 						],
-						"width":0.0124691315,
-						"length":1.0000001,
-						"material":0
+						"radius":0.5,
+						"material":2
+					},
+					{
+						"type":"sphere",
+						"name":"right_sphere",
+						"position":[
+							1.0,
+							0.0,
+							-1.0
+						],
+						"radius":0.5,
+						"material":3
 					}
 				],
 				"meshObjects":[

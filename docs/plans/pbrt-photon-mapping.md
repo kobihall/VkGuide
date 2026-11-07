@@ -59,7 +59,7 @@ From PBR 3ed's chapter 16 exercises:
 - The path tracer renders bit-identical.
 - A C++ test of the radius and flux update against pbrt's code on a fixed sequence of photon counts.
 - On the Cornell box, SPPM converges toward the path tracer's reference as iterations grow: the relative error keeps falling, and its bias at a fixed iteration count shrinks with the initial radius.
-- A caustic seen in a mirror (a glass sphere lighting a floor, viewed in a mirror): at equal time, SPPM's error falls where `path`, `lvc` and `bdpt` barely improve. The scene goes into `assets/scenes/`.
+- A caustic seen in a mirror (a glass sphere lighting a floor, viewed in a mirror): at equal time, SPPM's error falls where `path`, `lvc` and `bdpt` barely improve. The scene goes into `assets/scenes/tests/`, written by a generator in `tools/verify/`.
 
 ## Order of work
 

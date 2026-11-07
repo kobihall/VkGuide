@@ -5,16 +5,16 @@ read, into assets/ (committed, like the optics scenes):
   assets/textures/white.png          a white 64 x 32 image, a projection light's
   assets/ies/isotropic.ies           an IES LM-63 file whose every candela value is 3415 (5 W/sr)
 
-  assets/scenes/lt_point_reference.gltf     a floor and a wall lit by a point light of 5 W/sr
-  assets/scenes/lt_goniometric.gltf         the same lit by a goniometric light of isotropic.ies, which must match it
-  assets/scenes/lt_projection.gltf          a wall lit by a white projection light with a 90 degree field of view
-  assets/scenes/lt_projection_point.gltf    the same wall lit by a point light of the same intensity
-  assets/scenes/lt_one_sided.gltf           a one-sided emissive quad seen from behind, over a floor on both its sides
-  assets/scenes/lt_sphere_point.gltf        a 1000 lm point light inside a diffuse sphere of albedo 0.5
-  assets/scenes/lt_sphere_spot.gltf         a 1000 lm spot light (smoothstep falloff) aimed away from the camera, the same
-  assets/scenes/tx_checker_plane.gltf       a checkered plane receding to the horizon (PBR 4ed Figure 10.1)
-  assets/scenes/tx_mirror_checker.gltf      a mirror sphere reflecting the checkered plane
-  assets/scenes/tx_textured_emitter.gltf    a checker-textured emissive quad over a floor, lit by it alone
+  assets/scenes/tests/lights_and_textures/lt_point_reference.gltf     a floor and a wall lit by a point light of 5 W/sr
+  assets/scenes/tests/lights_and_textures/lt_goniometric.gltf         the same lit by a goniometric light of isotropic.ies, which must match it
+  assets/scenes/tests/lights_and_textures/lt_projection.gltf          a wall lit by a white projection light with a 90 degree field of view
+  assets/scenes/tests/lights_and_textures/lt_projection_point.gltf    the same wall lit by a point light of the same intensity
+  assets/scenes/tests/lights_and_textures/lt_one_sided.gltf           a one-sided emissive quad seen from behind, over a floor on both its sides
+  assets/scenes/tests/lights_and_textures/lt_sphere_point.gltf        a 1000 lm point light inside a diffuse sphere of albedo 0.5
+  assets/scenes/tests/lights_and_textures/lt_sphere_spot.gltf         a 1000 lm spot light (smoothstep falloff) aimed away from the camera, the same
+  assets/scenes/tests/lights_and_textures/tx_checker_plane.gltf       a checkered plane receding to the horizon (PBR 4ed Figure 10.1)
+  assets/scenes/tests/lights_and_textures/tx_mirror_checker.gltf      a mirror sphere reflecting the checkered plane
+  assets/scenes/tests/lights_and_textures/tx_textured_emitter.gltf    a checker-textured emissive quad over a floor, lit by it alone
 
 tools/verify/light_texture_check.py renders and checks them.
 
@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vkscene  # noqa: E402
 
 ROOT = vkscene.ROOT
-SCENES = ROOT / "assets" / "scenes"
+SCENES = vkscene.TEST_SCENES / "lights_and_textures"
 TEXTURES = ROOT / "assets" / "textures"
 IES = ROOT / "assets" / "ies"
 
@@ -127,7 +127,7 @@ def write_scenes():
 
     # a goniometric light of an isotropic distribution and a point light of the same 5 W/sr
     save("lt_point_reference.gltf", room(light("point", "point", [0, 3, 0], 5.0)))
-    save("lt_goniometric.gltf", room(light("goniometric", "goniometric", [0, 3, 0], 1.0, orientation=looking([0, -1, 0]), image="../ies/isotropic.ies")))
+    save("lt_goniometric.gltf", room(light("goniometric", "goniometric", [0, 3, 0], 1.0, orientation=looking([0, -1, 0]), image="../../../ies/isotropic.ies")))
 
     # a white 2:1 projection with a 90 degree field of view (its shorter side) on a wall, against a point light. Direct
     # light only: the camera ray and the light sample
@@ -135,7 +135,7 @@ def write_scenes():
     wall_shapes = [vkscene.quad("wall", [0, 0, -2], [1, 0, 0], [0, 1, 0], 12, 8, 0)]
     wall_shapes[0]["material"] = 0
     cam = vkscene.camera([0, 0, 2.5], [0, 0, -2], 90)
-    save("lt_projection.gltf", scene(wall_shapes, wall, [light("projection", "projector", [0, 0, 0], 4.0, orientation=looking([0, 0, -1]), image="../textures/white.png", fov=90.0)],
+    save("lt_projection.gltf", scene(wall_shapes, wall, [light("projection", "projector", [0, 0, 0], 4.0, orientation=looking([0, 0, -1]), image="../../../textures/white.png", fov=90.0)],
                                      cam, 320, 240, samples=16, ray_depth=2))
     save("lt_projection_point.gltf", scene(wall_shapes, wall, [light("point", "point", [0, 0, 0], 4.0)], cam, 320, 240, samples=16, ray_depth=2))
 
@@ -167,7 +167,7 @@ def write_scenes():
                                                                       outerCone=30.0, falloff="smoothstep", unit="lumen")], inside, 160, 120, samples=256, ray_depth=16))
 
     # a checkered plane to the horizon, the checker repeating every 2 m, lit by a sky-like solid background
-    checker_texture = [{"path": "../textures/checker.png", "colorSpace": "srgb", "wrap": ["repeat", "repeat"], "nearest": [False, False], "encoding": "srgb", "gamma": 2.2, "invert": False}]
+    checker_texture = [{"path": "../../../textures/checker.png", "colorSpace": "srgb", "wrap": ["repeat", "repeat"], "nearest": [False, False], "encoding": "srgb", "gamma": 2.2, "invert": False}]
     plane_material = material("checker", "lambertian", albedo=[0.8, 0.8, 0.8],
                               textures={"albedo": {"texture": 0, "channel": "rgb", "mapping": "uv", "uvSet": 0, "offset": [0, 0], "scale": [0.5, 0.5], "rotation": 0}})
     plane = {"type": "plane", "name": "ground", "position": [0.0, 0.0, 0.0], "orientation": [0.0, 0.0, 0.0, 1.0], "material": 0}

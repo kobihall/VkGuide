@@ -1,4 +1,4 @@
-"""The detectors' verification scenes (docs/plans/completed/physoptics-detectors.md), written to assets/scenes/optics/ with a
+"""The detectors' verification scenes (docs/plans/completed/physoptics-detectors.md), written to assets/scenes/tests/detectors/ with a
 file of the values each must show (<name>.expected.json). tools/verify/detector_check.py renders them with light tracing
 and checks what their detectors read.
 
@@ -41,7 +41,7 @@ import beam_probe as bp  # noqa: E402
 import laser_scenes as ls  # noqa: E402
 import vkscene  # noqa: E402
 
-SCENES = vkscene.ROOT / "assets" / "scenes" / "optics"
+SCENES = vkscene.TEST_SCENES / "detectors"
 ORIGIN = np.array([0.0, 0.1, 0.0])
 AXIS = (0.0, 0.0, 1.0)
 HNL = ls.HNL

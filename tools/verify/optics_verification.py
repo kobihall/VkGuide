@@ -19,7 +19,7 @@ embedded Gaussian, Siegman 1986). Before detectors existed each plane was a whit
 
 Every lens is N-BK7, whose index exact RGB reads at the laser's wavelength (the design wavelength follows the scene's one
 laser). The planes a waist is fitted through are a sensor stack (src/optic_detectors.h), evenly spaced and each the
-size of the widest beam among them. Each scene stands on a breadboard, every mirror and lens in its mount on a post. The scenes are written to assets/scenes/optics/<name>.gltf with their screen at the nominal plane, and the values
+size of the widest beam among them. Each scene stands on a breadboard, every mirror and lens in its mount on a post. The scenes are written to assets/scenes/tests/optics_verification/<name>.gltf with their screen at the nominal plane, and the values
 each must show to <name>.expected.json.
 
   python3 tools/verify/optics_verification.py --write       write the scenes
@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import beam_probe as bp  # noqa: E402
 import vkscene  # noqa: E402
 
-SCENES = vkscene.ROOT / "assets" / "scenes" / "optics"
+SCENES = vkscene.TEST_SCENES / "optics_verification"
 LAMBDA = 632.8e-9
 HNL_WAIST = 0.405e-3
 HNL_M2 = math.pi * HNL_WAIST * 0.5e-3 / LAMBDA
@@ -315,7 +315,7 @@ def tilted_mirror(samples, out):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true")
-    parser.add_argument("--write", action="store_true", help="write the scenes to assets/scenes/optics/ with their expected values")
+    parser.add_argument("--write", action="store_true", help="write the scenes to assets/scenes/tests/optics_verification/ with their expected values")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     out = args.out or Path(tempfile.mkdtemp(prefix="optics_verification_"))
@@ -332,7 +332,7 @@ def main():
         for name, (scene, expected) in results.items():
             vkscene.write_scene(SCENES / f"{name}.gltf", scene)
             (SCENES / f"{name}.expected.json").write_text(json.dumps(expected, indent=2) + "\n")
-            print(f"wrote assets/scenes/optics/{name}.gltf")
+            print(f"wrote {(SCENES / f'{name}.gltf').relative_to(vkscene.ROOT)}")
     print()
     print("PASS" if not failures else f"FAIL ({len(failures)})")
     for f in failures:

@@ -430,7 +430,8 @@ def check_baseline(baseline, spp, workdir):
         env = dict(os.environ, VKGUIDE_WINDOW="background", VKGUIDE_VERIFY=f"{scene}:{spp}:{old}", VKGUIDE_VERIFY_SIZE="120x90")
         subprocess.run([str(baseline / "bin" / "vulkan_guide")], cwd=baseline / "bin", env=env, capture_output=True, timeout=900)
         env = dict(os.environ, VKGUIDE_WINDOW="background")
-        subprocess.run([str(BIN / "vulkan_guide"), "--render", scene, "--spp", str(spp), "--size", "120x90", "--out", str(new)], cwd=BIN, env=env, capture_output=True, timeout=900)
+        # this build reads the scene from assets/scenes/tests/core; the baseline, an older build, by its bare name
+        subprocess.run([str(BIN / "vulkan_guide"), "--render", f"tests/core/{scene}", "--spp", str(spp), "--size", "120x90", "--out", str(new)], cwd=BIN, env=env, capture_output=True, timeout=900)
         check(old.exists() and new.exists() and old.read_bytes() == new.read_bytes(), f"{scene}: {spp} samples at 120 x 90 are byte for byte what the build before made")
 
 

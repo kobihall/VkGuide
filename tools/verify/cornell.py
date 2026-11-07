@@ -1,4 +1,4 @@
-"""The Cornell box of assets/scenes/cornell_box.gltf, as data: one description that the scene files,
+"""The Cornell box of assets/scenes/tests/core/cornell_box.gltf, as data: one description that the scene files,
 the radiosity solve and the pbrt scene are all made from, so they cannot drift apart.
 
 Units are the scene's. The box is open at z = 0 (the camera looks in from z = -80), has no front

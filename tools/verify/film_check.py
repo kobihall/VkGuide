@@ -23,9 +23,9 @@ from pathlib import Path
 import numpy as np
 
 from caustic_scene import caustic_scene
-from vkscene import ROOT, run_render
+from vkscene import TEST_SCENES, run_render
 
-CORNELL = ROOT / "assets" / "scenes" / "cornell_box.gltf"
+CORNELL = TEST_SCENES / "core" / "cornell_box.gltf"
 
 
 def variant(scene, film, extra=None):

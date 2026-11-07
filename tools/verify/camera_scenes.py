@@ -3,18 +3,18 @@
 
   assets/textures/aperture_star.png    a 128 x 128 five-pointed star, white on black: an aperture image
 
-  assets/scenes/cam_ortho_box.gltf     an open box with red and green side walls, seen straight in by an orthographic
+  assets/scenes/tests/cameras/cam_ortho_box.gltf     an open box with red and green side walls, seen straight in by an orthographic
                                        camera: the side walls, parallel to its rays, show edge-on
-  assets/scenes/cam_dof_spheres.gltf   three spheres at three depths over a checkered floor, a wide aperture focused on
+  assets/scenes/tests/cameras/cam_dof_spheres.gltf   three spheres at three depths over a checkered floor, a wide aperture focused on
                                        the middle one, the concentric lens mapping
-  assets/scenes/cam_bokeh.gltf         one small emitter far behind the plane of focus on black, a six-bladed aperture:
+  assets/scenes/tests/cameras/cam_bokeh.gltf         one small emitter far behind the plane of focus on black, a six-bladed aperture:
                                        its out-of-focus image is the aperture's shape
-  assets/scenes/cam_tilt_ground.gltf   a checkered ground seen from 1 m up, looking 20 degrees down through a wide
+  assets/scenes/tests/cameras/cam_tilt_ground.gltf   a checkered ground seen from 1 m up, looking 20 degrees down through a wide
                                        aperture, the plane of focus tilted 70 degrees onto the ground
-  assets/scenes/cam_equirect_room.gltf a closed room of six colors and a ceiling light, seen by an equirectangular
+  assets/scenes/tests/cameras/cam_equirect_room.gltf a closed room of six colors and a ceiling light, seen by an equirectangular
                                        spherical camera at the point P
-  assets/scenes/cam_mirror_room.gltf   the same room with a small mirror sphere at P, seen up close by a perspective camera
-  assets/scenes/cam_mirror_env.gltf    the mirror sphere alone, lit by cam_room_equirect.exr (beside it) as the environment
+  assets/scenes/tests/cameras/cam_mirror_room.gltf   the same room with a small mirror sphere at P, seen up close by a perspective camera
+  assets/scenes/tests/cameras/cam_mirror_env.gltf    the mirror sphere alone, lit by cam_room_equirect.exr (beside it) as the environment
                                        map: tools/verify/camera_check.py renders that file from cam_equirect_room.gltf
 
 tools/verify/camera_check.py renders and checks them.
@@ -31,7 +31,7 @@ import vkscene  # noqa: E402
 from light_texture_scenes import write_png  # noqa: E402
 
 ROOT = vkscene.ROOT
-SCENES = ROOT / "assets" / "scenes"
+SCENES = vkscene.TEST_SCENES / "cameras"
 TEXTURES = ROOT / "assets" / "textures"
 
 # the point the spherical camera sees from and the mirror sphere stands at
@@ -79,7 +79,7 @@ def write_assets():
 
 
 def checker_texture():
-    return [{"path": "../textures/checker.png", "colorSpace": "srgb", "wrap": ["repeat", "repeat"], "nearest": [False, False], "encoding": "srgb", "gamma": 2.2, "invert": False}]
+    return [{"path": "../../../textures/checker.png", "colorSpace": "srgb", "wrap": ["repeat", "repeat"], "nearest": [False, False], "encoding": "srgb", "gamma": 2.2, "invert": False}]
 
 
 def checker_material(scale):
@@ -142,7 +142,7 @@ def write_scenes():
     bokeh_materials = [material("light", "emissive", albedo=[1.0, 1.0, 1.0], strength=10.0)]
     bokeh = scene([placed(vkscene.sphere("point", [0, 0, -6], 0.05, 0), 0)], bokeh_materials,
                   vkscene.camera([0, 0, 0], [0, 0, -1], 40, aperture=0.5, focusDistance=1.0, lensMapping="concentric", apertureShape="polygon",
-                                 apertureBlades=6, apertureRotation=0.0, apertureImage="../textures/aperture_star.png"),
+                                 apertureBlades=6, apertureRotation=0.0, apertureImage="../../../textures/aperture_star.png"),
                   256, 256, samples=256, ray_depth=1)
     save("cam_bokeh.gltf", bokeh)
 

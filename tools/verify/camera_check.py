@@ -26,7 +26,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vkscene  # noqa: E402
 
-SCENES = vkscene.ROOT / "assets" / "scenes"
+SCENES = vkscene.TEST_SCENES / "cameras"
 failures = []
 
 

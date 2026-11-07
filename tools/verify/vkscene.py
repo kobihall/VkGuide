@@ -17,6 +17,9 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 BIN = ROOT / "bin"
+# the scenes these scripts write and read, a folder per suite; the rest of assets/scenes is the user's, and no script
+# reads or writes it. A scene here names an asset three folders up: "../../../textures/checker.png"
+TEST_SCENES = ROOT / "assets" / "scenes" / "tests"
 
 
 # ---------------------------------------------------------------- vectors and quaternions

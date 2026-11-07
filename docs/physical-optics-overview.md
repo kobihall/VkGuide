@@ -210,7 +210,7 @@ A slot's material is a library entry the element owns (`OpticSlotOrigin`): it is
 
 The panel shows the parameters in the scene's length unit, the readout, the slots' coatings, the ports' directions, and the mount (§7). In the raster preview a planar mirror at a preset size draws its PF blank model, and every other element its tessellated prescription.
 
-`tools/verify/optics_scenes.py` writes the scenes the checks render to `assets/scenes/`: `optics_furnace` (a lens in a white furnace), `optics_nd_filter`, `optics_cube_split`, `optics_lens_focus`, `optics_prism` (a camera looking through an F2 prism at a slit), and `optics_bench`, one element of each kind on a bench. `tools/verify/optics_check.py` renders the first five.
+`tools/verify/optics_scenes.py` writes the scenes the checks render to `assets/scenes/tests/optics/`: `optics_furnace` (a lens in a white furnace), `optics_nd_filter`, `optics_cube_split`, `optics_lens_focus`, `optics_prism` (a camera looking through an F2 prism at a slit), and `optics_bench`, one element of each kind on a bench. `tools/verify/optics_check.py` renders the first five.
 
 ## 7. The bench and the mounts
 
@@ -332,13 +332,13 @@ shaders/rt/include/crt_coating.glsl         the coating tables and the transfer 
 shaders/rt/include/crt_optic_material.glsl  the optical interface, absorption and the ABg lobe
 assets/glass/bundled.agf         the bundled glass catalog
 tests/optics_test.cpp            bin/optics_test
-tools/verify/optics_scenes.py    writes assets/scenes/optics_*.gltf
+tools/verify/optics_scenes.py    writes assets/scenes/tests/optics/optics_*.gltf
 tools/verify/optics_check.py     renders them and checks what each must show
 tools/verify/beam_probe.py       a screen and a camera to measure a beam, ABCD and the waist fit
 tools/verify/wave_optics.py      the wave reference
-tools/verify/laser_scenes.py     writes assets/scenes/optics/laser_*.gltf
+tools/verify/laser_scenes.py     writes assets/scenes/tests/lasers/laser_*.gltf
 tools/verify/laser_check.py      renders them against the closed forms and the wave reference
-tools/verify/optics_verification.py  the geometric verification scenes, assets/scenes/optics/*.gltf
+tools/verify/optics_verification.py  the geometric verification scenes, assets/scenes/tests/optics_verification/*.gltf
 src/optic_detectors.{h,cpp}      rt_optics: the detectors' sensors and films, and the ISO 11146 measurements
 src/rt_detectors.{h,cpp}         the detector films on the GPU: records, fold, readbacks, pictures, --detectors
 src/detectors_ui.{h,cpp}         the readings the Raytraced Output window adds while it shows a detector
@@ -346,7 +346,7 @@ shaders/rt/2601_deposit_detector.comp  stage 26: light paths deposit on the dete
 shaders/rt/include/crt_detector.glsl   the pixel a path lands in, and what it adds there
 shaders/rt/light/detector_fold.comp    the per-frame fold into compensated sums, and the frame totals
 shaders/rt/light/detector_view.comp    a film as a picture for the Raytraced Output window
-tools/verify/detector_scenes.py  writes assets/scenes/optics/detector_*.gltf
+tools/verify/detector_scenes.py  writes assets/scenes/tests/detectors/detector_*.gltf
 tools/verify/detector_check.py   renders them and checks what the detectors read
 ```
 

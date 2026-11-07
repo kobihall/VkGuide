@@ -1,7 +1,7 @@
 """Scene files for the optical elements (docs/plans/completed/physoptics-optical-elements.md): payload version 23, with the
 Optical bench capability on and the elements in "optics", unmounted where the scene needs them bare and in mid-air, on
 the breadboard in their mounts in optics_bench (docs/plans/completed/physoptics-bench-and-mounts.md). tools/verify/optics_check.py
-renders the first five and checks what each must show; assets/scenes/optics_*.gltf are these, written by
+renders the first five and checks what each must show; assets/scenes/tests/optics/optics_*.gltf are these, written by
 
     python3 tools/verify/optics_scenes.py
 
@@ -25,7 +25,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vkscene  # noqa: E402
 
-SCENES = vkscene.ROOT / "assets" / "scenes"
+SCENES = vkscene.TEST_SCENES / "optics"
 
 
 def look(position, target, fov=30.0):

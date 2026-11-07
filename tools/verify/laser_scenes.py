@@ -1,4 +1,4 @@
-"""The laser sources' verification scenes (docs/plans/completed/physoptics-laser-sources.md), written to assets/scenes/optics/
+"""The laser sources' verification scenes (docs/plans/completed/physoptics-laser-sources.md), written to assets/scenes/tests/lasers/
 with a file of the values each must show (<name>.expected.json). tools/verify/laser_check.py renders them and compares
 what their detectors (docs/plans/completed/physoptics-detectors.md) read with the closed forms and with the wave reference
 of tools/verify/wave_optics.py. A probe plane records the beam where it crosses without changing it, so one render
@@ -38,7 +38,7 @@ import beam_probe as bp  # noqa: E402
 import vkscene  # noqa: E402
 import wave_optics as wo  # noqa: E402
 
-SCENES = vkscene.ROOT / "assets" / "scenes" / "optics"
+SCENES = vkscene.TEST_SCENES / "lasers"
 # 0.9 m back from the breadboard's center, which a 2 m beam then fits on
 ORIGIN = (0.0, 0.1, -0.9)
 AXIS = (0.0, 0.0, 1.0)
