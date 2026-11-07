@@ -2,8 +2,22 @@
 
 ## 2026-11-07
 
+### New
+
+- A beam axis records the order a beam is meant to visit the optics in (`docs/plans/physoptics-beam-axis.md`). With Optical bench on, **Add** → **Beam axis** makes one, and the Scene panel's **Beam axes** folder lists each axis with its visits indented under it. A new axis starts from the selected laser or camera, or the scene's one laser.
+- An axis's **source** is a laser, a camera or none. A camera's beam is its chief ray, traced outward from its sensor once the beam solver exists. An axis with no source records an order you attach a source to later.
+- Each visit hangs off a named port of the optic before it: **Reflected** and **Transmitted** for a beamsplitter, **Turned** and **Retro** for a right-angle prism. An optic can be visited twice, as a lens is in a double pass. Right-click a visit for **Add after**, **Insert before**, **Detach**, **Remove** and **Remove with what follows**; the axis's panel has the same edits as buttons, the source and the beam solver's ghost threshold.
+- **Remove** moves what followed a visit up into its place: the visit on its first port takes it, and the visits on any other port dangle. A dangling visit keeps what follows it, is listed under **Dangling**, and goes back into the tree with **Attach to**. A visit that moved is marked **review** until you **Mark reviewed**.
+- **Render Settings** → **Optics** → **Guided tracing** chooses the one beam axis renders trace along and the trace mode (**Full**, **Seeded**, **Guided**, **Sequential**), and shows only while the scene has an axis. Nothing reads them yet: every render traces fully. An axis's panel says whether renders trace along it and has **Guide renders by this axis**. Choosing another guide axis restarts a render.
+- The **Viewport** draws each axis as arrows from its source through its visits, brighter and labeled by port for the selected axis, and grey where a visit dangles.
+- The batch mode's `--save-scene <file>` opens a scene, saves it back through the editor and quits without rendering. A file that opened with problems saves as the load repaired it.
+- `tools/verify/optics_verification.py` writes two more scenes: `beam_axis_setup`, the beam axis plan's laser, two turning mirrors, an iris, a lens, a plate beamsplitter and a power meter on each arm, and `beam_axis_double_pass`, a cat's eye that sends the beam through one lens twice. Each of its seven scenes has a beam axis along its beam.
+
 ### Changed
 
+- Scene files are payload version 32: `beamAxes`, each with its source, its ghost threshold and its visits, which name optics by their index in `optics` and ports by name. A load drops a visit whose optic is gone, as **Remove** does, and cuts loose a visit whose port its parent lacks, that shares a place with another, or that is part of a cycle, with a warning for each.
+- Deleting an optic removes its visits from every beam axis, and deleting a laser or a camera detaches the axes it started.
+- A probe plane has a **Transmitted** port, since the beam passes through it unchanged.
 - `assets/scenes/` is split in two. `assets/scenes/tests/` holds the scenes `tools/verify/` writes and renders, one folder per suite (`core`, `bidirectional`, `cameras`, `lights_and_textures`, `optics`, `lasers`, `detectors`, `optics_verification`), with each `<name>.expected.json` beside its scene. No script reads or writes the rest of `assets/scenes/`, which is yours to edit.
 - Your scenes are `sphere_scene.gltf` (still the startup scene), `cornell_box.gltf`, `veach_mis.gltf`, `all_materials.gltf`, `thin_glass.gltf`, `Sponza.gltf`, `caustic_glass.gltf` and `prism_dispersion.gltf`, with copies of verification scenes in `cameras/`, `lights_and_textures/` and `optics/`. The `optics_prism.gltf` and `caustic_glass.gltf` you edited are these copies now, and the checks render freshly generated versions under `tests/`.
 - A scene saved in a folder of `assets/scenes/`, such as `optics/`, names the textures, environment maps and models in `assets/` by a relative path, as a scene in `assets/scenes/` itself does. A save went one folder up and wrote a path two folders up as an absolute one.
@@ -15,6 +29,10 @@
 
 ### Internal
 
+- `src/beam_axis.h` (in `rt_optics`): `BeamAxis`, `BeamAxisNode`, `BeamSource`, `OpticPortId` and the tree edits, which keep an axis a tree. `BeamTraceMode` and the guide strength are `OpticsSettings`' (`src/rt_scene_types.h`), and the guide axis is `RaytraceRenderer::guideAxisId()`, in `RenderKey`, saved as `"guideAxis"`. `RaytraceSceneEditor::editBeamAxis()` is the one way to change an axis: it moves `beamAxisRevision()` and `beamAxesRevision()`, never `revision()`, so an axis edit restarts no render.
+- `bin/beam_test` checks the ports and the trees, and `tools/verify/beam_axis_check.py` the scene file's round trip through `--save-scene`. `run_all.py` runs both.
+- `VulkanEngine::openScene()` takes an optional `loaded` flag that tells a file that did not parse from one that opened with problems.
+- `tools/verify/beam_probe.py` gains `beam_axis()`, and `scene()` takes `beam_axes`, naming optics by name.
 - `vkscene.TEST_SCENES` is `assets/scenes/tests/`, and every generator and check in `tools/verify/` names its suite's folder through it. A test scene names an asset three folders up: `../../../textures/checker.png`.
 
 ## 2026-11-06

@@ -18,6 +18,7 @@
 #include <optional>
 #include <string_view>
 
+#include <beam_axis.h>
 #include <bvh.h>
 #include <optic_bench.h>
 #include <optic_catalog.h>
@@ -28,6 +29,7 @@
 
 class VulkanEngine;
 class TransformGizmo;
+struct ViewportView;
 
 // the per-object imgui controls, one per struct rather than a virtual per class. Each returns
 // whether anything the render depends on changed; drawCameraParams() also reports a change to
@@ -128,6 +130,33 @@ public:
 	void replaceSensorStacks(std::vector<SensorStack>&& stacks);
 	void setSensorStackSlotMaterial(uint64_t stackId, size_t slot, MaterialDef material);
 
+	// THE BEAM AXES (src/beam_axis.h): the order beams are meant to visit the optics in, each a row of the Beam axes
+	// folder. Removing an optic removes its visits from every axis (removeBeamOptic()), and removing an axis's laser or
+	// camera detaches its source; neither removes the axis
+	const std::vector<BeamAxis>& beamAxes() const { return m_beamAxes; }
+	BeamAxis* findBeamAxis(uint64_t id);
+	const BeamAxis* findBeamAxis(uint64_t id) const;
+	// a new axis; returns its id
+	uint64_t addBeamAxis(BeamAxis axis);
+	void removeBeamAxis(uint64_t id);
+	// the axes of a loaded file, their sources and visits already naming this editor's optic and camera ids
+	void replaceBeamAxes(std::vector<BeamAxis>&& axes);
+	// THE ONE WAY TO CHANGE AN AXIS: `edit` changes it in place, and the axis's revision moves when it changed anything.
+	// False when there is no such axis
+	bool editBeamAxis(uint64_t id, const std::function<void(BeamAxis&)>& edit);
+	// moves with every change to any axis. An axis records intent and the renders never read it, so its edits move
+	// neither revision() nor contentRevision(); the beam solver compares this and each axis's own
+	uint64_t beamAxesRevision() const { return m_beamAxesRevision; }
+	// one axis's: moves when its source or its tree changed; 0 for no such axis
+	uint64_t beamAxisRevision(uint64_t id) const;
+	// the Beam axes folder of the Scene panel's tree (the Optical bench capability draws it) and the Add menu's entry
+	void drawBeamAxisRows(VulkanEngine* engine);
+	void drawBeamAxisAddItems(VulkanEngine* engine);
+	// the authored order over the Viewport: an arrow from the source to each visit and from each visit to the next,
+	// labeled by port. Until the beam solver gives each node a status, every arrow is one color, brighter for the
+	// selected axis, and grey where a subtree dangles
+	void drawBeamAxisOverlays(const ViewportView& view) const;
+
 	// THE BENCH (docs/plans/completed/physoptics-bench-and-mounts.md): the breadboard and the settings every stack is placed by, and
 	// each optic's stack as the last resolveBench() assembled it, in the order of optics()
 	const BenchSettings& bench() const { return m_bench; }
@@ -220,6 +249,7 @@ private:
 		MeshObject,
 		Optic,
 		SensorStack,
+		BeamAxis,
 		// the breadboard, which has no id of its own
 		Bench
 	};
@@ -258,6 +288,17 @@ private:
 	void resolveSensorStacks();
 	// the breadboard's panel: the bench's settings
 	void drawSelectedBench(VulkanEngine* engine);
+	// a beam axis's panel: its source, its tree of visits and their statuses, the trace settings
+	void drawSelectedBeamAxis(VulkanEngine* engine, BeamAxis& axis);
+	// one visit's row in the folder or the panel, with its context menu: the edits of a node (beam_axis.h) by the optics
+	// that can take them. Returns false when the menu changed the axis's tree, so the caller stops walking it
+	bool drawBeamNodeRow(uint64_t axisId, uint32_t node, int depth);
+	// the menus that add a visit after `parent` (BEAM_SOURCE_NODE for the first visit), appended on a free port and
+	// inserted on a taken one, and that put one in front of `node`
+	void drawBeamAppendMenu(uint64_t axisId, uint32_t parent);
+	void drawBeamInsertBeforeMenu(uint64_t axisId, uint32_t node);
+	// the axes' bookkeeping after an optic or a camera went away: every visit of the optic, and a source naming either
+	void forgetInBeamAxes(uint64_t id);
 	// the mount section of an optic's panel: its kind, free placement, the stack's pose and readouts, the fine adjustment
 	bool drawOpticMount(VulkanEngine* engine, SceneOptic& optic);
 	// the gizmo: the stack's four degrees of freedom on the bench, or all six for a free or unmounted optic
@@ -314,6 +355,13 @@ private:
 	std::vector<SceneOptic> m_optics;
 	std::vector<SensorStack> m_sensorStacks;
 	int m_nextStackNumber { 1 };
+	std::vector<BeamAxis> m_beamAxes;
+	// each axis's revision, by its id; an axis's entry goes with it
+	std::map<uint64_t, uint64_t> m_beamAxisRevisions;
+	uint64_t m_beamAxesRevision { 1 };
+	int m_nextBeamAxisNumber { 1 };
+	// the visit the selected axis's panel acts on, BEAM_SOURCE_NODE for its source; reset when the selection changes
+	uint32_t m_selectedBeamNode { BEAM_SOURCE_NODE };
 	BenchSettings m_bench;
 	std::vector<OpticStack> m_stacks;
 	// a laser's turn about the vertical over the gizmo drag so far, unsnapped, which the snapped turn steps after; NaN

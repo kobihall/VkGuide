@@ -129,6 +129,7 @@ RaytraceRenderer::RenderKey RaytraceRenderer::currentKey(VulkanEngine* engine, c
 	key.camera = target.snapshot;
 	key.aperture = target.camera != nullptr ? apertureTable(engine, *target.camera).get() : nullptr;
 	key.detectorTarget = target.detector != nullptr ? target.detector->id : 0;
+	key.guideAxis = editor.findBeamAxis(m_guideAxisId) != nullptr ? m_guideAxisId : 0;
 	key.settings = m_settings;
 	//toggling the watch itself is not a reason to start over
 	key.settings.restartOnChange = false;

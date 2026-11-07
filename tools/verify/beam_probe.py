@@ -26,7 +26,7 @@ import vkscene  # noqa: E402
 
 # the narrowest view the scene file keeps: it clamps a camera to 1 degree
 MIN_FOV_DEGREES = 1.0
-SCENE_VERSION = 31
+SCENE_VERSION = 32
 
 
 def unit(v):
@@ -198,11 +198,39 @@ def measure_detector(readings, p):
     return Measurement(entry["power"], centroid, (0.5 * diameter[0], 0.5 * diameter[1]), film / area)
 
 
-def scene(shapes, materials, optics, cam, width, height, *, samples=64, integrator="light", render_extra=None, bench=None, render_detector=None, stacks=()):
+def beam_axis(name, source, visits):
+    """A beam axis (docs/plans/physoptics-beam-axis.md, scene file version 32) from the laser named `source` (None for
+    no source) through `visits`, each (optic name, parent, port): the parent an index into `visits`, None for the first
+    visit, and the port the parent's optic leaves by, as its kind names it ("Reflected"), None under the source. scene()
+    turns the names into indices into its optics"""
+    nodes = []
+    for optic, parent, port in visits:
+        node = {"optic": optic}
+        if parent is not None:
+            node["parent"] = parent
+            node["port"] = port
+        nodes.append(node)
+    axis = {"name": name, "ghostThreshold": 1e-4, "nodes": nodes}
+    if source is not None:
+        axis["source"] = {"laser": source}
+    return axis
+
+
+def resolve_beam_axis(axis, optics):
+    """`axis` with its optics' names made indices into `optics`, as the scene file has them"""
+    names = [o["name"] for o in optics]
+    resolved = dict(axis)
+    if "source" in axis:
+        resolved["source"] = {"laser": names.index(axis["source"]["laser"])}
+    resolved["nodes"] = [dict(node, optic=names.index(node["optic"])) for node in axis["nodes"]]
+    return resolved
+
+
+def scene(shapes, materials, optics, cam, width, height, *, samples=64, integrator="light", render_extra=None, bench=None, render_detector=None, stacks=(), beam_axes=()):
     """A scene file for a measurement: light tracing, a fixed seed, a box pixel filter, no background light, on a
-    breadboard under everything (breadboard(), or `bench`), with the sensor `stacks` (detector_stack()'s records). With
-    `render_detector`, the name of a detector among `optics`, the render target is that detector (and `cam` may be None:
-    a scene with no camera at all)"""
+    breadboard under everything (breadboard(), or `bench`), with the sensor `stacks` (detector_stack()'s records) and the
+    `beam_axes` (beam_axis()'s, naming optics). With `render_detector`, the name of a detector among `optics`, the render
+    target is that detector (and `cam` may be None: a scene with no camera at all)"""
     render = {"width": width, "height": height, "matchViewport": False, "antialiasing": True, "maxSamples": samples,
               "unlimitedSamples": False, "rayDepth": 16, "useFixedSeed": True, "seed": 1, "samplesPerFrame": 16,
               "russianRoulette": False, "minBouncesBeforeRoulette": 4, "restartOnChange": True,
@@ -216,6 +244,8 @@ def scene(shapes, materials, optics, cam, width, height, *, samples=64, integrat
     extras["bench"] = bench if bench is not None else breadboard(optics, stacks)
     if stacks:
         extras["sensorStacks"] = list(stacks)
+    if beam_axes:
+        extras["beamAxes"] = [resolve_beam_axis(axis, optics) for axis in beam_axes]
     if render_detector is not None:
         extras["renderDetector"] = [o["name"] for o in optics].index(render_detector)
     view = cam or vkscene.camera((0.3, 0.3, -0.3), (0.0, 0.1, 0.3), 40.0)

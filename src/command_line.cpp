@@ -62,6 +62,7 @@ std::string commandLineUsage()
 		"  --design-wavelength <nm>    the wavelength exact RGB reads a dispersive index at\n"
 		"  --spectral-images <n>       keep n wavelength buckets per pixel (hero) or the bands, as S0.<nm> EXR channels\n"
 		"  --detectors <dir>           write each detector's reading to <dir>/detectors.json and its film to <dir>/<name>.exr\n"
+		"  --save-scene <file>         open the scene, save it back to <file> and quit without rendering (in place of --out)\n"
 		"  --help                      this text\n"
 		"\n"
 		"exit code: 0 the file was written, 2 the scene or the options were refused, 3 a timeout\n",
@@ -164,6 +165,11 @@ bool parseCommandLine(int argc, char* const* argv, CommandLine& out, std::string
 			out.captureThroughSpecular = true;
 		} else if (flag == "--light-groups") {
 			out.lightGroups = true;
+		} else if (flag == "--save-scene") {
+			if (!value(text)) {
+				return false;
+			}
+			out.saveScene = text;
 		} else if (flag == "--detectors") {
 			if (!value(text)) {
 				return false;
@@ -262,7 +268,11 @@ bool parseCommandLine(int argc, char* const* argv, CommandLine& out, std::string
 	if (out.help) {
 		return true;
 	}
-	if (out.batch() != !out.output.empty()) {
+	if (!out.saveScene.empty() && (!out.batch() || !out.output.empty())) {
+		error = out.batch() ? "--save-scene takes the place of --out" : "--save-scene needs --render";
+		return false;
+	}
+	if (out.saveScene.empty() && out.batch() != !out.output.empty()) {
 		error = out.batch() ? "--render needs --out" : "--out needs --render";
 		return false;
 	}

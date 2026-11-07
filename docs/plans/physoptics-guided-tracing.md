@@ -1,12 +1,19 @@
 # Guided tracing
 
-A light path from a laser through a twenty-element setup meets twenty-odd surfaces, and at each the path tracer must find what it hits next and decide whether it reflects or refracts. The beam axis already says what it should hit and which way it should go. This plan lets the path tracer use that, in four modes chosen per beam axis: **Full** ignores the graph; **Seeded** uses it only to speed up the search, and gives the same result as **Full**; **Guided** also biases each reflect-or-refract choice toward the graph and reweights, which stays unbiased and still finds every ghost; **Sequential** traces the graph's surfaces alone, as a lens design program's sequential mode does, which is fast and ignores clipping by anything outside the graph and every ghost.
+A light path from a laser through a twenty-element setup meets twenty-odd surfaces, and at each the path tracer must find what it hits next and decide whether it reflects or refracts. The beam axis already says what it should hit and which way it should go. This plan lets the path tracer use that, along one beam axis the render settings choose, in four modes: **Full** ignores the graph; **Seeded** uses it only to speed up the search, and gives the same result as **Full**; **Guided** also biases each reflect-or-refract choice toward the graph and reweights, which stays unbiased and still finds every ghost; **Sequential** traces the graph's surfaces alone, as a lens design program's sequential mode does, which is fast and ignores clipping by anything outside the graph and every ghost.
 
-*Not implemented. Depends on [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-laser-sources.md](completed/physoptics-laser-sources.md), the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md) and [physoptics-detectors.md](completed/physoptics-detectors.md), which measures what the modes change. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. The settings exist since 2026-11-07 and nothing reads them yet: **Render Settings** → **Optics** → **Guided tracing** chooses the guide axis and the mode, saved with the scene. Depends on [physoptics-beam-axis.md](physoptics-beam-axis.md), [physoptics-laser-sources.md](completed/physoptics-laser-sources.md), the light integrator of [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md) and [physoptics-detectors.md](completed/physoptics-detectors.md), which measures what the modes change. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## Decisions already made
 
-On 2026-10-18 the user chose all four modes. The request asks for a maximal mode in which no ray traverses the full scene, a proper render that also finds clipping, stray light, back reflections and ghosts, and something weighted between them.
+- On 2026-10-18 the user chose all four modes. The request asks for a maximal mode in which no ray traverses the full scene, a proper render that also finds clipping, stray light, back reflections and ghosts, and something weighted between them.
+- On 2026-11-07 the user moved the mode from the beam axis to the render settings, since it is about how the renderer chooses its samples: one **guide axis** at a time, chosen in **Render Settings** → **Optics** → **Guided tracing**, which shows only while the scene has Optical bench on and at least one axis. A scene with several axes picks one of them.
+
+## The guide axis
+
+The renderer keeps the guide axis by id (`RaytraceRenderer::guideAxisId()`, `setGuideAxis()`), as it keeps the render camera, and saves it as an index into `beamAxes` (scene file `"guideAxis"`). The mode and the guided mode's strength are `OpticsSettings::traceMode` and `guideStrength` (`src/rt_scene_types.h`), saved in `"render"` `"optics"` when the mode is not **Full**. An axis's panel says whether renders trace along it and has **Guide renders by this axis**. `RenderKey::guideAxis` restarts a render when the guide axis changes, and a change of mode restarts it as any setting does. Once this plan is built, an edit to the guide axis's tree must restart a render too (its `beamAxisRevision()` goes into the key); until then it does not, since nothing reads the tree.
+
+What one guide axis means for the modes below: only light paths from the guide axis's source follow a graph. A path from another laser, or every path while no axis is chosen, is off the graph from its emission and traces as **Full** does. A scene whose two lasers each have an axis is guided along one of them; guiding both at once would make the guide axis a set, which `BeamGraph` can hold, and is the user's call if a setup needs it.
 
 ## What the renderer does today
 
@@ -29,13 +36,13 @@ struct OpticPathState {
     uint node;          // the beam-axis node the path is at or heading for, or CRT_OFF_GRAPH
     uint entry;         // the surface it entered the node's optic through, or none
     uint bounces;       // reflections inside the current body
-    uint flags;         // inside a body; the axis's mode
+    uint flags;         // inside a body
 };
 ```
 
-It is allocated only while some beam axis has a mode other than **Full**, as `MediumPathState` is allocated only when a scene has a medium ([pbrt-participating-media.md](pbrt-participating-media.md)). `PathState` does not grow. Stage 11 sets `node` to the root of the laser's axis when it emits.
+It is allocated only while there is a guide axis and the mode is not **Full**, as `MediumPathState` is allocated only when a scene has a medium ([pbrt-participating-media.md](pbrt-participating-media.md)). `PathState` does not grow. Stage 11 sets `node` to the guide axis's first visit when it emits from the guide axis's laser, and `CRT_OFF_GRAPH` for any other laser.
 
-Binding 58, `BeamGraph`, is the axes flattened by the CPU when the scene is built: per node, its optic's instance slot, its mode and guide strength, and its ports, each a child node and the (entry surface, exit surface, internal reflections) triples that identify it ([physoptics-optical-elements.md](completed/physoptics-optical-elements.md) defines ports by such sequences).
+Binding 58, `BeamGraph`, is the guide axis flattened by the CPU when the scene is built: a header with the mode, the guide strength and the source's light index, and per node, its optic's instance slot and its ports, each a child node and the (entry surface, exit surface, internal reflections) triples that identify it ([physoptics-optical-elements.md](completed/physoptics-optical-elements.md) defines ports by such sequences).
 
 ### Following the graph
 
@@ -68,7 +75,7 @@ where `g` is the axis's guide strength and `q_R` is 1 when only the reflected br
 
 In **Sequential** mode, on the graph, kernel 02 tests only the expected body. A path that misses it, outside its clear aperture, is lost and counted as vignetted. At a partial interface the path takes the graph's branch with its power as weight (`R` or `T`), the way sequential lens software reports transmitted power, and at a splitter whose two ports both have children it picks one by power. Nothing off the graph exists in this mode: no mount clips, no ghost forms. It is for design work on a long train, where it costs a fraction of a BVH walk per ray, and the panel says what it leaves out.
 
-The mode is a uniform per-dispatch flag, `CRT_FLAG_BEAM_GRAPH`, with the per-axis mode in `BeamGraph`. Kernel 02 reads binding 57 and 58 only under the flag, so camera paths, which have no beam state, never touch them; the bindings stay declared, and the renderer publishes a 16-byte placeholder for each while no axis needs them, since a declared binding nobody published aborts. This is a uniform branch in the shared kernel 02, not a variant, so it works in every integrator that runs kernel 02.
+The mode is a uniform per-dispatch flag, `CRT_FLAG_BEAM_GRAPH`, with the mode in `BeamGraph`'s header. Kernel 02 reads binding 57 and 58 only under the flag, so camera paths, which have no beam state, never touch them; the bindings stay declared, and the renderer publishes a 16-byte placeholder for each while there is no guide axis or the mode is **Full**, since a declared binding nobody published aborts. This is a uniform branch in the shared kernel 02, not a variant, so it works in every integrator that runs kernel 02.
 
 ### Counters and the render guard
 
@@ -83,11 +90,11 @@ Step 6 of [physoptics-detectors.md](completed/physoptics-detectors.md), which mo
 - Binding 57 `OpticPathState`; binding 58 `BeamGraph`; `CrtBinding::OpticPathState`, `CrtBinding::BeamGraph`.
 - `CRT_FLAG_BEAM_GRAPH`; the seeded and sequential branch in kernel 02 (`crt_intersect.glsl`); the state update and the guided choice in the light paths' scatter stage and in `optical_interface`'s sampling ([physoptics-optical-materials.md](completed/physoptics-optical-materials.md)).
 - `buildBeamGraph()` (`src/beam_graph.h/.cpp`).
-- The mode and guide strength are the beam axis's, saved with it ([physoptics-beam-axis.md](physoptics-beam-axis.md)).
+- The guide axis is the renderer's, and the mode and guide strength are `OpticsSettings`', all saved with the scene (above).
 
 ## Verification
 
-- With every axis in **Full**, every scene renders bit-identical, and no graph buffer is allocated.
+- With no guide axis, or the mode **Full**, every scene renders bit-identical, and no graph buffer is allocated.
 - **Seeded** gives bit-identical detector films and images to **Full** with a fixed seed, on the 30-element test setup with mounts in the beam, and the traversal counters fall. The ratio of nodes visited goes into this file's results table.
 - **Guided** converges to **Full**'s detector readings within noise for every detector, on-graph and off-graph, at `g` = 0.5, 0.8, 0.95 and −0.8; its relative MSE on the on-graph detectors at equal sample count is lower than **Full**'s, and on a ghost detector higher, by amounts recorded here.
 - **Sequential** matches the beam solver's transmitted power at each on-graph detector to 1e-3 relative, and misses exactly the clipping and ghost power the solver attributes to off-graph objects.
@@ -95,7 +102,7 @@ Step 6 of [physoptics-detectors.md](completed/physoptics-detectors.md), which mo
 
 ## Order of work
 
-1. `OpticPathState`, `BeamGraph`, and the on-graph tracking, with every axis still in **Full**. Bit-identical.
+1. `OpticPathState`, `BeamGraph`, and the on-graph tracking, with the mode still **Full**. Bit-identical.
 2. **Seeded**, and its bit-identical check.
 3. **Sequential**.
 4. **Guided**, including negative guide strengths.

@@ -24,7 +24,7 @@
 // 21 the optical elements, the optical library's catalogs, glasses and coatings, the optics settings and the length unit,
 // 22 the viewport's camera, 23 the bench and each optic's mount, which an older file's optics open without, and 24 the
 // background mode, which an older file implied. Each later version is described where the payload is written
-// (SCENE_FILE_FORMAT_VERSION in scene_io.cpp), up to 30's sensor stacks.
+// (SCENE_FILE_FORMAT_VERSION in scene_io.cpp), up to 32's beam axes.
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -33,6 +33,7 @@
 #include <optional>
 #include <vector>
 
+#include <beam_axis.h>
 #include <length_unit.h>
 #include <optic_bench.h>
 #include <optic_catalog.h>
@@ -110,6 +111,15 @@ struct SceneOpticRecord {
 struct SceneSensorStackRecord {
 	SensorStack stack;
 	std::array<std::optional<MaterialDef>, MAX_OPTIC_MATERIAL_SLOTS> slots;
+};
+
+// version 32: a beam axis (src/beam_axis.h) as the file records it. Ids are positions in the file: `axis.source.id` is
+// an index into `cameras` for a camera and into `optics` for a laser, each node's `optic` an index into `optics`, and
+// each node's `id` its position in `axis.nodes`, which its children's `parent` names (renumberBeamNodes() makes them so
+// before a save). The axis's own id is unused. The load drops a node whose optic is gone, as Remove does (its children
+// move up or dangle), and cuts loose one whose port or parent is, each with a warning
+struct SceneBeamAxisRecord {
+	BeamAxis axis;
 };
 
 // version 22: the raster viewport's free camera, how it moves and where it is, so a scene opens at the speed and clip
@@ -216,6 +226,12 @@ struct SceneDescription {
 	std::vector<SceneTextureRecord> textures;
 	// version 30: the sensor stacks
 	std::vector<SceneSensorStackRecord> sensorStacks;
+	// version 32: the beam axes, and what the load dropped from them (a node whose optic or port is gone, a source that
+	// is not a laser or a camera)
+	std::vector<SceneBeamAxisRecord> beamAxes;
+	std::vector<std::string> beamAxisWarnings;
+	// version 32: the axis renders trace along (RaytraceRenderer::guideAxisId()), an index into beamAxes; -1 for none
+	int guideAxis { -1 };
 };
 
 IoResult saveSceneFile(const SceneDescription& scene, const std::filesystem::path& file);

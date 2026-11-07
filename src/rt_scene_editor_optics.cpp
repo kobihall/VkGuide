@@ -80,6 +80,8 @@ void RaytraceSceneEditor::removeOptic(uint64_t id)
 	}
 	std::erase_if(m_optics, [id](const SceneOptic& o) { return o.id == id; });
 	std::erase_if(m_materials, [&owned](const MaterialDef& m) { return m.id != 0 && std::find(owned.begin(), owned.end(), m.id) != owned.end(); });
+	// its visits, and the source of an axis it started
+	forgetInBeamAxes(id);
 	if (m_selectionKind == SelectionKind::Optic && m_selectionId == id) {
 		m_selectionKind = SelectionKind::None;
 		m_selectionId = 0;

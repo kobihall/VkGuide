@@ -63,6 +63,10 @@ struct CommandLine {
 	// --detectors <dir>: write every detector's reading to <dir>/detectors.json and its film to <dir>/<name>.exr
 	// (docs/plans/completed/physoptics-detectors.md)
 	std::filesystem::path detectors;
+	// --save-scene <file>: open the scene, save it back to <file> through the editor (every id made an index again) and
+	// quit without rendering, exit code 0 when the file was written. What the scene file checks compare: a scene that
+	// round-trips unchanged saves the same. Takes the place of --out
+	std::filesystem::path saveScene;
 	// --help
 	bool help { false };
 

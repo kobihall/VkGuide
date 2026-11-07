@@ -108,6 +108,10 @@ public:
 	// while the target is a camera). Only one is the target; light tracing records it, the rest of its sensor stack, and with RenderSettings::renderAllSensors every other detector
 	uint64_t renderDetectorId() const { return m_renderDetectorId; }
 	void setRenderDetector(uint64_t opticId) { m_renderDetectorId = opticId; }
+	// THE GUIDE AXIS (docs/plans/physoptics-guided-tracing.md): the beam axis a render traces along, by
+	// RenderSettings::optics.traceMode, 0 for none. An id the scene no longer has is none. Saved with the scene
+	uint64_t guideAxisId() const { return m_guideAxisId; }
+	void setGuideAxis(uint64_t axisId) { m_guideAxisId = axisId; }
 
 	// Reference images and render exports as files. They wait for the device, so a running render stalls for the
 	// readback
@@ -190,6 +194,8 @@ private:
 		// the camera's aperture image's distribution, once its image has loaded: a render started before restarts
 		const PiecewiseConstant2D* aperture { nullptr };
 		uint64_t detectorTarget { 0 };
+		// the guide axis, while the scene has it: a render guided by one axis restarts on another
+		uint64_t guideAxis { 0 };
 
 		bool operator==(const RenderKey&) const = default;
 	};
@@ -292,6 +298,7 @@ private:
 	int m_customHeight { RESOLUTION_PRESETS[DEFAULT_RESOLUTION_PRESET].height };
 	uint64_t m_renderCameraId { 0 };
 	uint64_t m_renderDetectorId { 0 };
+	uint64_t m_guideAxisId { 0 };
 	// the detector target's film, for the resolution section; 0 while a camera is the target
 	glm::uvec2 m_detectorTargetPixels { 0u };
 

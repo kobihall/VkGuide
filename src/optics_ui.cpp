@@ -374,6 +374,44 @@ void drawOpticsRenderSettings(VulkanEngine* engine)
 			"and coatings projected per channel)");
 		ImGui::PopTextWrapPos();
 	}
+
+	// GUIDED TRACING (docs/plans/physoptics-guided-tracing.md): the one beam axis renders trace along, and how. Only while
+	// the scene has an axis to choose
+	const std::vector<BeamAxis>& axes = engine->m_raytraceScene.beamAxes();
+	if (!axes.empty()) {
+		ImGui::SeparatorText("Guided tracing");
+		RaytraceRenderer& renderer = engine->m_raytracer;
+		const BeamAxis* guide = engine->m_raytraceScene.findBeamAxis(renderer.guideAxisId());
+		if (ImGui::BeginCombo("guide axis", guide != nullptr ? guide->name.c_str() : "none")) {
+			if (ImGui::Selectable("none", guide == nullptr)) {
+				renderer.setGuideAxis(0);
+			}
+			for (const BeamAxis& axis : axes) {
+				ImGui::PushID((int)axis.id);
+				if (ImGui::Selectable(axis.name.c_str(), guide == &axis)) {
+					renderer.setGuideAxis(axis.id);
+				}
+				ImGui::PopID();
+			}
+			ImGui::EndCombo();
+		}
+		ImGui::SetItemTooltip("The beam axis light paths follow: one at a time. Paths from a laser that is not its source trace fully");
+		ImGui::BeginDisabled(guide == nullptr);
+		int mode = (int)settings.optics.traceMode;
+		if (ImGui::Combo("trace mode", &mode, BEAM_TRACE_MODE_LABELS, (int)std::size(BEAM_TRACE_MODE_LABELS))) {
+			settings.optics.traceMode = (BeamTraceMode)mode;
+			changed = true;
+		}
+		ImGui::SetItemTooltip("Full ignores the axis. Seeded finds each expected hit first, with the same result. Guided also leans each\n"
+			"reflect-or-refract choice toward the axis and reweights. Sequential traces the axis's optics alone, with no ghosts or clipping");
+		if (settings.optics.traceMode == BeamTraceMode::Guided) {
+			changed |= ImGui::SliderFloat("guide strength", &settings.optics.guideStrength, 0.f, 1.f);
+		}
+		ImGui::EndDisabled();
+		ImGui::PushTextWrapPos(0.f);
+		ImGui::TextDisabled("Not built yet: every render traces fully, whatever the mode");
+		ImGui::PopTextWrapPos();
+	}
 	if (changed) {
 		engine->m_raytracer.setSettings(settings);
 	}

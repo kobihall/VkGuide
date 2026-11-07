@@ -469,6 +469,8 @@ const PortEvent THROUGH_TWO[] = { { 0, false }, { 1, false } };
 const OpticPort TRANSMITTED_PORTS[] = { { "Transmitted", THROUGH_TWO } };
 const OpticPort SPLITTER_PORTS[] = { { "Reflected", REFLECT_FRONT }, { "Transmitted", THROUGH_TWO } };
 const OpticPort IRIS_PORTS[] = { { "Transmitted", {} } };
+// a probe plane records the beam where it crosses and lets it through unchanged
+const OpticPort PROBE_PORTS[] = { { "Transmitted", {} } };
 const OpticPort LASER_PORTS[] = { { "Output", {} } };
 // the cube's surfaces: 0 z-, 1 y-, 2 z+, 3 y+, 4 to 7 the two triangles of each x face, 8 the diagonal
 const PortEvent CUBE_REFLECTED[] = { { 0, false }, { 8, true }, { 1, false } };
@@ -862,7 +864,7 @@ const OpticTraits OPTIC_TRAITS[] = {
 	{ "screen", "Screen", "Screens", {}, SCREEN_PARAMS, FACE_SLOTS, {}, {}, false, buildDetector, false, "size", true },
 	{ "spectrometer", "Spectrometer", "Spectrometers", {}, SPECTROMETER_PARAMS, SENSOR_SLOTS, {}, {}, false, buildDetector, false, "size", true },
 	{ "beam_dump", "Beam dump", "Beam dumps", {}, DUMP_PARAMS, SENSOR_SLOTS, {}, {}, false, buildDetector, false, "size", true },
-	{ "probe_plane", "Probe plane", "Probe planes", {}, PROBE_PARAMS, {}, {}, {}, false, buildDetector, false, "size", true },
+	{ "probe_plane", "Probe plane", "Probe planes", {}, PROBE_PARAMS, {}, {}, PROBE_PORTS, false, buildDetector, false, "size", true },
 };
 static_assert(std::size(OPTIC_TRAITS) == OPTIC_KIND_COUNT);
 

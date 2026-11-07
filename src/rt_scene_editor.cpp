@@ -736,6 +736,9 @@ void RaytraceSceneEditor::replaceShapes(std::vector<SceneShape>&& shapes)
 
 void RaytraceSceneEditor::replaceCameras(std::vector<SceneCamera>&& cameras)
 {
+	for (const SceneCamera& camera : m_cameras) {
+		forgetInBeamAxes(camera.id);
+	}
 	m_cameras.clear();
 	m_nextCameraNumber = 1;
 	for (SceneCamera& camera : cameras) {
@@ -909,6 +912,96 @@ void RaytraceSceneEditor::select(SelectionKind kind, uint64_t id)
 	m_selectionId = id;
 	//a rename in progress belongs to the row that started it
 	m_renamingId = 0;
+	m_selectedBeamNode = BEAM_SOURCE_NODE;
+}
+
+//---------------------------------------------------------------- beam axes
+
+BeamAxis* RaytraceSceneEditor::findBeamAxis(uint64_t id)
+{
+	for (BeamAxis& axis : m_beamAxes) {
+		if (axis.id == id) {
+			return &axis;
+		}
+	}
+	return nullptr;
+}
+
+const BeamAxis* RaytraceSceneEditor::findBeamAxis(uint64_t id) const
+{
+	return const_cast<RaytraceSceneEditor*>(this)->findBeamAxis(id);
+}
+
+uint64_t RaytraceSceneEditor::addBeamAxis(BeamAxis axis)
+{
+	axis.id = m_nextId++;
+	if (axis.name.empty()) {
+		axis.name = fmt::format("BeamAxis{}", m_nextBeamAxisNumber);
+	}
+	m_nextBeamAxisNumber++;
+	m_beamAxes.push_back(std::move(axis));
+	m_beamAxisRevisions[m_beamAxes.back().id] = ++m_beamAxesRevision;
+	return m_beamAxes.back().id;
+}
+
+void RaytraceSceneEditor::removeBeamAxis(uint64_t id)
+{
+	if (std::erase_if(m_beamAxes, [id](const BeamAxis& axis) { return axis.id == id; }) == 0) {
+		return;
+	}
+	m_beamAxisRevisions.erase(id);
+	m_beamAxesRevision++;
+	if (m_selectionKind == SelectionKind::BeamAxis && m_selectionId == id) {
+		select(SelectionKind::None, 0);
+	}
+}
+
+void RaytraceSceneEditor::replaceBeamAxes(std::vector<BeamAxis>&& axes)
+{
+	m_beamAxes.clear();
+	m_beamAxisRevisions.clear();
+	m_nextBeamAxisNumber = 1;
+	if (m_selectionKind == SelectionKind::BeamAxis) {
+		select(SelectionKind::None, 0);
+	}
+	for (BeamAxis& axis : axes) {
+		addBeamAxis(std::move(axis));
+	}
+	m_beamAxesRevision++;
+}
+
+bool RaytraceSceneEditor::editBeamAxis(uint64_t id, const std::function<void(BeamAxis&)>& edit)
+{
+	BeamAxis* axis = findBeamAxis(id);
+	if (axis == nullptr) {
+		return false;
+	}
+	const BeamAxis before = *axis;
+	edit(*axis);
+	//the id is the editor's: an edit that changed it would orphan the axis's revision
+	axis->id = id;
+	if (!(*axis == before)) {
+		m_beamAxisRevisions[id] = ++m_beamAxesRevision;
+	}
+	return true;
+}
+
+uint64_t RaytraceSceneEditor::beamAxisRevision(uint64_t id) const
+{
+	const auto found = m_beamAxisRevisions.find(id);
+	return found != m_beamAxisRevisions.end() ? found->second : 0;
+}
+
+void RaytraceSceneEditor::forgetInBeamAxes(uint64_t id)
+{
+	for (const BeamAxis& axis : m_beamAxes) {
+		editBeamAxis(axis.id, [id](BeamAxis& edited) {
+			removeBeamOptic(edited, id);
+			if (edited.source.kind != BeamSourceKind::None && edited.source.id == id) {
+				edited.source = {};
+			}
+		});
+	}
 }
 
 namespace {
@@ -1017,6 +1110,26 @@ std::optional<Aabb> RaytraceSceneEditor::selectionBounds(const VulkanEngine* eng
 			box = opticBox(engine, *optic);
 			if (boxEmpty(box)) {
 				box = boxAround(glm::vec3(optic->world[3]), OVERLAY_HALF_SIZE);
+			}
+		}
+		break;
+	case SelectionKind::BeamAxis:
+		//the optics it visits, and its source's
+		if (const BeamAxis* axis = findBeamAxis(m_selectionId)) {
+			std::vector<uint64_t> optics;
+			for (const BeamAxisNode& node : axis->nodes) {
+				optics.push_back(node.optic);
+			}
+			if (axis->source.kind == BeamSourceKind::Laser) {
+				optics.push_back(axis->source.id);
+			} else if (const SceneCamera* camera = axis->source.kind == BeamSourceKind::Camera ? findCamera(axis->source.id) : nullptr) {
+				box.grow(boxAround(camera->position, OVERLAY_HALF_SIZE));
+			}
+			for (uint64_t id : optics) {
+				if (const SceneOptic* optic = findOptic(id)) {
+					const Aabb part = opticBox(engine, *optic);
+					box.grow(boxEmpty(part) ? boxAround(glm::vec3(optic->world[3]), OVERLAY_HALF_SIZE) : part);
+				}
 			}
 		}
 		break;
@@ -1216,6 +1329,16 @@ void RaytraceSceneEditor::duplicateSelection()
 		select(SelectionKind::SensorStack, id);
 		break;
 	}
+	case SelectionKind::BeamAxis: {
+		const BeamAxis* source = findBeamAxis(m_selectionId);
+		if (source == nullptr) {
+			return;
+		}
+		BeamAxis copy = *source;
+		copy.name = fmt::format("{}_copy", source->name);
+		select(SelectionKind::BeamAxis, addBeamAxis(std::move(copy)));
+		break;
+	}
 	case SelectionKind::Light: {
 		const SceneLight* source = findLight(m_selectionId);
 		if (source == nullptr) {
@@ -1245,6 +1368,7 @@ void RaytraceSceneEditor::deleteSelection()
 		break;
 	case SelectionKind::Camera:
 		std::erase_if(m_cameras, [this](const SceneCamera& c) { return c.id == m_selectionId; });
+		forgetInBeamAxes(m_selectionId);
 		break;
 	case SelectionKind::Light:
 		std::erase_if(m_lights, [this](const SceneLight& l) { return l.id == m_selectionId; });
@@ -1264,6 +1388,10 @@ void RaytraceSceneEditor::deleteSelection()
 	case SelectionKind::SensorStack:
 		removeSensorStack(m_selectionId);
 		break;
+	case SelectionKind::BeamAxis:
+		//nothing a render reads: no markChanged()
+		removeBeamAxis(m_selectionId);
+		return;
 	case SelectionKind::Bench:
 		m_bench.table = false;
 		break;
@@ -1538,6 +1666,12 @@ bool RaytraceSceneEditor::drawObjectRow(SelectionKind kind, uint64_t id, const s
 					target = &stack->name;
 				}
 				break;
+			case SelectionKind::BeamAxis:
+				//through its own revision, not the render's
+				if (m_renameBuffer[0] != '\0') {
+					editBeamAxis(id, [this](BeamAxis& axis) { axis.name = m_renameBuffer; });
+				}
+				break;
 			case SelectionKind::Bench:
 			case SelectionKind::None:
 				break;
@@ -1801,6 +1935,11 @@ void RaytraceSceneEditor::drawSelection(VulkanEngine* engine)
 	case SelectionKind::SensorStack:
 		if (SensorStack* stack = findSensorStack(m_selectionId)) {
 			drawSelectedSensorStack(engine, *stack);
+		}
+		break;
+	case SelectionKind::BeamAxis:
+		if (BeamAxis* axis = findBeamAxis(m_selectionId)) {
+			drawSelectedBeamAxis(engine, *axis);
 		}
 		break;
 	case SelectionKind::Bench:

@@ -73,6 +73,13 @@ if (NOT MSVC)
     target_compile_options(optics_test PRIVATE -O2)
 endif()
 
+# CPU-only verification of the beams: the beam axes' trees and ports (docs/plans/physoptics-beam-axis.md): ./bin/beam_test
+add_executable(beam_test tests/beam_test.cpp)
+target_link_libraries(beam_test PRIVATE rt_optics fmt::fmt)
+if (NOT MSVC)
+    target_compile_options(beam_test PRIVATE -O2)
+endif()
+
 # CPU-only verification of the film behind kernels 00 and 09: ./bin/film_test
 add_executable(film_test tests/film_test.cpp)
 target_link_libraries(film_test PRIVATE rt_film fmt::fmt)

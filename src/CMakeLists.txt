@@ -189,6 +189,8 @@ endif()
 # the detectors' films and the measurements made from them (docs/plans/completed/physoptics-detectors.md).
 # Checked by tests/optics_test.cpp; the CPU traversal in rt_bvh intersects optics through it
 add_library(rt_optics STATIC
+    beam_axis.cpp
+    beam_axis.h
     optic_bench.cpp
     optic_bench.h
     optic_catalog.cpp
@@ -255,6 +257,7 @@ add_executable(vulkan_guide
     rt_scene.h
     rt_scene_editor.cpp
     rt_scene_editor.h
+    rt_scene_editor_beam_axes.cpp
     rt_scene_editor_optics.cpp
     length_unit.cpp
     length_unit.h

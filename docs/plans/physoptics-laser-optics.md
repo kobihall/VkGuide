@@ -129,7 +129,7 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 15. [pbrt-light-types.md](completed/pbrt-light-types.md). Emitted-ray sampling, which the laser's emission joins.
 16. [physoptics-laser-sources.md](completed/physoptics-laser-sources.md). Implemented 2026-11-02, with light tracing as the only integrator that renders a laser's light, its polarization deferred to item 31, and a wave-optics reference (`tools/verify/wave_optics.py`) that later plans compare the rays with.
-17. [physoptics-beam-axis.md](physoptics-beam-axis.md)
+17. [physoptics-beam-axis.md](physoptics-beam-axis.md). Partly implemented 2026-11-07: the axes, with a source you attach (a laser or a camera) and dangling visits, their folder, panel, overlay and scene file. Statuses, Follow beam and picking come with item 18.
 18. [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)
 19. [physoptics-beam-preview.md](physoptics-beam-preview.md)
 20. [physoptics-locked-transforms.md](physoptics-locked-transforms.md)

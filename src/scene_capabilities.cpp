@@ -87,8 +87,8 @@ void opticalBenchDependentObjects(const VulkanEngine* engine, std::vector<Object
 			.erase = [](VulkanEngine* e) { e->m_raytraceScene.setBench(BenchSettings {}); },
 		});
 	}
-	//the optical elements (physoptics-optical-elements.md) and the lasers (physoptics-laser-sources.md); the beam axes and
-	//detectors follow as their plans land
+	//the optical elements (physoptics-optical-elements.md), the lasers (physoptics-laser-sources.md) and the detectors
+	//(physoptics-detectors.md)
 	for (const SceneOptic& optic : engine->m_raytraceScene.optics()) {
 		//a stack's members go with their stack
 		if (optic.stack != 0) {
@@ -109,16 +109,27 @@ void opticalBenchDependentObjects(const VulkanEngine* engine, std::vector<Object
 			.erase = [id](VulkanEngine* e) { e->m_raytraceScene.removeSensorStack(id); },
 		});
 	}
+	//the beam axes (physoptics-beam-axis.md)
+	for (const BeamAxis& axis : engine->m_raytraceScene.beamAxes()) {
+		const uint64_t id = axis.id;
+		out.push_back(ObjectRef {
+			.kind = "Beam axis",
+			.name = axis.name,
+			.erase = [id](VulkanEngine* e) { e->m_raytraceScene.removeBeamAxis(id); },
+		});
+	}
 }
 
 void opticalBenchSceneFolders(VulkanEngine* engine)
 {
 	engine->m_raytraceScene.drawOpticRows(engine);
+	engine->m_raytraceScene.drawBeamAxisRows(engine);
 }
 
 void opticalBenchAddMenu(VulkanEngine* engine)
 {
 	engine->m_raytraceScene.drawOpticAddMenu(engine);
+	engine->m_raytraceScene.drawBeamAxisAddItems(engine);
 }
 
 // the detectors are sensors, beside the cameras (docs/plans/completed/physoptics-detectors.md)
@@ -194,6 +205,8 @@ void detectorOverlay(const SceneOptic& optic, const ViewportView& view)
 // the raster pass nor the tracer sees. The tracer has the output aperture alone
 void opticalBenchOverlays(VulkanEngine* engine, const ViewportView& view)
 {
+	// the beam axes' authored order, under the optics' own outlines
+	engine->m_raytraceScene.drawBeamAxisOverlays(view);
 	// a sensor stack's axis, the rail its sensors slide along, from its start to its end; each member draws its own outline
 	for (const SensorStack& stack : engine->m_raytraceScene.sensorStacks()) {
 		const ImU32 rail = IM_COL32(120, 220, 255, 160);

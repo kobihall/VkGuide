@@ -16,6 +16,13 @@ embedded Gaussian, Siegman 1986). Before detectors existed each plane was a whit
                             with the parabola turned 0.1 and 0.5 degrees, reported
   tilted_spherical_mirror   the 2 mm beam on an R = 200 mm concave mirror at 10, 20 and 45 degrees: the tangential and
                             sagittal foci, R cos(theta) / 2 and R / (2 cos(theta)), each fitted through five planes
+  beam_axis_setup           the beam axis plan's setup: the HNL050LB, two turning mirrors, an iris, a lens, a plate
+                            beamsplitter and a power meter on each arm, the axis visiting them all; the two arms' powers
+  beam_axis_double_pass     a cat's eye: a lens, a tilted mirror at its focus and a pickoff, the axis visiting the lens
+                            twice; the returned power
+
+Each scene has a beam axis along its beam (docs/plans/physoptics-beam-axis.md). Until the beam solver gives each visit
+a status, the last two show the axis is followed by the power their meters read.
 
 Every lens is N-BK7, whose index exact RGB reads at the laser's wavelength (the design wavelength follows the scene's one
 laser). The planes a waist is fitted through are a sensor stack (src/optic_detectors.h), evenly spaced and each the
@@ -113,11 +120,11 @@ def side_camera():
     return vkscene.camera((0.3, 0.4, -0.3), (0.1, Y, 0.3), 40.0)
 
 
-def measure_planes(name, optics, planes, samples, out, up=(0.0, 1.0, 0.0), stacks=()):
+def measure_planes(name, optics, planes, samples, out, up=(0.0, 1.0, 0.0), stacks=(), beam_axes=()):
     """One render with a detector at each of `planes`, (center, direction, half field[, kind]): a probe plane unless the
-    kind says otherwise, and the sensor `stacks`, (probes, record) of bp.detector_stack(). Returns each plane's
-    Measurement (the renderer's ISO 11146 radii along the detector's x and y), the stacks' members after them, and the
-    scene"""
+    kind says otherwise, named <name>_0, <name>_1, ..., and the sensor `stacks`, (probes, record) of
+    bp.detector_stack(), with the `beam_axes` (bp.beam_axis()). Returns each plane's Measurement (the renderer's ISO 11146
+    radii along the detector's x and y), the stacks' members after them, and the scene"""
     probes = []
     records = []
     for i, plane in enumerate(planes):
@@ -128,7 +135,7 @@ def measure_planes(name, optics, planes, samples, out, up=(0.0, 1.0, 0.0), stack
         records.append(record)
     for members, _ in stacks:
         probes += members
-    scene = bp.scene([], [], list(optics) + records, side_camera(), 256, 256, samples=samples, stacks=[record for _, record in stacks])
+    scene = bp.scene([], [], list(optics) + records, side_camera(), 256, 256, samples=samples, stacks=[record for _, record in stacks], beam_axes=beam_axes)
     readings, _, _ = vkscene.run_detectors(scene, samples, workdir=out / name)
     return [bp.measure_detector(readings, p) for p in probes], scene
 
@@ -143,11 +150,11 @@ def plane_stack(name, origin, direction, distances, half_fields, pixels=256):
     return bp.detector_stack(name, origin + distances[0] * direction, origin + distances[-1] * direction, len(distances), max(half_fields), pixels=pixels)
 
 
-def fit_planes(name, optics, origin, direction, distances, half_fields, samples, out, extra_planes=(), pixels=256):
+def fit_planes(name, optics, origin, direction, distances, half_fields, samples, out, extra_planes=(), pixels=256, beam_axes=()):
     """a stack of probe planes at `distances` along `direction` from `origin`, in one render: the radii along x and y, and
     their fits"""
     stack = plane_stack(name, origin, direction, distances, half_fields, pixels)
-    measured, scene = measure_planes(name, optics, list(extra_planes), samples, out, stacks=[stack])
+    measured, scene = measure_planes(name, optics, list(extra_planes), samples, out, stacks=[stack], beam_axes=beam_axes)
     extra = measured[:len(extra_planes)]
     measured = measured[len(extra_planes):]
     rows = [(d, m.radius[0], m.radius[1], m.power) for d, m in zip(distances, measured)]
@@ -180,7 +187,9 @@ def gaussian_train(samples, out):
     # of it and half beyond two: here 7 within and 8 beyond
     distances = [z0 + k * z_r for k in np.linspace(-3.0, 3.0, 21)]
     halves = [4.0 * w0 * math.sqrt(1.0 + ((d - z0) / z_r) ** 2) for d in distances]
-    rows, fit_u, fit_v, nominal, _ = fit_planes("gaussian_train", optics, back, (0.0, 0.0, 1.0), distances, halves, samples, out)
+    # the axis ends at the lens: the stack's planes are its members, which a beam axis does not visit
+    axis = bp.beam_axis("train", "HNL050LB", [("M1", None, None), ("M2", 0, "Reflected"), ("L1", 1, "Reflected")])
+    rows, fit_u, fit_v, nominal, _ = fit_planes("gaussian_train", optics, back, (0.0, 0.0, 1.0), distances, halves, samples, out, beam_axes=[axis])
     expected = {"waist": w0, "waist_position_after_lens": z0, "m2": HNL_M2, "rayleigh_range": z_r,
                 "tolerance": {"waist": 0.01, "position": 0.5e-3, "m2": 0.02}, "notes": "the focus after the lens: ABCD of the thick lens, the embedded Gaussian of the HNL050LB"}
     for label, (fw, fz, fm) in (("x", fit_u), ("y", fit_v)):
@@ -222,7 +231,8 @@ def telescope(name, f2, ct2, samples, out):
         w = bp.beam_radius_after(HNL_WAIST, HNL_M2, LAMBDA, 0.0, system)
         expected["radius"].append(w)
         planes.append((back + [0.0, 0.0, d], (0.0, 0.0, 1.0), 4.0 * w, kind))
-    measured, scene = measure_planes(name, optics, planes, samples, out)
+    axis = bp.beam_axis("telescope", "HNL050LB", [("L1", None, None), ("L2", 0, "Transmitted"), (f"{name}_0", 1, "Transmitted"), (f"{name}_1", 2, "Transmitted")])
+    measured, scene = measure_planes(name, optics, planes, samples, out, beam_axes=[axis])
     for (d, w, m) in zip((0.1, 0.6), expected["radius"], measured):
         check(rel(m.radius[0], w) < 0.01 and rel(m.radius[1], w) < 0.01, f"{d:g} m past it: radii {m.radius[0] * 1e3:.4f} x {m.radius[1] * 1e3:.4f} mm, ABCD {w * 1e3:.4f} mm")
     # the input's divergence over the output's, from the growth between the planes, against f1 / |f2|: a divergence ratio,
@@ -254,7 +264,8 @@ def oap_focus(samples, out):
     z_r = math.pi * w0 ** 2 / LAMBDA
     distances = planes_around(z0, z_r)
     halves = [4.0 * w0 * math.sqrt(1.0 + ((d - z0) / z_r) ** 2) for d in distances]
-    rows, fit_u, fit_v, nominal, _ = fit_planes("oap_focus", optics_turned(0.0), datum, (1.0, 0.0, 0.0), distances, halves, samples, out)
+    rows, fit_u, fit_v, nominal, _ = fit_planes("oap_focus", optics_turned(0.0), datum, (1.0, 0.0, 0.0), distances, halves, samples, out,
+                                                beam_axes=[bp.beam_axis("focus", "wide", [("OAP1", None, None)])])
     for label, (fw, fz, fm) in (("tangential", fit_u), ("sagittal", fit_v)):
         check(rel(fw, w0) < 0.01, f"{label}: waist {fw * 1e6:.2f} um, lambda f / (pi w) = {LAMBDA * rfl / (math.pi * w_in) * 1e6:.2f} um, ABCD {w0 * 1e6:.2f} um")
         check(abs(fz - z0) < 0.1e-3, f"{label}: focus {fz * 1e3:.3f} mm from the datum, ABCD {z0 * 1e3:.3f} mm")
@@ -295,7 +306,8 @@ def tilted_mirror(samples, out):
             sets.append((label, f, w0, z0, distances))
             stacks.append(plane_stack(f"tilted_{degrees:g}_{label}", vertex, out_dir, distances,
                                       [4.0 * w0 * math.sqrt(1.0 + ((d - z0) / z_r) ** 2) for d in distances]))
-        measured, scene = measure_planes(f"tilted_{degrees:g}", optics, [], samples, out, stacks=stacks)
+        measured, scene = measure_planes(f"tilted_{degrees:g}", optics, [], samples, out, stacks=stacks,
+                                         beam_axes=[bp.beam_axis("focus", "wide", [("CM1", None, None)])])
         for k, (label, f, w0, z0, distances) in enumerate(sets):
             rows = measured[5 * k:5 * k + 5]
             # x is horizontal, in the plane of incidence: the tangential axis
@@ -312,6 +324,87 @@ def tilted_mirror(samples, out):
     return nominal, expected
 
 
+def splitter(name, position, incoming, outgoing):
+    """a 1 in plate beamsplitter at 45 degrees, its coated front toward the incoming beam: unlike a mirror's, its light
+    travels along its body's +z, from the front face to the back"""
+    return bp.free_optic("plate_beamsplitter", name, position, bp.unit(np.asarray(incoming, float) - np.asarray(outgoing, float)), size="1in")
+
+
+def beam_axis_setup(samples, out):
+    """The beam axis plan's test setup (docs/plans/physoptics-beam-axis.md, Verification), placed by hand: the HNL050LB
+    along +z, M1 turning it to +x and M2 back to +z, an open iris, the f = 100 mm lens and a plate beamsplitter 50 mm past
+    it, whose reflected arm goes to a power meter along +x and whose transmitted arm to one along +z. Its beam axis visits
+    every one of them. Until the beam solver gives each visit a status, the meters' readings say the axis is followed:
+    the two arms add to the laser's power less the mirrors' and the splitter's losses"""
+    print("beam_axis_setup: HNL050LB, two turning mirrors, an iris, a lens, a plate beamsplitter and two power meters")
+    origin = np.array([0.0, Y, 0.0])
+    m1 = origin + [0.0, 0.0, 0.15]
+    m2 = m1 + [0.15, 0.0, 0.0]
+    iris_at = m2 + [0.0, 0.0, 0.1]
+    lens_front = m2 + [0.0, 0.0, 0.2]
+    split_at = lens_front + [0.0, 0.0, 0.05]
+    lens, _ = plano_lens("L1", lens_front, (0.0, 0.0, 1.0), 0.1, 0.0254, 3.6e-3)
+    optics = [hnl(origin, (0.0, 0.0, 1.0)),
+              turning_mirror("M1", m1, (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+              turning_mirror("M2", m2, (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+              bp.free_optic("iris", "I1", iris_at, (0.0, 0.0, 1.0), params={"opening": 5e-3}),
+              lens,
+              splitter("BS1", split_at, (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))]
+    _, meter_r = bp.detector("PM_R", split_at + [0.1, 0.0, 0.0], (1.0, 0.0, 0.0), 5e-3, kind="power_meter")
+    _, meter_t = bp.detector("PM_T", split_at + [0.0, 0.0, 0.15], (0.0, 0.0, 1.0), 5e-3, kind="power_meter")
+    optics += [meter_r, meter_t]
+    axis = bp.beam_axis("setup", "HNL050LB", [("M1", None, None), ("M2", 0, "Reflected"), ("I1", 1, "Reflected"), ("L1", 2, "Transmitted"),
+                                              ("BS1", 3, "Transmitted"), ("PM_R", 4, "Reflected"), ("PM_T", 4, "Transmitted")])
+    scene = bp.scene([], [], optics, side_camera(), 256, 256, samples=samples, beam_axes=[axis])
+    readings, _, _ = vkscene.run_detectors(scene, samples, workdir=out / "beam_axis_setup")
+    reflected = readings["PM_R"][0]["power"]
+    transmitted = readings["PM_T"][0]["power"]
+    power = 5e-3
+    print(f"  reflected arm {reflected * 1e3:.4f} mW, transmitted arm {transmitted * 1e3:.4f} mW, of the laser's {power * 1e3:g} mW")
+    check(reflected > 0.2 * power and transmitted > 0.2 * power, "both of the splitter's arms reach their meters")
+    check(reflected + transmitted > 0.85 * power, f"the arms carry {(reflected + transmitted) / power:.4f} of the laser's power: every visit is in the beam")
+    expected = {"power": {"PM_R": reflected, "PM_T": transmitted}, "statuses": "Hit for every visit",
+                "nudges": [{"optic": "M2", "adjuster": "one revolution", "expect": {"L1": "Missed"},
+                            "notes": "the miss distance is twice the tilt times the distance to the lens, less its aperture's radius, to 1 um"},
+                           {"optic": "I1", "opening": 0.6e-3, "expect": {"I1": "Clipped", "L1": "Hit", "BS1": "Hit", "PM_R": "Hit", "PM_T": "Hit"},
+                            "notes": "the clipped fraction the solver computes for the beam's radius at the iris"}],
+                "notes": "the beam axis plan's setup; statuses wait for the beam solver, the meters' powers are this render's (light tracing)"}
+    return scene, expected
+
+
+def beam_axis_double_pass(samples, out):
+    """A double pass through a lens, as a cat's eye: the HNL050LB along the axis of a 2 in f = 100 mm lens, a 1/2 in
+    mirror at its focus turned by ALPHA, which sends the beam back through the lens displaced by about 2 ALPHA f and
+    parallel to the axis, and a 1/2 in pickoff beside the incoming beam that turns the return onto a power meter. The
+    beam axis visits the lens twice"""
+    alpha = 0.075
+    print(f"beam_axis_double_pass: a cat's eye of an f = 100 mm lens and a mirror at its focus turned {math.degrees(alpha):.2f} deg")
+    origin = np.array([0.0, Y, 0.0])
+    lens_front = origin + [0.0, 0.0, 0.15]
+    lens, _ = plano_lens("L1", lens_front, (0.0, 0.0, 1.0), 0.1, 0.0508, 10.0e-3)
+    w0, z0 = bp.propagate_q(HNL_WAIST, HNL_M2, LAMBDA, 0.15, lens_matrix(0.1, 10.0e-3))
+    focus = lens_front + [0.0, 0.0, 10.0e-3 + z0]
+    back = np.array([math.sin(2.0 * alpha), 0.0, -math.cos(2.0 * alpha)])
+    offset = 0.1 * math.tan(2.0 * alpha)
+    pickoff_at = origin + [offset + 2e-3, 0.0, 0.075]
+    optics = [hnl(origin, (0.0, 0.0, 1.0)), lens,
+              bp.free_optic("planar_mirror", "M_focus", focus, bp.unit(back - np.array([0.0, 0.0, 1.0])), size="half_inch"),
+              bp.free_optic("planar_mirror", "M_pickoff", pickoff_at, bp.unit(np.array([1.0, 0.0, 0.0]) - np.array([0.0, 0.0, -1.0])), size="half_inch")]
+    _, meter = bp.detector("PM", pickoff_at + [0.12, 0.0, 0.0], (1.0, 0.0, 0.0), 5e-3, kind="power_meter")
+    optics.append(meter)
+    axis = bp.beam_axis("cat's eye", "HNL050LB", [("L1", None, None), ("M_focus", 0, "Transmitted"), ("L1", 1, "Reflected"),
+                                                  ("M_pickoff", 2, "Transmitted"), ("PM", 3, "Reflected")])
+    scene = bp.scene([], [], optics, side_camera(), 256, 256, samples=samples, beam_axes=[axis])
+    readings, _, _ = vkscene.run_detectors(scene, samples, workdir=out / "beam_axis_double_pass")
+    returned = readings["PM"][0]["power"]
+    print(f"  the focus at {z0 * 1e3:.3f} mm past the lens, waist {w0 * 1e6:.2f} um; the return {offset * 1e3:.2f} mm off the axis; "
+          f"{returned * 1e3:.4f} mW on the meter")
+    check(returned > 0.85 * 5e-3, f"the return through the lens reaches the meter with {returned / 5e-3:.4f} of the laser's power")
+    expected = {"power": {"PM": returned}, "focus_after_lens": z0, "return_offset": offset, "statuses": "Hit for every visit, the lens's two among them",
+                "notes": "two visits of L1, both solved; the meter's power is this render's (light tracing)"}
+    return scene, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true")
@@ -326,6 +419,8 @@ def main():
         "telescope_galilean": telescope("telescope_galilean", -0.025, 2.0e-3, samples, out),
         "oap_focus": oap_focus(samples, out),
         "tilted_spherical_mirror": tilted_mirror(samples, out),
+        "beam_axis_setup": beam_axis_setup(samples, out),
+        "beam_axis_double_pass": beam_axis_double_pass(samples, out),
     }
     if args.write:
         SCENES.mkdir(parents=True, exist_ok=True)

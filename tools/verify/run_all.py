@@ -2,13 +2,14 @@
 """Runs every verification check and prints one line per result:
 
   bin/bsdf_test, bin/light_test, bin/camera_test, bin/sampler_test, bin/film_test, bin/aov_test, bin/spectrum_test,
-  bin/pbrt_test, bin/bvh_bench, bin/optic_models_test, bin/optics_test   the CPU tests
+  bin/pbrt_test, bin/bvh_bench, bin/optic_models_test, bin/optics_test,
+  bin/beam_test                                                    the CPU tests
   VKGUIDE_SELFTEST=1 bin/vulkan_guide                              shaders against their C++ mirrors
   furnace_check.py, cornell_check.py, filter_check.py, film_check.py, aov_check.py, spectral_check.py, bsdf_check.py,
   optics_check.py, light_texture_check.py, camera_check.py,        scene-level energy, reference, filter, film, output,
   bidirectional_check.py, laser_check.py,                          spectral, optics, light type, texture, camera,
-  optics_verification.py, detector_check.py                        bidirectional, laser, geometric optics and
-                                                                   detector checks
+  optics_verification.py, detector_check.py,                       bidirectional, laser, geometric optics and
+  beam_axis_check.py                                               detector checks, the beam axes' round trip
   wave_optics.py                                                   the wave reference against its closed forms
   pbrt_compare.py --cornell --integrator bdpt                      bdpt against pbrt-v4's own BDPT (not with --skip-pbrt)
 
@@ -62,6 +63,7 @@ def main():
     ok &= run("bvh_bench", [str(BIN / "bvh_bench"), str(ROOT / "assets/models/structure.glb"), "--rays", "2000"])
     ok &= run("optic_models_test", [str(BIN / "optic_models_test")], cwd=ROOT)
     ok &= run("optics_test", [str(BIN / "optics_test")], cwd=ROOT)
+    ok &= run("beam_test", [str(BIN / "beam_test")], cwd=ROOT)
     if not args.cpu_only:
         env = dict(os.environ, VKGUIDE_WINDOW="background", VKGUIDE_SELFTEST="1")
         ok &= run("GPU self-tests", [str(BIN / "vulkan_guide")], env=env, cwd=BIN)
@@ -84,6 +86,7 @@ def main():
         ok &= run("laser_check", [sys.executable, os.path.join(HERE, "laser_check.py")] + quick, cwd=HERE)
         ok &= run("optics_verification", [sys.executable, os.path.join(HERE, "optics_verification.py")] + quick, cwd=HERE)
         ok &= run("detector_check", [sys.executable, os.path.join(HERE, "detector_check.py")] + quick, cwd=HERE)
+        ok &= run("beam_axis_check", [sys.executable, os.path.join(HERE, "beam_axis_check.py")], cwd=HERE)
         if not args.skip_pbrt:
             ok &= run("pbrt_compare bdpt", [sys.executable, os.path.join(HERE, "pbrt_compare.py"), "--cornell", "--integrator", "bdpt", "--max-depth", "5",
                                             "--size", "128", "--spp", "64" if args.quick else "256", "--max-mean-error", "0.01"], cwd=HERE)

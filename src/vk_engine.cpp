@@ -1978,6 +1978,8 @@ void VulkanEngine::newScene()
 	m_firstPersonCameraId = 0;
 	m_raytraceScene.replaceShapes({});
 	m_raytraceScene.replaceLights({});
+	m_raytraceScene.replaceBeamAxes({});
+	m_raytracer.setGuideAxis(0);
 	//the optics and the sensor stacks before the materials: each removes the slot materials it owns
 	m_raytraceScene.replaceOptics({});
 	m_raytraceScene.replaceSensorStacks({});
@@ -2239,6 +2241,47 @@ SceneDescription VulkanEngine::describeScene()
 		}
 		scene.sensorStacks.push_back(std::move(record));
 	}
+	//the beam axes, naming the optics by their place in scene.optics and the cameras by theirs in scene.cameras. A visit
+	//of an optic the file does not hold (a stack's member) goes as Remove takes it
+	{
+		std::map<uint64_t, uint64_t> opticIndex;
+		for (const SceneOptic& optic : m_raytraceScene.optics()) {
+			if (optic.stack == 0) {
+				opticIndex.emplace(optic.id, opticIndex.size());
+			}
+		}
+		std::map<uint64_t, uint64_t> cameraIndex;
+		for (const SceneCamera& camera : m_raytraceScene.cameras()) {
+			cameraIndex.emplace(camera.id, cameraIndex.size());
+		}
+		for (const BeamAxis& editorAxis : m_raytraceScene.beamAxes()) {
+			if (editorAxis.id == m_raytracer.guideAxisId()) {
+				scene.guideAxis = (int)scene.beamAxes.size();
+			}
+			BeamAxis axis = editorAxis;
+			axis.id = 0;
+			const std::map<uint64_t, uint64_t>& sources = axis.source.kind == BeamSourceKind::Camera ? cameraIndex : opticIndex;
+			if (const auto found = sources.find(axis.source.id); axis.source.kind != BeamSourceKind::None && found != sources.end()) {
+				axis.source.id = found->second;
+			} else {
+				axis.source = {};
+			}
+			std::vector<uint32_t> unsaved;
+			for (const BeamAxisNode& node : axis.nodes) {
+				if (!opticIndex.contains(node.optic)) {
+					unsaved.push_back(node.id);
+				}
+			}
+			for (uint32_t id : unsaved) {
+				removeBeamNode(axis, id);
+			}
+			for (BeamAxisNode& node : axis.nodes) {
+				node.optic = opticIndex.at(node.optic);
+			}
+			renumberBeamNodes(axis);
+			scene.beamAxes.push_back({ std::move(axis) });
+		}
+	}
 	scene.glassCatalogs = m_opticalLibrary.loadedCatalogPaths();
 	scene.userGlasses = m_opticalLibrary.userGlasses();
 	scene.userCoatings = m_opticalLibrary.userCoatings();
@@ -2249,10 +2292,13 @@ SceneDescription VulkanEngine::describeScene()
 	return scene;
 }
 
-IoResult VulkanEngine::openScene(const std::filesystem::path& path)
+IoResult VulkanEngine::openScene(const std::filesystem::path& path, bool* loaded)
 {
 	SceneDescription scene;
 	IoResult parsed = loadSceneFile(path, scene);
+	if (loaded != nullptr) {
+		*loaded = parsed.ok;
+	}
 	if (!parsed.ok) {
 		//the current scene is untouched
 		return parsed;
@@ -2267,6 +2313,7 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 	//the previous scene's lights go too: a file older than lights has only what its models bring.
 	//So do its user materials; each import below brings its model's
 	m_raytraceScene.replaceLights({});
+	m_raytraceScene.replaceBeamAxes({});
 	m_raytraceScene.replaceOptics({});
 	m_raytraceScene.replaceSensorStacks({});
 	m_raytraceScene.replaceMaterials({});
@@ -2507,6 +2554,34 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path)
 		m_viewportNav.settings = ViewportCameraSettings {};
 	}
 	m_raytraceScene.replaceCameras(std::move(scene.cameras));
+	//the beam axes, once the optics and cameras they name have ids. optics() starts with the file's optics in its order;
+	//the stacks' members come after them
+	{
+		std::vector<BeamAxis> axes;
+		for (SceneBeamAxisRecord& record : scene.beamAxes) {
+			BeamAxis axis = std::move(record.axis);
+			const std::vector<SceneOptic>& optics = m_raytraceScene.optics();
+			const std::vector<SceneCamera>& cameras = m_raytraceScene.cameras();
+			if (axis.source.kind == BeamSourceKind::Laser) {
+				axis.source.id = axis.source.id < optics.size() ? optics[axis.source.id].id : 0;
+			} else if (axis.source.kind == BeamSourceKind::Camera) {
+				axis.source.id = axis.source.id < cameras.size() ? cameras[axis.source.id].id : 0;
+			}
+			if (axis.source.kind != BeamSourceKind::None && axis.source.id == 0) {
+				axis.source = {};
+			}
+			for (BeamAxisNode& node : axis.nodes) {
+				node.optic = node.optic < optics.size() ? optics[node.optic].id : 0;
+			}
+			axes.push_back(std::move(axis));
+		}
+		m_raytraceScene.replaceBeamAxes(std::move(axes));
+		const std::vector<BeamAxis>& loaded = m_raytraceScene.beamAxes();
+		m_raytracer.setGuideAxis(scene.guideAxis >= 0 && scene.guideAxis < (int)loaded.size() ? loaded[(size_t)scene.guideAxis].id : 0);
+		for (const std::string& warning : scene.beamAxisWarnings) {
+			problems.push_back(warning);
+		}
+	}
 	//the light groups last of the objects that name one: a light or material in a group the file does not list moves to group 0
 	m_raytraceScene.setLightGroups(scene.lightGroupNames, scene.environmentGroup);
 	m_raytracer.setExportSettings(scene.exportSettings);
@@ -2923,8 +2998,17 @@ bool VulkanEngine::beginBatch()
 	if (pbrt) {
 		newScene();
 	}
-	const IoResult opened = pbrt ? importPbrt(scenePath) : openScene(scenePath);
+	bool loaded = false;
+	const IoResult opened = pbrt ? importPbrt(scenePath) : openScene(scenePath, &loaded);
 	fmt::println("render: {}", opened.message);
+	//--save-scene: the scene as the editor holds it, written back, with no render; a file that opened with problems
+	//saves as the load repaired it
+	if (!m_commandLine.saveScene.empty() && (opened.ok || loaded)) {
+		const IoResult saved = saveScene(m_commandLine.saveScene);
+		fmt::println("render: {}", saved.message);
+		m_exitCode = saved.ok ? 0 : 2;
+		return false;
+	}
 	if (!opened.ok) {
 		m_exitCode = 2;
 		return false;

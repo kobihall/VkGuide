@@ -573,7 +573,9 @@ public:
 	// what is loaded untouched; a partially readable scene reports what it could not load.
 	// newScene() is the Render scene template: one camera, default settings, no capability
 	void newScene();
-	IoResult openScene(const std::filesystem::path& path);
+	// `loaded`, when given, says whether the file replaced the scene: true also when it opened with problems, which the
+	// result then reports as a failure
+	IoResult openScene(const std::filesystem::path& path, bool* loaded = nullptr);
 	IoResult saveScene(const std::filesystem::path& path);
 
 	// the scene's capabilities (scene_capabilities.h). Turning one on with `offerRecommendations` queues its note in

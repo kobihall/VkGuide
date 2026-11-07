@@ -2,7 +2,7 @@
 
 The request ends with what should be buildable, in four stages: a camera lens, a telescope, a microscope, Gaussian beam propagation and an off-axis parabola's focus first; then prisms, chromatic aberration, XUV optics and dichroics once spectral rendering exists; then wave plates, beamsplitters, Brewster windows and crystals once polarization exists; and diffraction and interference once the wave backend exists. This plan turns each into a scene in `assets/scenes/optics/`, a reference it is checked against (closed-form, OpticStudio, Optiland or LightPipes), a tolerance, and a script that runs the check. The unit tests of the other plans (`bin/optics_test`, `bin/beam_test`) check parts; these scenes check the system, and that the beam solver and the path tracer agree with each other and with the references.
 
-*Partly implemented. Five geometric scenes (`gaussian_train`, `telescope_kepler`, `telescope_galilean`, `oap_focus`, `tilted_spherical_mirror`) were built with [physoptics-laser-sources.md](completed/physoptics-laser-sources.md) on 2026-11-02, checked on white screens against ABCD, and moved to probe planes and a beam profiler with [physoptics-detectors.md](completed/physoptics-detectors.md) on 2026-11-04; "Results so far" below has their numbers. Each scene depends on the plans its row names; the geometric section needs milestones 1 to 4 of the [laser optics plan](physoptics-laser-optics.md), the spectral section milestone 5, the polarization section milestone 6. Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Partly implemented. Five geometric scenes (`gaussian_train`, `telescope_kepler`, `telescope_galilean`, `oap_focus`, `tilted_spherical_mirror`) were built with [physoptics-laser-sources.md](completed/physoptics-laser-sources.md) on 2026-11-02, checked on white screens against ABCD, and moved to probe planes and a beam profiler with [physoptics-detectors.md](completed/physoptics-detectors.md) on 2026-11-04; "Results so far" below has their numbers. On 2026-11-07 each got a beam axis along its beam ([physoptics-beam-axis.md](physoptics-beam-axis.md)), and two scenes of the beam axis plan joined them, `beam_axis_setup` and `beam_axis_double_pass`. Each scene depends on the plans its row names; the geometric section needs milestones 1 to 4 of the [laser optics plan](physoptics-laser-optics.md), the spectral section milestone 5, the polarization section milestone 6. Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## How a scene is checked
 
@@ -22,8 +22,10 @@ The request ends with what should be buildable, in four stages: a camera lens, a
 | `gaussian_train.gltf` | a laser, two turning mirrors, a 100 mm lens, a probe plane scanned through the focus | waist radius and position, Rayleigh range, M² from second moments at 21 planes | closed-form ABCD; LightPipes' Fresnel propagation | 1 % in radii, 0.5 mm in position |
 | `tilted_spherical_mirror.gltf` | a concave mirror at 10°, 20° and 45° incidence focusing a collimated beam | the separation of the tangential and sagittal foci | `R cos θ / 2` and `R / (2 cos θ)`; OpticStudio's skew Gaussian beam | 1e-3 relative |
 | `oap_focus.gltf` | a collimated 2 mm beam on a 90° off-axis parabola, then misaligned by 0.1° and 0.5° | focal spot radii on a beam profiler; the solver's waist; the growth of the spot with misalignment | `w₀' = λ f / (π w)` aligned; OpticStudio's or Optiland's spot diagram and Gaussian analyses when misaligned | 1 % aligned; 5 % in spot growth |
+| `beam_axis_setup.gltf` | the beam axis plan's setup: the HNL050LB, two turning mirrors, an open iris, an f = 100 mm lens, a plate beamsplitter and a power meter on each arm | the two arms' powers now; with the solver, every visit **Hit**, the lens **Missed** after one adjuster revolution of the second mirror, the iris **Clipped** when closed to 0.6 mm | the arms' sum against the laser's power less the losses; the miss geometry | 0.85 of the laser's power; 1 µm in the miss distance |
+| `beam_axis_double_pass.gltf` | a cat's eye: the HNL050LB on the axis of a 2 in f = 100 mm lens, a 1/2 in mirror at its focus turned 4.3°, and a pickoff turning the return onto a power meter | the returned power now; with the solver, both visits of the lens solved | the laser's power less the losses | 0.85 of the laser's power |
 
-Every geometric scene also checks that its beam axis is all **Hit** at its nominal alignment, and that nudging a named optic produces the status change the scene's notes predict.
+Every geometric scene also checks that its beam axis is all **Hit** at its nominal alignment, and that nudging a named optic produces the status change the scene's notes predict. The axes exist since 2026-11-07, each ending where the scene's sensor stack begins, since an axis does not visit a stack's members; the statuses wait for the solver. `tools/verify/beam_axis_check.py` checks that each scene's axes survive the editor's round trip.
 
 ### Results so far
 
@@ -34,9 +36,11 @@ Every geometric scene also checks that its beam axis is all **Hit** at its nomin
 - `oap_focus`: the waist 20.45 µm (λ f / (π w) = 20.43 µm, ABCD 20.45 µm) and its focus 101.683 mm from the datum (101.683 mm). Turned 0.1° and 0.5°, the spot at the nominal focus is 1.002 and 1.08 times the aligned waist (x) and moves 0.355 and 1.775 mm: recorded, not checked, until OpticStudio's or Optiland's numbers exist. On screens on 2026-11-02 the same spots read 1.02 and 1.24 times the waist. The field and its 256 pixels are the same; the measure is not. The screens took the whole image's moments at pixel centers, and the detectors take ISO 11146's iterative area with Sheppard's correction. At 0.5° the field's pixels are 21 µm, as wide as the waist, which pixel-center moments widen most. A finer field would settle it.
 - `tilted_spherical_mirror`: every focus within 0.01 mm of ABCD; the foci 3.067, 12.467 and 70.801 mm apart at 10°, 20° and 45° (`R / (2 cos θ) − R cos θ / 2` = 3.062, 12.449 and 70.711 mm). At 45° the tangential waist is 16.0 µm against ABCD's 14.2 µm: the sphere's other aberrations, which ABCD leaves out.
 
+- `beam_axis_setup`, on 2026-11-07: the reflected arm 2.076 mW and the transmitted arm 2.547 mW of the laser's 5 mW, 0.925 of its power, the rest the two mirrors' and the splitter's losses. `beam_axis_double_pass`: the focus 94.159 mm past the lens with a 49.9 µm waist, the return 15.11 mm off the axis, and 4.647 mW on the meter, 0.929 of the laser's power. These powers say the authored order is the beam's, until the solver's statuses say it per visit.
+
 The screen results of 2026-11-02 agreed with these to within their noise, apart from the misaligned parabola's spots. These checks found that catalog glasses were divided by the air's index twice ([physoptics-optical-materials.md](completed/physoptics-optical-materials.md)): before the fix the Gaussian train's focus was 0.11 mm long and the telescopes 0.3 % to 0.5 % wide.
 
-Still to do for these scenes: the beam axis's **Hit** status, the solver's analytic readout beside the light tracing ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)), the 20-seed noise estimate (detector_check.py makes it for a power split), LightPipes' Fresnel propagation for `gaussian_train` (or `tools/verify/wave_optics.py`, which already propagates the laser's beam), and Optiland or OpticStudio for the misaligned parabola. `camera_35mm` and `microscope` wait for the realistic camera and the prescription import.
+Still to do for these scenes: the beam axes' **Hit** statuses and nudges, the solver's analytic readout beside the light tracing ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)), the 20-seed noise estimate (detector_check.py makes it for a power split), LightPipes' Fresnel propagation for `gaussian_train` (or `tools/verify/wave_optics.py`, which already propagates the laser's beam), and Optiland or OpticStudio for the misaligned parabola. `camera_35mm` and `microscope` wait for the realistic camera and the prescription import.
 
 ## Spectral goals
 
@@ -71,8 +75,8 @@ Their references no longer need LightPipes alone: `tools/verify/wave_optics.py` 
 
 ## Registry, bindings and data
 
-- `assets/scenes/tests/optics_verification/*.gltf`, each with a short notes file of its expected values.
-- `tools/verify_optics.py`; the results tables, filled in this file when the scenes run.
+- `assets/scenes/tests/optics_verification/*.gltf`, each with its expected values in `<name>.expected.json`.
+- `tools/verify/optics_verification.py`, which renders, checks and (with `--write`) writes them; the results, filled in this file when the scenes run.
 
 ## Verification
 
@@ -80,7 +84,7 @@ This plan's own check is that it catches a planted error: changing N-BK7's first
 
 ## Order of work
 
-1. `gaussian_train`, `tilted_spherical_mirror` and `oap_focus`, which need only the solver and detectors.
+1. `gaussian_train`, `tilted_spherical_mirror` and `oap_focus`, which need only the solver and detectors; `beam_axis_setup` and `beam_axis_double_pass`, whose statuses need the solver.
 2. The two telescopes and the microscope.
 3. `camera_35mm`, once the realistic camera exists.
 4. The spectral scenes, after milestone 5.

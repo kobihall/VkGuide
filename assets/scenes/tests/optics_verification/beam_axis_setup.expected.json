@@ -1,0 +1,30 @@
+{
+  "power": {
+    "PM_R": 0.002075770611554617,
+    "PM_T": 0.002546704485818433
+  },
+  "statuses": "Hit for every visit",
+  "nudges": [
+    {
+      "optic": "M2",
+      "adjuster": "one revolution",
+      "expect": {
+        "L1": "Missed"
+      },
+      "notes": "the miss distance is twice the tilt times the distance to the lens, less its aperture's radius, to 1 um"
+    },
+    {
+      "optic": "I1",
+      "opening": 0.0006,
+      "expect": {
+        "I1": "Clipped",
+        "L1": "Hit",
+        "BS1": "Hit",
+        "PM_R": "Hit",
+        "PM_T": "Hit"
+      },
+      "notes": "the clipped fraction the solver computes for the beam's radius at the iris"
+    }
+  ],
+  "notes": "the beam axis plan's setup; statuses wait for the beam solver, the meters' powers are this render's (light tracing)"
+}

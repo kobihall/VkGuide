@@ -610,11 +610,28 @@ inline const char* surroundingGlassName(SurroundingMedium medium)
 	return medium == SurroundingMedium::Vacuum ? "VACUUM" : "AIR";
 }
 
-// the optics a render reads: the surrounding medium, and whether coatings are evaluated per hit (crt_tmm.glsl) rather
-// than looked up in their tables
+// How a render uses a beam axis (docs/plans/physoptics-guided-tracing.md): Full ignores it; Seeded uses it only to find
+// hits sooner, with the same result; Guided also biases each reflect-or-refract choice toward it and reweights; Sequential
+// traces its optics alone. Which axis is the renderer's (RaytraceRenderer::guideAxisId()). Nothing reads these until
+// guided tracing is built: every render traces fully
+enum class BeamTraceMode : uint8_t {
+	Full,
+	Seeded,
+	Guided,
+	Sequential
+};
+// the scene file's names and the panel's, by BeamTraceMode
+inline constexpr const char* BEAM_TRACE_MODE_KEYS[] = { "full", "seeded", "guided", "sequential" };
+inline constexpr const char* BEAM_TRACE_MODE_LABELS[] = { "Full", "Seeded", "Guided", "Sequential" };
+
+// the optics a render reads: the surrounding medium, whether coatings are evaluated per hit (crt_tmm.glsl) rather
+// than looked up in their tables, and how the guide axis is used
 struct OpticsSettings {
 	SurroundingMedium surrounding { SurroundingMedium::Air };
 	bool exactCoatings { false };
+	BeamTraceMode traceMode { BeamTraceMode::Full };
+	// the guided mode's bias toward the axis, 0 to 1
+	float guideStrength { 0.8f };
 	bool operator==(const OpticsSettings&) const = default;
 };
 

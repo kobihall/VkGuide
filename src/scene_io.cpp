@@ -142,7 +142,15 @@ namespace {
 //   "optical_center", "second_principal_plane" or "back_vertex"), which says where along its axis that origin is. A lens
 //   without "originAt" is from an older file: its position was the body frame's, and it opens with its origin, which was
 //   the middle between its vertices, kept where it was and now its optical center. Every other kind is as before
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 31;
+//32: adds "beamAxes" (src/beam_axis.h): each a "name", a "source" ({"laser": i} an index into "optics", {"camera": i}
+//   one into "cameras", absent for none), the beam solver's "ghostThreshold" and its "nodes". A node is the "optic" it visits, an index into "optics"; its "parent", the index
+//   of another node, absent for the first visit and "dangling" for a node a Remove cut loose; the "port" of the
+//   parent's optic it hangs off, by the name its kind gives it ("Reflected"); and "review", written when true. The
+//   load drops a node whose optic is gone, as Remove does, and cuts loose one whose port or parent is, with a warning.
+//   "guideAxis", an index into "beamAxes", is the axis renders trace along, absent for none, and "render" "optics" gains
+//   "traceMode" ("seeded", "guided", "sequential"; absent for full) and "guideStrength" with it. An older file has no
+//   beam axes
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 32;
 
 //---------------------------------------------------------------- writing
 
@@ -514,6 +522,43 @@ std::string sensorStacksJson(const SceneDescription& scene)
 	return json + "]";
 }
 
+//version 32: the beam axes, every reference an index into the file's lists
+std::string beamAxesJson(const SceneDescription& scene)
+{
+	if (scene.beamAxes.empty()) {
+		return {};
+	}
+	std::string json = R"(,"beamAxes":[)";
+	for (size_t i = 0; i < scene.beamAxes.size(); i++) {
+		const BeamAxis& axis = scene.beamAxes[i].axis;
+		std::string source;
+		if (axis.source.kind == BeamSourceKind::Laser) {
+			source = fmt::format(R"(,"source":{{"laser":{}}})", axis.source.id);
+		} else if (axis.source.kind == BeamSourceKind::Camera) {
+			source = fmt::format(R"(,"source":{{"camera":{}}})", axis.source.id);
+		}
+		std::string nodes;
+		for (size_t n = 0; n < axis.nodes.size(); n++) {
+			const BeamAxisNode& node = axis.nodes[n];
+			std::string place;
+			if (node.parent == BEAM_DANGLING_NODE || (node.parent != BEAM_SOURCE_NODE && node.parent >= axis.nodes.size())) {
+				place = R"(,"parent":"dangling")";
+			} else if (node.parent != BEAM_SOURCE_NODE) {
+				const OpticKind parentKind = scene.optics[axis.nodes[node.parent].optic].optic.kind;
+				place = fmt::format(R"(,"parent":{},"port":{})", node.parent, jsonString(opticPortName(parentKind, node.port)));
+			}
+			nodes += fmt::format(R"({}{{"optic":{}{}{}}})", n > 0 ? "," : "", node.optic, place, node.review ? R"(,"review":true)" : "");
+		}
+		json += fmt::format(R"({}{{"name":{}{},"ghostThreshold":{},"nodes":[{}]}})", i > 0 ? "," : "", jsonString(axis.name), source,
+			jsonNumber(axis.ghostThreshold), nodes);
+	}
+	json += "]";
+	if (scene.guideAxis >= 0 && scene.guideAxis < (int)scene.beamAxes.size()) {
+		json += fmt::format(R"(,"guideAxis":{})", scene.guideAxis);
+	}
+	return json;
+}
+
 std::string sceneJson(const SceneDescription& scene, const std::filesystem::path& sceneDirectory)
 {
 	std::string json = fmt::format(R"({{"version":{},"models":[)", SCENE_FILE_FORMAT_VERSION);
@@ -608,7 +653,10 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	//version 21: the optics settings, still inside "render", only when they differ from the defaults
 	if (r.optics != OpticsSettings {}) {
 		json.pop_back();
-		json += fmt::format(R"(,"optics":{{"surrounding":"{}","exactCoatings":{}}}}})", r.optics.surrounding == SurroundingMedium::Vacuum ? "vacuum" : "air", r.optics.exactCoatings);
+		//version 32: how renders trace along the guide axis, when not fully
+		const std::string trace = r.optics.traceMode == BeamTraceMode::Full ? std::string()
+			: fmt::format(R"(,"traceMode":"{}","guideStrength":{})", BEAM_TRACE_MODE_KEYS[(size_t)r.optics.traceMode], jsonNumber(r.optics.guideStrength));
+		json += fmt::format(R"(,"optics":{{"surrounding":"{}","exactCoatings":{}{}}}}})", r.optics.surrounding == SurroundingMedium::Vacuum ? "vacuum" : "air", r.optics.exactCoatings, trace);
 	}
 	//version 27: the bidirectional integrators' settings, still inside "render", only when they differ from the defaults
 	if (r.bidirectional != BidirectionalSettings {}) {
@@ -788,6 +836,7 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	json += opticalLibraryJson(scene, sceneDirectory);
 	json += opticsJson(scene);
 	json += sensorStacksJson(scene);
+	json += beamAxesJson(scene);
 	//version 23: the bench
 	json += benchJson(scene);
 
@@ -1270,6 +1319,19 @@ void readOpticsSettings(JsonElement element, OpticsSettings& out)
 		out.surrounding = surrounding == "vacuum" ? SurroundingMedium::Vacuum : SurroundingMedium::Air;
 	}
 	readOptionalBool(object["exactCoatings"], out.exactCoatings);
+	//version 32: how renders trace along the guide axis
+	std::string_view mode;
+	if (object["traceMode"].get_string().get(mode) == simdjson::SUCCESS) {
+		for (size_t i = 0; i < std::size(BEAM_TRACE_MODE_KEYS); i++) {
+			if (mode == BEAM_TRACE_MODE_KEYS[i]) {
+				out.traceMode = (BeamTraceMode)i;
+			}
+		}
+	}
+	double strength = out.guideStrength;
+	if (object["guideStrength"].get_double().get(strength) == simdjson::SUCCESS) {
+		out.guideStrength = (float)std::clamp(strength, 0.0, 1.0);
+	}
 }
 
 void readRenderSettings(JsonElement element, RenderSettings& out)
@@ -2157,6 +2219,120 @@ bool readObjectMaterial(JsonElement element, int64_t version, const std::string&
 	return true;
 }
 
+//version 32: one beam axis. `loadedOptic` maps the file's optic indices to the loaded ones (-1 for a skipped optic), and
+//the axis comes back naming the loaded ones. Nodes are numbered by their place in the file, which their parents name
+bool readBeamAxis(simdjson::dom::object object, const SceneDescription& scene, const std::vector<int64_t>& loadedOptic, BeamAxis& axis, std::vector<std::string>& warnings)
+{
+	axis.name = readOptionalString(object["name"]);
+	const auto opticOf = [&](int64_t fileIndex) -> int64_t { return fileIndex >= 0 && fileIndex < (int64_t)loadedOptic.size() ? loadedOptic[(size_t)fileIndex] : -1; };
+
+	simdjson::dom::object source;
+	if (object["source"].get_object().get(source) == simdjson::SUCCESS) {
+		int64_t index = -1;
+		if (source["laser"].get_int64().get(index) == simdjson::SUCCESS) {
+			const int64_t optic = opticOf(index);
+			if (optic >= 0 && scene.optics[(size_t)optic].optic.kind == OpticKind::Laser) {
+				axis.source = { BeamSourceKind::Laser, (uint64_t)optic };
+			} else {
+				warnings.push_back(fmt::format("beam axis \"{}\": its source, optic {}, is not a laser; the axis has no source", axis.name, index));
+			}
+		} else if (source["camera"].get_int64().get(index) == simdjson::SUCCESS) {
+			if (index >= 0 && index < (int64_t)scene.cameras.size()) {
+				axis.source = { BeamSourceKind::Camera, (uint64_t)index };
+			} else {
+				warnings.push_back(fmt::format("beam axis \"{}\": its source, camera {}, does not exist; the axis has no source", axis.name, index));
+			}
+		}
+	}
+	double value = axis.ghostThreshold;
+	readOptionalDouble(object["ghostThreshold"], value);
+	axis.ghostThreshold = (float)std::clamp(value, 0.0, 1.0);
+
+	simdjson::dom::array nodes;
+	if (object["nodes"].get_array().get(nodes) != simdjson::SUCCESS) {
+		return true;
+	}
+	//first every node as the file has it, then the places resolved, so a parent may come after its child
+	std::vector<std::string> ports;
+	std::vector<uint32_t> gone;
+	for (simdjson::dom::element entry : nodes) {
+		simdjson::dom::object nodeObject;
+		BeamAxisNode node;
+		node.id = (uint32_t)axis.nodes.size();
+		std::string port;
+		if (entry.get_object().get(nodeObject) == simdjson::SUCCESS) {
+			int64_t index = -1;
+			if (nodeObject["optic"].get_int64().get(index) != simdjson::SUCCESS) {
+				index = -1;
+			}
+			const int64_t optic = opticOf(index);
+			if (optic >= 0) {
+				node.optic = (uint64_t)optic;
+			} else {
+				warnings.push_back(fmt::format("beam axis \"{}\": node {} visits optic {}, which is gone; it is removed", axis.name, node.id, index));
+				gone.push_back(node.id);
+			}
+			std::string_view text;
+			int64_t parent = -1;
+			if (nodeObject["parent"].get_string().get(text) == simdjson::SUCCESS) {
+				node.parent = BEAM_DANGLING_NODE;
+			} else if (nodeObject["parent"].get_int64().get(parent) == simdjson::SUCCESS) {
+				node.parent = parent >= 0 && parent < (int64_t)nodes.size() && parent != (int64_t)node.id ? (uint32_t)parent : BEAM_DANGLING_NODE;
+			}
+			port = readOptionalString(nodeObject["port"]);
+			if (nodeObject["review"].get_bool().get(node.review) != simdjson::SUCCESS) {
+				node.review = false;
+			}
+		} else {
+			warnings.push_back(fmt::format("beam axis \"{}\": node {} is not an object; it is removed", axis.name, node.id));
+			gone.push_back(node.id);
+		}
+		axis.nodes.push_back(node);
+		ports.push_back(std::move(port));
+	}
+
+	//a node whose port its parent's optic does not have, whose place another took, or which a cycle never connects to
+	//the source dangles
+	const auto cutLoose = [&](BeamAxisNode& node, const char* why) {
+		warnings.push_back(fmt::format("beam axis \"{}\": node {} {}; it dangles", axis.name, node.id, why));
+		node.parent = BEAM_DANGLING_NODE;
+		node.port = NO_PORT;
+		node.review = true;
+	};
+	for (BeamAxisNode& node : axis.nodes) {
+		//under a gone node, the port is moot: the removal below moves the node up or cuts it loose
+		if (node.parent == BEAM_SOURCE_NODE || node.parent == BEAM_DANGLING_NODE || std::find(gone.begin(), gone.end(), node.parent) != gone.end()) {
+			continue;
+		}
+		const OpticKind parentKind = scene.optics[(size_t)axis.nodes[node.parent].optic].optic.kind;
+		if (const std::optional<OpticPortId> port = findOpticPort(parentKind, ports[node.id])) {
+			node.port = *port;
+		} else {
+			cutLoose(node, fmt::format("hangs off port \"{}\", which a {} does not have", ports[node.id], opticTraits(parentKind).name).c_str());
+		}
+	}
+	for (BeamAxisNode& node : axis.nodes) {
+		if (node.parent == BEAM_DANGLING_NODE || std::find(gone.begin(), gone.end(), node.parent) != gone.end()) {
+			continue;
+		}
+		const BeamAxisNode* occupant = beamNodeAt(axis, node.parent, node.port);
+		if (occupant != nullptr && occupant->id != node.id) {
+			cutLoose(node, "hangs where another node does");
+		}
+	}
+	for (BeamAxisNode& node : axis.nodes) {
+		if (!beamNodeDangling(axis, node.id) && !beamNodeBelow(axis, node.id, BEAM_SOURCE_NODE)) {
+			cutLoose(node, "is part of a cycle");
+		}
+	}
+	//a gone optic's node goes as Remove takes it, its children moving up, and the rest are numbered by their places again
+	for (uint32_t id : gone) {
+		removeBeamNode(axis, id);
+	}
+	renumberBeamNodes(axis);
+	return true;
+}
+
 struct ParseContext {
 	std::filesystem::path sceneDirectory;
 	SceneDescription scene;
@@ -2559,13 +2735,18 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 		}
 	}
 	simdjson::dom::array optics;
+	//each of the file's optics' index in ctx.scene.optics, -1 for one the load skipped: what a beam axis names
+	std::vector<int64_t> loadedOptic;
 	if (root["optics"].get_array().get(optics) == simdjson::SUCCESS) {
 		size_t opticIndex = 0;
 		for (simdjson::dom::element entry : optics) {
 			simdjson::dom::object opticObject;
 			SceneOpticRecord record;
 			if (entry.get_object().get(opticObject) == simdjson::SUCCESS && readOptic(opticObject, opticIndex, record, ctx.scene.kernelWarnings)) {
+				loadedOptic.push_back((int64_t)ctx.scene.optics.size());
 				ctx.scene.optics.push_back(std::move(record));
+			} else {
+				loadedOptic.push_back(-1);
 			}
 			opticIndex++;
 		}
@@ -2616,6 +2797,22 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			}
 			ctx.scene.sensorStacks.push_back(std::move(record));
 			stackIndex++;
+		}
+	}
+	//version 32: the beam axes, after the cameras and the optics they name
+	simdjson::dom::array beamAxes;
+	if (root["beamAxes"].get_array().get(beamAxes) == simdjson::SUCCESS) {
+		for (simdjson::dom::element entry : beamAxes) {
+			simdjson::dom::object axisObject;
+			SceneBeamAxisRecord record;
+			if (entry.get_object().get(axisObject) == simdjson::SUCCESS
+				&& readBeamAxis(axisObject, ctx.scene, loadedOptic, record.axis, ctx.scene.beamAxisWarnings)) {
+				ctx.scene.beamAxes.push_back(std::move(record));
+			}
+		}
+		int64_t guide = -1;
+		if (root["guideAxis"].get_int64().get(guide) == simdjson::SUCCESS && guide >= 0 && guide < (int64_t)ctx.scene.beamAxes.size()) {
+			ctx.scene.guideAxis = (int)guide;
 		}
 	}
 

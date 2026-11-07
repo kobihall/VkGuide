@@ -15,16 +15,24 @@
 				0
 			],
 			"extras":{
-				"version":7,
+				"version":32,
 				"models":[
 					{
 						"path":"../models/Sponza/Sponza.gltf"
 					}
 				],
-				"environmentIntensity":1.0,
+				"environmentMap":"../environment_maps/nowhere_road_4k.hdr",
+				"environmentIntensity":4.0,
+				"environmentRotation":-53.1,
+				"backgroundMode":"environment",
+				"background":[
+					0.0,
+					0.0,
+					0.0
+				],
 				"render":{
-					"width":640,
-					"height":360,
+					"width":960,
+					"height":540,
 					"matchViewport":false,
 					"antialiasing":true,
 					"maxSamples":64,
@@ -35,7 +43,124 @@
 					"samplesPerFrame":1,
 					"russianRoulette":true,
 					"minBouncesBeforeRoulette":3,
-					"restartOnChange":true
+					"restartOnChange":true,
+					"errorBoundedOffsets":true,
+					"watertightTriangles":true,
+					"samplerRandomization":"owen",
+					"textureStorage":"legacy",
+					"maxTextureSize":4096,
+					"textureFilter":"trilinear",
+					"pixelFilter":{
+						"kind":"box",
+						"radius":0.5,
+						"sigma":0.5,
+						"b":0.33333334,
+						"c":0.33333334,
+						"tau":3.0
+					},
+					"clampSamples":false,
+					"clampValue":10.0,
+					"outlierKappa":4.0,
+					"aov":{
+						"outputs":[
+							
+						],
+						"captureThroughSpecular":false
+					},
+					"lightGroups":false,
+					"spectral":{
+						"representation":"rgb",
+						"lanes":4,
+						"range":[
+							360.0,
+							830.0
+						],
+						"wavelength":587.6,
+						"designWavelength":587.6,
+						"bandBasis":"box",
+						"gaussians":[
+							[
+								616.0,
+								39.0
+							],
+							[
+								536.0,
+								46.0
+							],
+							[
+								449.0,
+								38.0
+							]
+						],
+						"sampling":"visible",
+						"emittersShare":0.5,
+						"colorSpace":"srgb",
+						"images":0,
+						"matching":"cie1931"
+					}
+				},
+				"spectralDisplay":{
+					"mode":"grayscale",
+					"colormap":"viridis",
+					"logarithmic":false,
+					"decades":4.0,
+					"infrared":[
+						0.55,
+						0.0,
+						0.0
+					],
+					"ultraviolet":[
+						0.45,
+						0.0,
+						0.75
+					],
+					"xuv":[
+						0.2,
+						0.6,
+						1.0
+					]
+				},
+				"lightGroupNames":[
+					"Default"
+				],
+				"environmentGroup":0,
+				"export":{
+					"half":false,
+					"saveWhenFinished":false,
+					"path":""
+				},
+				"integrator":"path",
+				"traversal":"bvh_binary",
+				"kernels":{
+					"00":"thin_lens",
+					"01":"pcg_hash",
+					"02":"closest",
+					"03":"background",
+					"04":"direct",
+					"05":"none",
+					"06":"mis_power",
+					"07":"none",
+					"08":"occlusion",
+					"09":"running_mean",
+					"11":"emit",
+					"12":"camera",
+					"13":"importance",
+					"14":"splat",
+					"15":"recursive_mis",
+					"16":"light_vertex_cache",
+					"17":"random_walk",
+					"18":"connect_bdpt",
+					"26":"deposit"
+				},
+				"accel":{
+					"builder":"spatial splits (SBVH)",
+					"maxLeafSize":4,
+					"binCount":32,
+					"traversalCost":1.0,
+					"intersectionCost":1.0,
+					"spatialAlpha":1e-05,
+					"spatialBudget":0.3,
+					"maxDepth":48
 				},
 				"renderCamera":0,
 				"cameras":[
@@ -55,9 +180,56 @@
 						"fov":70.0,
 						"aperture":0.0,
 						"focusDistance":6.0,
-						"exposure":1.0
+						"exposure":3.442,
+						"kind":"perspective",
+						"lensMapping":"polar",
+						"apertureShape":"circle",
+						"apertureBlades":6,
+						"apertureRotation":0.0,
+						"tilt":[
+							0.0,
+							0.0
+						],
+						"shift":[
+							0.0,
+							0.0
+						]
 					}
 				],
+				"lights":[
+					
+				],
+				"textures":[
+					
+				],
+				"materials":[
+					
+				],
+				"materialOverrides":[
+					
+				],
+				"viewport":{
+					"position":[
+						-0.64479643,
+						0.3532008,
+						0.35709745
+					],
+					"orientation":[
+						-0.14683755,
+						-0.6395862,
+						-0.12624216,
+						0.7439295
+					],
+					"pivot":[
+						-0.03535534,
+						0.1,
+						0.26464465
+					],
+					"speed":5.0,
+					"fov":70.0,
+					"near":0.1,
+					"far":10000.0
+				},
 				"geometry":[
 					
 				],
@@ -85,15 +257,7 @@
 							1.0
 						],
 						"visible":true,
-						"shading":"gltf",
-						"material":{
-							"type":"lambertian",
-							"albedo":[
-								0.7,
-								0.7,
-								0.7
-							]
-						}
+						"shading":"gltf"
 					}
 				]
 			},
