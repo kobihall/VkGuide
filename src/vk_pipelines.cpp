@@ -71,6 +71,8 @@ void PipelineBuilder::clear()
 
 	m_vertexBindings.clear();
 	m_vertexAttributes.clear();
+	m_colorAttachmentFormats.clear();
+	m_colorBlendAttachments.clear();
 }
 
 VkPipeline PipelineBuilder::buildPipeline(VkDevice device)
@@ -92,8 +94,8 @@ VkPipeline PipelineBuilder::buildPipeline(VkDevice device)
 
 	colorBlending.logicOpEnable = VK_FALSE;
 	colorBlending.logicOp = VK_LOGIC_OP_COPY;
-	colorBlending.attachmentCount = 1;
-	colorBlending.pAttachments = &m_colorBlendAttachment;
+	colorBlending.attachmentCount = m_colorBlendAttachments.empty() ? 1 : (uint32_t)m_colorBlendAttachments.size();
+	colorBlending.pAttachments = m_colorBlendAttachments.empty() ? &m_colorBlendAttachment : m_colorBlendAttachments.data();
 
 	// no vertex input unless setVertexInput() gave some
 	VkPipelineVertexInputStateCreateInfo m_vertexInputInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
@@ -235,6 +237,14 @@ void PipelineBuilder::setColorAttachmentFormat(VkFormat format)
 	// connect the format to the renderInfo	 structure
 	m_renderInfo.colorAttachmentCount = 1;
 	m_renderInfo.pColorAttachmentFormats = &m_colorAttachmentformat;
+}
+
+void PipelineBuilder::setColorAttachments(std::span<const VkFormat> formats, std::span<const VkPipelineColorBlendAttachmentState> blends)
+{
+	m_colorAttachmentFormats.assign(formats.begin(), formats.end());
+	m_colorBlendAttachments.assign(blends.begin(), blends.end());
+	m_renderInfo.colorAttachmentCount = (uint32_t)m_colorAttachmentFormats.size();
+	m_renderInfo.pColorAttachmentFormats = m_colorAttachmentFormats.data();
 }
 
 void PipelineBuilder::setDepthFormat(VkFormat format)

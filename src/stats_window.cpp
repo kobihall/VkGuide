@@ -304,6 +304,41 @@ void drawRasterSection(VulkanEngine* engine)
 	ImGui::EndTable();
 }
 
+// the Gaussian beam solver (docs/plans/completed/physoptics-gaussian-beam-solver.md): its time per frame against the 2 ms a drag
+// may spend, and what it traced
+void drawBeamSolverSection(VulkanEngine* engine)
+{
+	const FrameHistory& history = engine->m_frameHistory;
+	const FrameSample* latest = history.latest();
+	if (latest == nullptr || !ImGui::BeginTable("##beams", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+		return;
+	}
+	ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.35f);
+	ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.3f);
+	ImGui::TableSetupColumn("history", ImGuiTableColumnFlags_WidthStretch, 0.35f);
+	const BeamSolver& solver = engine->m_raytraceScene.beamSolver();
+	ImGui::TableNextRow();
+	ImGui::TableNextColumn();
+	ImGui::TextUnformatted("Solve");
+	ImGui::SetItemTooltip("Re-tracing what an edit changed, and reading every beam axis; budget 2 ms while dragging");
+	ImGui::TableNextColumn();
+	ImGui::Text("%.3f ms", latest->beamSolveMs);
+	ImGui::TableNextColumn();
+	sparkline("##beamSolve", history, &FrameSample::beamSolveMs, ImPlot::GetColormapColor(2));
+
+	size_t segments = 0;
+	for (const BeamTree& tree : solver.solution().trees) {
+		segments += tree.segments.size();
+	}
+	ImGui::TableNextRow();
+	ImGui::TableNextColumn();
+	ImGui::TextUnformatted("Segments");
+	ImGui::SetItemTooltip("In every beam, ghosts included; the last solve re-traced the second number");
+	ImGui::TableNextColumn();
+	ImGui::Text("%zu (%zu traced)", segments, solver.lastTraced());
+	ImGui::EndTable();
+}
+
 void drawMemorySection(VulkanEngine* engine)
 {
 	char a[32];
@@ -385,6 +420,9 @@ void drawStatsWindow(VulkanEngine* engine, bool* open)
 	}
 	if (ImGui::CollapsingHeader("Raster preview", ImGuiTreeNodeFlags_DefaultOpen)) {
 		drawRasterSection(engine);
+	}
+	if (!engine->m_raytraceScene.beamSolver().solution().trees.empty() && ImGui::CollapsingHeader("Beam solver", ImGuiTreeNodeFlags_DefaultOpen)) {
+		drawBeamSolverSection(engine);
 	}
 	engine->m_raytracer.drawStats(engine, engine->m_raytraceScene);
 	if (ImGui::CollapsingHeader("GPU memory")) {

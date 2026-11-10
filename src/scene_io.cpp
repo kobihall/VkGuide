@@ -150,7 +150,14 @@ namespace {
 //   "guideAxis", an index into "beamAxes", is the axis renders trace along, absent for none, and "render" "optics" gains
 //   "traceMode" ("seeded", "guided", "sequential"; absent for full) and "guideStrength" with it. An older file has no
 //   beam axes
-constexpr int64_t SCENE_FILE_FORMAT_VERSION = 32;
+//33: "viewport" gains "beamPreview", how the beam solver's beams are drawn (src/beam_preview.h), each key written when it
+//   is not the default: "display" ("spots", "off"; absent for the full beam), "radius" (1 for w; absent for 1.5 w, and a file from before 1.5 w was the default that left it out reads as 1.5 w),
+//   "waistRegion" ("confocal"; absent for z_R), "brightnessDecades" (absent for 4), "ghosts" (absent for off), and the
+//   annotations "waistLabels", "distances" and "missMarkers". An older file draws a new scene's
+//34: a beam axis writes "ghostThreshold" only when it sets its own, and without one follows the scene's, "beamPreview"'s
+//   "ghostThreshold" (absent for 1e-4). In an older file, where every axis has one, an axis at the default 1e-4 follows
+//   the scene's
+constexpr int64_t SCENE_FILE_FORMAT_VERSION = 34;
 
 //---------------------------------------------------------------- writing
 
@@ -549,8 +556,9 @@ std::string beamAxesJson(const SceneDescription& scene)
 			}
 			nodes += fmt::format(R"({}{{"optic":{}{}{}}})", n > 0 ? "," : "", node.optic, place, node.review ? R"(,"review":true)" : "");
 		}
-		json += fmt::format(R"({}{{"name":{}{},"ghostThreshold":{},"nodes":[{}]}})", i > 0 ? "," : "", jsonString(axis.name), source,
-			jsonNumber(axis.ghostThreshold), nodes);
+		//version 34: only an axis's own threshold
+		const std::string threshold = axis.ghostThreshold ? fmt::format(R"(,"ghostThreshold":{})", jsonNumber(*axis.ghostThreshold)) : std::string();
+		json += fmt::format(R"({}{{"name":{}{}{},"nodes":[{}]}})", i > 0 ? "," : "", jsonString(axis.name), source, threshold, nodes);
 	}
 	json += "]";
 	if (scene.guideAxis >= 0 && scene.guideAxis < (int)scene.beamAxes.size()) {
@@ -824,9 +832,36 @@ std::string sceneJson(const SceneDescription& scene, const std::filesystem::path
 	//version 22: the viewport's free camera
 	if (scene.viewport) {
 		const SceneViewportRecord& viewport = *scene.viewport;
-		json += fmt::format(R"(,"viewport":{{"position":{},"orientation":{},"pivot":{},"speed":{},"fov":{},"near":{},"far":{}}})", jsonVec3(viewport.position),
+		//version 33: the beam preview's settings, those that are not the default
+		const BeamPreviewSettings& preview = viewport.beamPreview;
+		const BeamPreviewSettings defaults;
+		std::string beams;
+		const auto add = [&](const std::string& entry) { beams += (beams.empty() ? "" : ",") + entry; };
+		if (preview.display != defaults.display) {
+			add(fmt::format(R"("display":"{}")", preview.display == BeamDisplay::SpotsOnly ? "spots" : "off"));
+		}
+		if (preview.radiusScale != defaults.radiusScale) {
+			add(fmt::format(R"("radius":{})", jsonNumber(preview.radiusScale)));
+		}
+		if (preview.waistRegion != defaults.waistRegion) {
+			add(R"("waistRegion":"confocal")");
+		}
+		if (preview.brightnessDecades != defaults.brightnessDecades) {
+			add(fmt::format(R"("brightnessDecades":{})", jsonNumber(preview.brightnessDecades)));
+		}
+		//version 34: the scene's ghost threshold
+		if (preview.ghostThreshold != defaults.ghostThreshold) {
+			add(fmt::format(R"("ghostThreshold":{})", jsonNumber(preview.ghostThreshold)));
+		}
+		for (const auto& [key, value, standard] : { std::tuple { "ghosts", preview.ghosts, defaults.ghosts }, std::tuple { "waistLabels", preview.waistLabels, defaults.waistLabels },
+				 std::tuple { "distances", preview.distances, defaults.distances }, std::tuple { "missMarkers", preview.missMarkers, defaults.missMarkers } }) {
+			if (value != standard) {
+				add(fmt::format(R"("{}":{})", key, value));
+			}
+		}
+		json += fmt::format(R"(,"viewport":{{"position":{},"orientation":{},"pivot":{},"speed":{},"fov":{},"near":{},"far":{}{}}})", jsonVec3(viewport.position),
 			jsonQuat(viewport.orientation), jsonVec3(viewport.pivot), jsonNumber(viewport.settings.speed), jsonNumber(viewport.settings.vfovDegrees),
-			jsonNumber(viewport.settings.nearClip), jsonNumber(viewport.settings.farClip));
+			jsonNumber(viewport.settings.nearClip), jsonNumber(viewport.settings.farClip), beams.empty() ? std::string() : fmt::format(R"(,"beamPreview":{{{}}})", beams));
 	}
 
 	//version 21: the length unit, the optical library and the optical elements
@@ -2221,7 +2256,7 @@ bool readObjectMaterial(JsonElement element, int64_t version, const std::string&
 
 //version 32: one beam axis. `loadedOptic` maps the file's optic indices to the loaded ones (-1 for a skipped optic), and
 //the axis comes back naming the loaded ones. Nodes are numbered by their place in the file, which their parents name
-bool readBeamAxis(simdjson::dom::object object, const SceneDescription& scene, const std::vector<int64_t>& loadedOptic, BeamAxis& axis, std::vector<std::string>& warnings)
+bool readBeamAxis(simdjson::dom::object object, int64_t version, const SceneDescription& scene, const std::vector<int64_t>& loadedOptic, BeamAxis& axis, std::vector<std::string>& warnings)
 {
 	axis.name = readOptionalString(object["name"]);
 	const auto opticOf = [&](int64_t fileIndex) -> int64_t { return fileIndex >= 0 && fileIndex < (int64_t)loadedOptic.size() ? loadedOptic[(size_t)fileIndex] : -1; };
@@ -2244,9 +2279,13 @@ bool readBeamAxis(simdjson::dom::object object, const SceneDescription& scene, c
 			}
 		}
 	}
-	double value = axis.ghostThreshold;
+	//version 34: absent follows the scene's threshold. Before it every axis saved one, and the default meant it was never set
+	double value = -1.0;
 	readOptionalDouble(object["ghostThreshold"], value);
-	axis.ghostThreshold = (float)std::clamp(value, 0.0, 1.0);
+	axis.ghostThreshold.reset();
+	if (value >= 0.0 && (version >= 34 || (float)value != DEFAULT_GHOST_THRESHOLD)) {
+		axis.ghostThreshold = (float)std::min(value, 1.0);
+	}
 
 	simdjson::dom::array nodes;
 	if (object["nodes"].get_array().get(nodes) != simdjson::SUCCESS) {
@@ -2678,6 +2717,24 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			readOptionalFloat(viewportObject["near"], settings.nearClip);
 			readOptionalFloat(viewportObject["far"], settings.farClip);
 			settings = settings.clamped();
+			//version 33: the beam preview's settings
+			simdjson::dom::object beams;
+			if (viewportObject["beamPreview"].get_object().get(beams) == simdjson::SUCCESS) {
+				BeamPreviewSettings& preview = viewport.beamPreview;
+				const std::string display = readOptionalString(beams["display"]);
+				preview.display = display == "spots" ? BeamDisplay::SpotsOnly : display == "off" ? BeamDisplay::Off : BeamDisplay::FullBeam;
+				readOptionalFloat(beams["radius"], preview.radiusScale);
+				preview.radiusScale = preview.radiusScale > 1.25f ? 1.5f : 1.f;
+				preview.waistRegion = readOptionalString(beams["waistRegion"]) == "confocal" ? BeamWaistRegion::Confocal : BeamWaistRegion::RayleighRange;
+				readOptionalFloat(beams["brightnessDecades"], preview.brightnessDecades);
+				preview.brightnessDecades = std::clamp(preview.brightnessDecades, 1.f, 10.f);
+				readOptionalFloat(beams["ghostThreshold"], preview.ghostThreshold);
+				preview.ghostThreshold = std::clamp(preview.ghostThreshold, 0.f, 1.f);
+				readOptionalBool(beams["ghosts"], preview.ghosts);
+				readOptionalBool(beams["waistLabels"], preview.waistLabels);
+				readOptionalBool(beams["distances"], preview.distances);
+				readOptionalBool(beams["missMarkers"], preview.missMarkers);
+			}
 			ctx.scene.viewport = viewport;
 		}
 	}
@@ -2806,7 +2863,7 @@ void parseSceneExtras(simdjson::dom::object* extras, std::size_t objectIndex, fa
 			simdjson::dom::object axisObject;
 			SceneBeamAxisRecord record;
 			if (entry.get_object().get(axisObject) == simdjson::SUCCESS
-				&& readBeamAxis(axisObject, ctx.scene, loadedOptic, record.axis, ctx.scene.beamAxisWarnings)) {
+				&& readBeamAxis(axisObject, version, ctx.scene, loadedOptic, record.axis, ctx.scene.beamAxisWarnings)) {
 				ctx.scene.beamAxes.push_back(std::move(record));
 			}
 		}

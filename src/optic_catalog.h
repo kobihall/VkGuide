@@ -137,6 +137,7 @@ struct MaterialSlot {
 struct PortEvent {
 	uint32_t surface;
 	bool reflect;
+	bool operator==(const PortEvent&) const = default;
 };
 // a named output beam (physoptics-beam-axis.md), defined by the sequence that produces it for a ray entering along
 // the kind's design axis
@@ -227,6 +228,9 @@ std::string opticString(const SceneOptic& optic, std::string_view name);
 OpticValue opticValue(const SceneOptic& optic, std::string_view name);
 // sets a value, clamped to the parameter's range; returns whether it changed
 bool setOpticValue(SceneOptic& optic, std::string_view name, OpticValue value);
+// the index of a cube beamsplitter's diagonal in its body's surfaces
+inline constexpr uint32_t CUBE_DIAGONAL_SURFACE = 8;
+
 // a spherical lens's "originAt" for a form: the optical center (bi-convex, bi-concave) or the back vertex (plano)
 int lensDefaultOrigin(int form);
 // switches to a size preset (and its values) or to custom (-1, keeping the values)

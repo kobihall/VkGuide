@@ -65,7 +65,7 @@ stays well conditioned as `c → 0`, where it becomes the plane `z = 0` without 
 
 The even asphere starts from the conic's root and refines it with Newton's method on `z − sag(ρ) = 0`, four iterations at most, which converges to a float's precision for every asphere in Thorlabs' and Edmund's catalogs.
 
-The surface normal is the normalized gradient of the implicit function, and `rt_optics` also returns the two principal curvatures and their directions at a hit, which the beam solver's differential ray transfer needs ([physoptics-gaussian-beam-solver.md](../physoptics-gaussian-beam-solver.md)). For a conic both have closed forms.
+The surface normal is the normalized gradient of the implicit function, and `rt_optics` also returns the two principal curvatures and their directions at a hit, which the beam solver's differential ray transfer needs ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)). For a conic both have closed forms.
 
 ### Apertures
 
@@ -120,7 +120,7 @@ Every traversal declares binding 55, through `traversalBindings()` in `src/rt_ke
 
 ### Precision
 
-A float carries about 7 digits. At 0.3 m from the origin its spacing is 30 nm, which locates a surface well enough for intensity transport. The solver, which differentiates rays and accumulates path lengths over meters of beam line, uses `double` on the CPU. The future wave backend needs optical path length to a fraction of a wavelength over a whole setup, which float cannot hold; the solver's double-precision path lengths per segment are kept for it ([physoptics-gaussian-beam-solver.md](../physoptics-gaussian-beam-solver.md)).
+A float carries about 7 digits. At 0.3 m from the origin its spacing is 30 nm, which locates a surface well enough for intensity transport. The solver, which differentiates rays and accumulates path lengths over meters of beam line, uses `double` on the CPU. The future wave backend needs optical path length to a fraction of a wavelength over a whole setup, which float cannot hold; the solver's double-precision path lengths per segment are kept for it ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)).
 
 [pbrt-robust-intersections.md](pbrt-robust-intersections.md) gains the optic surfaces in its error-bound table: a conic hit is reprojected onto its surface along the normal and bounded like a quadric, a plane's error is zero along its normal.
 

@@ -202,10 +202,11 @@ void detectorOverlay(const SceneOptic& optic, const ViewportView& view)
 
 // Each laser's housing as an outline, the placeholder model's box behind its output, and an arrow along its beam in
 // the color of its wavelength (docs/plans/completed/physoptics-laser-sources.md): lines over the preview, which neither
-// the raster pass nor the tracer sees. The tracer has the output aperture alone
+// the raster pass nor the tracer sees. The tracer has the output aperture alone. One picture of the beams at a time: the
+// solved beam's preview, else the beam axes' arrows, else these output arrows
 void opticalBenchOverlays(VulkanEngine* engine, const ViewportView& view)
 {
-	// the beam axes' authored order, under the optics' own outlines
+	// the beam axes' arrows (while the beam preview is off) and the misses, under the optics' own outlines
 	engine->m_raytraceScene.drawBeamAxisOverlays(view);
 	// a sensor stack's axis, the rail its sensors slide along, from its start to its end; each member draws its own outline
 	for (const SensorStack& stack : engine->m_raytraceScene.sensorStacks()) {
@@ -235,6 +236,11 @@ void opticalBenchOverlays(VulkanEngine* engine, const ViewportView& view)
 				}
 			}
 		}
+		// the output arrow only while nothing else shows the beam: no preview of the solved beam (Optics -> Beam Preview) and
+		// no beam axis, whose arrows start at the laser
+		if (engine->m_raytraceScene.beamPreview().display != BeamDisplay::Off || !engine->m_raytraceScene.beamAxes().empty()) {
+			continue;
+		}
 		const LaserBeam beam = laserBeam(optic);
 		const glm::dvec3 color = glm::clamp(beam.rgb / std::max({ beam.rgb.r, beam.rgb.g, beam.rgb.b, 1e-6 }), 0.0, 1.0);
 		const ImU32 arrow = IM_COL32((int)(255 * color.r), (int)(255 * color.g), (int)(255 * color.b), 255);
@@ -254,11 +260,11 @@ void opticalBenchRasterGeometry(VulkanEngine* engine)
 }
 
 // Optics: a wider Scene panel for the bench's object tree, the viewport and the render (a detector's film and readings when
-// it is the target) in the middle, the stats and settings on the right. The Beam window docks below the viewport when its
-// plan adds it
+// it is the target) in the middle, the Beam window below them, the stats and settings on the right
 void buildOpticsLayout(uint32_t dockspace, std::vector<std::string>& open)
 {
-	const DockColumns columns = splitDockColumns(dockspace, 0.26f, 0.22f, 0.62f, 0.45f);
+	DockColumns columns = splitDockColumns(dockspace, 0.26f, 0.22f, 0.62f, 0.45f);
+	dockWindow("Beam", splitDockBelow(columns.center, 0.3f));
 	dockWindow("Scene", columns.leftTop);
 	dockWindow("Materials", columns.leftBottom);
 	dockWindow("Scene Capabilities", columns.leftBottom);

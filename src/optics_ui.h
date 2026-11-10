@@ -20,6 +20,11 @@ bool drawCoatingCombo(const char* label, std::string& key);
 // a glass by name, from every catalog; with `allowDefault` an empty name ("the kind's default") is offered too
 bool drawGlassCombo(const char* label, std::string& name, bool allowDefault);
 
+// A positive float on a log scale, in one field: dragging moves it by whole powers of ten, from 10^minDecade to
+// 10^maxDecade, and a double-click turns the field into a text box for any number in that range. Returns whether the
+// value changed
+bool dragPowersOfTen(const char* label, float& value, int minDecade, int maxDecade);
+
 // the surrounding medium as the library's glass name
 const char* surroundingGlass(SurroundingMedium medium);
 

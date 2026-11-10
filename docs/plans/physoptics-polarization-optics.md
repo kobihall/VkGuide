@@ -2,14 +2,14 @@
 
 Polarization is how a laser lab controls power. A half-wave plate in a rotation mount ahead of a polarizing beamsplitter divides a beam between two arms in any ratio; a quarter-wave plate makes it circular; a window at Brewster's angle passes one polarization without loss; a calcite displacer splits it into two parallel beams. The request lists these as its polarization goals, with birefringent crystals. [pbrt-polarization.md](pbrt-polarization.md) carries Stokes vectors and Mueller matrices through the path tracer and adds polarizer and retarder materials. This plan builds the optical elements on top: wave plates, polarizers and Brewster windows as catalog kinds, polarizing coatings put to work, the rotation mount driving each element's axis, uniaxial crystals that split rays into ordinary and extraordinary with walk-off, and the same physics in the beam solver.
 
-*Not implemented. Depends on [pbrt-polarization.md](pbrt-polarization.md), [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) (complex coating amplitudes), [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md) (rotation mounts) and [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) (the chief ray's Jones vector). Part of the [laser optics plan](physoptics-laser-optics.md).*
+*Not implemented. Depends on [pbrt-polarization.md](pbrt-polarization.md), [physoptics-optical-materials.md](completed/physoptics-optical-materials.md) (complex coating amplitudes), [physoptics-optical-elements.md](completed/physoptics-optical-elements.md), [physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md) (rotation mounts) and [physoptics-gaussian-beam-solver.md](completed/physoptics-gaussian-beam-solver.md) (built 2026-11-07 without polarization; this plan adds its Jones vectors). Part of the [laser optics plan](physoptics-laser-optics.md).*
 
 ## What the renderer will have
 
 - [pbrt-polarization.md](pbrt-polarization.md): a polarized lane family whose throughput is, per lane, an adjoint Stokes row for camera paths; Mueller matrices for exact Fresnel, rough microfacets, depolarizers, an ideal `linear_polarizer` and a `retarder`; a polarizing filter on the camera.
 - [physoptics-optical-materials.md](completed/physoptics-optical-materials.md): coatings that return complex `rₛ, rₚ, tₛ, tₚ`, and the optical interface material, which averages s and p while the polarized family is off.
 - [physoptics-laser-sources.md](completed/physoptics-laser-sources.md): lasers, built 2026-11-02 without polarization. Their Stokes vector arrives with [pbrt-polarization.md](pbrt-polarization.md) (its "Lasers" section), before this plan.
-- [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md): a Jones vector on every chief ray, through every coating.
+- [physoptics-gaussian-beam-solver.md](completed/physoptics-gaussian-beam-solver.md), built 2026-11-07: a chief ray per segment with its transverse frame carried by parallel transport (`transportFrame()`, `src/beam_gaussian.h`), and at every polished surface the coating's response from `evaluateCoating()`, whose `rₛ, rₚ, tₛ, tₚ` it reads only as the average of `Rₛ` and `Rₚ`. Its polarization moved here (below, "Polarization in the beam solver").
 
 ## Design
 
@@ -48,6 +48,16 @@ The split's amplitudes are each eigenpolarization's projection of the arriving f
 
 Nothing new is needed for a polarizing beamsplitter beyond the coating tables of [physoptics-optical-materials.md](completed/physoptics-optical-materials.md): with the polarized family on, the interface material builds its Mueller matrix from the table's `rₛ, rₚ` (or `tₛ, tₚ`) and their phases, as [pbrt-polarization.md](pbrt-polarization.md) does for exact Fresnel, and the s and p powers go to their ports. The warning the materials plan shows for polarizing coatings with polarization off stays.
 
+### Polarization in the beam solver
+
+The solver carries no polarization yet: every coating's split is the average of s and p, as the renderer's is. This plan adds it, as the solver plan first described:
+
+- Each segment's start state (`BeamBranchState`, `src/beam_solver.h`) gains a Jones vector in its transverse frame. At each surface the solver rotates it into the plane of incidence (s along `d × N`, p in the plane), multiplies by the coating's complex `rₛ, rₚ` or `tₛ, tₚ` (`evaluateCoating()`), and rotates it back into the outgoing frame, which `transportFrame()` already carries. A branch's power is then `|J|²`, not the averaged reflectance, so a polarizing beamsplitter's two ports carry their real powers.
+- An unpolarized or partially polarized laser is two orthogonal Jones vectors whose powers add, which is exact for the powers. The laser's polarization comes from [pbrt-polarization.md](pbrt-polarization.md)'s "Lasers" section; until a laser has one, it is unpolarized.
+- The wave plates, polarizers and crystals above act on the Jones vector as their Jones matrices; a thick crystal's ordinary and extraordinary rays are two branches, as a splitter's two ports are, and the ports **Ordinary** and **Extraordinary** match them.
+- The vector is part of the start state, so selective updating re-traces it with the rest and needs no change.
+- The Beam window's probe shows the polarization ellipse (azimuth and ellipticity) and the degree of polarization where its readout now says it waits for polarization, and **Copy as CSV** gains the Jones vector's columns.
+
 ### Measuring polarization
 
 - A detector option, **Polarimeter**, makes a film store all four Stokes components per pixel per channel, and its window shows `s₀`, the degree of polarization, the azimuth and the ellipticity as images ([physoptics-detectors.md](completed/physoptics-detectors.md)).
@@ -71,6 +81,12 @@ Nothing new is needed for a polarizing beamsplitter beyond the coating tables of
 - A calcite displacer cut at 45° to its axis separates the ordinary and extraordinary beams by `L tan ρ`, with `ρ` the walk-off angle, to 1 µm, with orthogonal polarizations, in the solver and on a beam profiler.
 - A thin crystal between crossed polarizers under a broadband source shows the interference colors that its retardance predicts, in a spectral render, against Michel-Lévy's chart.
 
+Moved from the solver plan, for `bin/beam_test`:
+
+- The solver's Brewster window transmits p-polarized light with no loss at either face, to 1e-12.
+- The solver's polarizing cube splits a 45-degree linear input 50/50 by power, and its two ports carry s and p.
+- The solver's power budget still adds up to the laser's to 1e-12, every branch's power now `|J|²`.
+
 ## Order of work
 
 1. Forward Stokes vectors on light paths, and polarimeter detectors.
@@ -78,6 +94,7 @@ Nothing new is needed for a polarizing beamsplitter beyond the coating tables of
 3. The polarizing cube, and the half-wave-plate power divider.
 4. Brewster windows and **Set to Brewster**.
 5. Uniaxial media in the thick model: splitting, walk-off, the ports, the displacer test.
+6. The beam solver's Jones vectors (above), with its own Brewster and polarizing-cube checks in `bin/beam_test`. They need nothing but the coatings' complex amplitudes, so they can come first.
 
 ## Waiting for the wave backend
 

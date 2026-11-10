@@ -82,6 +82,8 @@ struct BeamAxisNode {
 };
 
 inline constexpr float DEFAULT_GHOST_THRESHOLD = 1e-4f;
+// the smallest threshold the panels offer is 10 to this
+inline constexpr int GHOST_THRESHOLD_MIN_DECADE = -12;
 
 struct BeamAxis {
 	// shares the editor's id space with the optics; never saved
@@ -91,8 +93,9 @@ struct BeamAxis {
 	// in the order they were added; the tree is the parent links. At most one node hangs off each port of each node,
 	// and at most one off the source. Dangling nodes are roots of their own, any number of them
 	std::vector<BeamAxisNode> nodes;
-	// the beam solver's power floor for a branch, relative to the source's power
-	float ghostThreshold { DEFAULT_GHOST_THRESHOLD };
+	// the axis's own power floor for the beam solver's branches, relative to the source's power; none follows the scene's
+	// (BeamPreviewSettings::ghostThreshold)
+	std::optional<float> ghostThreshold;
 	bool operator==(const BeamAxis&) const = default;
 };
 
@@ -152,7 +155,7 @@ enum class BeamNodeStatus : uint8_t {
 	Clipped,
 	// it passes the optic
 	Missed,
-	// it hits another object first
+	// it hits another optic first
 	Blocked,
 	// the parent's port carries less than the axis's ghost threshold
 	BelowThreshold,
@@ -168,10 +171,17 @@ struct BeamNodeReport {
 	// the power reaching the node, watts, and the fraction of the parent's port power lost before it (Clipped)
 	double power { 0.0 };
 	double lostFraction { 0.0 };
-	// what took the power or blocked the beam: an optic's or a blocker's name and part
+	// the optic the beam hit first instead (Blocked), by name. The solver sees optics only: a mount in the way is the
+	// path tracer's to show
 	std::string blocker;
 	// Missed: the distance from the aperture's edge (m) and the world direction from the beam toward the aperture's
 	// center, perpendicular to the beam
 	double missDistance { 0.0 };
 	glm::dvec3 steer { 0.0 };
+	// the segment of the solver's tree (BeamSolution::treeOf()) that leaves the parent's port toward the node: where it
+	// starts, and where it reached the node or ended; 0xffffffff when the parent sent no beam that way
+	uint32_t segment { 0xffffffffu };
+	glm::dvec3 from { 0.0 };
+	glm::dvec3 to { 0.0 };
+	bool operator==(const BeamNodeReport&) const = default;
 };

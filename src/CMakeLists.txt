@@ -186,11 +186,18 @@ endif()
 # element traits and builders and their preview meshes, and the bench (docs/plans/completed/physoptics-bench-and-mounts.md): the
 # breadboard, the stack of fork, holder, post and mount under every optic by the mount models' mates, and the kinematic
 # mounts' adjusters, what a laser element's parameters make of its beam (docs/plans/completed/physoptics-laser-sources.md), and
-# the detectors' films and the measurements made from them (docs/plans/completed/physoptics-detectors.md).
-# Checked by tests/optics_test.cpp; the CPU traversal in rt_bvh intersects optics through it
+# the detectors' films and the measurements made from them (docs/plans/completed/physoptics-detectors.md), the beam axes,
+# and the Gaussian beam solver and its preview's sections (docs/plans/completed/physoptics-gaussian-beam-solver.md).
+# Checked by tests/optics_test.cpp and tests/beam_test.cpp; the CPU traversal in rt_bvh intersects optics through it
 add_library(rt_optics STATIC
     beam_axis.cpp
     beam_axis.h
+    beam_gaussian.cpp
+    beam_gaussian.h
+    beam_preview.cpp
+    beam_preview.h
+    beam_solver.cpp
+    beam_solver.h
     optic_bench.cpp
     optic_bench.h
     optic_catalog.cpp
@@ -258,6 +265,7 @@ add_executable(vulkan_guide
     rt_scene_editor.cpp
     rt_scene_editor.h
     rt_scene_editor_beam_axes.cpp
+    rt_scene_editor_beam_window.cpp
     rt_scene_editor_optics.cpp
     length_unit.cpp
     length_unit.h

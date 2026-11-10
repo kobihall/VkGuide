@@ -113,6 +113,14 @@ DockColumns splitDockColumns(uint32_t dockspace, float leftWidth, float rightWid
 	return columns;
 }
 
+uint32_t splitDockBelow(uint32_t& node, float fraction)
+{
+	ImGuiID top = node;
+	const ImGuiID bottom = ImGui::DockBuilderSplitNode(node, ImGuiDir_Down, fraction, nullptr, &top);
+	node = top;
+	return bottom;
+}
+
 void dockWindow(const char* name, uint32_t node)
 {
 	ImGui::DockBuilderDockWindow(name, node);

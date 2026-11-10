@@ -1,0 +1,25 @@
+#version 460
+
+//the beam preview's weighted blended transparency (shaders/optics/beam_preview.frag) over the draw image: the weighted average
+//color covers what is there by one minus the revealage
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout(rgba16f, set = 0, binding = 0) uniform image2D image;
+layout(rgba16f, set = 0, binding = 1) uniform readonly image2D accum;
+layout(rgba16f, set = 0, binding = 2) uniform readonly image2D reveal;
+
+void main()
+{
+	const ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(texel, imageSize(image)))) {
+		return;
+	}
+	const float revealage = imageLoad(reveal, texel).r;
+	if (revealage >= 1.0) {
+		return;
+	}
+	const vec4 sum = imageLoad(accum, texel);
+	const vec3 average = sum.rgb / max(sum.a, 1e-5);
+	const vec4 under = imageLoad(image, texel);
+	imageStore(image, texel, vec4(mix(average, under.rgb, revealage), under.a));
+}

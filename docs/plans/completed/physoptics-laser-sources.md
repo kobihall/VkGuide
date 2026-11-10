@@ -55,7 +55,7 @@ Sampling starts at the waist and carries each ray straight to the housing's aper
 
 ### Polarization
 
-Not built: the user deferred it on 2026-11-02, and it lands with [pbrt-polarization.md](../pbrt-polarization.md), whose "Lasers" section now holds this design. The laser's Stokes vector is `P (1, p cos 2ψ cos 2χ, p sin 2ψ cos 2χ, p sin 2χ)` for azimuth ψ, ellipticity χ and degree of polarization p, in the frame of its x axis. [pbrt-polarization.md](../pbrt-polarization.md) carries it forward along light paths in the polarized family; in other families it is reduced to its intensity. The beam solver carries the fully polarized part as a Jones vector on the chief ray ([physoptics-gaussian-beam-solver.md](../physoptics-gaussian-beam-solver.md)). The laser's second light record has room for the Stokes vector.
+Not built: the user deferred it on 2026-11-02, and it lands with [pbrt-polarization.md](../pbrt-polarization.md), whose "Lasers" section now holds this design. The laser's Stokes vector is `P (1, p cos 2ψ cos 2χ, p sin 2ψ cos 2χ, p sin 2χ)` for azimuth ψ, ellipticity χ and degree of polarization p, in the frame of its x axis. [pbrt-polarization.md](../pbrt-polarization.md) carries it forward along light paths in the polarized family; in other families it is reduced to its intensity. The beam solver carries the fully polarized part as a Jones vector on the chief ray ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)). The laser's second light record has room for the Stokes vector.
 
 ### In the beam solver
 

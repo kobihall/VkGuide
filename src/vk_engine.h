@@ -4,6 +4,7 @@
 #pragma once
 
 #include <command_line.h>
+#include <beam_preview.h>
 #include <vk_types.h>
 #include <vk_descriptors.h>
 #include <vk_display.h>
@@ -73,6 +74,11 @@ struct FrameData {
 	// Raster (GPU)); rasterTimed says the last use of the slot wrote them. Null without timestamps on the device
 	VkQueryPool rasterTimestamps { VK_NULL_HANDLE };
 	bool rasterTimed { false };
+	// the beam preview's sections (drawBeamPreview()), host-visible and kept mapped, rewritten when
+	// VulkanEngine::m_beamSectionsRevision moves past beamSectionsRevision
+	AllocatedBuffer beamSections {};
+	size_t beamSectionsCapacity { 0 };
+	uint64_t beamSectionsRevision { 0 };
 };
 
 constexpr unsigned int FRAME_OVERLAP = 2;
@@ -116,6 +122,8 @@ struct RasterKey {
 	bool occlusionCulling { false };
 	// BenchScene::revision(): the breadboard re-meshed, a mount model uploaded
 	uint64_t benchAssets { 0 };
+	// VulkanEngine::m_beamSectionsRevision: the solved beams or the preview's settings changed
+	uint64_t beamSections { 0 };
 
 	bool operator==(const RasterKey&) const = default;
 };
@@ -238,6 +246,8 @@ struct EngineStats {
 	// the raster pass on the GPU, in ms, FRAME_OVERLAP frames late; NaN when that frame drew none or the device has no
 	// timestamps
 	float rasterGpuTime;
+	// the beam solver this frame (RaytraceSceneEditor::solveBeams()), in ms
+	float beamSolveTime;
 };
 
 bool is_visible(const RenderObject& obj, const glm::mat4& viewproj);
@@ -380,6 +390,21 @@ public:
 	uint64_t m_environmentMapsLoaded { 0 };
 	// draws a world-space box with no color or depth writes, for the occlusion queries (shaders/occlusion_box.vert)
 	MaterialPipeline m_occlusionBoxPipeline {};
+	// THE BEAM PREVIEW (docs/plans/completed/physoptics-beam-preview.md): the solved beams as translucent tubes in weighted
+	// blended order-independent transparency, one instanced draw after the raster pass (shaders/optics/beam_preview.vert).
+	// The sections are rebuilt when the solver's revision or the preview's settings move, and m_beamSectionsRevision with them
+	MaterialPipeline m_beamPreviewPipeline {};
+	VkDescriptorSetLayout m_beamPreviewSetLayout { VK_NULL_HANDLE };
+	// the weighted blend's two targets, the draw image's size (createDrawImages()): the weighted color and weight summed,
+	// and the revealage; and the pass that composites them over the draw image (shaders/optics/beam_preview_composite.comp)
+	// when a frame drew beams
+	AllocatedImage m_beamPreviewAccum {};
+	AllocatedImage m_beamPreviewReveal {};
+	ComputePass m_beamPreviewComposite;
+	bool m_beamPreviewDrawn { false };
+	std::vector<BeamSection> m_beamSections;
+	uint64_t m_beamSectionsRevision { 0 };
+	std::pair<uint64_t, uint64_t> m_beamSectionsFor { 0, 0 };
 	// every model's base-colour textures in one array image, for the path tracer's triangles.
 	// Rebuilt alongside the mesh data, so the layers a triangle's material names always exist
 	RaytraceTextureArray m_raytraceTextures;
@@ -675,6 +700,9 @@ private:
 	void initComputePipelines();
 	void initMeshPipeline();
 	void initOcclusionPipeline();
+	void initBeamPreviewPipeline();
+	// the solved beams' sections into the weighted blend's targets, after drawGeometry()'s rendering, against its depth
+	void drawBeamPreview(VkCommandBuffer cmd, VkDescriptorSet globalDescriptor);
 	RasterKey rasterKey() const;
 	void initIMGUI();
 	void initDefaultData();

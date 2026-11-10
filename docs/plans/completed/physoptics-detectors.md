@@ -94,7 +94,7 @@ An alignment card or a screen scatters what reaches it, so the light integrator'
 
 ### Answers (2026-11-04)
 
-- Scope: steps 1 to 3 and 5 of "Order of work". Step 4, the solver's prediction, waits for the beam solver and moves to [physoptics-gaussian-beam-solver.md](../physoptics-gaussian-beam-solver.md). Step 6, **Separate stray light**, waits for guided tracing and moves to [physoptics-guided-tracing.md](../physoptics-guided-tracing.md).
+- Scope: steps 1 to 3 and 5 of "Order of work". Step 4, the solver's prediction, waits for the beam solver and moves to [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md). Step 6, **Separate stray light**, waits for guided tracing and moves to [physoptics-guided-tracing.md](../physoptics-guided-tracing.md).
 - Placement: a detector is placed freely, as a laser is. While the bench snaps, its sensor goes on the nearest hole with its axis along the grid, and the gizmo turns it in quarter turns. The Viewport outlines its housing, and the tracer sees only the sensor.
 - Sizes: the sensor's true size and pitch, with a **binning** parameter that keeps a camera's or a profiler's film at most 512 pixels across by default. The numbers are Thorlabs' pages as read on 2026-11-04 and still wait for the user's confirmation (see "Pending answers").
 - The batch mode writes `detectors.json` and an EXR film per detector (`--detectors <dir>`), ahead of [physoptics-data-export.md](../physoptics-data-export.md).
@@ -164,7 +164,7 @@ After the first build the user asked that detectors not be a system of their own
 
 ## Not built
 
-- The solver's prediction beside each reading (step 4): there is no beam solver yet. It moves to [physoptics-gaussian-beam-solver.md](../physoptics-gaussian-beam-solver.md), whose analytic readouts at detectors are the prediction.
+- The solver's prediction beside each reading (step 4): there is no beam solver yet. It moves to [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md), whose analytic readouts at detectors are the prediction.
 - **Separate stray light** (step 6): there is no beam axis or guided tracing yet. It moves to [physoptics-guided-tracing.md](../physoptics-guided-tracing.md).
 - Detectors under the light vertex cache and pbrt 3's BDPT, and any detector but the render target under the path tracer: only light tracing starts paths at the lasers (see [physoptics-laser-sources.md](physoptics-laser-sources.md)), so only it runs stage 26, and camera paths follow one sensor. A path-traced sensor's readings have no standard error, and its spectral modes give the film's RGB, not watts.
 - Several camera targets in one render (see "Design questions").

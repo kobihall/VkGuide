@@ -63,6 +63,9 @@ std::string commandLineUsage()
 		"  --spectral-images <n>       keep n wavelength buckets per pixel (hero) or the bands, as S0.<nm> EXR channels\n"
 		"  --detectors <dir>           write each detector's reading to <dir>/detectors.json and its film to <dir>/<name>.exr\n"
 		"  --save-scene <file>         open the scene, save it back to <file> and quit without rendering (in place of --out)\n"
+		"  --solve-beams <file>        open the scene, write the beam solver's beams and statuses to <file> as JSON and quit\n"
+		"                              without rendering (in place of --out)\n"
+		"  --follow-beams              with --solve-beams: first run Follow beam from the source of every axis with no visit\n"
 		"  --help                      this text\n"
 		"\n"
 		"exit code: 0 the file was written, 2 the scene or the options were refused, 3 a timeout\n",
@@ -170,6 +173,13 @@ bool parseCommandLine(int argc, char* const* argv, CommandLine& out, std::string
 				return false;
 			}
 			out.saveScene = text;
+		} else if (flag == "--solve-beams") {
+			if (!value(text)) {
+				return false;
+			}
+			out.solveBeams = text;
+		} else if (flag == "--follow-beams") {
+			out.followBeams = true;
 		} else if (flag == "--detectors") {
 			if (!value(text)) {
 				return false;
@@ -272,7 +282,15 @@ bool parseCommandLine(int argc, char* const* argv, CommandLine& out, std::string
 		error = out.batch() ? "--save-scene takes the place of --out" : "--save-scene needs --render";
 		return false;
 	}
-	if (out.saveScene.empty() && out.batch() != !out.output.empty()) {
+	if (!out.solveBeams.empty() && (!out.batch() || !out.output.empty() || !out.saveScene.empty())) {
+		error = !out.batch() ? "--solve-beams needs --render" : "--solve-beams takes the place of --out and --save-scene";
+		return false;
+	}
+	if (out.followBeams && out.solveBeams.empty()) {
+		error = "--follow-beams needs --solve-beams";
+		return false;
+	}
+	if (out.saveScene.empty() && out.solveBeams.empty() && out.batch() != !out.output.empty()) {
 		error = out.batch() ? "--render needs --out" : "--out needs --render";
 		return false;
 	}

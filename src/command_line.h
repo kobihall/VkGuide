@@ -67,6 +67,12 @@ struct CommandLine {
 	// quit without rendering, exit code 0 when the file was written. What the scene file checks compare: a scene that
 	// round-trips unchanged saves the same. Takes the place of --out
 	std::filesystem::path saveScene;
+	// --solve-beams <file>: open the scene, write the beam solver's solution to <file> as JSON (every beam's segments,
+	// readings and power budget, every axis's statuses) and quit without rendering, in place of --out
+	// (docs/plans/completed/physoptics-gaussian-beam-solver.md). --follow-beams first runs Follow beam from the source of every
+	// axis with no visit yet, so the file shows the axis the beam builds
+	std::filesystem::path solveBeams;
+	bool followBeams { false };
 	// --help
 	bool help { false };
 

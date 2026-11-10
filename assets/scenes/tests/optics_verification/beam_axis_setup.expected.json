@@ -1,17 +1,18 @@
 {
   "power": {
-    "PM_R": 0.002075770611554617,
-    "PM_T": 0.002546704485818433
+    "PM_R": 0.002075770650359724,
+    "PM_T": 0.002546704505220987
   },
   "statuses": "Hit for every visit",
   "nudges": [
     {
       "optic": "M2",
-      "adjuster": "one revolution",
+      "adjuster": "five revolutions",
+      "iris": "open",
       "expect": {
         "L1": "Missed"
       },
-      "notes": "the miss distance is twice the tilt times the distance to the lens, less its aperture's radius, to 1 um"
+      "notes": "one revolution turns the beam 16 mrad, 3.2 mm at the lens, which still hits it, and the 5 mm iris takes the beam past 1.6: opened wide, five revolutions miss the lens by the distance the turned beam crosses its plane past its edge, to 1 um (tools/verify/beam_solver_check.py)"
     },
     {
       "optic": "I1",
@@ -26,5 +27,5 @@
       "notes": "the clipped fraction the solver computes for the beam's radius at the iris"
     }
   ],
-  "notes": "the beam axis plan's setup; statuses wait for the beam solver, the meters' powers are this render's (light tracing)"
+  "notes": "the beam axis plan's setup; the statuses are the beam solver's (tools/verify/beam_solver_check.py), the meters' powers this render's (light tracing)"
 }

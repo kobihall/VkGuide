@@ -216,6 +216,58 @@ void setOpticsUiLibrary(OpticalLibrary* library)
 	s_library = library;
 }
 
+// The field drags the power as an integer, so ImGui's own double-click would type the power: it is off, and the field
+// becomes an InputFloat of the value until that loses focus
+bool dragPowersOfTen(const char* label, float& value, int minDecade, int maxDecade)
+{
+	const float lowest = (float)std::pow(10.0, minDecade);
+	const float highest = (float)std::pow(10.0, maxDecade);
+	ImGuiStorage* storage = ImGui::GetStateStorage();
+	ImGui::PushID(label);
+	const ImGuiID typingKey = ImGui::GetID("typing");
+	const ImGuiID draftKey = ImGui::GetID("draft");
+	ImGui::PopID();
+	// 0 dragging, 1 the text box is waiting for focus, 2 it has had focus
+	const int typing = storage->GetInt(typingKey, 0);
+	if (typing != 0) {
+		if (!ImGui::IsAnyItemActive()) {
+			ImGui::SetKeyboardFocusHere();
+		}
+		float draft = storage->GetFloat(draftKey, value);
+		// an id of its own: with the drag's, the box would inherit the drag's active state and never load the value
+		ImGui::PushID("typing");
+		ImGui::InputFloat(label, &draft, 0.f, 0.f, "%.6g", ImGuiInputTextFlags_AutoSelectAll);
+		ImGui::PopID();
+		storage->SetFloat(draftKey, draft);
+		const bool committed = ImGui::IsItemDeactivatedAfterEdit();
+		if (ImGui::IsItemActive()) {
+			storage->SetInt(typingKey, 2);
+		} else if (typing == 2) {
+			storage->SetInt(typingKey, 0);
+		}
+		if (!committed) {
+			return false;
+		}
+		const float entered = std::clamp(draft, lowest, highest);
+		const bool changed = entered != value;
+		value = entered;
+		return changed;
+	}
+	int decade = std::clamp((int)std::lround(std::log10(std::max(value, lowest))), minDecade, maxDecade);
+	const bool power = std::abs(value - (float)std::pow(10.0, decade)) <= 1e-6f * value;
+	const std::string shown = power ? fmt::format("1e{}", decade) : fmt::format("{:.2e}", value);
+	const bool dragged = ImGui::DragInt(label, &decade, 0.05f, minDecade, maxDecade, shown.c_str(), ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput);
+	if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+		storage->SetInt(typingKey, 1);
+		storage->SetFloat(draftKey, value);
+		return false;
+	}
+	if (dragged) {
+		value = (float)std::pow(10.0, decade);
+	}
+	return dragged;
+}
+
 const char* surroundingGlass(SurroundingMedium medium)
 {
 	return surroundingGlassName(medium);
@@ -435,6 +487,7 @@ void drawOpticsMenu(VulkanEngine* engine)
 	if (ImGui::IsItemHovered()) {
 		ImGui::SetTooltip("The breadboard, its size, the beam height new mounts are set to, and snapping to holes");
 	}
+	engine->m_raytraceScene.drawBeamPreviewMenu();
 	ImGui::Separator();
 	if (ImGui::MenuItem("Load Glass Catalog...")) {
 		engine->m_pendingFileAction = VulkanEngine::FileAction::LoadGlassCatalog;

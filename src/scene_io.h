@@ -24,7 +24,7 @@
 // 21 the optical elements, the optical library's catalogs, glasses and coatings, the optics settings and the length unit,
 // 22 the viewport's camera, 23 the bench and each optic's mount, which an older file's optics open without, and 24 the
 // background mode, which an older file implied. Each later version is described where the payload is written
-// (SCENE_FILE_FORMAT_VERSION in scene_io.cpp), up to 32's beam axes.
+// (SCENE_FILE_FORMAT_VERSION in scene_io.cpp), up to 32's beam axes and 33's beam preview.
 //
 // Neither function touches the engine: they are pure file io over plain data, and failures come
 // back as an IoResult rather than aborting, since a bad path is expected input.
@@ -34,6 +34,7 @@
 #include <vector>
 
 #include <beam_axis.h>
+#include <beam_preview.h>
 #include <length_unit.h>
 #include <optic_bench.h>
 #include <optic_catalog.h>
@@ -129,6 +130,8 @@ struct SceneViewportRecord {
 	glm::vec3 position { 0.f, 0.f, 5.f };
 	glm::quat orientation { 1.f, 0.f, 0.f, 0.f };
 	glm::vec3 pivot { 0.f };
+	// version 33: how the solved beams are drawn (src/beam_preview.h); a new scene's in an older file
+	BeamPreviewSettings beamPreview;
 };
 
 // in a template file only (assets/templates/): what File -> New from Template lists it as

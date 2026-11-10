@@ -12,9 +12,9 @@ femtoPro (Brixner et al. 2023; Müller et al. 2025; Brixner et al. 2025) simulat
 
 What this plan keeps:
 
-- The beam as a few rays per segment for interactive work, with Gaussian beam parameters attached, solved on the CPU, and recomputed only downstream of a change ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)).
+- The beam as a few rays per segment for interactive work, with Gaussian beam parameters attached, solved on the CPU, and recomputed only downstream of a change ([physoptics-gaussian-beam-solver.md](completed/physoptics-gaussian-beam-solver.md)).
 - The split between coarse placement and fine adjustment ([physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md)).
-- A beam that is visible as a volume in the viewport, colored by its spectrum ([physoptics-beam-preview.md](physoptics-beam-preview.md)).
+- A beam that is visible as a volume in the viewport, colored by its spectrum ([physoptics-beam-preview.md](completed/physoptics-beam-preview.md)).
 - Detectors that measure rather than display: power meters, cameras, cards ([physoptics-detectors.md](completed/physoptics-detectors.md)).
 
 What it does differently:
@@ -90,8 +90,8 @@ Two consumers read the same optics. The solver traces one chief ray per segment 
 | [physoptics-bench-and-mounts.md](completed/physoptics-bench-and-mounts.md) | The breadboard, posts, post holders and clamps, mount poses, hole snapping, fine adjusters, mounts as traced geometry |
 | [physoptics-laser-sources.md](completed/physoptics-laser-sources.md) | The laser element: Gaussian emission, line spectra, power, polarization, emitted-ray sampling |
 | [physoptics-beam-axis.md](physoptics-beam-axis.md) | The authored graph of elements and ports, its editor, the traced graph beside it |
-| [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) | Chief rays with differential ray transfer, astigmatic beam matrices, clipping, ghosts, selective updating |
-| [physoptics-beam-preview.md](physoptics-beam-preview.md) | Beams in the raster viewport as at most three conical sections per segment |
+| [physoptics-gaussian-beam-solver.md](completed/physoptics-gaussian-beam-solver.md) | Chief rays with differential ray transfer, astigmatic beam matrices, clipping, ghosts, selective updating |
+| [physoptics-beam-preview.md](completed/physoptics-beam-preview.md) | Beams in the raster viewport as at most three conical sections per segment |
 | [physoptics-locked-transforms.md](physoptics-locked-transforms.md) | Moving one degree of freedom while the beam path holds still: carry, re-aim, fixed |
 | [physoptics-guided-tracing.md](physoptics-guided-tracing.md) | The four trace modes in the path tracer, and the per-path beam state |
 | [physoptics-detectors.md](completed/physoptics-detectors.md) | Detector elements, the detector film, the deposit stage, measurement readouts |
@@ -129,9 +129,9 @@ One linear order for every plan, pbrt and physoptics alike. Each item lists its 
 
 15. [pbrt-light-types.md](completed/pbrt-light-types.md). Emitted-ray sampling, which the laser's emission joins.
 16. [physoptics-laser-sources.md](completed/physoptics-laser-sources.md). Implemented 2026-11-02, with light tracing as the only integrator that renders a laser's light, its polarization deferred to item 31, and a wave-optics reference (`tools/verify/wave_optics.py`) that later plans compare the rays with.
-17. [physoptics-beam-axis.md](physoptics-beam-axis.md). Partly implemented 2026-11-07: the axes, with a source you attach (a laser or a camera) and dangling visits, their folder, panel, overlay and scene file. Statuses, Follow beam and picking come with item 18.
-18. [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)
-19. [physoptics-beam-preview.md](physoptics-beam-preview.md)
+17. [physoptics-beam-axis.md](physoptics-beam-axis.md). Partly implemented 2026-11-07: the axes, with a source you attach (a laser or a camera) and dangling visits, their folder, panel, overlay and scene file; with item 18, the statuses and Follow beam. Picking and assemblies remain.
+18. [physoptics-gaussian-beam-solver.md](completed/physoptics-gaussian-beam-solver.md). Implemented 2026-11-07, tracing the optics alone (no blockers), with its polarization moved to item 31.
+19. [physoptics-beam-preview.md](completed/physoptics-beam-preview.md). Implemented 2026-11-07.
 20. [physoptics-locked-transforms.md](physoptics-locked-transforms.md)
 
 ### Milestone 3: light from lasers, measured

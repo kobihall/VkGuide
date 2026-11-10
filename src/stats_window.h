@@ -34,6 +34,8 @@ struct FrameSample {
 	double raytraceGpuMs { 0.0 };
 	double drawCalls { 0.0 };
 	double triangles { 0.0 };
+	// the beam solver this frame, on the CPU: a frame with nothing to re-trace still compares the optics
+	double beamSolveMs { 0.0 };
 };
 
 // the last CAPACITY frames in a ring, which ImPlot reads in place through its offset

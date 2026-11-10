@@ -26,7 +26,7 @@ import vkscene  # noqa: E402
 
 # the narrowest view the scene file keeps: it clamps a camera to 1 degree
 MIN_FOV_DEGREES = 1.0
-SCENE_VERSION = 32
+SCENE_VERSION = 33
 
 
 def unit(v):

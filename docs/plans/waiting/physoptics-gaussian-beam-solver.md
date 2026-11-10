@@ -1,0 +1,7 @@
+# Gaussian beam solver: waiting for the wave backend
+
+These are the parts of [physoptics-gaussian-beam-solver.md](../completed/physoptics-gaussian-beam-solver.md) that need the phases and optical path lengths the wave backend will carry ([the laser optics plan](../physoptics-laser-optics.md), "The wave backend"). The rest of the plan was implemented on 2026-11-07, and its polarization moved to [physoptics-polarization-optics.md](../physoptics-polarization-optics.md).
+
+- Diffraction from clipping: the rings and side lobes a beam develops after a hard aperture, in place of the power loss alone. The solver records each aperture's clipped share (`BeamSegment::endClipped`) and the clipping upstream of every segment (`BeamBranchState::clippedUpstream`), which is where a diffracted beam would start.
+- Interference between segments that overlap on a detector: femtoPro's integrated visibility factor between two Gaussian beams of different radii, positions and directions is a closed form the solver could evaluate from each segment's `Q` (`ComplexRays`), its optical path length (`BeamBranchState::opticalPath`) and, once polarization exists, its Jones vector. Whether this cheap analytic interference belongs in the solver, or waits to be replaced by the wave backend's, is the user's call.
+- Gouy phase and optical path length in readouts that compare arms of an interferometer. The Beam window's probe shows both for one segment (`BeamAxisProfile::gouy()`); comparing two arms needs a readout of its own.

@@ -21,8 +21,8 @@ embedded Gaussian, Siegman 1986). Before detectors existed each plane was a whit
   beam_axis_double_pass     a cat's eye: a lens, a tilted mirror at its focus and a pickoff, the axis visiting the lens
                             twice; the returned power
 
-Each scene has a beam axis along its beam (docs/plans/physoptics-beam-axis.md). Until the beam solver gives each visit
-a status, the last two show the axis is followed by the power their meters read.
+Each scene has a beam axis along its beam (docs/plans/physoptics-beam-axis.md), which tools/verify/beam_solver_check.py
+checks is followed, visit by visit; the last two also show it by the power their meters read.
 
 Every lens is N-BK7, whose index exact RGB reads at the laser's wavelength (the design wavelength follows the scene's one
 laser). The planes a waist is fitted through are a sensor stack (src/optic_detectors.h), evenly spaced and each the
@@ -334,7 +334,7 @@ def beam_axis_setup(samples, out):
     """The beam axis plan's test setup (docs/plans/physoptics-beam-axis.md, Verification), placed by hand: the HNL050LB
     along +z, M1 turning it to +x and M2 back to +z, an open iris, the f = 100 mm lens and a plate beamsplitter 50 mm past
     it, whose reflected arm goes to a power meter along +x and whose transmitted arm to one along +z. Its beam axis visits
-    every one of them. Until the beam solver gives each visit a status, the meters' readings say the axis is followed:
+    every one of them, which the beam solver reads Hit at every visit; the meters' readings say so too:
     the two arms add to the laser's power less the mirrors' and the splitter's losses"""
     print("beam_axis_setup: HNL050LB, two turning mirrors, an iris, a lens, a plate beamsplitter and two power meters")
     origin = np.array([0.0, Y, 0.0])
@@ -364,11 +364,13 @@ def beam_axis_setup(samples, out):
     check(reflected > 0.2 * power and transmitted > 0.2 * power, "both of the splitter's arms reach their meters")
     check(reflected + transmitted > 0.85 * power, f"the arms carry {(reflected + transmitted) / power:.4f} of the laser's power: every visit is in the beam")
     expected = {"power": {"PM_R": reflected, "PM_T": transmitted}, "statuses": "Hit for every visit",
-                "nudges": [{"optic": "M2", "adjuster": "one revolution", "expect": {"L1": "Missed"},
-                            "notes": "the miss distance is twice the tilt times the distance to the lens, less its aperture's radius, to 1 um"},
+                "nudges": [{"optic": "M2", "adjuster": "five revolutions", "iris": "open", "expect": {"L1": "Missed"},
+                            "notes": "one revolution turns the beam 16 mrad, 3.2 mm at the lens, which still hits it, and the 5 mm iris takes the beam "
+                                     "past 1.6: opened wide, five revolutions miss the lens by the distance the turned beam crosses its plane past its "
+                                     "edge, to 1 um (tools/verify/beam_solver_check.py)"},
                            {"optic": "I1", "opening": 0.6e-3, "expect": {"I1": "Clipped", "L1": "Hit", "BS1": "Hit", "PM_R": "Hit", "PM_T": "Hit"},
                             "notes": "the clipped fraction the solver computes for the beam's radius at the iris"}],
-                "notes": "the beam axis plan's setup; statuses wait for the beam solver, the meters' powers are this render's (light tracing)"}
+                "notes": "the beam axis plan's setup; the statuses are the beam solver's (tools/verify/beam_solver_check.py), the meters' powers this render's (light tracing)"}
     return scene, expected
 
 

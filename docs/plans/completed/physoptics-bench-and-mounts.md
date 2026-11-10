@@ -344,7 +344,7 @@ The user's review of the first build, the same day, changed three things:
 
 - Collisions between stacks other than the fork rule: two post holders in neighboring holes overlap, as the design
   question expected.
-- The beam solver's and light tracing's clipping check, which need [physoptics-gaussian-beam-solver.md](../physoptics-gaussian-beam-solver.md)
+- The beam solver's and light tracing's clipping check, which need [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md)
   and [physoptics-detectors.md](physoptics-detectors.md).
 - The mounts' decals in the path tracer, the breadboard's side lettering and its bottom skin's mounting holes.
 - KM100 and KM200 turned 90° on their second tapped hole.

@@ -9,7 +9,8 @@
   optics_check.py, light_texture_check.py, camera_check.py,        scene-level energy, reference, filter, film, output,
   bidirectional_check.py, laser_check.py,                          spectral, optics, light type, texture, camera,
   optics_verification.py, detector_check.py,                       bidirectional, laser, geometric optics and
-  beam_axis_check.py                                               detector checks, the beam axes' round trip
+  beam_axis_check.py, beam_solver_check.py                         detector checks, the beam axes' round trip, the beam
+                                                                   solver on the verification scenes
   wave_optics.py                                                   the wave reference against its closed forms
   pbrt_compare.py --cornell --integrator bdpt                      bdpt against pbrt-v4's own BDPT (not with --skip-pbrt)
 
@@ -87,6 +88,7 @@ def main():
         ok &= run("optics_verification", [sys.executable, os.path.join(HERE, "optics_verification.py")] + quick, cwd=HERE)
         ok &= run("detector_check", [sys.executable, os.path.join(HERE, "detector_check.py")] + quick, cwd=HERE)
         ok &= run("beam_axis_check", [sys.executable, os.path.join(HERE, "beam_axis_check.py")], cwd=HERE)
+        ok &= run("beam_solver_check", [sys.executable, os.path.join(HERE, "beam_solver_check.py")], cwd=HERE)
         if not args.skip_pbrt:
             ok &= run("pbrt_compare bdpt", [sys.executable, os.path.join(HERE, "pbrt_compare.py"), "--cornell", "--integrator", "bdpt", "--max-depth", "5",
                                             "--size", "128", "--spp", "64" if args.quick else "256", "--max-mean-error", "0.01"], cwd=HERE)

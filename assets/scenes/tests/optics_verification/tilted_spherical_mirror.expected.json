@@ -5,14 +5,14 @@
       "tangential": {
         "focus": 0.0985599411037571,
         "waist": 1.982031569373636e-05,
-        "measured_focus": 0.09855867286635674,
-        "measured_waist": 1.9849162576165745e-05
+        "measured_focus": 0.09855867286595617,
+        "measured_waist": 1.9849162573439976e-05
       },
       "sagittal": {
         "focus": 0.10162555154501907,
         "waist": 2.04370600903125e-05,
-        "measured_focus": 0.10162561764492412,
-        "measured_waist": 2.0437617084999443e-05
+        "measured_focus": 0.10162561764486601,
+        "measured_waist": 2.0437617079994983e-05
       }
     },
     {
@@ -20,14 +20,14 @@
       "tangential": {
         "focus": 0.09404294884933546,
         "waist": 1.891162088740608e-05,
-        "measured_focus": 0.09404097403620128,
-        "measured_waist": 1.902982501498951e-05
+        "measured_focus": 0.09404097403617152,
+        "measured_waist": 1.9029825011962775e-05
       },
       "sagittal": {
         "focus": 0.10650658834274715,
         "waist": 2.1419083142794278e-05,
-        "measured_focus": 0.10650736542936548,
-        "measured_waist": 2.1427118778130327e-05
+        "measured_focus": 0.10650736542926056,
+        "measured_waist": 2.1427118778520694e-05
       }
     },
     {
@@ -35,14 +35,14 @@
       "tangential": {
         "focus": 0.07075709347029048,
         "waist": 1.4227837866409252e-05,
-        "measured_focus": 0.07074827413040169,
-        "measured_waist": 1.6056996263917446e-05
+        "measured_focus": 0.070748274130387,
+        "measured_waist": 1.6056996263587747e-05
       },
       "sagittal": {
         "focus": 0.14154990414467156,
         "waist": 2.8471487393839005e-05,
-        "measured_focus": 0.14154945059362303,
-        "measured_waist": 2.8477016857813046e-05
+        "measured_focus": 0.1415494505935698,
+        "measured_waist": 2.84770168576383e-05
       }
     }
   ],

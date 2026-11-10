@@ -52,6 +52,8 @@ struct DockColumns {
 };
 DockColumns splitDockColumns(uint32_t dockspace, float leftWidth, float rightWidth, float leftTopHeight, float rightTopHeight);
 void dockWindow(const char* name, uint32_t node);
+// splits `node`: returns the bottom `fraction` of it, and leaves `node` the top
+uint32_t splitDockBelow(uint32_t& node, float fraction);
 
 // the built-in Render workspace
 const WorkspaceInfo& renderWorkspace();

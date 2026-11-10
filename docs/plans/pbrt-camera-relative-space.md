@@ -54,7 +54,7 @@ Every plan that puts a world-space position in a GPU buffer routes it through `R
 - [pbrt-bidirectional-path-tracing.md](completed/pbrt-bidirectional-path-tracing.md): the light vertex cache holds render-space positions, which is consistent because everything GPU-side shares one origin.
 - [physoptics-data-export.md](physoptics-data-export.md): ray records and detector data leave in world coordinates, so the exporter adds the origin back.
 
-The CPU solver in [physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md) already runs in double and works in world space.
+The CPU solver in [physoptics-gaussian-beam-solver.md](completed/physoptics-gaussian-beam-solver.md) already runs in double and works in world space.
 
 ## Verification
 

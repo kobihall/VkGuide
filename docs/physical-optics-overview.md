@@ -13,7 +13,7 @@ The optics have two consumers, which read the same data:
 - A CPU solver traces one chief ray per beam segment, in double precision, fast enough to run on every gizmo drag. It gives the beam's path and its Gaussian size everywhere.
 - The GPU path tracer traces millions of light paths from the lasers. It gives what detectors and cameras record, and the stray light, ghosts and clipping a single beam misses.
 
-The solver does not exist yet; light tracing does, with lasers to start its paths and detectors to measure where they land. The bench has its place in the scene, its workspace and its template, and the optics themselves: thirteen kinds of element, each an exact surface prescription the path tracer traces, made of catalog glasses and coated with thin-film stacks or metals. Each optic stands in its Thorlabs mount on a post, a post holder and a clamping fork, on a breadboard with holes on a 25 mm grid, and every part of that stack is geometry the preview draws and the tracer hits.
+Both exist: the solver traces every laser's beam through the optics' own surfaces as you edit (it leaves mounts and the breadboard to the path tracer), and light tracing starts paths at the lasers and measures where they land on detectors. The bench has its place in the scene, its workspace and its template, and the optics themselves: thirteen kinds of element, each an exact surface prescription the path tracer traces, made of catalog glasses and coated with thin-film stacks or metals. Each optic stands in its Thorlabs mount on a post, a post holder and a clamping fork, on a breadboard with holes on a 25 mm grid, and every part of that stack is geometry the preview draws and the tracer hits.
 
 ```text
 scene file ──► capabilities ──► which folders, menus, windows, settings and workspace appear
@@ -33,8 +33,11 @@ scene file ──► capabilities ──► which folders, menus, windows, setti
 | [physoptics-bench-and-mounts](plans/completed/physoptics-bench-and-mounts.md) | 2026-10-30 | The breadboard, the stack of fork, holder, post and mount under every optic, placement on the table, the fork's hole, the adjusters' kinematics, and the bench in the preview and the tracer |
 | [physoptics-laser-sources](plans/completed/physoptics-laser-sources.md) | 2026-11-02 | The laser: a Gaussian beam of any M², astigmatic or round, as an element and as a light that light tracing starts paths at; the wave reference, the beam checks, and five of the geometric verification scenes |
 | [physoptics-detectors](plans/completed/physoptics-detectors.md) | 2026-11-04 | Power meters, camera sensors, beam profilers, alignment cards, screens, spectrometers, beam dumps and probe planes as sensors a render targets; light tracing's stage 26, which deposits on them; camera paths from a sensor's pixels; readings with ISO 11146 widths in the Raytraced Output window; the batch mode's readings; the verification checks on detectors |
+| [physoptics-beam-axis](plans/physoptics-beam-axis.md) | 2026-11-07, in part | Beam axes: the order a beam should visit the optics in, from a laser or a camera, as a tree of visits by port, with each visit's status from the solver and **Follow beam**; picking and assemblies remain |
+| [physoptics-gaussian-beam-solver](plans/completed/physoptics-gaussian-beam-solver.md) | 2026-11-07 | Every laser's beam traced through the optics in double, a general astigmatic Gaussian beam per segment from the surfaces' curvatures, coatings' splits, clipping, ghosts, selective updating, the **Beam** window and `--solve-beams`; polarization waits for its own plan |
+| [physoptics-beam-preview](plans/completed/physoptics-beam-preview.md) | 2026-11-07 | The solved beams as translucent tubes in the Viewport, sized by the beam and colored by its wavelength, or their footprints on every surface |
 
-Every other physoptics plan is unbuilt. The laser optics plan's roadmap gives their order: the beam axis and the Gaussian beam solver come next.
+Every other physoptics plan is unbuilt. The laser optics plan's roadmap gives their order: locked transforms come next.
 
 ## 3. Scene capabilities
 
@@ -326,6 +329,14 @@ src/optic_bench.{h,cpp}          rt_optics: the breadboard, the stack, the fork 
 src/bench_scene.{h,cpp}          the breadboard, posts and mounts on the GPU, in the preview and in the tracer
 src/optic_laser.{h,cpp}          rt_optics: a laser's beam from its parameters, the data sheet fit, the housings, the design wavelength
 src/light_sampling.{h,cpp}       rt_light: the laser's emitted rays and densities (LaserEmitter), beside every other light's
+src/beam_axis.{h,cpp}            rt_optics: beam axes, their trees of visits by port, the visits' statuses
+src/beam_gaussian.{h,cpp}        rt_optics: complex rays, the surface ray-transfer matrix, the Gaussian readouts, clipping
+src/beam_solver.{h,cpp}          rt_optics: the Gaussian beam solver, selective updating, statuses, Follow beam
+src/beam_preview.{h,cpp}         rt_optics: the solved beams as tube sections for the raster preview
+src/rt_scene_editor_beam_axes.cpp      the Beam axes folder, an axis's panel and the Viewport's arrows
+src/rt_scene_editor_beam_window.cpp    the Beam window
+shaders/optics/beam_preview.{vert,frag}    the beams' tubes, one instanced draw into weighted blended transparency
+shaders/optics/beam_preview_composite.comp  the beams' blend laid over the Viewport's picture
 shaders/rt/include/crt_laser.glsl           the laser's beam, its rays and radiance, light tracing's pick
 shaders/rt/include/crt_optic.glsl           the intersector and the surface records, mirroring optic_surface.cpp
 shaders/rt/include/crt_coating.glsl         the coating tables and the transfer matrix, mirroring optic_coating.cpp

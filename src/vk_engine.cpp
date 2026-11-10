@@ -225,6 +225,18 @@ void VulkanEngine::draw()
 		//the draw image is linear; the Viewport shows it sRGB-encoded, as the swapchain is UNORM. Only here, after a raster
 		//pass drew it: a paused or skipped frame keeps last frame's encoded picture
 		vkutil::transition_image(cmd, m_drawImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+		//the solved beams drawn by drawGeometry(), composited over the linear picture before it is encoded
+		if (m_beamPreviewDrawn) {
+			const VkDescriptorSet set = getCurrentFrame().frameDescriptors.allocate(m_device, m_beamPreviewComposite.setLayout);
+			DescriptorWriter writer;
+			writer.writeImage(0, m_drawImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+			writer.writeImage(1, m_beamPreviewAccum.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+			writer.writeImage(2, m_beamPreviewReveal.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+			writer.updateSet(m_device, set);
+			dispatchComputePassOver(cmd, m_beamPreviewComposite, set, nullptr, m_drawImage.imageExtent);
+			vkutil::memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+				VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		}
 		recordDrawImageEffect(cmd, m_viewportEncodePass, ComputePushConstants {});
 
 		// the Viewport window samples the draw image, so it has to be readable before drawImgui() below. Every image
@@ -348,6 +360,7 @@ RasterKey VulkanEngine::rasterKey() const
 	key.environmentRotation = m_environmentRotation;
 	key.occlusionCulling = m_occlusionCulling;
 	key.benchAssets = m_benchScene.revision();
+	key.beamSections = m_beamSectionsRevision;
 	return key;
 }
 
@@ -687,6 +700,34 @@ void VulkanEngine::drawGeometry(VkCommandBuffer cmd)
 
 	vkinit::VkFunctionLoader::get_instance().vkCmdEndRenderingKHR(cmd);
 
+	//the solved beams, in a rendering of their own into the weighted blend's two targets, tested against the depth drawn
+	//above and hidden by it; draw() composites them over the draw image
+	m_beamPreviewDrawn = !m_beamSections.empty();
+	if (m_beamPreviewDrawn) {
+		vkutil::transition_image(cmd, m_beamPreviewAccum.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		vkutil::transition_image(cmd, m_beamPreviewReveal.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		//nothing summed, everything revealed
+		VkClearValue zero {};
+		VkClearValue one {};
+		one.color = { { 1.f, 1.f, 1.f, 1.f } };
+		const VkRenderingAttachmentInfo beamAttachments[] = {
+			vkinit::attachment_info(m_beamPreviewAccum.imageView, &zero, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+			vkinit::attachment_info(m_beamPreviewReveal.imageView, &one, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+		};
+		VkRenderingAttachmentInfo beamDepth = vkinit::depth_attachment_info(m_depthImage.imageView, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+		beamDepth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		VkRenderingInfo beamInfo = vkinit::rendering_info(m_drawExtent, nullptr, &beamDepth);
+		beamInfo.colorAttachmentCount = 2;
+		beamInfo.pColorAttachments = beamAttachments;
+		vkinit::VkFunctionLoader::get_instance().vkCmdBeginRenderingKHR(cmd, &beamInfo);
+		vkCmdSetViewport(cmd, 0, 1, &viewport);
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		drawBeamPreview(cmd, globalDescriptor);
+		vkinit::VkFunctionLoader::get_instance().vkCmdEndRenderingKHR(cmd);
+		vkutil::transition_image(cmd, m_beamPreviewAccum.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+		vkutil::transition_image(cmd, m_beamPreviewReveal.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+	}
+
 	// we delete the draw commands now that we processed them
 	m_mainDrawContext.opaqueSurfaces.clear();
 	m_mainDrawContext.transparentSurfaces.clear();
@@ -870,6 +911,7 @@ void VulkanEngine::run()
 		sample.raytraceGpuMs = m_raytracer.renderRunning() && m_raytracer.gpu().hasTimestamps() && raytraceMs > 0.f ? raytraceMs : NAN;
 		sample.drawCalls = m_stats.drawcallCount;
 		sample.triangles = m_stats.triangleCount;
+		sample.beamSolveMs = m_stats.beamSolveTime;
 		m_frameHistory.record(sample);
 	}
 
@@ -895,6 +937,8 @@ void VulkanEngine::registerWindows()
 
 	m_workspaces.addWindow({ "Stats", &m_showStatsWindow, [this]() { drawStatsWindow(this, &m_showStatsWindow); } });
 	m_workspaces.addWindow({ "GPU self-tests", m_selfTests.visibilityFlag(), [this]() { m_selfTests.drawWindow(this); }, {}, WindowGroup::Debug });
+	//the solved beams' segments and the preview's settings (docs/plans/completed/physoptics-gaussian-beam-solver.md)
+	m_workspaces.addWindow({ "Beam", m_raytraceScene.beamWindowVisibilityFlag(), [this]() { m_raytraceScene.drawBeamWindow(this); }, CapabilityId::OpticalBench });
 	//the bench's settings, under Optical bench (Optics -> Bench Settings...)
 	m_workspaces.addWindow({ "Bench Settings", m_raytraceScene.benchSettingsVisibilityFlag(), [this]() {
 		bool* open = m_raytraceScene.benchSettingsVisibilityFlag();
@@ -1979,6 +2023,7 @@ void VulkanEngine::newScene()
 	m_raytraceScene.replaceShapes({});
 	m_raytraceScene.replaceLights({});
 	m_raytraceScene.replaceBeamAxes({});
+	m_raytraceScene.setBeamPreview({});
 	m_raytracer.setGuideAxis(0);
 	//the optics and the sensor stacks before the materials: each removes the slot materials it owns
 	m_raytraceScene.replaceOptics({});
@@ -2288,7 +2333,8 @@ SceneDescription VulkanEngine::describeScene()
 	scene.lengthUnit = m_lengthUnit;
 	scene.bench = m_raytraceScene.bench();
 	const Camera& view = m_viewportNav.camera;
-	scene.viewport = SceneViewportRecord { m_viewportNav.settings, view.position, glm::normalize(glm::quat_cast(glm::mat3(view.getRotationMatrix()))), view.pivot };
+	scene.viewport = SceneViewportRecord { m_viewportNav.settings, view.position, glm::normalize(glm::quat_cast(glm::mat3(view.getRotationMatrix()))), view.pivot,
+		m_raytraceScene.beamPreview() };
 	return scene;
 }
 
@@ -2550,8 +2596,10 @@ IoResult VulkanEngine::openScene(const std::filesystem::path& path, bool* loaded
 		m_viewportNav.settings = scene.viewport->settings;
 		m_viewportNav.lookAt(scene.viewport->position, scene.viewport->position + scene.viewport->orientation * glm::vec3(0.f, 0.f, -1.f));
 		m_viewportNav.camera.pivot = scene.viewport->pivot;
+		m_raytraceScene.setBeamPreview(scene.viewport->beamPreview);
 	} else {
 		m_viewportNav.settings = ViewportCameraSettings {};
+		m_raytraceScene.setBeamPreview({});
 	}
 	m_raytraceScene.replaceCameras(std::move(scene.cameras));
 	//the beam axes, once the optics and cameras they name have ids. optics() starts with the file's optics in its order;
@@ -2971,6 +3019,17 @@ void VulkanEngine::updateBench()
 		m_raytracer.prepareGeometry(this);
 		m_sceneRevision++;
 	}
+	//the beams for the poses just resolved (docs/plans/completed/physoptics-gaussian-beam-solver.md), before anything draws them
+	const auto started = std::chrono::steady_clock::now();
+	m_raytraceScene.solveBeams(this);
+	m_stats.beamSolveTime = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
+	//the preview's sections, when the beams or how they are shown changed
+	const std::pair<uint64_t, uint64_t> beamsFor { m_raytraceScene.beamSolver().revision(), m_raytraceScene.beamPreviewRevision() };
+	if (beamsFor != m_beamSectionsFor) {
+		m_beamSectionsFor = beamsFor;
+		m_beamSections = buildBeamSections(m_raytraceScene.beamSolver().solution(), m_raytraceScene.beamPreview());
+		m_beamSectionsRevision++;
+	}
 }
 
 OpticBuildContext VulkanEngine::opticBuildContext() const
@@ -2981,6 +3040,92 @@ OpticBuildContext VulkanEngine::opticBuildContext() const
 	context.surrounding = surroundingGlass(m_raytracer.settings().optics.surrounding);
 	return context;
 }
+
+namespace {
+
+// --solve-beams: the solver's solution as JSON, every optic named by its name (docs/plans/completed/physoptics-gaussian-beam-solver.md)
+std::string beamSolutionJson(const RaytraceSceneEditor& editor)
+{
+	const BeamSolver& solver = editor.beamSolver();
+	const BeamSolution& solution = solver.solution();
+	const auto name = [&](uint64_t id) -> std::string {
+		if (id == 0) {
+			return "null";
+		}
+		const SceneOptic* optic = editor.findOptic(id);
+		return optic != nullptr ? fmt::format("\"{}\"", optic->name) : std::string("null");
+	};
+	const auto vec3 = [](const glm::dvec3& v) { return fmt::format("[{:.12g},{:.12g},{:.12g}]", v.x, v.y, v.z); };
+	const auto vec2 = [](const glm::dvec2& v) { return fmt::format("[{:.12g},{:.12g}]", v.x, v.y); };
+	std::string json = fmt::format(R"({{"solveMs":{:.6g},"trees":[)", solver.lastSolveMs());
+	for (size_t t = 0; t < solution.trees.size(); t++) {
+		const BeamTree& tree = solution.trees[t];
+		std::string source = name(tree.source);
+		if (tree.sourceKind == BeamSourceKind::Camera) {
+			const SceneCamera* camera = editor.findCamera(tree.source);
+			source = camera != nullptr ? fmt::format("\"{}\"", camera->name) : "null";
+		}
+		const BeamPowerBudget& b = tree.budget;
+		json += fmt::format(
+			R"({}{{"source":{},"kind":"{}","wavelength":{:.12g},"power":{:.12g},"threshold":{:.6g},"truncated":{},"budget":{{"detected":{:.12g},"absorbed":{:.12g},"glass":{:.12g},"clipped":{:.12g},"scattered":{:.12g},"escaped":{:.12g},"backReflected":{:.12g},"belowThreshold":{:.12g},"truncated":{:.12g},"total":{:.15g}}},"segments":[)",
+			t == 0 ? "" : ",", source, tree.sourceKind == BeamSourceKind::Camera ? "camera" : "laser", tree.wavelength, tree.power, tree.threshold, tree.truncated, b.detected,
+			b.absorbed, b.glass, b.clipped, b.scattered, b.escaped, b.backReflected, b.belowThreshold, b.truncated, b.total());
+		for (uint32_t i = 0; i < tree.segments.size(); i++) {
+			const BeamSegment& s = tree.segments[i];
+			const BeamCrossSection start = tree.crossSection(i, 0.0);
+			const BeamCrossSection end = tree.crossSection(i, s.length);
+			const BeamProfile profile = tree.profile(i);
+			const SceneOptic* from = editor.findOptic(s.start.fromOptic);
+			const std::string port = from != nullptr && s.start.port != NO_PORT ? fmt::format("\"{}\"", opticPortName(from->kind, s.start.port)) : std::string("null");
+			json += fmt::format(
+				R"({}{{"parent":{},"start":{},"direction":{},"length":{:.12g},"end":"{}","optic":{},"surface":{},"power":{:.12g},"endPower":{:.12g},"clipped":{:.9g},"from":{},"port":{},"ghost":{},"inside":{},"index":{:.12g},"distance":{:.12g},"radiiStart":{},"radiiEnd":{},"angleStart":{:.9g},"waists":[{{"w0":{:.12g},"at":{:.12g},"zR":{:.12g}}},{{"w0":{:.12g},"at":{:.12g},"zR":{:.12g}}}],"profileAngle":{:.9g},"twisted":{}}})",
+				i == 0 ? "" : ",", s.parent == NO_BEAM_SEGMENT ? -1 : (int)s.parent, vec3(s.start.origin), vec3(s.start.direction), s.length, beamEndLabel(s.end),
+				name(s.endOptic), s.endSurface, s.start.power, s.endPower, s.endClipped, name(s.start.fromOptic), port, s.start.ghost, name(s.start.inside), s.start.index,
+				s.start.distance, vec2(start.radii), vec2(end.radii), start.angle, profile.axes[0].waist, profile.axes[0].waistAt, profile.axes[0].rayleighRange,
+				profile.axes[1].waist, profile.axes[1].waistAt, profile.axes[1].rayleighRange, profile.angle, profile.twisted);
+		}
+		json += R"(],"readings":[)";
+		for (size_t r = 0; r < tree.readings.size(); r++) {
+			const BeamDetectorReading& reading = tree.readings[r];
+			json += fmt::format(R"({}{{"optic":{},"segment":{},"power":{:.12g},"centroid":{},"radii":{},"angle":{:.9g}}})", r == 0 ? "" : ",", name(reading.optic), reading.segment,
+				reading.power, vec2(reading.centroid), vec2(reading.radii), reading.angle);
+		}
+		json += R"(],"warnings":[)";
+		for (size_t w = 0; w < tree.warnings.size(); w++) {
+			const BeamWarning& warning = tree.warnings[w];
+			json += fmt::format(R"({}{{"kind":"{}","segment":{},"optic":{},"power":{:.9g},"value":{:.9g}}})", w == 0 ? "" : ",",
+				warning.kind == BeamWarning::BackReflection ? "backReflection" : "ghostFocus", warning.segment, name(warning.optic), warning.power, warning.value);
+		}
+		json += "]}";
+	}
+	json += R"(],"axes":[)";
+	for (size_t a = 0; a < editor.beamAxes().size(); a++) {
+		const BeamAxis& axis = editor.beamAxes()[a];
+		const auto tree = solution.axisTrees.find(axis.id);
+		json += fmt::format(R"({}{{"name":"{}","tree":{},"nodes":[)", a == 0 ? "" : ",", axis.name, tree != solution.axisTrees.end() ? (int)tree->second : -1);
+		const auto reports = solution.reports.find(axis.id);
+		bool first = true;
+		if (reports != solution.reports.end()) {
+			for (const BeamNodeReport& r : reports->second) {
+				const BeamAxisNode* node = findBeamNode(axis, r.node);
+				const BeamAxisNode* parent = node != nullptr ? findBeamNode(axis, node->parent) : nullptr;
+				const SceneOptic* parentOptic = parent != nullptr ? editor.findOptic(parent->optic) : nullptr;
+				const std::string port = parentOptic != nullptr && node->port != NO_PORT ? fmt::format("\"{}\"", opticPortName(parentOptic->kind, node->port)) : std::string("null");
+				json += fmt::format(
+					R"({}{{"node":{},"optic":{},"parent":{},"port":{},"status":"{}","power":{:.12g},"lostFraction":{:.9g},"missDistance":{:.12g},"steer":{},"blocker":"{}","segment":{},"from":{},"to":{}}})",
+					first ? "" : ",", r.node, node != nullptr ? name(node->optic) : "null", node != nullptr && node->parent < BEAM_DANGLING_NODE ? (int)node->parent : -1, port,
+					beamNodeStatusLabel(r.status), r.power, r.lostFraction, r.missDistance, vec3(r.steer), r.blocker, r.segment == NO_BEAM_SEGMENT ? -1 : (int)r.segment,
+					vec3(r.from), vec3(r.to));
+				first = false;
+			}
+		}
+		json += "]}";
+	}
+	json += "]}\n";
+	return json;
+}
+
+} // namespace
 
 bool VulkanEngine::beginBatch()
 {
@@ -3011,6 +3156,27 @@ bool VulkanEngine::beginBatch()
 	}
 	if (!opened.ok) {
 		m_exitCode = 2;
+		return false;
+	}
+	//--solve-beams: the beam solver's solution for the scene as it opened, with no render
+	if (!m_commandLine.solveBeams.empty()) {
+		updateBench();
+		if (m_commandLine.followBeams) {
+			std::vector<uint64_t> empty;
+			for (const BeamAxis& axis : m_raytraceScene.beamAxes()) {
+				if (beamNodeAt(axis, BEAM_SOURCE_NODE, NO_PORT) == nullptr) {
+					empty.push_back(axis.id);
+				}
+			}
+			for (uint64_t id : empty) {
+				m_raytraceScene.followBeamFrom(id, BEAM_SOURCE_NODE);
+			}
+			updateBench();
+		}
+		std::ofstream file(m_commandLine.solveBeams, std::ios::binary);
+		file << beamSolutionJson(m_raytraceScene);
+		fmt::println("render: beam solution written to {} ({:.3f} ms)", m_commandLine.solveBeams.string(), m_raytraceScene.beamSolver().lastSolveMs());
+		m_exitCode = file ? 0 : 2;
 		return false;
 	}
 	if (pbrt) {
@@ -3353,6 +3519,8 @@ void VulkanEngine::initVulkan()
 	//the texture library's samplers are anisotropic, for the anisotropic texture filter
 	VkPhysicalDeviceFeatures coreFeatures {};
 	coreFeatures.samplerAnisotropy = VK_TRUE;
+	//the beam preview's weighted blend sums into one target and multiplies into the other
+	coreFeatures.independentBlend = VK_TRUE;
 
 	vkb::PhysicalDeviceSelector selector{ vkb_inst };
 	auto physdev_ret = selector
@@ -3751,6 +3919,11 @@ void VulkanEngine::createDrawImages(VkExtent2D extent)
 	VkImageViewCreateInfo dview_info = vkinit::imageview_create_info(m_depthImage.imageFormat, m_depthImage.image, VK_IMAGE_ASPECT_DEPTH_BIT);
 
 	checkVkResult(vkCreateImageView(m_device, &dview_info, nullptr, &m_depthImage.imageView));
+
+	//the beam preview's weighted blend: drawn into as color attachments, read by its composite as storage images
+	const VkImageUsageFlags beamUsages = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+	m_beamPreviewAccum = createImage(drawImageExtent, VK_FORMAT_R16G16B16A16_SFLOAT, beamUsages);
+	m_beamPreviewReveal = createImage(drawImageExtent, VK_FORMAT_R16G16B16A16_SFLOAT, beamUsages);
 }
 
 void VulkanEngine::destroyDrawImages()
@@ -3760,8 +3933,12 @@ void VulkanEngine::destroyDrawImages()
 
 	vkDestroyImageView(m_device, m_depthImage.imageView, nullptr);
 	vmaDestroyImage(m_memAllocator, m_depthImage.image, m_depthImage.allocation);
+	destroyImage(m_beamPreviewAccum);
+	destroyImage(m_beamPreviewReveal);
 	m_drawImage = {};
 	m_depthImage = {};
+	m_beamPreviewAccum = {};
+	m_beamPreviewReveal = {};
 }
 
 void VulkanEngine::initCommands()
@@ -3893,6 +4070,7 @@ void VulkanEngine::initPipeline()
 	initComputePipelines();
 	initMeshPipeline();
 	initOcclusionPipeline();
+	initBeamPreviewPipeline();
 	m_metalRoughMaterial.buildPipelines(this);
 
 	m_tonemapPass.init(this);
@@ -4043,6 +4221,131 @@ void VulkanEngine::initOcclusionPipeline()
 		vkDestroyPipelineLayout(m_device, m_occlusionBoxPipeline.layout, nullptr);
 		vkDestroyPipeline(m_device, m_occlusionBoxPipeline.pipeline, nullptr);
 	});
+}
+
+void VulkanEngine::initBeamPreviewPipeline()
+{
+	VkShaderModule vertexShader;
+	VkShaderModule fragmentShader;
+	if (!vkutil::load_shader_module(m_rootPath + "shaders/optics/beam_preview.vert.spv", m_device, &vertexShader)
+		|| !vkutil::load_shader_module(m_rootPath + "shaders/optics/beam_preview.frag.spv", m_device, &fragmentShader)) {
+		fmt::println("Error when building the beam preview's shader modules");
+	}
+
+	//set 0 for the view-projection, set 1 the sections, the eye, the beam's and the screen's numbers in push constants
+	{
+		DescriptorLayoutBuilder builder;
+		builder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+		m_beamPreviewSetLayout = builder.build(m_device, VK_SHADER_STAGE_VERTEX_BIT);
+	}
+	const VkDescriptorSetLayout layouts[] = { m_gpuSceneDataDescriptorLayout, m_beamPreviewSetLayout };
+	VkPushConstantRange pushRange {};
+	pushRange.size = 3 * sizeof(glm::vec4);
+	pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	VkPipelineLayoutCreateInfo layoutInfo = vkinit::pipelineLayoutCreateInfo();
+	layoutInfo.setLayoutCount = 2;
+	layoutInfo.pSetLayouts = layouts;
+	layoutInfo.pushConstantRangeCount = 1;
+	layoutInfo.pPushConstantRanges = &pushRange;
+	checkVkResult(vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &m_beamPreviewPipeline.layout));
+
+	//weighted blended order-independent transparency (McGuire and Bavoil 2013): each fragment's weighted color and weight
+	//summed into one target, and the revealage multiplied by 1 - alpha in the other, so the order the beams are drawn in
+	//does not matter. Tested against the raster pass's depth (reverse-Z) and writing none, so optics hide a beam behind
+	//them. A tube ends exactly on the face it meets, which the optics draw biased toward the camera (1 step, slope 0.25), so
+	//the tubes are biased a little further, or their ends would vanish into the face
+	VkPipelineColorBlendAttachmentState accumBlend {};
+	accumBlend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	accumBlend.blendEnable = VK_TRUE;
+	accumBlend.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	accumBlend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	accumBlend.colorBlendOp = VK_BLEND_OP_ADD;
+	accumBlend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	accumBlend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	accumBlend.alphaBlendOp = VK_BLEND_OP_ADD;
+	VkPipelineColorBlendAttachmentState revealBlend = accumBlend;
+	revealBlend.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+	revealBlend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+	revealBlend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	revealBlend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	const VkFormat formats[] = { m_beamPreviewAccum.imageFormat, m_beamPreviewReveal.imageFormat };
+	const VkPipelineColorBlendAttachmentState blends[] = { accumBlend, revealBlend };
+
+	PipelineBuilder pipelineBuilder;
+	pipelineBuilder.m_pipelineLayout = m_beamPreviewPipeline.layout;
+	pipelineBuilder.setShaders(vertexShader, fragmentShader);
+	pipelineBuilder.setInputTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	pipelineBuilder.setPolygonMode(VK_POLYGON_MODE_FILL);
+	pipelineBuilder.setCullMode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+	pipelineBuilder.setDepthBias(2.f, 0.5f);
+	pipelineBuilder.setMultisamplingNone();
+	pipelineBuilder.setColorAttachments(formats, blends);
+	pipelineBuilder.enableDepthtest(false, VK_COMPARE_OP_GREATER_OR_EQUAL);
+	pipelineBuilder.setDepthFormat(m_depthImage.imageFormat);
+	m_beamPreviewPipeline.pipeline = pipelineBuilder.buildPipeline(m_device);
+
+	m_beamPreviewComposite = ComputePassBuilder(m_rootPath + "shaders/optics/beam_preview_composite.comp.spv")
+		.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+		.build(m_device);
+
+	vkDestroyShaderModule(m_device, vertexShader, nullptr);
+	vkDestroyShaderModule(m_device, fragmentShader, nullptr);
+
+	m_mainDeletionQueue.push_function([this]() {
+		vkDestroyPipelineLayout(m_device, m_beamPreviewPipeline.layout, nullptr);
+		vkDestroyPipeline(m_device, m_beamPreviewPipeline.pipeline, nullptr);
+		m_beamPreviewComposite.destroy(m_device);
+		vkDestroyDescriptorSetLayout(m_device, m_beamPreviewSetLayout, nullptr);
+	});
+}
+
+void VulkanEngine::drawBeamPreview(VkCommandBuffer cmd, VkDescriptorSet globalDescriptor)
+{
+	if (m_beamSections.empty()) {
+		return;
+	}
+	//this frame slot's copy, rewritten only when the sections changed since it was last written; the fence wait in draw()
+	//means the slot's last use of it is over
+	FrameData& frame = getCurrentFrame();
+	const size_t bytes = m_beamSections.size() * sizeof(BeamSection);
+	if (m_beamSections.size() > frame.beamSectionsCapacity) {
+		if (frame.beamSections.buffer != VK_NULL_HANDLE) {
+			destroyBuffer(frame.beamSections);
+		}
+		frame.beamSectionsCapacity = std::max<size_t>(m_beamSections.size() + m_beamSections.size() / 2, 256);
+		frame.beamSections = createBuffer(frame.beamSectionsCapacity * sizeof(BeamSection), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+		frame.beamSectionsRevision = 0;
+	}
+	if (frame.beamSectionsRevision != m_beamSectionsRevision) {
+		std::memcpy(frame.beamSections.allocation->GetMappedData(), m_beamSections.data(), bytes);
+		vmaFlushAllocation(m_memAllocator, frame.beamSections.allocation, 0, bytes);
+		frame.beamSectionsRevision = m_beamSectionsRevision;
+	}
+	const VkDescriptorSet sections = frame.frameDescriptors.allocate(m_device, m_beamPreviewSetLayout);
+	{
+		DescriptorWriter writer;
+		writer.writeBuffer(0, frame.beamSections.buffer, bytes, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+		writer.updateSet(m_device, sections);
+	}
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_beamPreviewPipeline.pipeline);
+	const VkDescriptorSet sets[] = { globalDescriptor, sections };
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_beamPreviewPipeline.layout, 0, 2, sets, 0, nullptr);
+	//shaders/optics/beam_common.glsl's: the eye, and dashes 4 mm long; the radius drawn, and every ring at least 1.5 pixels
+	//in radius; the viewport's height and focal scale, and the blend's weights 1 at the orbit pivot's distance, where the
+	//eye is most likely looking
+	const BeamPreviewSettings& settings = m_raytraceScene.beamPreview();
+	const glm::vec3 eyePosition = glm::vec3(glm::inverse(m_sceneData.view)[3]);
+	glm::vec4 push[3];
+	push[0] = glm::vec4(eyePosition, 0.008f);
+	push[1] = glm::vec4(settings.radiusScale, 1.5f, 0.f, 0.f);
+	const float focal = std::abs(rasterDepthProjection()[1][1]);
+	push[2] = glm::vec4((float)m_drawExtent.height, focal, std::max(glm::distance(eyePosition, m_viewportNav.camera.pivot), 1e-3f), 0.f);
+	vkCmdPushConstants(cmd, m_beamPreviewPipeline.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
+	//BEAM_RING_VERTICES steps of two triangles a section
+	vkCmdDraw(cmd, 48 * 6, (uint32_t)m_beamSections.size(), 0, 0);
+	m_stats.drawcallCount++;
 }
 
 void VulkanEngine::initIMGUI()
@@ -4484,6 +4787,9 @@ void VulkanEngine::cleanup()
 			m_frames[i].deletionQueue.flush();
 			if (m_frames[i].instanceBuffer.buffer != VK_NULL_HANDLE) {
 				destroyBuffer(m_frames[i].instanceBuffer);
+			}
+			if (m_frames[i].beamSections.buffer != VK_NULL_HANDLE) {
+				destroyBuffer(m_frames[i].beamSections);
 			}
 			if (m_frames[i].occlusionQueries != VK_NULL_HANDLE) {
 				vkDestroyQueryPool(m_device, m_frames[i].occlusionQueries, nullptr);

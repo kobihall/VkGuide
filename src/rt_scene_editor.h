@@ -19,6 +19,8 @@
 #include <string_view>
 
 #include <beam_axis.h>
+#include <beam_preview.h>
+#include <beam_solver.h>
 #include <bvh.h>
 #include <optic_bench.h>
 #include <optic_catalog.h>
@@ -152,10 +154,34 @@ public:
 	// the Beam axes folder of the Scene panel's tree (the Optical bench capability draws it) and the Add menu's entry
 	void drawBeamAxisRows(VulkanEngine* engine);
 	void drawBeamAxisAddItems(VulkanEngine* engine);
-	// the authored order over the Viewport: an arrow from the source to each visit and from each visit to the next,
-	// labeled by port. Until the beam solver gives each node a status, every arrow is one color, brighter for the
-	// selected axis, and grey where a subtree dangles
+	// the authored order over the Viewport: an arrow along the solved beam from where it leaves each visit to where it meets
+	// the next, colored by the next visit's status, labeled by port on the selected axis; grey where a subtree dangles. With
+	// the Beam window's annotations, each waist's size, the distance from the source at each interaction, and a cross where
+	// a visit is missed
 	void drawBeamAxisOverlays(const ViewportView& view) const;
+
+	// THE BEAM SOLVER (src/beam_solver.h): every laser's beam and every axis's statuses, brought up to date with the optics
+	// as the last resolveBench() placed them. The engine calls it right after resolveBench(), so a frame's beam is the
+	// beam for that frame's poses
+	void solveBeams(VulkanEngine* engine);
+	const BeamSolver& beamSolver() const { return m_beamSolver; }
+	// FOLLOW BEAM: extends a visit (BEAM_SOURCE_NODE for the source) along the traced beam, port by port, as far as it goes
+	void followBeamFrom(uint64_t axisId, uint32_t node);
+	// THE BEAM PREVIEW's settings (src/beam_preview.h), which the Beam window edits and the scene file keeps with the viewport
+	const BeamPreviewSettings& beamPreview() const { return m_beamPreview; }
+	void setBeamPreview(const BeamPreviewSettings& settings)
+	{
+		m_beamPreview = settings;
+		m_beamPreviewRevision++;
+	}
+	// moves when the preview's settings change, for RasterKey
+	uint64_t beamPreviewRevision() const { return m_beamPreviewRevision; }
+	// Windows -> Beam: the selected axis's segments and a probe along one
+	void drawBeamWindow(VulkanEngine* engine);
+	// Optics -> Beam Preview: what the Viewport shows of the beams (the full beam, its spots, or the axes and lasers'
+	// arrows) and the preview's settings
+	void drawBeamPreviewMenu();
+	bool* beamWindowVisibilityFlag() { return &m_showBeamWindow; }
 
 	// THE BENCH (docs/plans/completed/physoptics-bench-and-mounts.md): the breadboard and the settings every stack is placed by, and
 	// each optic's stack as the last resolveBench() assembled it, in the order of optics()
@@ -362,6 +388,14 @@ private:
 	int m_nextBeamAxisNumber { 1 };
 	// the visit the selected axis's panel acts on, BEAM_SOURCE_NODE for its source; reset when the selection changes
 	uint32_t m_selectedBeamNode { BEAM_SOURCE_NODE };
+	BeamSolver m_beamSolver;
+	BeamPreviewSettings m_beamPreview;
+	uint64_t m_beamPreviewRevision { 1 };
+	bool m_showBeamWindow { false };
+	// the Beam window's tree (an index into the solution's), its segment, and the probe's distance along it
+	uint32_t m_beamWindowTree { 0 };
+	uint32_t m_beamWindowSegment { 0 };
+	double m_beamProbe { 0.0 };
 	BenchSettings m_bench;
 	std::vector<OpticStack> m_stacks;
 	// a laser's turn about the vertical over the gizmo drag so far, unsnapped, which the snapped turn steps after; NaN

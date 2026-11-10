@@ -9,7 +9,7 @@ opened by the batch mode and saved back with --save-scene, which turns the file'
   repairs         a file with a visit of a missing optic, a port its parent's kind lacks, two visits on one place, a
                   cycle and a source that is no laser opens with each repaired as Remove would, and a warning for each
   shifted optics  a malformed optic the load skips: the axes still name the optics they named
-  older file      a version 31 scene opens and saves without beam axes
+  older file      a version 31 scene opens and saves without beam axes, as version 33
 
   python3 tools/verify/beam_axis_check.py
 """
@@ -66,6 +66,9 @@ def named_axes(scene):
     axes = []
     for axis in e.get("beamAxes", []):
         named = copy.deepcopy(axis)
+        # before version 34 every axis saved a threshold, and one at the default now follows the scene's
+        if e["version"] < 34 and abs(named.get("ghostThreshold", 0.0) - 1e-4) < 1e-9:
+            del named["ghostThreshold"]
         source = named.get("source", {})
         if "laser" in source:
             source["laser"] = optics[source["laser"]]
@@ -169,6 +172,50 @@ def shifted_optics(workdir):
     check(named_axes(saved) == before, "the axes name the optics they named, the skipped one aside")
 
 
+def solved_threshold(scene, workdir, name):
+    """the threshold the batch mode's beam solver traced the scene's first tree to"""
+    path = workdir / f"{name}.in.gltf"
+    vkscene.write_scene(path, scene)
+    out = workdir / f"{name}.beams.json"
+    env = dict(os.environ, VKGUIDE_WINDOW="background")
+    result = subprocess.run([str(vkscene.BIN / "vulkan_guide"), "--render", str(path.resolve()), "--solve-beams", str(out)],
+                            cwd=vkscene.BIN, env=env, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0 or not out.exists():
+        raise RuntimeError(f"--solve-beams failed (exit {result.returncode})")
+    return json.loads(out.read_text())["trees"][0]["threshold"]
+
+
+def ghost_thresholds(workdir):
+    print("ghost thresholds: the scene's, and an axis's own")
+    scene = json.loads((vkscene.TEST_SCENES / "optics_verification" / "beam_axis_setup.gltf").read_text())
+    e = extras(scene)
+    axis = e["beamAxes"][0]
+
+    e["version"] = 33
+    axis["ghostThreshold"] = 1e-4
+    saved, _ = resave(scene, workdir, "threshold_v33_default")
+    check("ghostThreshold" not in extras(saved)["beamAxes"][0], "version 33: an axis at the default follows the scene's")
+    axis["ghostThreshold"] = 1e-3
+    saved, _ = resave(scene, workdir, "threshold_v33_own")
+    check(abs(extras(saved)["beamAxes"][0].get("ghostThreshold", 0.0) - 1e-3) < 1e-9, "version 33: any other value is the axis's own")
+
+    e["version"] = 34
+    axis["ghostThreshold"] = 1e-4
+    saved, _ = resave(scene, workdir, "threshold_v34_own")
+    check(abs(extras(saved)["beamAxes"][0].get("ghostThreshold", 0.0) - 1e-4) < 1e-9, "version 34: an axis's own 1e-4 stays its own")
+    del axis["ghostThreshold"]
+    e["viewport"]["beamPreview"] = {"ghostThreshold": 1e-7}
+    saved, _ = resave(scene, workdir, "threshold_v34_follow")
+    check("ghostThreshold" not in extras(saved)["beamAxes"][0], "version 34: no threshold stays none")
+    check(abs(extras(saved)["viewport"].get("beamPreview", {}).get("ghostThreshold", 0.0) - 1e-7) < 1e-12, "the scene's threshold survives")
+
+    traced = solved_threshold(scene, workdir, "threshold_solve_follow")
+    check(abs(traced - 1e-7) < 1e-12, f"the solver traces a following axis to the scene's: {traced:.3g}")
+    axis["ghostThreshold"] = 1e-3
+    traced = solved_threshold(scene, workdir, "threshold_solve_own")
+    check(abs(traced - 1e-3) < 1e-9, f"and an axis with its own to that: {traced:.3g}")
+
+
 def older_file(workdir):
     print("older file: version 31")
     scene = json.loads((vkscene.TEST_SCENES / "optics_verification" / "beam_axis_setup.gltf").read_text())
@@ -177,7 +224,8 @@ def older_file(workdir):
     del e["beamAxes"]
     saved, lines = resave(scene, workdir, "older")
     check("beamAxes" not in extras(saved), "an older file saves with no beam axes")
-    check(extras(saved)["version"] == 32, "and saves as version 32")
+    # the version this build writes: 34 since a beam axis's ghost threshold became optional
+    check(extras(saved)["version"] == 34, "and saves as version 34")
 
 
 def main():
@@ -186,6 +234,7 @@ def main():
     repairs(workdir)
     guide_axis(workdir)
     shifted_optics(workdir)
+    ghost_thresholds(workdir)
     older_file(workdir)
     print()
     print("PASS" if not failures else f"FAIL ({len(failures)})")

@@ -473,8 +473,8 @@ const OpticPort IRIS_PORTS[] = { { "Transmitted", {} } };
 const OpticPort PROBE_PORTS[] = { { "Transmitted", {} } };
 const OpticPort LASER_PORTS[] = { { "Output", {} } };
 // the cube's surfaces: 0 z-, 1 y-, 2 z+, 3 y+, 4 to 7 the two triangles of each x face, 8 the diagonal
-const PortEvent CUBE_REFLECTED[] = { { 0, false }, { 8, true }, { 1, false } };
-const PortEvent CUBE_TRANSMITTED[] = { { 0, false }, { 8, false }, { 2, false } };
+const PortEvent CUBE_REFLECTED[] = { { 0, false }, { CUBE_DIAGONAL_SURFACE, true }, { 1, false } };
+const PortEvent CUBE_TRANSMITTED[] = { { 0, false }, { CUBE_DIAGONAL_SURFACE, false }, { 2, false } };
 const OpticPort CUBE_PORTS[] = { { "Reflected", CUBE_REFLECTED }, { "Transmitted", CUBE_TRANSMITTED } };
 // the right-angle prism's surfaces: 0 the leg at z-, 1 the leg at y-, 2 the hypotenuse, 3 and 4 the caps
 const PortEvent RA_TURNED[] = { { 0, false }, { 2, true }, { 1, false } };

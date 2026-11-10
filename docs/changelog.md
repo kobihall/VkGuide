@@ -1,23 +1,81 @@
 # Changelog
 
+## 2026-11-10
+
+### Changed
+
+- The **Distances** label on a spherical lens follows the lens's **origin at** setting. A front or back vertex puts it on the beam's hit on that surface, and a principal plane or the optical center puts it where the beam crosses that plane. Every other optic keeps its label where the beam lands.
+- The **Distances** label on a cube beamsplitter sits on the beam's hit on the diagonal, whichever face the beam enters by.
+- **Optics** → **Beam Preview** has the scene's **ghost threshold**, under the brightness range while **Ghosts** is on. It is one field on a log scale: dragging moves it by whole powers of ten from 1e-12 to 1, and double-clicking lets you type any number in that range, such as `2.5e-7`.
+- A beam axis follows the scene's ghost threshold unless you check **own ghost threshold** in its panel. A laser with no beam axis uses the scene's. Scene files are payload version 34. In an older file, an axis saved at the default 1e-4 now follows the scene.
+
+## 2026-11-09
+
+### New
+
+- **Full beam** draws a disk on each surface a beam lands on and at each laser's output: the beam's Gaussian on its footprint, fading to nothing at the radius drawn. Iris openings and probe planes get none, since the beam meets nothing there.
+
+### Changed
+
+- A beam's tube keeps its color when you look along it. It darkened to 30 % before, and the dark tube covered any beam behind it.
+- **Spots only** draws the same Gaussian disks in place of flat ones.
+- The beam preview draws each beam at 1.5 w by default. A scene that was saved at w and never changed the radius opens at 1.5 w, and a scene you set to w now saves it.
+
+### Fixed
+
+- Fixed the two beams at a turning mirror looking like they crossed and carried on into the mirror, most of all at **1.5 w**. Each tube's glow counted the beam continuing behind the surface, and left a hard ellipse where the tube ended.
+
+### Internal
+
+- `BeamSection::axisA0.w` adds `BEAM_SECTION_STOP_AT_START` and `BEAM_SECTION_STOP_AT_END`. A section's glow stops at the surface under that ring unless a drawn part of the beam crosses the surface, and `beamGlow()` takes the distance along the view ray to stop at.
+
+## 2026-11-08
+
+### Changed
+
+- The Viewport shows one picture of the beams at a time: the solved beam's preview, else the beam axes' arrows, else each laser's output arrow when the scene has no beam axis. A miss's red cross shows with either.
+- The beam preview's settings moved from the **Beam** window to **Optics** → **Beam Preview**: **Full beam**, **Spots only** or **Off**, **Ghosts**, the **1.5 w radius**, the **confocal waist region**, the brightness range and the annotations. The **Beam** window keeps the segments and the probe.
+- The preview draws each laser's main beam and leaves out its ghosts unless **Ghosts** is on. A ghost that comes back through an expander draws at its Gaussian size, up to 15 cm across, though the lenses' apertures clip most of its power. Scene files save `ghosts` in `beamPreview` when it is on.
+- A beam's tube ends on the surface it meets, in the beam's footprint there, instead of square to the beam, so the two tubes at a turning mirror meet at its face.
+- The beam preview draws each tube translucent, brightest along the beam's axis and fading out by its 1/e² radius, and where two beams cross, the nearer one shows in front. It blends them with weighted blended order-independent transparency (McGuire and Bavoil 2013), chosen after a side-by-side test over an additive Gaussian glow, which showed no beam in front of another, and a solid core inside a glow, which hid what was behind it. The tubes before were brightest along their outlines, and a farther beam's outline showed through a nearer one.
+- A beam far from the camera stays at least 1.5 pixels in radius on screen, fainter by as much as it was widened, so it draws as a continuous line instead of a row of dots.
+
+### Fixed
+
+- Fixed reflections inside a lens counting as the main beam until they left it: the beam solver now marks a branch a ghost as soon as its reflections and refractions inside an optic can no longer make one of the optic's ports.
+- Fixed the beam preview's tubes vanishing into a mirror near where they meet it: they draw with a depth bias a step beyond the optics'.
+
+### Internal
+
+- The beam preview draws in a rendering of its own after `drawGeometry()`'s, into `m_beamPreviewAccum` and `m_beamPreviewReveal` (rgba16f, recreated with the draw images) against the raster pass's depth, and `draw()` runs `shaders/optics/beam_preview_composite.comp` over the draw image before encoding it. Its push constants are three `vec4`s for both stages, laid out in `shaders/optics/beam_common.glsl`.
+- `PipelineBuilder::setColorAttachments()` builds a pipeline with several color targets, each with its own blend. The device enables `independentBlend`, which the beam preview's two targets need.
+
 ## 2026-11-07
 
 ### New
 
 - A beam axis records the order a beam is meant to visit the optics in (`docs/plans/physoptics-beam-axis.md`). With Optical bench on, **Add** → **Beam axis** makes one, and the Scene panel's **Beam axes** folder lists each axis with its visits indented under it. A new axis starts from the selected laser or camera, or the scene's one laser.
-- An axis's **source** is a laser, a camera or none. A camera's beam is its chief ray, traced outward from its sensor once the beam solver exists. An axis with no source records an order you attach a source to later.
+- An axis's **source** is a laser, a camera or none. A camera's beam is its chief ray, traced outward from the camera along its view. An axis with no source records an order you attach a source to later.
 - Each visit hangs off a named port of the optic before it: **Reflected** and **Transmitted** for a beamsplitter, **Turned** and **Retro** for a right-angle prism. An optic can be visited twice, as a lens is in a double pass. Right-click a visit for **Add after**, **Insert before**, **Detach**, **Remove** and **Remove with what follows**; the axis's panel has the same edits as buttons, the source and the beam solver's ghost threshold.
 - **Remove** moves what followed a visit up into its place: the visit on its first port takes it, and the visits on any other port dangle. A dangling visit keeps what follows it, is listed under **Dangling**, and goes back into the tree with **Attach to**. A visit that moved is marked **review** until you **Mark reviewed**.
 - **Render Settings** → **Optics** → **Guided tracing** chooses the one beam axis renders trace along and the trace mode (**Full**, **Seeded**, **Guided**, **Sequential**), and shows only while the scene has an axis. Nothing reads them yet: every render traces fully. An axis's panel says whether renders trace along it and has **Guide renders by this axis**. Choosing another guide axis restarts a render.
-- The **Viewport** draws each axis as arrows from its source through its visits, brighter and labeled by port for the selected axis, and grey where a visit dangles.
+- The **Viewport** draws each axis as arrows along the solved beam, from where it leaves each visit to where it meets the next, in the next visit's status color, brighter and labeled by port for the selected axis, and grey where a visit dangles. A visit the beam misses gets a red cross where the beam crosses its face, the distance and a line toward the aperture's center.
+- The Gaussian beam solver (`docs/plans/completed/physoptics-gaussian-beam-solver.md`) traces every laser's beam through the optics' real surfaces in double precision, as you edit. Each segment carries a general astigmatic Gaussian beam: its radii, waists, Rayleigh ranges and wavefront radii follow from each surface's curvature at the hit, so a tilted spherical mirror's two foci and a lens's focus come out where ABCD optics puts them. Coatings split the power between reflected and refracted branches, and every branch above the axis's ghost threshold is followed, ghosts included. The solver sees the optics alone: a beam that misses an optic or passes a lens's rim carries on, and mounts, posts and the breadboard are left to the render.
+- Each visit of a beam axis has a status: **Hit**, **Clipped** (its aperture takes at least 0.01 % of the beam), **Missed** (with the distance from its aperture's edge and the way to steer), **Blocked** (by another optic, named), **Below threshold** or **Unreached**. The Scene panel colors it after the visit's name, its tooltip says why, and the axis's panel shows the selected visit's in full, with where the source's power went and any back reflection into a laser or ghost coming to a focus on an optic.
+- **Follow beam**, in a visit's context menu and the axis's panel, adds the optics the solved beam meets after the visit, port by port, until it leaves the optics, ends on a detector or falls below the ghost threshold. From the source, on a setup placed by hand, it builds the whole axis.
+- The **Viewport** draws every laser's solved beam as a glowing tube as wide as the beam's 1/e² radius, narrowing to each waist, in the wavelength's color, fading with power over four decades so a 1 % ghost shows, tinted toward red downstream of clipping, and hidden behind the optics and mounts in front of it.
+- **Windows** → **Beam** shows one beam's segments as a table (**Copy as CSV** copies them), a probe you drag along a segment with the beam there (both radii and their axes, the waists, Rayleigh ranges, wavefront radii, Gouy phase, power and optical path), and the preview's settings: **display** (**Full beam**, **Spots only**, the footprint on every surface the beam meets, or **Off**), **radius** (w or 1.5 w), **waist region** (z_R or the confocal parameter), **brightness range**, and the Viewport's **waist labels**, **distances** and **misses**. In the Optics workspace it docks below the Viewport.
+- The **Stats** window's **Beam solver** section plots the solve time per frame and counts the segments.
+- The batch mode's `--solve-beams <file>` opens a scene, writes the beam solver's solution as JSON (every beam's segments, readings at the detectors and power budget, every axis's statuses) and quits without rendering. `--follow-beams` first runs **Follow beam** on every axis without a visit.
 - The batch mode's `--save-scene <file>` opens a scene, saves it back through the editor and quits without rendering. A file that opened with problems saves as the load repaired it.
 - `tools/verify/optics_verification.py` writes two more scenes: `beam_axis_setup`, the beam axis plan's laser, two turning mirrors, an iris, a lens, a plate beamsplitter and a power meter on each arm, and `beam_axis_double_pass`, a cat's eye that sends the beam through one lens twice. Each of its seven scenes has a beam axis along its beam.
 
 ### Changed
 
-- Scene files are payload version 32: `beamAxes`, each with its source, its ghost threshold and its visits, which name optics by their index in `optics` and ports by name. A load drops a visit whose optic is gone, as **Remove** does, and cuts loose a visit whose port its parent lacks, that shares a place with another, or that is part of a cycle, with a warning for each.
+- Scene files are payload version 33: `viewport` gains `beamPreview`, the beam preview's settings, each written when it is not the default. Version 32 added `beamAxes`, each with its source, its ghost threshold and its visits, which name optics by their index in `optics` and ports by name. A load drops a visit whose optic is gone, as **Remove** does, and cuts loose a visit whose port its parent lacks, that shares a place with another, or that is part of a cycle, with a warning for each.
 - Deleting an optic removes its visits from every beam axis, and deleting a laser or a camera detaches the axes it started.
 - A probe plane has a **Transmitted** port, since the beam passes through it unchanged.
+- `beam_axis_setup`'s expected nudge of its second mirror is five revolutions of the adjuster with the iris opened, not one: one revolution turns the beam 3.2 mm at the lens, which still hits it, and the iris's blades take the beam past 1.6. `tools/verify/beam_probe.py`'s `SCENE_VERSION` is 33.
 - `assets/scenes/` is split in two. `assets/scenes/tests/` holds the scenes `tools/verify/` writes and renders, one folder per suite (`core`, `bidirectional`, `cameras`, `lights_and_textures`, `optics`, `lasers`, `detectors`, `optics_verification`), with each `<name>.expected.json` beside its scene. No script reads or writes the rest of `assets/scenes/`, which is yours to edit.
 - Your scenes are `sphere_scene.gltf` (still the startup scene), `cornell_box.gltf`, `veach_mis.gltf`, `all_materials.gltf`, `thin_glass.gltf`, `Sponza.gltf`, `caustic_glass.gltf` and `prism_dispersion.gltf`, with copies of verification scenes in `cameras/`, `lights_and_textures/` and `optics/`. The `optics_prism.gltf` and `caustic_glass.gltf` you edited are these copies now, and the checks render freshly generated versions under `tests/`.
 - A scene saved in a folder of `assets/scenes/`, such as `optics/`, names the textures, environment maps and models in `assets/` by a relative path, as a scene in `assets/scenes/` itself does. A save went one folder up and wrote a path two folders up as an absolute one.
@@ -29,6 +87,9 @@
 
 ### Internal
 
+- The beam solver is `src/beam_solver.h/.cpp` and its Gaussian math `src/beam_gaussian.h/.cpp`, in `rt_optics`: `BeamSolver::solve()` re-traces only the segments an edit can have changed, and gives the same trees as a full solve, bit for bit. `RaytraceSceneEditor::solveBeams()` runs it from `VulkanEngine::updateBench()` right after `resolveBench()`, and `followBeamFrom()` applies **Follow beam**. `BeamNodeReport` gains the segment the beam arrives along and its two ends; `PortEvent` gains `operator==`.
+- The beam preview is `src/beam_preview.h/.cpp` (`beamRings()`, `buildBeamSections()`, 112-byte `BeamSection` records) and `shaders/optics/beam_preview.vert`/`.frag`, one instanced draw from a storage buffer in set 1 with no vertex buffer (`VulkanEngine::drawBeamPreview()`, `m_beamPreviewPipeline`, `FrameData::beamSections`). `RasterKey::beamSections` moves with the solver's revision and the preview's settings, so a paused preview redraws a new beam.
+- `bin/beam_test` checks the beam: free space against the closed forms, every surface matrix symplectic and against central differences of parabasal rays at four angles on three surfaces, a 45-degree mirror's and an off-axis parabola's foci, a lens's focus against ABCD, the power budget, the statuses, **Follow beam**, 1000 random edits solved selectively against full solves, the preview's sections, and a 30-element setup's solve time. `tools/verify/beam_solver_check.py` runs the solver on the seven verification scenes; `run_all.py` runs it. The Beam window is `src/rt_scene_editor_beam_window.cpp`, and `splitDockBelow()` (`src/workspace.h`) splits a dock node.
 - `src/beam_axis.h` (in `rt_optics`): `BeamAxis`, `BeamAxisNode`, `BeamSource`, `OpticPortId` and the tree edits, which keep an axis a tree. `BeamTraceMode` and the guide strength are `OpticsSettings`' (`src/rt_scene_types.h`), and the guide axis is `RaytraceRenderer::guideAxisId()`, in `RenderKey`, saved as `"guideAxis"`. `RaytraceSceneEditor::editBeamAxis()` is the one way to change an axis: it moves `beamAxisRevision()` and `beamAxesRevision()`, never `revision()`, so an axis edit restarts no render.
 - `bin/beam_test` checks the ports and the trees, and `tools/verify/beam_axis_check.py` the scene file's round trip through `--save-scene`. `run_all.py` runs both.
 - `VulkanEngine::openScene()` takes an optional `loaded` flag that tells a file that did not parse from one that opened with problems.

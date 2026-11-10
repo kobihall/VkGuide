@@ -18,6 +18,9 @@ public:
 	VkPipelineDepthStencilStateCreateInfo m_depthStencil;
 	VkPipelineRenderingCreateInfo m_renderInfo;
 	VkFormat m_colorAttachmentformat;
+	// empty unless setColorAttachments() is called
+	std::vector<VkFormat> m_colorAttachmentFormats;
+	std::vector<VkPipelineColorBlendAttachmentState> m_colorBlendAttachments;
 	// empty unless setVertexInput() is called: most pipelines here read no vertex attributes
 	std::vector<VkVertexInputBindingDescription> m_vertexBindings;
 	std::vector<VkVertexInputAttributeDescription> m_vertexAttributes;
@@ -41,6 +44,8 @@ public:
 	void enableBlendingAdditive();
 	void enableBlendingAlphablend();
 	void setColorAttachmentFormat(VkFormat format);
+	// several color attachments, each with its own blend, in place of setColorAttachmentFormat() and the enableBlending*()
+	void setColorAttachments(std::span<const VkFormat> formats, std::span<const VkPipelineColorBlendAttachmentState> blends);
 	void setDepthFormat(VkFormat format);
 	void disableDepthtest();
 	void enableDepthtest(bool depthWriteEnable, VkCompareOp op);

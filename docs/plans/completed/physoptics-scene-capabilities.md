@@ -70,8 +70,8 @@ Each plan registers its UI under a capability. For **Optical bench**:
 | **Add** menu | **Optic**, **Laser**, **Detector**, **Beam axis** |
 | Menu bar | an **Optics** menu: **Import prescription...**, **Load glass catalog...**, **Bench settings...** ([physoptics-prescription-import.md](../physoptics-prescription-import.md), [physoptics-optical-materials.md](physoptics-optical-materials.md), [physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md)) |
 | **File** menu | **Export Optical Data...** ([physoptics-data-export.md](../physoptics-data-export.md)) |
-| **Windows** menu | **Beam**, **Detectors** ([physoptics-gaussian-beam-solver.md](../physoptics-gaussian-beam-solver.md), [physoptics-detectors.md](physoptics-detectors.md)) |
-| Viewport | the breadboard, beams, beam-axis overlays ([physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md), [physoptics-beam-preview.md](../physoptics-beam-preview.md)) |
+| **Windows** menu | **Beam**, **Detectors** ([physoptics-gaussian-beam-solver.md](physoptics-gaussian-beam-solver.md), [physoptics-detectors.md](physoptics-detectors.md)) |
+| Viewport | the breadboard, beams, beam-axis overlays ([physoptics-bench-and-mounts.md](physoptics-bench-and-mounts.md), [physoptics-beam-preview.md](physoptics-beam-preview.md)) |
 | **Render Settings** (split from **Raytrace Render**) | an **Optics** section: design wavelength, surrounding medium, exact coatings, record rays |
 | **Materials** window | the **Glasses** and **Coatings** folders |
 
